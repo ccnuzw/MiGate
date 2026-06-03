@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -49,5 +50,67 @@ func TestInboundsAPIListsStoredInboundsWithClients(t *testing.T) {
 	}
 	if strings.Contains(body, "panel_password") || strings.Contains(body, "super-secret-password") {
 		t.Fatalf("inbounds api leaked panel secrets: %s", body)
+	}
+}
+
+func TestCreateInboundAPIStoresInbound(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"remark":"新入口","protocol":"trojan","port":9443,"network":"tcp","security":"tls"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"remark":"新入口"`, `"protocol":"trojan"`, `"port":9443`, `"enabled":true`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("create response missing %q: %s", want, body)
+		}
+	}
+
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].Remark != "新入口" || inbounds[0].Protocol != "trojan" {
+		t.Fatalf("inbound was not persisted: %+v", inbounds)
+	}
+}
+
+func TestCreateInboundAPIRejectsUnsupportedProtocol(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"remark":"legacy","protocol":"openvpn","port":1194,"network":"udp"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "unsupported_protocol") {
+		t.Fatalf("expected unsupported_protocol body, got: %s", response.Body.String())
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 0 {
+		t.Fatalf("unsupported inbound should not persist: %+v", inbounds)
 	}
 }

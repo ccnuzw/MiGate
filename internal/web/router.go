@@ -10,6 +10,7 @@ import (
 
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
+	CreateInbound(ctx context.Context, params db.CreateInboundParams) (db.Inbound, error)
 }
 
 type routerConfig struct {
@@ -56,22 +57,49 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func inboundsHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			listInbounds(w, r, store)
+		case http.MethodPost:
+			createInbound(w, r, store)
+		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func listInbounds(w http.ResponseWriter, r *http.Request, store Store) {
+	inbounds := []db.Inbound{}
+	if store != nil {
+		loaded, err := store.ListInbounds(r.Context())
+		if err != nil {
+			http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
 			return
 		}
-		inbounds := []db.Inbound{}
-		if store != nil {
-			loaded, err := store.ListInbounds(r.Context())
-			if err != nil {
-				http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
-				return
-			}
-			inbounds = loaded
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": inbounds})
+		inbounds = loaded
 	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": inbounds})
+}
+
+func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
+	if store == nil {
+		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var payload db.CreateInboundParams
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	created, err := store.CreateInbound(r.Context(), payload)
+	if err != nil {
+		http.Error(w, `{"error":"unsupported_protocol"}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(created)
 }
 
 const panelHTML = `<!doctype html>
