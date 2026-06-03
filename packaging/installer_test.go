@@ -1,7 +1,12 @@
 package packaging_test
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,4 +81,81 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 			t.Fatalf("service must not contain %q: %s", word, service)
 		}
 	}
+}
+
+func TestBuildReleaseScriptProducesLinuxArchivesAndChecksums(t *testing.T) {
+	root := repoRoot(t)
+	distDir := t.TempDir()
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "build-release.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "DIST_DIR="+distDir, "VERSION=v0.0.0-test")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build release failed: %v\n%s", err, output)
+	}
+
+	for _, artifact := range []string{"migate-linux-amd64.tar.gz", "migate-linux-arm64.tar.gz", "checksums.txt"} {
+		path := filepath.Join(distDir, artifact)
+		if info, err := os.Stat(path); err != nil || info.Size() == 0 {
+			t.Fatalf("expected non-empty artifact %s, stat=%v info=%+v\noutput:\n%s", artifact, err, info, output)
+		}
+	}
+
+	checksums := mustReadFile(t, filepath.Join(distDir, "checksums.txt"))
+	for _, artifact := range []string{"migate-linux-amd64.tar.gz", "migate-linux-arm64.tar.gz"} {
+		if !strings.Contains(checksums, artifact) {
+			t.Fatalf("checksums missing %s: %s", artifact, checksums)
+		}
+		entries := tarEntries(t, filepath.Join(distDir, artifact))
+		for _, want := range []string{"migate", "packaging/migate.service", "packaging/install.sh"} {
+			if !entries[want] {
+				t.Fatalf("%s missing %s, entries=%v", artifact, want, entries)
+			}
+		}
+		forbidden := []string{".git/", "node_modules/", "python", "openvpn", "rollout", "leak", "egress"}
+		for name := range entries {
+			lower := strings.ToLower(name)
+			for _, word := range forbidden {
+				if strings.Contains(lower, word) {
+					t.Fatalf("%s contains forbidden release entry %q", artifact, name)
+				}
+			}
+		}
+	}
+}
+
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
+func tarEntries(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open archive %s: %v", path, err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("gzip reader %s: %v", path, err)
+	}
+	defer gz.Close()
+	reader := tar.NewReader(gz)
+	entries := map[string]bool{}
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read tar %s: %v", path, err)
+		}
+		entries[header.Name] = true
+	}
+	return entries
 }
