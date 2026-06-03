@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/xray"
 )
 
 type Store interface {
@@ -38,6 +39,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store))
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store))
+	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	return mux
 }
 
@@ -164,6 +166,31 @@ func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
 		}
 	}
 	return false
+}
+
+func xrayConfigHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		inbounds := []db.Inbound{}
+		if store != nil {
+			loaded, err := store.ListInbounds(r.Context())
+			if err != nil {
+				http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			inbounds = loaded
+		}
+		config, err := xray.BuildConfig(inbounds)
+		if err != nil {
+			http.Error(w, `{"error":"build_xray_config_failed"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(config)
+	}
 }
 
 const panelHTML = `<!doctype html>

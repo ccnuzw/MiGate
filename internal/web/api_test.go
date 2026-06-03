@@ -170,3 +170,39 @@ func TestCreateClientAPIRejectsUnknownInbound(t *testing.T) {
 		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
 	}
 }
+
+func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "client@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/xray/config", nil)
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"inbounds"`, `"outbounds"`, `"protocol":"vless"`, `"protocol":"freedom"`, `"email":"client@example.com"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("xray config response missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"systemctl", "restart", "write", "openvpn", "egress"} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Fatalf("xray config preview leaked side-effect/heavy marker %q: %s", forbidden, body)
+		}
+	}
+}
