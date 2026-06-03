@@ -53,12 +53,34 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", "go build", "openvpn", "migate-proxy", "rollout", "leak", "egress"}
+	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", "go build", "openvpn", "migate-proxy", "rollout", "leak", "egress", "armv7"}
 	lower := strings.ToLower(script)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
 			t.Fatalf("installer must not contain %q", word)
 		}
+	}
+}
+
+func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"MIGATE_VERSION:-latest",
+		"releases/latest/download",
+		"releases/download/${VERSION}",
+		"CHECKSUM_URL",
+		"checksums.txt",
+		"curl -fL \"$CHECKSUM_URL\"",
+		"grep \"migate-linux-${ARCH}.tar.gz\"",
+		"sha256sum -c",
+		"tar -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer release checksum contract missing %q", want)
+		}
+	}
+	if strings.Index(script, "sha256sum -c") > strings.Index(script, "tar -xzf") {
+		t.Fatalf("installer must verify checksum before extracting release archive")
 	}
 }
 

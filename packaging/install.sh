@@ -12,8 +12,7 @@ arch() {
   case "$(uname -m)" in
     x86_64|amd64) printf 'amd64' ;;
     aarch64|arm64) printf 'arm64' ;;
-    armv7l) printf 'armv7' ;;
-    *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+    *) echo "unsupported architecture: $(uname -m). MiGate release assets support linux/amd64 and linux/arm64." >&2; exit 1 ;;
   esac
 }
 
@@ -47,6 +46,7 @@ JSON
 main() {
   require_root
   ARCH="$(arch)"
+  ARTIFACT="migate-linux-${ARCH}.tar.gz"
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
 
@@ -62,13 +62,18 @@ main() {
   web_base_path="${web_base_path:-/}"
 
   if [ "$VERSION" = "latest" ]; then
-    URL="https://github.com/${REPO}/releases/latest/download/migate-linux-${ARCH}.tar.gz"
+    BASE_URL="https://github.com/${REPO}/releases/latest/download"
   else
-    URL="https://github.com/${REPO}/releases/download/${VERSION}/migate-linux-${ARCH}.tar.gz"
+    BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
   fi
+  URL="${BASE_URL}/${ARTIFACT}"
+  CHECKSUM_URL="${BASE_URL}/checksums.txt"
 
   echo "Downloading ${URL}"
-  curl -fL "$URL" -o "$TMP/migate-linux-${ARCH}.tar.gz"
+  curl -fL "$URL" -o "$TMP/${ARTIFACT}"
+  curl -fL "$CHECKSUM_URL" -o "$TMP/checksums.txt"
+  grep "migate-linux-${ARCH}.tar.gz" "$TMP/checksums.txt" > "$TMP/${ARTIFACT}.sha256"
+  (cd "$TMP" && sha256sum -c "${ARTIFACT}.sha256")
 
   systemctl stop migate 2>/dev/null || true
   mkdir -p "$INSTALL_DIR"
