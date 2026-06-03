@@ -26,7 +26,7 @@ func read(t *testing.T, parts ...string) string {
 	return string(b)
 }
 
-func TestInstallerIs轻量面板StyleInteractiveReleaseInstaller(t *testing.T) {
+func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"read -r -p \"Panel port",

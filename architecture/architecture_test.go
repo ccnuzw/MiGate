@@ -26,7 +26,7 @@ func read(t *testing.T, parts ...string) string {
 	return string(b)
 }
 
-func TestServiceRunsSinglePrebuiltBinaryLike轻量面板(t *testing.T) {
+func TestServiceRunsSinglePrebuiltBinary(t *testing.T) {
 	service := read(t, "packaging", "migate.service")
 	if !strings.Contains(service, "ExecStart=/usr/local/migate/migate") {
 		t.Fatalf("service must run single prebuilt binary:\n%s", service)
@@ -58,7 +58,7 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 
 func TestReadmeDeclaresLiteScopeAndExplicitlyExcludesLegacyHeavyFeatures(t *testing.T) {
 	readme := read(t, "README.md")
-	for _, want := range []string{"Go single-binary", "轻量面板-style", "VLESS", "VMess", "Trojan", "Shadowsocks"} {
+	for _, want := range []string{"Go single-binary", "lightweight-panel-style", "VLESS", "VMess", "Trojan", "Shadowsocks"} {
 		if !strings.Contains(readme, want) {
 			t.Fatalf("README missing scope marker %q", want)
 		}

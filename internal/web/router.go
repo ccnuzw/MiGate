@@ -17,8 +17,37 @@ type Store interface {
 	CreateClient(ctx context.Context, params db.CreateClientParams) (db.Client, error)
 }
 
+type XrayController interface {
+	Status(ctx context.Context) XrayStatus
+	Apply(ctx context.Context) XrayApplyResult
+}
+
+type XrayStatus struct {
+	Service          string   `json:"service"`
+	Status           string   `json:"status"`
+	Managed          bool     `json:"managed"`
+	CommandsExecuted []string `json:"commands_executed"`
+}
+
+type XrayApplyResult struct {
+	Status           string   `json:"status"`
+	Service          string   `json:"service"`
+	CommandsExecuted []string `json:"commands_executed"`
+}
+
+type defaultXrayController struct{}
+
+func (defaultXrayController) Status(ctx context.Context) XrayStatus {
+	return XrayStatus{Service: "xray", Status: "unknown", Managed: false, CommandsExecuted: []string{}}
+}
+
+func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
+	return XrayApplyResult{Status: "unavailable", Service: "xray", CommandsExecuted: []string{}}
+}
+
 type routerConfig struct {
-	store Store
+	store          Store
+	xrayController XrayController
 }
 
 type Option func(*routerConfig)
@@ -29,8 +58,14 @@ func WithStore(store Store) Option {
 	}
 }
 
+func WithXrayController(controller XrayController) Option {
+	return func(cfg *routerConfig) {
+		cfg.xrayController = controller
+	}
+}
+
 func NewRouter(options ...Option) http.Handler {
-	cfg := routerConfig{}
+	cfg := routerConfig{xrayController: defaultXrayController{}}
 	for _, option := range options {
 		option(&cfg)
 	}
@@ -40,6 +75,9 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store))
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store))
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
+	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
+	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
+	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	return mux
 }
 
@@ -193,6 +231,92 @@ func xrayConfigHandler(store Store) http.HandlerFunc {
 	}
 }
 
+func xrayStatusHandler(controller XrayController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if controller == nil {
+			controller = defaultXrayController{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(controller.Status(r.Context()))
+	}
+}
+
+func xrayApplyHandler(controller XrayController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var payload struct {
+			Confirm            bool `json:"confirm"`
+			AllowSystemChanges bool `json:"allow_system_changes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+			return
+		}
+		if !payload.Confirm || !payload.AllowSystemChanges {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "confirmation_required", "commands_executed": []string{}})
+			return
+		}
+		if controller == nil {
+			controller = defaultXrayController{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(controller.Apply(r.Context()))
+	}
+}
+
+func subscriptionHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if store == nil {
+			http.NotFound(w, r)
+			return
+		}
+		token := strings.Trim(strings.TrimPrefix(r.URL.Path, "/sub/"), "/")
+		if token == "" {
+			http.NotFound(w, r)
+			return
+		}
+		inbounds, err := store.ListInbounds(r.Context())
+		if err != nil {
+			http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
+			return
+		}
+		for _, inbound := range inbounds {
+			if !inbound.Enabled {
+				continue
+			}
+			for _, client := range inbound.Clients {
+				if !client.Enabled || client.UUID != token {
+					continue
+				}
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				_, _ = w.Write([]byte(shareLink(r.Host, inbound, client)))
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}
+}
+
+func shareLink(host string, inbound db.Inbound, client db.Client) string {
+	if host == "" {
+		host = "SERVER_IP"
+	}
+	return inbound.Protocol + "://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?type=" + inbound.Network + "&security=" + inbound.Security + "#" + client.Email
+}
+
 const panelHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -233,7 +357,7 @@ const panelHTML = `<!doctype html>
   <div class="shell">
     <aside>
       <div class="brand">MiGate <span>Go Lite</span></div>
-      <div class="subtitle">轻量面板 风格单二进制面板</div>
+      <div class="subtitle">轻量面板风格单二进制面板</div>
       <nav>
         <a class="active" href="/">概览</a>
         <a href="/#inbounds">入站</a>

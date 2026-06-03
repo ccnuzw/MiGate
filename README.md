@@ -1,6 +1,6 @@
 # MiGate
 
-MiGate is being rewritten as a **Go single-binary** VPS panel with a **轻量面板-style** architecture.
+MiGate is being rewritten as a **Go single-binary** VPS panel with a **lightweight-panel-style** architecture.
 
 ## Scope
 

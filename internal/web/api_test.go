@@ -206,3 +206,134 @@ func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
 		}
 	}
 }
+
+func TestSubscriptionEndpointReturnsClientShareLink(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "主入口", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "panel.example.com"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{"vless://" + client.UUID + "@panel.example.com:443", "type=tcp", "security=reality", "#sam@example.com"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("subscription missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestSubscriptionEndpointRejectsUnknownClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/missing", nil)
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+
+
+type fakeXrayController struct {
+	statusCalls int
+	applyCalls  int
+}
+
+func (f *fakeXrayController) Status(ctx context.Context) web.XrayStatus {
+	f.statusCalls++
+	return web.XrayStatus{Service: "xray", Status: "running", Managed: true, CommandsExecuted: []string{}}
+}
+
+func (f *fakeXrayController) Apply(ctx context.Context) web.XrayApplyResult {
+	f.applyCalls++
+	return web.XrayApplyResult{Status: "applied", Service: "xray", CommandsExecuted: []string{"xray -test -config /usr/local/etc/xray/config.json", "systemctl restart xray"}}
+}
+
+func TestXrayStatusAPIIsReadOnly(t *testing.T) {
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/xray/status", nil)
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"service":"xray"`, `"status":"running"`, `"managed":true`, `"commands_executed":[]`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("status response missing %q: %s", want, body)
+		}
+	}
+	if controller.statusCalls != 1 || controller.applyCalls != 0 {
+		t.Fatalf("status must be read-only, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	}
+}
+
+func TestXrayApplyAPIRejectsWithoutDoubleConfirmation(t *testing.T) {
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"error":"confirmation_required"`, `"commands_executed":[]`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rejection response missing %q: %s", want, body)
+		}
+	}
+	if controller.applyCalls != 0 {
+		t.Fatalf("rejected apply must not call controller, calls=%d", controller.applyCalls)
+	}
+}
+
+func TestXrayApplyAPICallsControllerAfterDoubleConfirmation(t *testing.T) {
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"status":"applied"`, `"service":"xray"`, `"systemctl restart xray"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("apply response missing %q: %s", want, body)
+		}
+	}
+	if controller.applyCalls != 1 || controller.statusCalls != 0 {
+		t.Fatalf("apply should call only apply once, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	}
+}
