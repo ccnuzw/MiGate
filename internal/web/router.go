@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/imzyb/MiGate/internal/db"
 )
@@ -11,6 +13,7 @@ import (
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
 	CreateInbound(ctx context.Context, params db.CreateInboundParams) (db.Inbound, error)
+	CreateClient(ctx context.Context, params db.CreateClientParams) (db.Client, error)
 }
 
 type routerConfig struct {
@@ -34,6 +37,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/", panelHandler)
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store))
+	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store))
 	return mux
 }
 
@@ -100,6 +104,66 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(created)
+}
+
+func inboundChildrenHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/api/inbounds/")
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) != 2 || parts[1] != "clients" {
+			http.NotFound(w, r)
+			return
+		}
+		inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || inboundID <= 0 {
+			http.NotFound(w, r)
+			return
+		}
+		createClient(w, r, store, inboundID)
+	}
+}
+
+func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) {
+	if store == nil {
+		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if !inboundExists(r.Context(), store, inboundID) {
+		http.Error(w, `{"error":"inbound_not_found"}`, http.StatusNotFound)
+		return
+	}
+	var payload struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email})
+	if err != nil {
+		http.Error(w, `{"error":"create_client_failed"}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(created)
+}
+
+func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return false
+	}
+	for _, inbound := range inbounds {
+		if inbound.ID == inboundID {
+			return true
+		}
+	}
+	return false
 }
 
 const panelHTML = `<!doctype html>
