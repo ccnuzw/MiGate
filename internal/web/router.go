@@ -1,13 +1,38 @@
 package web
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+
+	"github.com/imzyb/MiGate/internal/db"
 )
 
-func NewRouter() http.Handler {
+type Store interface {
+	ListInbounds(ctx context.Context) ([]db.Inbound, error)
+}
+
+type routerConfig struct {
+	store Store
+}
+
+type Option func(*routerConfig)
+
+func WithStore(store Store) Option {
+	return func(cfg *routerConfig) {
+		cfg.store = store
+	}
+}
+
+func NewRouter(options ...Option) http.Handler {
+	cfg := routerConfig{}
+	for _, option := range options {
+		option(&cfg)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", panelHandler)
 	mux.HandleFunc("/api/health", healthHandler)
+	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store))
 	return mux
 }
 
@@ -27,6 +52,26 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok","mode":"go-lite"}`))
+}
+
+func inboundsHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		inbounds := []db.Inbound{}
+		if store != nil {
+			loaded, err := store.ListInbounds(r.Context())
+			if err != nil {
+				http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			inbounds = loaded
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": inbounds})
+	}
 }
 
 const panelHTML = `<!doctype html>
