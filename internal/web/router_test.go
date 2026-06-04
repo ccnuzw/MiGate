@@ -301,7 +301,8 @@ func TestSettingsAPI(t *testing.T) {
 	router := web.NewRouter(web.WithConfigDir(tmp))
 
 	// GET should return settings without password, but has_password=true
-	t.Run("GET returns settings without password", func(t *testing.T) {
+// GET returns settings including has_password
+	t.Run("GET returns settings including has_password", func(t *testing.T) {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 		router.ServeHTTP(resp, req)
@@ -377,6 +378,42 @@ func TestSettingsAPI(t *testing.T) {
 			t.Fatalf("expected password to be preserved as 'newpass', got %v", saved["panel_password"])
 		}
 	})
+}
+
+func TestSettingsPreservesDatabasePath(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := tmp + "/panel.json"
+	// Pre-seed config with database_path
+	initial := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","database_path":"/data/migate.db"}`
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+	router := web.NewRouter(web.WithConfigDir(tmp))
+
+	// PUT without database_path should preserve it
+	resp := httptest.NewRecorder()
+	body := `{"panel_port":8888,"panel_username":"newadmin"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var saved map[string]interface{}
+	if err := json.Unmarshal(b, &saved); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if saved["database_path"] != "/data/migate.db" {
+		t.Fatalf("expected database_path to be preserved, got %v", saved["database_path"])
+	}
+	if saved["panel_port"] != float64(8888) {
+		t.Fatalf("expected panel_port=8888, got %v", saved["panel_port"])
+	}
 }
 
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {

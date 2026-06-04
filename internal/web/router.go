@@ -439,6 +439,12 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 							updated["panel_password"] = oldPW
 						}
 					}
+					// Preserve database_path if not in update
+					if _, has := updated["database_path"]; !has {
+						if oldDP, ok := existingMap["database_path"]; ok {
+							updated["database_path"] = oldDP
+						}
+					}
 				}
 			}
 			data, err := json.MarshalIndent(updated, "", "  ")
