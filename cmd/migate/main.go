@@ -8,15 +8,20 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/web"
 )
 
 type panelConfig struct {
-	PanelPort    int    `json:"panel_port"`
-	WebPath      string `json:"web_base_path"`
-	DatabasePath string `json:"database_path"`
+	PanelPort      int    `json:"panel_port"`
+	PanelUsername  string `json:"panel_username"`
+	PanelPassword  string `json:"panel_password"`
+	WebPath        string `json:"web_base_path"`
+	DatabasePath   string `json:"database_path"`
+	XrayConfigPath string `json:"xray_config_path"`
 }
 
 func main() {
@@ -69,7 +74,19 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return web.NewRouter(web.WithStore(store)), func() { _ = store.Close() }, nil
+	closeStore := func() { _ = store.Close() }
+
+	opts := []web.Option{web.WithStore(store)}
+	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
+		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
+	}
+	if cfg.XrayConfigPath != "" {
+		xrayDir := filepath.Dir(cfg.XrayConfigPath)
+		opts = append(opts, web.WithXrayController(
+			web.NewRealController(store, xrayDir, execCmd),
+		))
+	}
+	return web.NewRouter(opts...), closeStore, nil
 }
 
 func readPanelConfig(path string) (panelConfig, error) {
@@ -82,4 +99,10 @@ func readPanelConfig(path string) (panelConfig, error) {
 		return panelConfig{}, err
 	}
 	return cfg, nil
+}
+
+func execCmd(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.Output()
+	return string(out), err
 }
