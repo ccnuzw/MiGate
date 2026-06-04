@@ -24,15 +24,22 @@ type Store struct {
 }
 
 type Inbound struct {
-	ID       int64    `json:"id"`
-	UUID     string   `json:"uuid"`
-	Remark   string   `json:"remark"`
-	Protocol string   `json:"protocol"`
-	Port     int      `json:"port"`
-	Network  string   `json:"network"`
-	Security string   `json:"security"`
-	Enabled  bool     `json:"enabled"`
-	Clients  []Client `json:"clients"`
+	ID               int64    `json:"id"`
+	UUID             string   `json:"uuid"`
+	Remark           string   `json:"remark"`
+	Protocol         string   `json:"protocol"`
+	Port             int      `json:"port"`
+	Network          string   `json:"network"`
+	Security         string   `json:"security"`
+	Enabled          bool     `json:"enabled"`
+	WsPath           string   `json:"ws_path"`
+	WsHost           string   `json:"ws_host"`
+	GrpcServiceName  string   `json:"grpc_service_name"`
+	RealityDest      string   `json:"reality_dest"`
+	RealityServerNames string `json:"reality_server_names"`
+	RealityShortID   string   `json:"reality_short_id"`
+	SSMethod         string   `json:"ss_method"`
+	Clients          []Client `json:"clients"`
 }
 
 type Client struct {
@@ -48,11 +55,18 @@ type Client struct {
 }
 
 type CreateInboundParams struct {
-	Remark   string
-	Protocol string
-	Port     int
-	Network  string
-	Security string
+	Remark             string
+	Protocol           string
+	Port               int
+	Network            string
+	Security           string
+	WsPath             string
+	WsHost             string
+	GrpcServiceName    string
+	RealityDest        string
+	RealityServerNames string
+	RealityShortID     string
+	SSMethod           string
 }
 
 type CreateClientParams struct {
@@ -63,12 +77,19 @@ type CreateClientParams struct {
 }
 
 type UpdateInboundParams struct {
-	Remark   string `json:"remark"`
-	Protocol string `json:"protocol"`
-	Port     int    `json:"port"`
-	Network  string `json:"network"`
-	Security string `json:"security"`
-	Enabled  bool   `json:"enabled"`
+	Remark             string `json:"remark"`
+	Protocol           string `json:"protocol"`
+	Port               int    `json:"port"`
+	Network            string `json:"network"`
+	Security           string `json:"security"`
+	Enabled            bool   `json:"enabled"`
+	WsPath             string `json:"ws_path"`
+	WsHost             string `json:"ws_host"`
+	GrpcServiceName    string `json:"grpc_service_name"`
+	RealityDest        string `json:"reality_dest"`
+	RealityServerNames string `json:"reality_server_names"`
+	RealityShortID     string `json:"reality_short_id"`
+	SSMethod           string `json:"ss_method"`
 }
 
 type UpdateClientParams struct {
@@ -130,6 +151,18 @@ CREATE INDEX IF NOT EXISTS idx_clients_inbound_id ON clients(inbound_id);
 	} {
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE clients ADD COLUMN %s %s", col.name, col.typ))
 	}
+	// Migration: add transport columns to inbounds (ignore errors if already exist)
+	for _, col := range []struct{ name, typ, def string }{
+		{"ws_path", "TEXT", "DEFAULT ''"},
+		{"ws_host", "TEXT", "DEFAULT ''"},
+		{"grpc_service_name", "TEXT", "DEFAULT ''"},
+		{"reality_dest", "TEXT", "DEFAULT ''"},
+		{"reality_server_names", "TEXT", "DEFAULT ''"},
+		{"reality_short_id", "TEXT", "DEFAULT ''"},
+		{"ss_method", "TEXT", "DEFAULT '2022-blake3-aes-128-gcm'"},
+	} {
+		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE inbounds ADD COLUMN %s %s %s", col.name, col.typ, col.def))
+	}
 	return nil
 }
 
@@ -150,19 +183,29 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 	if remark == "" {
 		remark = protocol
 	}
-	id, uuid, err := s.insertInbound(ctx, remark, protocol, params.Port, network, security)
+	id, uuid, err := s.insertInbound(ctx, remark, protocol, params.Port, network, security,
+		params.WsPath, params.WsHost, params.GrpcServiceName,
+		params.RealityDest, params.RealityServerNames, params.RealityShortID,
+		params.SSMethod)
 	if err != nil {
 		return Inbound{}, err
 	}
-	return Inbound{ID: id, UUID: uuid, Remark: remark, Protocol: protocol, Port: params.Port, Network: network, Security: security, Enabled: true, Clients: []Client{}}, nil
+	return Inbound{ID: id, UUID: uuid, Remark: remark, Protocol: protocol, Port: params.Port, Network: network, Security: security, Enabled: true,
+		WsPath: params.WsPath, WsHost: params.WsHost, GrpcServiceName: params.GrpcServiceName,
+		RealityDest: params.RealityDest, RealityServerNames: params.RealityServerNames, RealityShortID: params.RealityShortID,
+		SSMethod: params.SSMethod,
+		Clients: []Client{}}, nil
 }
 
-func (s *Store) insertInbound(ctx context.Context, remark, protocol string, port int, network, security string) (int64, string, error) {
+func (s *Store) insertInbound(ctx context.Context, remark, protocol string, port int, network, security string,
+	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, ssMethod string) (int64, string, error) {
 	uuid := newUUID()
 	result, err := s.db.ExecContext(ctx, `
-INSERT INTO inbounds (uuid, remark, protocol, port, network, security, enabled, created_at)
-VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-`, uuid, remark, protocol, port, network, security, time.Now().UTC().Format(time.RFC3339))
+INSERT INTO inbounds (uuid, remark, protocol, port, network, security, enabled, created_at,
+  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, ss_method)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+`, uuid, remark, protocol, port, network, security, time.Now().UTC().Format(time.RFC3339),
+		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, ssMethod)
 	if err != nil {
 		return 0, "", err
 	}
@@ -247,8 +290,10 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if params.Enabled {
 		enabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, security=?, enabled=? WHERE id=?`,
-		remark, protocol, params.Port, network, security, enabled, id)
+	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
+		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, ss_method=? WHERE id=?`,
+		remark, protocol, params.Port, network, security, enabled,
+		params.WsPath, params.WsHost, params.GrpcServiceName, params.RealityDest, params.RealityServerNames, params.RealityShortID, params.SSMethod, id)
 	if err != nil {
 		return Inbound{}, err
 	}
@@ -260,10 +305,12 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 		return Inbound{}, fmt.Errorf("inbound not found: %d", id)
 	}
 	// Reload to get the full row
-	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled FROM inbounds WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
+		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, ss_method FROM inbounds WHERE id=?`, id)
 	var inbound Inbound
 	var dbEnabled int
-	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled); err != nil {
+	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
+		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.SSMethod); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -304,7 +351,8 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 
 func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, uuid, remark, protocol, port, network, security, enabled
+SELECT id, uuid, remark, protocol, port, network, security, enabled,
+  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, ss_method
 FROM inbounds
 ORDER BY id ASC
 `)
@@ -318,7 +366,8 @@ ORDER BY id ASC
 	for rows.Next() {
 		var inbound Inbound
 		var enabled int
-		if err := rows.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled); err != nil {
+		if err := rows.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled,
+			&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.SSMethod); err != nil {
 			return nil, err
 		}
 		inbound.Enabled = enabled != 0

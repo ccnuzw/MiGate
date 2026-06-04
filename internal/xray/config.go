@@ -68,7 +68,7 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 		Listen:         "0.0.0.0",
 		Port:           inbound.Port,
 		Protocol:       protocol,
-		StreamSettings: buildStreamSettings(inbound.Network, inbound.Security),
+		StreamSettings: buildStreamSettings(inbound),
 	}
 
 	switch protocol {
@@ -86,8 +86,12 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 			"clients": clientsAsPasswordEmail(clients),
 		}
 	case "shadowsocks":
+		ssMethod := "2022-blake3-aes-128-gcm"
+		if inbound.SSMethod != "" {
+			ssMethod = inbound.SSMethod
+		}
 		base.Settings = map[string]interface{}{
-			"method":   "2022-blake3-aes-128-gcm",
+			"method":   ssMethod,
 			"password": inbound.UUID,
 			"clients":  clientsAsPasswordEmail(clients),
 		}
@@ -141,9 +145,9 @@ func clientsAsPasswordEmail(clients []db.Client) []map[string]interface{} {
 	return result
 }
 
-func buildStreamSettings(network string, security string) map[string]interface{} {
-	network = strings.ToLower(strings.TrimSpace(network))
-	security = strings.ToLower(strings.TrimSpace(security))
+func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
+	network := strings.ToLower(strings.TrimSpace(inbound.Network))
+	security := strings.ToLower(strings.TrimSpace(inbound.Security))
 	if network == "" {
 		network = "tcp"
 	}
@@ -154,15 +158,41 @@ func buildStreamSettings(network string, security string) map[string]interface{}
 		"network":  network,
 		"security": security,
 	}
-	if network == "ws" {
-		settings["wsSettings"] = map[string]interface{}{"path": "/"}
+	if network == "ws" || network == "h2" {
+		wsSettings := map[string]interface{}{"path": "/"}
+		if inbound.WsPath != "" {
+			wsSettings["path"] = inbound.WsPath
+		}
+		if inbound.WsHost != "" {
+			wsSettings["host"] = inbound.WsHost
+		}
+		settings["wsSettings"] = wsSettings
+	}
+	if network == "grpc" {
+		grpcSettings := map[string]interface{}{"serviceName": "migate"}
+		if inbound.GrpcServiceName != "" {
+			grpcSettings["serviceName"] = inbound.GrpcServiceName
+		}
+		settings["grpcSettings"] = grpcSettings
 	}
 	if security == "reality" {
-		settings["realitySettings"] = map[string]interface{}{
-			"show":        false,
-			"dest":        "www.cloudflare.com:443",
-			"serverNames": []string{"www.cloudflare.com"},
+		dest := "www.cloudflare.com:443"
+		if inbound.RealityDest != "" {
+			dest = inbound.RealityDest
 		}
+		serverNames := []string{"www.cloudflare.com"}
+		if inbound.RealityServerNames != "" {
+			serverNames = strings.Split(inbound.RealityServerNames, ",")
+		}
+		realitySettings := map[string]interface{}{
+			"show":        false,
+			"dest":        dest,
+			"serverNames": serverNames,
+		}
+		if inbound.RealityShortID != "" {
+			realitySettings["shortId"] = inbound.RealityShortID
+		}
+		settings["realitySettings"] = realitySettings
 	}
 	return settings
 }

@@ -273,3 +273,110 @@ func TestStoreUpdateClientRejectsUnknownID(t *testing.T) {
 		t.Fatal("expected error for unknown client")
 	}
 }
+
+func TestStoreCreateInboundWithTransportFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create inbound with WS + Reality + SS fields
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark:             "transport-test",
+		Protocol:           "vless",
+		Port:               20000,
+		Network:            "ws",
+		Security:           "tls",
+		WsPath:             "/migate",
+		WsHost:             "test.example.com",
+		GrpcServiceName:    "migate",
+		RealityDest:        "www.google.com:443",
+		RealityServerNames: "www.google.com",
+		RealityShortID:     "6ba85179e30d4fc2",
+		SSMethod:           "2022-blake3-aes-256-gcm",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	// Verify returned fields
+	tests := []struct {
+		name string
+		got  string
+	}{
+		{"ws_path", inbound.WsPath},
+		{"ws_host", inbound.WsHost},
+		{"grpc_service_name", inbound.GrpcServiceName},
+		{"reality_dest", inbound.RealityDest},
+		{"reality_server_names", inbound.RealityServerNames},
+		{"reality_short_id", inbound.RealityShortID},
+		{"ss_method", inbound.SSMethod},
+	}
+	for _, tc := range tests {
+		if tc.got == "" {
+			t.Errorf("expected non-empty %s", tc.name)
+		}
+	}
+
+	if inbound.WsPath != "/migate" {
+		t.Fatalf("ws_path: got %q, want /migate", inbound.WsPath)
+	}
+	if inbound.WsHost != "test.example.com" {
+		t.Fatalf("ws_host: got %q, want test.example.com", inbound.WsHost)
+	}
+
+	// Verify via list
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	var found bool
+	for _, ib := range inbounds {
+		if ib.ID == inbound.ID {
+			found = true
+			if ib.WsPath != "/migate" {
+				t.Fatalf("list ws_path: got %q, want /migate", ib.WsPath)
+			}
+			if ib.RealityDest != "www.google.com:443" {
+				t.Fatalf("list reality_dest: got %q, want www.google.com:443", ib.RealityDest)
+			}
+			if ib.SSMethod != "2022-blake3-aes-256-gcm" {
+				t.Fatalf("list ss_method: got %q, want 2022-blake3-aes-256-gcm", ib.SSMethod)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("inbound not found in list")
+	}
+
+	// Test UpdateInbound preserves transport fields
+	updated, err := store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark:             "transport-updated",
+		Protocol:           "vmess",
+		Port:               20000,
+		Network:            "ws",
+		Security:           "tls",
+		Enabled:            true,
+		WsPath:             "/updated-path",
+		WsHost:             "updated.example.com",
+		GrpcServiceName:    "updated-grpc",
+		RealityDest:        "updated.com:443",
+		RealityServerNames: "updated.com",
+		RealityShortID:     "deadbeef",
+		SSMethod:           "2022-blake3-aes-128-gcm",
+	})
+	if err != nil {
+		t.Fatalf("update inbound: %v", err)
+	}
+	if updated.WsPath != "/updated-path" {
+		t.Fatalf("update ws_path: got %q, want /updated-path", updated.WsPath)
+	}
+	if updated.RealityDest != "updated.com:443" {
+		t.Fatalf("update reality_dest: got %q, want updated.com:443", updated.RealityDest)
+	}
+	if updated.Remark != "transport-updated" {
+		t.Fatalf("update remark: got %q, want transport-updated", updated.Remark)
+	}
+}
