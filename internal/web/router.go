@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -311,10 +312,19 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 }
 
 func shareLink(host string, inbound db.Inbound, client db.Client) string {
-	if host == "" {
-		host = "SERVER_IP"
-	}
+	host = subscriptionHost(host)
 	return inbound.Protocol + "://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?type=" + inbound.Network + "&security=" + inbound.Security + "#" + client.Email
+}
+
+func subscriptionHost(host string) string {
+	if host == "" {
+		return "SERVER_IP"
+	}
+	name, _, err := net.SplitHostPort(host)
+	if err == nil && name != "" {
+		return name
+	}
+	return strings.Trim(host, "[]")
 }
 
 const panelHTML = `<!doctype html>

@@ -239,6 +239,40 @@ func TestSubscriptionEndpointReturnsClientShareLink(t *testing.T) {
 	}
 }
 
+func TestSubscriptionEndpointStripsPanelPortBeforeAppendingInboundPort(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "主入口", Protocol: "vless", Port: 8443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "127.0.0.1:9999"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	want := "vless://" + client.UUID + "@127.0.0.1:8443"
+	if !strings.Contains(body, want) {
+		t.Fatalf("subscription should strip panel port before appending inbound port, want %q got %s", want, body)
+	}
+	if strings.Contains(body, "127.0.0.1:9999:8443") {
+		t.Fatalf("subscription contains double port: %s", body)
+	}
+}
+
 func TestSubscriptionEndpointRejectsUnknownClient(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
