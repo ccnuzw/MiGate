@@ -171,6 +171,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	// Dynamic config fields present
 	for _, want := range []string{
 		`id="ws-settings"`,
+		`id="grpc-settings"`,
 		`id="reality-settings"`,
 		`id="ss-settings"`,
 	} {
@@ -209,6 +210,17 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	for _, want := range []string{"toggleInbound(", "editInbound(", "toggleClient(", "editClient("} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing edit/toggle function %q", want)
+		}
+	}
+
+	// gRPC dynamic field in edit modal
+	for _, want := range []string{
+		`id="ei-grpc-settings"`,
+		`id="ei-grpc-service-name"`,
+		`grpc_service_name:`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing gRPC edit field %q", want)
 		}
 	}
 

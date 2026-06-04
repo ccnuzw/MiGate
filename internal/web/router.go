@@ -688,6 +688,9 @@ const panelHTML = `<!doctype html>
             <input id="ei-ws-path" placeholder="WS Path (默认 /)">
             <input id="ei-ws-host" placeholder="WS Host (可选)">
           </div>
+          <div id="ei-grpc-settings" class="hidden">
+            <input id="ei-grpc-service-name" value="migate" placeholder="gRPC ServiceName">
+          </div>
           <div id="ei-reality-settings" class="hidden">
             <input id="ei-reality-dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
             <input id="ei-reality-server-names" value="www.cloudflare.com" placeholder="ServerNames (逗号分隔)">
@@ -784,6 +787,9 @@ const panelHTML = `<!doctype html>
             <div id="ws-settings" class="hidden">
               <input name="ws_path" placeholder="WS Path (默认 /)">
               <input name="ws_host" placeholder="WS Host (可选)">
+            </div>
+            <div id="grpc-settings" class="hidden">
+              <input name="grpc_service_name" value="migate" placeholder="gRPC ServiceName">
             </div>
             <div id="reality-settings" class="hidden">
               <input name="reality_dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
@@ -1063,6 +1069,7 @@ const panelHTML = `<!doctype html>
       const net = document.getElementById('ei-network').value;
       const sec = document.getElementById('ei-security').value;
       document.getElementById('ei-ws-settings').classList.toggle('hidden', net !== 'ws' && net !== 'h2');
+      document.getElementById('ei-grpc-settings').classList.toggle('hidden', net !== 'grpc');
       document.getElementById('ei-reality-settings').classList.toggle('hidden', sec !== 'reality');
       document.getElementById('ei-ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
     }
@@ -1080,6 +1087,7 @@ const panelHTML = `<!doctype html>
       document.getElementById('ei-security').value = inbound.security || 'none';
       document.getElementById('ei-ws-path').value = inbound.ws_path || '';
       document.getElementById('ei-ws-host').value = inbound.ws_host || '';
+      document.getElementById('ei-grpc-service-name').value = inbound.grpc_service_name || 'migate';
       document.getElementById('ei-reality-dest').value = inbound.reality_dest || '';
       document.getElementById('ei-reality-server-names').value = inbound.reality_server_names || '';
       document.getElementById('ei-reality-short-id').value = inbound.reality_short_id || '';
@@ -1102,6 +1110,7 @@ const panelHTML = `<!doctype html>
         security: document.getElementById('ei-security').value,
         ws_path: document.getElementById('ei-ws-path').value,
         ws_host: document.getElementById('ei-ws-host').value,
+        grpc_service_name: document.getElementById('ei-grpc-service-name').value,
         reality_dest: document.getElementById('ei-reality-dest').value,
         reality_server_names: document.getElementById('ei-reality-server-names').value,
         reality_short_id: document.getElementById('ei-reality-short-id').value,
@@ -1137,7 +1146,14 @@ const panelHTML = `<!doctype html>
           port: inbound.port,
           network: inbound.network || 'tcp',
           security: inbound.security || 'none',
-          enabled: inbound.enabled
+          enabled: inbound.enabled,
+          ws_path: inbound.ws_path || '',
+          ws_host: inbound.ws_host || '',
+          grpc_service_name: inbound.grpc_service_name || '',
+          reality_dest: inbound.reality_dest || '',
+          reality_server_names: inbound.reality_server_names || '',
+          reality_short_id: inbound.reality_short_id || '',
+          ss_method: inbound.ss_method || ''
         })
       });
       if (!res.ok) {
@@ -1293,6 +1309,7 @@ const panelHTML = `<!doctype html>
       const net = document.querySelector('[name=network]').value;
       const sec = document.querySelector('[name=security]').value;
       document.getElementById('ws-settings').classList.toggle('hidden', net !== 'ws' && net !== 'h2');
+      document.getElementById('grpc-settings').classList.toggle('hidden', net !== 'grpc');
       document.getElementById('reality-settings').classList.toggle('hidden', sec !== 'reality');
       document.getElementById('ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
     }
