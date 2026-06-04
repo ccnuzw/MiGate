@@ -49,6 +49,10 @@ func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
 type routerConfig struct {
 	store          Store
 	xrayController XrayController
+	authEnabled    bool
+	authUsername   string
+	authPassword   string
+	sessionSecret  []byte
 }
 
 type Option func(*routerConfig)
@@ -72,6 +76,9 @@ func NewRouter(options ...Option) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", panelHandler)
+	mux.HandleFunc("/login", loginHandler(&cfg))
+	mux.HandleFunc("/api/login", loginHandler(&cfg))
+	mux.HandleFunc("/api/logout", logoutHandler())
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store))
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store))
@@ -79,7 +86,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
-	return mux
+	return authMiddleware(mux, &cfg)
 }
 
 func panelHandler(w http.ResponseWriter, r *http.Request) {
