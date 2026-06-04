@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -58,6 +59,7 @@ type routerConfig struct {
 	authUsername   string
 	authPassword   string
 	sessionSecret  []byte
+	configDir      string
 }
 
 type Option func(*routerConfig)
@@ -71,6 +73,12 @@ func WithStore(store Store) Option {
 func WithXrayController(controller XrayController) Option {
 	return func(cfg *routerConfig) {
 		cfg.xrayController = controller
+	}
+}
+
+func WithConfigDir(dir string) Option {
+	return func(cfg *routerConfig) {
+		cfg.configDir = dir
 	}
 }
 
@@ -90,6 +98,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
+	mux.HandleFunc("/api/settings", settingsHandler(&cfg))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	return authMiddleware(mux, &cfg)
 }
@@ -384,6 +393,68 @@ func xrayApplyHandler(controller XrayController) http.HandlerFunc {
 	}
 }
 
+func settingsHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg.configDir == "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"settings_not_available"}`))
+			return
+		}
+		configPath := cfg.configDir + "/panel.json"
+		switch r.Method {
+		case http.MethodGet:
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				http.Error(w, `{"error":"read_config_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			// Mask password for GET
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				http.Error(w, `{"error":"parse_config_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			if _, exists := raw["panel_password"]; exists {
+				raw["has_password"] = true
+				delete(raw, "panel_password")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(raw)
+		case http.MethodPut:
+			var updated map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				return
+			}
+			// Read existing to preserve password if not provided
+			existing, err := os.ReadFile(configPath)
+			if err == nil {
+				var existingMap map[string]interface{}
+				if err := json.Unmarshal(existing, &existingMap); err == nil {
+					if pw, has := updated["panel_password"]; !has || pw == "" {
+						if oldPW, ok := existingMap["panel_password"]; ok {
+							updated["panel_password"] = oldPW
+						}
+					}
+				}
+			}
+			data, err := json.MarshalIndent(updated, "", "  ")
+			if err != nil {
+				http.Error(w, `{"error":"serialize_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(configPath, data, 0o600); err != nil {
+				http.Error(w, `{"error":"write_config_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
 func subscriptionHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -630,6 +701,7 @@ const panelHTML = `<!doctype html>
         <a href="/#clients">客户端</a>
         <a href="/#subscriptions">订阅</a>
         <a href="/#xray">Xray</a>
+        <a href="/#settings">设置</a>
       </nav>
     </aside>
     <main>
@@ -735,6 +807,26 @@ const panelHTML = `<!doctype html>
           <button class="secondary" onclick="applyXrayConfig()">应用配置</button>
         </div>
         <div id="xray-result" class="list muted" style="margin-top:12px"></div>
+        <div style="margin-top:16px">
+          <button class="secondary" onclick="previewXrayConfig()">预览配置</button>
+        </div>
+        <div id="xray-config-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-config-json" style="background:rgba(148,163,184,.06);border-radius:12px;padding:16px;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:400px;overflow-y:auto"></pre></div>
+      </section>
+      <section id="settings" class="card">
+        <h2 class="section-title">面板设置</h2>
+        <p class="muted" style="margin-bottom:16px">编辑 panel.json 配置。修改面板端口或认证后需重启服务生效。</p>
+        <form id="settings-form" onsubmit="return false">
+          <input id="set-panel-port" type="number" min="1" max="65535" placeholder="面板端口" required>
+          <input id="set-username" placeholder="登录用户名">
+          <input id="set-password" type="password" placeholder="登录密码（留空不修改）">
+          <input id="set-xray-config-path" placeholder="Xray 配置路径（如 /etc/migate/xray.json）">
+          <input id="set-web-path" placeholder="Web 基础路径（如 /）">
+          <div class="actions" style="margin-top:8px">
+            <button type="submit" onclick="saveSettings()">保存设置</button>
+            <button type="button" class="secondary" onclick="loadSettings()">刷新</button>
+          </div>
+        </form>
+        <div id="settings-status" class="list muted" style="margin-top:12px"></div>
       </section>
     </main>
   </div>
@@ -769,7 +861,7 @@ const panelHTML = `<!doctype html>
 
     // === Navigation section switching ===
     function navigateTo(sectionId) {
-      const validSections = ['overview', 'inbounds', 'clients', 'subscriptions', 'xray'];
+      const validSections = ['overview', 'inbounds', 'clients', 'subscriptions', 'xray', 'settings'];
       if (!validSections.includes(sectionId)) sectionId = 'overview';
       document.querySelectorAll('main > section').forEach((el) => {
         el.style.display = (el.id === sectionId) ? '' : 'none';
@@ -1172,8 +1264,74 @@ const panelHTML = `<!doctype html>
       }
     }
 
+    // === Xray config preview ===
+    let _configVisible = false;
+    async function previewXrayConfig() {
+      const el = document.getElementById('xray-config-preview');
+      const pre = document.getElementById('xray-config-json');
+      if (_configVisible) {
+        el.style.display = 'none';
+        _configVisible = false;
+        return;
+      }
+      try {
+        const res = await fetch('/api/xray/config');
+        const json = await res.json();
+        pre.textContent = JSON.stringify(json, null, 2);
+        el.style.display = '';
+        _configVisible = true;
+      } catch (e) {
+        pre.textContent = '加载配置失败';
+        el.style.display = '';
+        _configVisible = true;
+      }
+    }
+
+    // === Settings ===
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) { throw new Error('not available'); }
+        const data = await res.json();
+        document.getElementById('set-panel-port').value = data.panel_port || '';
+        document.getElementById('set-username').value = data.panel_username || '';
+        document.getElementById('set-password').value = '';
+        document.getElementById('set-xray-config-path').value = data.xray_config_path || '';
+        document.getElementById('set-web-path').value = data.web_base_path || '';
+        if (data.database_path) {
+          document.getElementById('settings-status').innerHTML = '<span class="muted">数据库：' + escapeHtml(data.database_path) + (data.has_password ? ' | 密码已设置' : ' | 无密码') + '</span>';
+        }
+      } catch (e) {
+        document.getElementById('settings-status').textContent = '设置页面不可用：需要在 panel.json 配置文件下运行';
+      }
+    }
+    async function saveSettings() {
+      const data = {
+        panel_port: parseInt(document.getElementById('set-panel-port').value) || 0,
+        panel_username: document.getElementById('set-username').value.trim(),
+        panel_password: document.getElementById('set-password').value,
+        xray_config_path: document.getElementById('set-xray-config-path').value.trim(),
+        web_base_path: document.getElementById('set-web-path').value.trim() || '/',
+      };
+      if (!data.panel_port) { showToast('请输入面板端口', 'error'); return; }
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(data)
+        });
+        if (!res.ok) { showToast('保存设置失败', 'error'); return; }
+        showToast('设置已保存，重启服务后生效', 'success');
+        document.getElementById('set-password').value = '';
+        await loadSettings();
+      } catch (e) {
+        showToast('保存设置失败', 'error');
+      }
+    }
+
     fetchXrayStatus();
     loadSubSummary();
+    loadSettings();
   </script>
 </body>
 </html>`

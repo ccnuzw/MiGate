@@ -80,6 +80,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
 		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
 	}
+	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
 	if cfg.XrayConfigPath != "" {
 		xrayDir := filepath.Dir(cfg.XrayConfigPath)
 		opts = append(opts, web.WithXrayController(

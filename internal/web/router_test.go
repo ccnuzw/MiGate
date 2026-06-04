@@ -1,8 +1,10 @@
 package web_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -216,7 +218,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Nav links work with section switching
-	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#clients"`, `href="/#subscriptions"`, `href="/#xray"`} {
+	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#clients"`, `href="/#subscriptions"`, `href="/#xray"`, `href="/#settings"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing nav link %q", want)
 		}
@@ -265,6 +267,109 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	if strings.Contains(body, "prompt(") && !strings.Contains(body, "edit-inbound-overlay") {
 		t.Fatalf("panel should not use prompt(), should use modal overlays")
 	}
+
+	// Settings section
+	for _, want := range []string{`href="/#settings"`, `id="settings"`, "loadSettings", "saveSettings"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing settings element %q", want)
+		}
+	}
+
+	// Xray config preview
+	for _, want := range []string{"previewXrayConfig", "xray-config-preview"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing config preview element %q", want)
+		}
+	}
+}
+
+func TestSettingsAPI(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := tmp + "/panel.json"
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/","database_path":"/tmp/migate.db"}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router := web.NewRouter(web.WithConfigDir(tmp))
+
+	// GET should return settings without password, but has_password=true
+	t.Run("GET returns settings without password", func(t *testing.T) {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.Code)
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, ok := data["panel_password"]; ok {
+			t.Fatal("GET /api/settings should not expose panel_password")
+		}
+		if data["has_password"] != true {
+			t.Fatal("GET /api/settings should set has_password=true")
+		}
+		if data["panel_port"] != float64(9999) {
+			t.Fatalf("expected panel_port=9999, got %v", data["panel_port"])
+		}
+	})
+
+	// PUT saves settings
+	t.Run("PUT saves settings", func(t *testing.T) {
+		body := `{"panel_port":8888,"panel_username":"newadmin","panel_password":"newpass","web_base_path":"/panel/"}`
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+
+		// Verify written to file
+		b, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		var saved map[string]interface{}
+		if err := json.Unmarshal(b, &saved); err != nil {
+			t.Fatalf("unmarshal saved: %v", err)
+		}
+		if saved["panel_port"] != float64(8888) {
+			t.Fatalf("expected panel_port=8888, got %v", saved["panel_port"])
+		}
+		if saved["panel_username"] != "newadmin" {
+			t.Fatalf("expected panel_username=newadmin, got %v", saved["panel_username"])
+		}
+		if saved["panel_password"] != "newpass" {
+			t.Fatalf("expected panel_password=newpass, got %v", saved["panel_password"])
+		}
+	})
+
+	// PUT preserves existing password when empty
+	t.Run("PUT preserves existing password", func(t *testing.T) {
+		body := `{"panel_port":7777,"panel_username":"admin","panel_password":""}`
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.Code)
+		}
+
+		b, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		var saved map[string]interface{}
+		if err := json.Unmarshal(b, &saved); err != nil {
+			t.Fatalf("unmarshal saved: %v", err)
+		}
+		if saved["panel_password"] != "newpass" {
+			t.Fatalf("expected password to be preserved as 'newpass', got %v", saved["panel_password"])
+		}
+	})
 }
 
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {
