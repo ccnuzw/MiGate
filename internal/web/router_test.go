@@ -216,7 +216,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Nav links work with section switching
-	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#clients"`} {
+	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#clients"`, `href="/#subscriptions"`, `href="/#xray"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing nav link %q", want)
 		}
@@ -228,6 +228,20 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	// Confirm overlay hidden class must use higher-specificity selector
 	if !strings.Contains(body, "#confirm-overlay.hidden") {
 		t.Fatalf("panel CSS must use #confirm-overlay.hidden (not .hidden) to override ID selector display:flex")
+	}
+
+	// New sections: subscriptions and xray
+	for _, want := range []string{`id="subscriptions"`, `id="xray"`, `id="sub-inbound-summary"`, `id="xray-status"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing section/element %q", want)
+		}
+	}
+
+	// Xray and subscription JS functions
+	for _, want := range []string{"fetchXrayStatus", "applyXrayConfig", "loadSubSummary"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing JS function %q", want)
+		}
 	}
 }
 

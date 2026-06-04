@@ -638,6 +638,32 @@ const panelHTML = `<!doctype html>
         </form>
         <div id="client-list" class="list muted">选择一个入站以查看客户端...</div>
       </section>
+      <section id="subscriptions" class="card">
+        <h2 class="section-title">订阅管理</h2>
+        <p class="muted" style="margin-bottom:16px">每个客户端自动生成订阅链接和分享链接，可在客户端列表中查看和复制。</p>
+        <div id="subscription-info" style="background:rgba(148,163,184,.06); border-radius:16px; padding:20px; line-height:2">
+          <div><strong>订阅格式</strong>：<code>/sub/{uuid}</code> — 返回对应协议的分享链接</div>
+          <div><strong>支持协议</strong>：VLESS / VMess / Trojan / Shadowsocks</div>
+          <div><strong>使用方式</strong>：将订阅链接填入 V2Ray / Clash Meta / Nekoray 等客户端</div>
+        </div>
+        <div class="list" style="margin-top:16px">
+          <div id="sub-inbound-summary">正在加载入站订阅概况...</div>
+        </div>
+      </section>
+      <section id="xray" class="card">
+        <h2 class="section-title">Xray 管理</h2>
+        <p class="muted" style="margin-bottom:16px">查看 Xray 服务状态，应用配置变更。</p>
+        <div style="background:rgba(148,163,184,.06); border-radius:16px; padding:20px; margin-bottom:16px">
+          <div><strong>状态</strong>：<span id="xray-status">未知</span></div>
+          <div><strong>托管</strong>：<span id="xray-managed">-</span></div>
+          <div><strong>服务</strong>：<span id="xray-service">xray</span></div>
+        </div>
+        <div class="actions" style="gap:10px">
+          <button onclick="fetchXrayStatus()">刷新状态</button>
+          <button class="secondary" onclick="applyXrayConfig()">应用配置</button>
+        </div>
+        <div id="xray-result" class="list muted" style="margin-top:12px"></div>
+      </section>
     </main>
   </div>
   <script>
@@ -671,7 +697,7 @@ const panelHTML = `<!doctype html>
 
     // === Navigation section switching ===
     function navigateTo(sectionId) {
-      const validSections = ['overview', 'inbounds', 'clients'];
+      const validSections = ['overview', 'inbounds', 'clients', 'subscriptions', 'xray'];
       if (!validSections.includes(sectionId)) sectionId = 'overview';
       document.querySelectorAll('main > section').forEach((el) => {
         el.style.display = (sectionId === 'overview' || el.id === sectionId) ? '' : 'none';
@@ -690,7 +716,6 @@ const panelHTML = `<!doctype html>
         navigateTo(id);
       });
     });
-    // Only show overview and inbounds/clients that have content; keep subscriptions/xray hidden
     // Start on overview
     navigateTo('overview');
 
@@ -947,6 +972,63 @@ const panelHTML = `<!doctype html>
       showToast('入站创建成功', 'success');
       await loadInbounds();
     });
+
+    // === Xray status & apply ===
+    async function fetchXrayStatus() {
+      try {
+        const res = await fetch('/api/xray/status');
+        const data = await res.json();
+        document.getElementById('xray-status').textContent = data.status || '未知';
+        document.getElementById('xray-managed').textContent = data.managed ? '是' : '否';
+        document.getElementById('xray-service').textContent = data.service || 'xray';
+      } catch (e) {
+        document.getElementById('xray-status').textContent = '连接失败';
+      }
+    }
+    async function applyXrayConfig() {
+      document.getElementById('xray-result').textContent = '正在应用...';
+      try {
+        const res = await fetch('/api/xray/apply', {method: 'POST'});
+        const data = await res.json();
+        document.getElementById('xray-result').innerHTML = '<div>状态：' + (data.status || '完成') + '</div>' +
+          (data.commands_executed && data.commands_executed.length
+            ? '<div style="margin-top:8px;font-size:12px">' + data.commands_executed.join('<br>') + '</div>'
+            : '');
+        showToast('配置已应用', 'success');
+        await fetchXrayStatus();
+      } catch (e) {
+        document.getElementById('xray-result').textContent = '应用失败';
+        showToast('应用配置失败', 'error');
+      }
+    }
+
+    // === Subscription summary ===
+    async function loadSubSummary() {
+      try {
+        const res = await fetch('/api/inbounds');
+        const data = await res.json();
+        const inbounds = data.inbounds || [];
+        const host = window.location.host;
+        const el = document.getElementById('sub-inbound-summary');
+        if (inbounds.length === 0) {
+          el.innerHTML = '<span class="muted">暂无入站，请先在「入站」页面创建。</span>';
+          return;
+        }
+        el.innerHTML = inbounds.map(inb => {
+          const count = (inb.clients || []).length;
+          return '<div style="background:rgba(148,163,184,.06); border-radius:12px; padding:14px; margin-bottom:10px">' +
+            '<strong>' + escapeHtml(inb.remark || inb.protocol) + '</strong> ' +
+            '<span class="muted">' + inb.protocol.toUpperCase() + ' / ' + (inb.port||'') + '</span>' +
+            ' <span class="muted">(' + count + ' 个客户端)</span>' +
+            '</div>';
+        }).join('');
+      } catch (e) {
+        document.getElementById('sub-inbound-summary').textContent = '加载失败';
+      }
+    }
+
+    fetchXrayStatus();
+    loadSubSummary();
   </script>
 </body>
 </html>`
