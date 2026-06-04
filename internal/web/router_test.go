@@ -288,6 +288,13 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 			t.Fatalf("panel missing traffic/expiry element %q", want)
 		}
 	}
+
+	// Overview traffic stats
+	for _, want := range []string{"total-traffic", "xray-status-metric", "formatBytes"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing overview stat element %q", want)
+		}
+	}
 }
 
 func TestSettingsAPI(t *testing.T) {

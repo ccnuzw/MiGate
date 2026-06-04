@@ -732,9 +732,9 @@ const panelHTML = `<!doctype html>
     <main>
       <section id="overview" class="grid" aria-label="概览指标">
         <div class="card"><div>入站</div><div id="inbound-count" class="metric">0</div><p>VLESS / VMess / Trojan / Shadowsocks</p></div>
-        <div class="card"><div>客户端</div><div id="client-count" class="metric">0</div><p>按 inbound 管理账号</p></div>
-        <div class="card"><div>订阅</div><div class="metric">Ready</div><p>Clash / 通用链接规划中</p></div>
-        <div class="card"><div>Xray</div><div class="metric">Direct</div><p>默认 freedom 出站</p></div>
+        <div class="card"><div>客户端</div><div id="client-count" class="metric">0</div><p>活跃 / 总计</p></div>
+        <div class="card"><div>总流量</div><div id="total-traffic" class="metric">0 B</div><p><span id="xray-managed-badge" class="badge" style="display:inline-flex;background:rgba(34,197,94,.09);color:#86efac;border-color:rgba(34,197,94,.18);font-size:11px;padding:3px 8px">● 在线</span></p></div>
+        <div class="card"><div>Xray</div><div id="xray-status-metric" class="metric">检查中...</div><p>运行状态</p></div>
       </section>
       <section id="inbounds" class="card">
         <h2 class="section-title">核心协议</h2>
@@ -861,10 +861,29 @@ const panelHTML = `<!doctype html>
     const inboundList = document.getElementById('inbound-list');
     const inboundCount = document.getElementById('inbound-count');
     const clientCount = document.getElementById('client-count');
+    const totalTraffic = document.getElementById('total-traffic');
+    const xrayStatusMetric = document.getElementById('xray-status-metric');
 
     function renderInbounds(inbounds) {
       inboundCount.textContent = String(inbounds.length);
-      clientCount.textContent = String(inbounds.reduce((total, inbound) => total + (inbound.clients || []).length, 0));
+      const allClients = inbounds.flatMap(i => i.clients || []);
+      clientCount.textContent = String(allClients.length);
+      // Compute total traffic
+      const totalUp = allClients.reduce((s, c) => s + (c.up || 0), 0);
+      const totalDown = allClients.reduce((s, c) => s + (c.down || 0), 0);
+      totalTraffic.textContent = formatBytes(totalUp + totalDown);
+      // Active clients (enabled + not expired + not over limit)
+      const now = Math.floor(Date.now() / 1000);
+      const active = allClients.filter(c => {
+        if (!c.enabled) return false;
+        if (c.expiry_at && c.expiry_at > 0 && c.expiry_at <= now) return false;
+        if (c.traffic_limit && c.traffic_limit > 0 && (c.up||0)+(c.down||0) >= c.traffic_limit) return false;
+        return true;
+      }).length;
+      // Show active/total in client count description
+      const card = clientCount.closest('.card');
+      const p = card ? card.querySelector('p') : null;
+      if (p) p.textContent = active + ' / ' + allClients.length;
       if (inbounds.length === 0) {
         inboundList.className = 'list muted';
         inboundList.textContent = '暂无入站，先创建一个 VLESS / VMess / Trojan / Shadowsocks 节点。';
@@ -882,6 +901,16 @@ const panelHTML = `<!doctype html>
       const response = await fetch('/api/inbounds');
       const data = await response.json();
       renderInbounds(data.inbounds || []);
+      // Fetch Xray status for overview
+      try {
+        const xr = await fetch('/api/xray/status');
+        const xs = await xr.json();
+        if (xs && xs.service !== undefined) {
+          xrayStatusMetric.textContent = xs.service === 'running' ? '运行中' : (xs.service === 'stopped' ? '已停止' : xs.service);
+        }
+      } catch (e) {
+        xrayStatusMetric.textContent = '无法连接';
+      }
     }
 
     loadInbounds();
