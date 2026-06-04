@@ -164,3 +164,112 @@ func TestStoreDeleteClientRejectsUnknownID(t *testing.T) {
 		t.Fatal("expected error when deleting non-existent client")
 	}
 }
+
+func TestStoreUpdateInboundUpdatesFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "old", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	updated, err := store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark:   "new",
+		Port:     8443,
+		Network:  "ws",
+		Security: "tls",
+		Enabled:  false,
+	})
+	if err != nil {
+		t.Fatalf("update inbound: %v", err)
+	}
+	if updated.Remark != "new" || updated.Port != 8443 || updated.Network != "ws" || updated.Security != "tls" || updated.Enabled != false {
+		t.Fatalf("unexpected updated inbound: %+v", updated)
+	}
+	if updated.ID != inbound.ID || updated.UUID != inbound.UUID {
+		t.Fatalf("id/uuid changed after update: old=%+v new=%+v", inbound, updated)
+	}
+
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Remark != "new" || loaded[0].Enabled != false {
+		t.Fatalf("updated values not persisted: %+v", loaded[0])
+	}
+}
+
+func TestStoreUpdateInboundRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.UpdateInbound(context.Background(), 99999, db.UpdateInboundParams{Remark: "x", Port: 80})
+	if err == nil {
+		t.Fatal("expected error for unknown inbound")
+	}
+}
+
+func TestStoreUpdateClientUpdatesFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "test", Protocol: "trojan", Port: 443, Network: "tcp", Security: "tls",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "old@test.com",
+	})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	updated, err := store.UpdateClient(context.Background(), client.ID, db.UpdateClientParams{
+		Email:   "new@test.com",
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("update client: %v", err)
+	}
+	if updated.Email != "new@test.com" || updated.Enabled != false {
+		t.Fatalf("unexpected updated client: %+v", updated)
+	}
+	if updated.ID != client.ID || updated.UUID != client.UUID {
+		t.Fatalf("id/uuid changed: old=%+v new=%+v", client, updated)
+	}
+
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(loaded) != 1 || len(loaded[0].Clients) != 1 || loaded[0].Clients[0].Email != "new@test.com" || loaded[0].Clients[0].Enabled != false {
+		t.Fatalf("updated client not persisted: %+v", loaded[0].Clients[0])
+	}
+}
+
+func TestStoreUpdateClientRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.UpdateClient(context.Background(), 99999, db.UpdateClientParams{Email: "x"})
+	if err == nil {
+		t.Fatal("expected error for unknown client")
+	}
+}

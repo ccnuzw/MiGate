@@ -292,6 +292,112 @@ func TestSubscriptionEndpointRejectsUnknownClient(t *testing.T) {
 	}
 }
 
+func TestUpdateInboundAPIUpdatesFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "old", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	body := `{"remark":"new","port":8443,"network":"ws","security":"tls","enabled":false}`
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	resp := response.Body.String()
+	for _, want := range []string{`"remark":"new"`, `"port":8443`, `"network":"ws"`, `"security":"tls"`, `"enabled":false`} {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("update response missing %q: %s", want, resp)
+		}
+	}
+}
+
+func TestUpdateInboundAPIRejectsUnknownInbound(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(store))
+	body := `{"remark":"new","port":8443,"network":"tcp","security":"none","enabled":true}`
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/99999", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown inbound, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestUpdateClientAPIUpdatesFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "test", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "old@test.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	body := `{"email":"new@test.com","enabled":false}`
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10), bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	resp := response.Body.String()
+	for _, want := range []string{`"email":"new@test.com"`, `"enabled":false`} {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("update client response missing %q: %s", want, resp)
+		}
+	}
+}
+
+func TestUpdateClientAPIRejectsUnknownClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(store))
+	body := `{"email":"x","enabled":true}`
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/1/clients/99999", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown client, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 
 
 type fakeXrayController struct {

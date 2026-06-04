@@ -202,6 +202,13 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	if !strings.Contains(body, "showConfirm(") {
 		t.Fatalf("panel should have showConfirm() to replace native confirm()")
 	}
+
+	// Edit and toggle buttons for inbound and client rows
+	for _, want := range []string{"toggleInbound(", "editInbound(", "toggleClient(", "editClient("} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing edit/toggle function %q", want)
+		}
+	}
 }
 
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {

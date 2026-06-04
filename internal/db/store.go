@@ -56,6 +56,19 @@ type CreateClientParams struct {
 	Email     string
 }
 
+type UpdateInboundParams struct {
+	Remark   string
+	Port     int
+	Network  string
+	Security string
+	Enabled  bool
+}
+
+type UpdateClientParams struct {
+	Email   string
+	Enabled bool
+}
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	database, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -190,6 +203,78 @@ func (s *Store) DeleteInbound(ctx context.Context, id int64) error {
 		return fmt.Errorf("inbound not found: %d", id)
 	}
 	return nil
+}
+
+func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboundParams) (Inbound, error) {
+	remark := strings.TrimSpace(params.Remark)
+	if remark == "" {
+		return Inbound{}, fmt.Errorf("remark cannot be empty")
+	}
+	if params.Port <= 0 || params.Port > 65535 {
+		return Inbound{}, fmt.Errorf("invalid port: %d", params.Port)
+	}
+	network := strings.ToLower(strings.TrimSpace(params.Network))
+	if network == "" {
+		network = "tcp"
+	}
+	security := strings.ToLower(strings.TrimSpace(params.Security))
+	enabled := 0
+	if params.Enabled {
+		enabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET remark=?, port=?, network=?, security=?, enabled=? WHERE id=?`,
+		remark, params.Port, network, security, enabled, id)
+	if err != nil {
+		return Inbound{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Inbound{}, err
+	}
+	if n == 0 {
+		return Inbound{}, fmt.Errorf("inbound not found: %d", id)
+	}
+	// Reload to get the full row
+	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled FROM inbounds WHERE id=?`, id)
+	var inbound Inbound
+	var dbEnabled int
+	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled); err != nil {
+		return Inbound{}, err
+	}
+	inbound.Enabled = dbEnabled != 0
+	inbound.Clients = []Client{}
+	return inbound, nil
+}
+
+func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientParams) (Client, error) {
+	email := strings.TrimSpace(params.Email)
+	if email == "" {
+		email = "client"
+	}
+	enabled := 0
+	if params.Enabled {
+		enabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE clients SET email=?, enabled=? WHERE id=?`,
+		email, enabled, id)
+	if err != nil {
+		return Client{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Client{}, err
+	}
+	if n == 0 {
+		return Client{}, fmt.Errorf("client not found: %d", id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled FROM clients WHERE id=?`, id)
+	var client Client
+	var dbEnabled int
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &dbEnabled); err != nil {
+		return Client{}, err
+	}
+	client.Enabled = dbEnabled != 0
+	return client, nil
 }
 
 func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {

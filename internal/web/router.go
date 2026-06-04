@@ -18,6 +18,8 @@ type Store interface {
 	CreateClient(ctx context.Context, params db.CreateClientParams) (db.Client, error)
 	DeleteInbound(ctx context.Context, id int64) error
 	DeleteClient(ctx context.Context, id int64) error
+	UpdateInbound(ctx context.Context, id int64, params db.UpdateInboundParams) (db.Inbound, error)
+	UpdateClient(ctx context.Context, id int64, params db.UpdateClientParams) (db.Client, error)
 }
 
 type XrayController interface {
@@ -173,6 +175,26 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 				return
 			}
 			createClient(w, r, store, inboundID)
+		case http.MethodPut:
+			if len(parts) == 1 {
+				// PUT /api/inbounds/{id}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				updateInbound(w, r, store, inboundID)
+			} else if len(parts) == 3 && parts[1] == "clients" {
+				// PUT /api/inbounds/{id}/clients/{clientId}
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				updateClient(w, r, store, clientID)
+			} else {
+				http.NotFound(w, r)
+			}
 		case http.MethodDelete:
 			if len(parts) == 1 {
 				// DELETE /api/inbounds/{id}
@@ -254,6 +276,44 @@ func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
 		}
 	}
 	return false
+}
+
+func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) {
+	if store == nil {
+		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var payload db.UpdateInboundParams
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)
+	if err != nil {
+		http.Error(w, `{"error":"update_inbound_failed"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+}
+
+func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID int64) {
+	if store == nil {
+		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var payload db.UpdateClientParams
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	updated, err := store.UpdateClient(r.Context(), clientID, payload)
+	if err != nil {
+		http.Error(w, `{"error":"update_client_failed"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
 }
 
 func xrayConfigHandler(store Store) http.HandlerFunc {
@@ -415,6 +475,7 @@ const panelHTML = `<!doctype html>
     .muted { color:var(--muted); }
     .error { color:#fecaca; }
     .btn-del { background:var(--danger); border:none; color:white; padding:4px 10px; border-radius:8px; font-size:12px; cursor:pointer; }
+    .btn-sm { border:none; color:white; padding:4px 8px; border-radius:8px; font-size:11px; cursor:pointer; }
     .hidden { display:none; }
     #toast-container { position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:10px; }
     .toast { background:var(--card); border:1px solid var(--accent); color:var(--text); padding:12px 18px; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,.4); animation: toastIn .3s ease, toastOut .3s ease 2.7s forwards; }
@@ -557,7 +618,7 @@ const panelHTML = `<!doctype html>
         return;
       }
       inboundList.className = 'list';
-      inboundList.innerHTML = inbounds.map((inbound) => '<div class="row"><strong>' + escapeHtml(inbound.remark || '-') + '</strong><span>' + escapeHtml(inbound.protocol) + '</span><span>:' + inbound.port + '</span><span>' + escapeHtml(inbound.network || 'tcp') + '/' + escapeHtml(inbound.security || 'none') + '</span><span>' + ((inbound.clients || []).length) + ' 客户端</span><button class="btn-del" onclick="deleteInbound(' + inbound.id + ')">删除</button></div>').join('');
+      inboundList.innerHTML = inbounds.map((inbound) => '<div class="row"><strong>' + escapeHtml(inbound.remark || '-') + '</strong><span>' + escapeHtml(inbound.protocol) + '</span><span>:' + inbound.port + '</span><span>' + escapeHtml(inbound.network || 'tcp') + '/' + escapeHtml(inbound.security || 'none') + '</span><span>' + ((inbound.clients || []).length) + ' 客户端</span><span style="display:flex;gap:4px"><button class="btn-sm" style="background:var(--accent)" onclick="editInbound(' + inbound.id + ')" title="EDIT">\u270f\ufe0f</button><button class="btn-sm" style="background:' + (inbound.enabled ? 'var(--accent2)' : 'var(--muted)') + '" onclick="toggleInbound(' + inbound.id + ')" title="TOGGLE">' + (inbound.enabled ? 'ON' : 'OFF') + '</button><button class="btn-del" onclick="deleteInbound(' + inbound.id + ')">DEL</button></span></div>').join('');
     }
 
     function escapeHtml(value) {
@@ -603,13 +664,16 @@ const panelHTML = `<!doctype html>
       list.innerHTML = clients.map(c => {
         const subUrl = window.location.protocol + '//' + subscriptionHost + '/sub/' + c.uuid;
         const shareLink = inbound.protocol + '://' + c.uuid + '@' + subscriptionHost + ':' + inbound.port + '?type=' + (inbound.network||'tcp') + '&security=' + (inbound.security||'none') + '#' + escapeHtml(c.email);
-        return '<div class="row" style="grid-template-columns:1.2fr .8fr .8fr 1.5fr .4fr .5fr">' +
+        return '<div class="row" style="grid-template-columns:1.2fr .8fr .8fr 1.5fr .4fr .7fr">' +
           '<strong>' + escapeHtml(c.email) + '</strong>' +
           '<span class="muted" style="font-size:11px;word-break:break-all">' + c.uuid + '</span>' +
           '<span class="muted" style="font-size:11px">订阅链接</span>' +
           '<span class="copy-link" style="font-size:11px;cursor:pointer;color:var(--accent);word-break:break-all" onclick="copySubUrl(\'' + subUrl + '\')" title="点击复制订阅链接">' + subUrl + '</span>' +
           '<span class="copy-link" style="font-size:11px;cursor:pointer;color:var(--accent2)" onclick="copySubUrl(\'' + shareLink + '\')" title="点击复制分享链接">🔗</span>' +
-          '<button class="btn-del" style="padding:4px 8px;font-size:11px;background:var(--danger)" onclick="deleteClient(' + inbound.id + ',' + c.id + ')">删除</button></div>';
+          '<span style="display:flex;gap:4px">' +
+          '<button class="btn-sm" style="background:var(--accent)" onclick="editClient(' + c.id + ')" title="EDIT">\u270f\ufe0f</button>' +
+          '<button class="btn-sm" style="background:' + (c.enabled ? 'var(--accent2)' : 'var(--muted)') + '" onclick="toggleClient(' + c.id + ')" title="TOGGLE">' + (c.enabled ? 'ON' : 'OFF') + '</button>' +
+          '<button class="btn-del" style="padding:4px 8px;font-size:11px" onclick="deleteClient(' + inbound.id + ',' + c.id + ')">DEL</button></span></div>';
       }).join('');
     }
 
@@ -656,6 +720,83 @@ const panelHTML = `<!doctype html>
         sel.innerHTML = '<option value="">--选择入站--</option>' +
           inbounds.map(i => '<option value="' + i.id + '">' + escapeHtml(i.remark) + ' (' + i.protocol + ' :' + i.port + ')</option>').join('');
       });
+    }
+
+    // === Edit & toggle functions ===
+    async function editInbound(id) {
+      const newRemark = prompt('新备注：');
+      if (newRemark === null) return;
+      const response = await fetch('/api/inbounds/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({remark: newRemark})
+      });
+      if (!response.ok) {
+        showToast('编辑入站失败', 'error');
+        return;
+      }
+      showToast('入站已更新', 'success');
+      await loadInbounds();
+    }
+
+    async function toggleInbound(id) {
+      const response = await fetch('/api/inbounds');
+      const data = await response.json();
+      const inbound = (data.inbounds || []).find(i => i.id === id);
+      if (!inbound) return;
+      const newEnabled = !inbound.enabled;
+      const res = await fetch('/api/inbounds/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: newEnabled})
+      });
+      if (!res.ok) {
+        showToast('开关入站失败', 'error');
+        return;
+      }
+      showToast('入站 ' + (newEnabled ? '已启用' : '已禁用'), 'success');
+      await loadInbounds();
+    }
+
+    async function editClient(id) {
+      const newEmail = prompt('新邮箱：');
+      if (newEmail === null) return;
+      const response = await fetch('/api/inbounds/1/clients/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email: newEmail})
+      });
+      if (!response.ok) {
+        showToast('编辑客户端失败', 'error');
+        return;
+      }
+      showToast('客户端已更新', 'success');
+      await loadClients();
+    }
+
+    async function toggleClient(id) {
+      const sel = document.getElementById('client-inbound-select');
+      const inboundRes = await fetch('/api/inbounds');
+      const data = await inboundRes.json();
+      const inbound = (data.inbounds || []).find(i => i.id === parseInt(sel.value));
+      if (!inbound) return;
+      const client = (inbound.clients || []).find(c => c.id === id);
+      if (!client) return;
+      const newEnabled = !client.enabled;
+      const res = await fetch('/api/inbounds/1/clients/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: newEnabled})
+      });
+      if (!res.ok) {
+        showToast('开关客户端失败', 'error');
+        return;
+      }
+      showToast('客户端 ' + (newEnabled ? '已启用' : '已禁用'), 'success');
+      await loadClients();
+      const inboundResponse = await fetch('/api/inbounds');
+      const inboundData = await inboundResponse.json();
+      renderInbounds(inboundData.inbounds || []);
     }
 
     document.getElementById('client-form').addEventListener('submit', async (event) => {
