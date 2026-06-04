@@ -725,6 +725,9 @@ const panelHTML = `<!doctype html>
     .modal-form { margin:0; grid-template-columns:repeat(2,minmax(0,1fr)); }
     #edit-inbound-form.modal-form, #edit-client-form.modal-form { gap:var(--space-4); }
     .modal-actions { margin-top:0; }
+    .advanced-fieldset { padding:var(--space-4); border-radius:var(--radius-lg); background:rgba(250,250,250,.72); box-shadow:var(--shadow-sm), inset 0 0 0 1px var(--line); }
+    .advanced-fieldset-title { color:var(--fg); font-size:var(--text-sm); font-weight:600; letter-spacing:-0.12px; }
+    .advanced-fieldset-copy { color:var(--muted); font-size:var(--text-xs); line-height:1.55; }
     #ei-dynamic-fields { display:contents; }
     #edit-inbound-dialog input, #edit-inbound-dialog select, #edit-client-dialog input, #edit-client-dialog select { width:100%; box-sizing:border-box; margin-bottom:0; }
     @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
@@ -792,18 +795,24 @@ const panelHTML = `<!doctype html>
           <p class="field-help">TLS/REALITY 会显示证书或伪装参数。</p>
         </div>
         <div id="ei-dynamic-fields">
-          <div id="ei-ws-settings" class="field-group span-2 hidden">
+          <div id="ei-ws-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">WebSocket 设置</div>
+            <div class="advanced-fieldset-copy">适合 CDN、反向代理或路径分流场景。</div>
             <label class="field-label" for="ei-ws-path">WebSocket</label>
             <input id="ei-ws-path" placeholder="WS Path (默认 /)">
             <input id="ei-ws-host" placeholder="WS Host (可选)">
             <p class="field-help">路径和 Host 用于 CDN 或反代场景。</p>
           </div>
-          <div id="ei-grpc-settings" class="field-group span-2 hidden">
+          <div id="ei-grpc-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">gRPC 设置</div>
+            <div class="advanced-fieldset-copy">用于 gRPC 传输的服务名，客户端需保持一致。</div>
             <label class="field-label" for="ei-grpc-service-name">gRPC ServiceName</label>
             <input id="ei-grpc-service-name" value="migate" placeholder="gRPC ServiceName">
             <p class="field-help">客户端需与服务端保持一致。</p>
           </div>
-          <div id="ei-xhttp-settings" class="field-group span-2 hidden">
+          <div id="ei-xhttp-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">XHTTP 设置</div>
+            <div class="advanced-fieldset-copy">配置 XHTTP 路径与上传模式。</div>
             <label class="field-label" for="ei-xhttp-path">XHTTP</label>
             <input id="ei-xhttp-path" value="/" placeholder="XHTTP Path (默认 /)">
             <select id="ei-xhttp-mode">
@@ -813,7 +822,9 @@ const panelHTML = `<!doctype html>
             </select>
             <p class="field-help">选择 XHTTP 路径和上传模式。</p>
           </div>
-          <div id="ei-reality-settings" class="field-group span-2 hidden">
+          <div id="ei-reality-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">REALITY 设置</div>
+            <div class="advanced-fieldset-copy">填写伪装目标、SNI 与短 ID，避免与客户端参数不一致。</div>
             <label class="field-label" for="ei-reality-dest">REALITY</label>
             <input id="ei-reality-dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
             <input id="ei-reality-server-names" value="www.cloudflare.com" placeholder="ServerNames (逗号分隔)">
@@ -821,7 +832,9 @@ const panelHTML = `<!doctype html>
             <input type="hidden" id="ei-reality-private-key">
             <p class="field-help">用于 REALITY 伪装目标、SNI 和短 ID。</p>
           </div>
-          <div id="ei-ss-settings" class="field-group span-2 hidden">
+          <div id="ei-ss-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">Shadowsocks 设置</div>
+            <div class="advanced-fieldset-copy">选择客户端支持的加密方法。</div>
             <label class="field-label" for="ei-ss-method">Shadowsocks 加密</label>
             <select id="ei-ss-method">
               <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
@@ -830,7 +843,9 @@ const panelHTML = `<!doctype html>
             </select>
             <p class="field-help">选择与客户端兼容的加密方法。</p>
           </div>
-          <div id="ei-tls-settings" class="field-group span-2 hidden">
+          <div id="ei-tls-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">TLS 设置</div>
+            <div class="advanced-fieldset-copy">填写证书和私钥路径，应用前会交给 Xray 校验。</div>
             <label class="field-label" for="ei-tls-cert-file">TLS 证书</label>
             <input id="ei-tls-cert-file" placeholder="TLS 证书路径 (如 /etc/.../fullchain.pem)">
             <input id="ei-tls-key-file" placeholder="TLS 密钥路径 (如 /etc/.../privkey.key)">

@@ -236,11 +236,29 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`<label class="field-label" for="ec-email">客户端标识</label>`,
 		`<label class="field-label" for="ec-traffic-limit">流量限额</label>`,
 		`<label class="field-label" for="ec-expiry-at">过期时间</label>`,
-		`class="field-group span-2 hidden"`,
+		`class="advanced-fieldset field-group span-2 hidden"`,
 		`class="form-actions modal-actions"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing unified edit-modal form contract %q", want)
+		}
+	}
+
+	// Edit inbound dynamic advanced fields are grouped as scan-friendly cards.
+	for _, want := range []string{
+		`.advanced-fieldset`,
+		`.advanced-fieldset-title`,
+		`.advanced-fieldset-copy`,
+		`class="advanced-fieldset field-group span-2 hidden"`,
+		`<div class="advanced-fieldset-title">WebSocket 设置</div>`,
+		`<div class="advanced-fieldset-title">gRPC 设置</div>`,
+		`<div class="advanced-fieldset-title">XHTTP 设置</div>`,
+		`<div class="advanced-fieldset-title">REALITY 设置</div>`,
+		`<div class="advanced-fieldset-title">Shadowsocks 设置</div>`,
+		`<div class="advanced-fieldset-title">TLS 设置</div>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing advanced edit-fieldset contract %q", want)
 		}
 	}
 
