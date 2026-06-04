@@ -97,7 +97,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok","mode":"go-lite"}`))
+	_, _ = w.Write([]byte(`{"status":"ok","mode":"single-binary"}`))
 }
 
 func inboundsHandler(store Store) http.HandlerFunc {
@@ -332,7 +332,7 @@ const panelHTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MiGate Go Lite</title>
+  <title>MiGate</title>
   <style>
     :root { color-scheme: dark; --bg:#070b14; --card:#101827; --muted:#94a3b8; --text:#e5eefb; --line:#223047; --accent:#4f8cff; --accent2:#22c55e; --danger:#ef4444; }
     * { box-sizing: border-box; }
@@ -372,7 +372,7 @@ const panelHTML = `<!doctype html>
 <body>
   <div class="shell">
     <aside>
-      <div class="brand">MiGate <span>Go Lite</span></div>
+      <div class="brand">MiGate</div>
       <div class="subtitle">轻量面板风格单二进制面板</div>
       <nav>
         <a class="active" href="/">概览</a>
@@ -385,7 +385,7 @@ const panelHTML = `<!doctype html>
     <main>
       <section class="hero">
         <div>
-          <h1>MiGate Go Lite</h1>
+          <h1>MiGate</h1>
           <p>从零重写为轻量 Go 单二进制：SQLite、本地 Xray 配置、订阅链接与核心面板能力。</p>
         </div>
         <div class="badge">● 服务在线</div>

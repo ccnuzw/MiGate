@@ -63,6 +63,11 @@ func TestReadmeDeclaresLiteScopeAndExplicitlyExcludesLegacyHeavyFeatures(t *test
 			t.Fatalf("README missing scope marker %q", want)
 		}
 	}
+	for _, forbiddenName := range []string{"MiGate Go Lite", "Go Lite"} {
+		if strings.Contains(readme, forbiddenName) {
+			t.Fatalf("README should use MiGate as the product name, found %q", forbiddenName)
+		}
+	}
 	for _, removed := range []string{"OpenVPN", "TUN", "egress tunnel", "remote readiness", "leak check", "rollout plan", "proxy service", "multi-node remote checks"} {
 		if !strings.Contains(readme, "Not included: "+removed) {
 			t.Fatalf("README must explicitly exclude %q", removed)

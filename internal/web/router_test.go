@@ -19,9 +19,14 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
 	}
 	body := page.Body.String()
-	for _, want := range []string{"MiGate", "Go Lite", "概览", "入站", "客户端", "订阅", "Xray", "VLESS", "VMess", "Trojan", "Shadowsocks"} {
+	for _, want := range []string{"MiGate", "概览", "入站", "客户端", "订阅", "Xray", "VLESS", "VMess", "Trojan", "Shadowsocks"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"MiGate Go Lite", "Go Lite"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("panel should use MiGate as the product name, found %q: %s", forbidden, body)
 		}
 	}
 
@@ -31,8 +36,11 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 	if health.Code != http.StatusOK {
 		t.Fatalf("expected health 200, got %d: %s", health.Code, health.Body.String())
 	}
-	if !strings.Contains(health.Body.String(), `"status":"ok"`) || !strings.Contains(health.Body.String(), `"mode":"go-lite"`) {
+	if !strings.Contains(health.Body.String(), `"status":"ok"`) || !strings.Contains(health.Body.String(), `"mode":"single-binary"`) {
 		t.Fatalf("unexpected health body: %s", health.Body.String())
+	}
+	if strings.Contains(health.Body.String(), "go-lite") {
+		t.Fatalf("health API should not expose go-lite as the product mode: %s", health.Body.String())
 	}
 }
 
@@ -64,7 +72,7 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 	}
 	for _, forbidden := range []string{"npm", "node_modules", "openvpn", "leak-check", "remote/readiness"} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
-			t.Fatalf("panel should keep Go Lite scope and avoid %q: %s", forbidden, body)
+			t.Fatalf("panel should keep lightweight single-binary scope and avoid %q: %s", forbidden, body)
 		}
 	}
 }

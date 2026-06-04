@@ -60,6 +60,11 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 			t.Fatalf("installer must not contain %q", word)
 		}
 	}
+	for _, forbiddenName := range []string{"MiGate Go Lite", "Go Lite"} {
+		if strings.Contains(script, forbiddenName) {
+			t.Fatalf("installer should use MiGate as the product name, found %q", forbiddenName)
+		}
+	}
 }
 
 func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {

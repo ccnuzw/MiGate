@@ -50,7 +50,7 @@ main() {
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
 
-  echo "MiGate Go Lite installer"
+  echo "MiGate installer"
   read -r -p "Panel port [9999]: " panel_port
   panel_port="${panel_port:-9999}"
   read -r -p "Panel username [admin]: " panel_username
