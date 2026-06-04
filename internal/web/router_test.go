@@ -180,6 +180,46 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		}
 	}
 
+	// Unified density/design-token contract for cards, forms, controls, and rows.
+	for _, want := range []string{
+		`--space-1: 4px;`,
+		`--space-2: 8px;`,
+		`--space-3: 12px;`,
+		`--space-4: 16px;`,
+		`--space-5: 20px;`,
+		`--space-6: 24px;`,
+		`--control-height: 40px;`,
+		`--control-radius: var(--radius-sm);`,
+		`--text-xs: 12px;`,
+		`--text-sm: 13px;`,
+		`--text-md: 14px;`,
+		`--text-lg: 16px;`,
+		`--panel-padding: var(--space-5);`,
+		`--row-padding: var(--space-4);`,
+		`.ui-control`,
+		`input, select, textarea {`,
+		`min-height:var(--control-height);`,
+		`font-size:var(--text-md);`,
+		`.panel, .card {`,
+		`padding:var(--panel-padding);`,
+		`.form-grid {`,
+		`gap:var(--space-4);`,
+		`.field-group { display:grid; gap:var(--space-2);`,
+		`.field-label { color:var(--fg); font-size:var(--text-sm);`,
+		`.field-help { color:var(--muted); font-size:var(--text-xs);`,
+		`.resource-row {`,
+		`padding:var(--row-padding);`,
+		`.resource-main { min-width:0; display:grid; gap:var(--space-2);`,
+		`.resource-meta {`,
+		`font-size:var(--text-xs);`,
+		`.icon-btn, .danger-icon-btn {`,
+		`min-height:32px;`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing unified density/design-token contract %q", want)
+		}
+	}
+
 	// Network is a select with all transport options
 	for _, want := range []string{
 		`<select name="network"`,
