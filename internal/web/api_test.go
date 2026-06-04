@@ -886,8 +886,41 @@ func TestSubscriptionSkipsExpiredClient(t *testing.T) {
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for expired client, got %d", response.Code)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 for expired client, got %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "Subscription expired") {
+		t.Fatalf("expected 'Subscription expired' message, got: %s", response.Body.String())
+	}
+}
+
+func TestSubscriptionSkipsDisabledClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "test", Protocol: "vless", Port: 8443})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "disabled"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	// Disable the client
+	_, err = store.UpdateClient(context.Background(), client.ID, db.UpdateClientParams{Email: "disabled", Enabled: false, TrafficLimit: 0, ExpiryAt: 0})
+	if err != nil {
+		t.Fatalf("update client: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 for disabled client, got %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "Subscription disabled") {
+		t.Fatalf("expected 'Subscription disabled' message, got: %s", response.Body.String())
 	}
 }
 

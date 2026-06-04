@@ -490,15 +490,24 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 			}
 			now := time.Now().Unix()
 			for _, client := range inbound.Clients {
-				if !client.Enabled || client.UUID != token {
+				if client.UUID != token {
 					continue
 				}
-				// Skip expired or over-limit clients
+				if !client.Enabled {
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+					_, _ = w.Write([]byte("// Subscription disabled"))
+					return
+				}
+				// Check expired or over-limit
 				if client.ExpiryAt > 0 && client.ExpiryAt <= now {
-					continue
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+					_, _ = w.Write([]byte("// Subscription expired"))
+					return
 				}
 				if client.TrafficLimit > 0 && (client.Up+client.Down) >= client.TrafficLimit {
-					continue
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+					_, _ = w.Write([]byte("// Traffic limit exceeded"))
+					return
 				}
 				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 				_, _ = w.Write([]byte(shareLink(r.Host, inbound, client)))
