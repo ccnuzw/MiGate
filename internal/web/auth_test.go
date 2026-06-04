@@ -176,6 +176,28 @@ func TestAuthHealthEndpointDoesNotRequireAuthEvenWhenAuthEnabled(t *testing.T) {
 	}
 }
 
+func TestAuthSubscriptionEndpointIsPublic(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/some-uuid-here", nil)
+	router.ServeHTTP(response, req)
+	// Should be accessible without auth (clients need to fetch subscriptions)
+	if response.Code == http.StatusUnauthorized {
+		t.Fatal("/sub/{uuid} must be public, got 401")
+	}
+}
+
+func TestAuthAPILoginIsPublic(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code == http.StatusUnauthorized {
+		t.Fatal("/api/login must be public, got 401")
+	}
+}
+
 // registerWithAuthTestImports ensures unused import doesn't cause issues
 var _ = context.Background
 var _ = json.Marshal
