@@ -3,8 +3,10 @@ package web_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -369,5 +371,84 @@ func TestXrayApplyAPICallsControllerAfterDoubleConfirmation(t *testing.T) {
 	}
 	if controller.applyCalls != 1 || controller.statusCalls != 0 {
 		t.Fatalf("apply should call only apply once, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	}
+}
+
+func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "test", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	configDir := t.TempDir()
+	var calls []string
+	mockRun := func(name string, args ...string) (string, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return "ok", nil
+	}
+
+	controller := web.NewRealController(store, configDir, mockRun)
+	result := controller.Apply(context.Background())
+
+	if result.Status != "applied" {
+		t.Fatalf("expected status 'applied', got %q", result.Status)
+	}
+	configPath := configDir + "/xray.json"
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("config file was not written: %v", err)
+	}
+	if !strings.Contains(string(configBytes), `"protocol": "vless"`) {
+		t.Fatalf("config missing inbound: %s", string(configBytes))
+	}
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 runner calls, got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "xray") || !strings.Contains(calls[0], "-test") {
+		t.Fatalf("first call should be xray -test, got %q", calls[0])
+	}
+	if !strings.Contains(calls[len(calls)-1], "systemctl restart xray") {
+		t.Fatalf("last call should be systemctl restart, got %q", calls[len(calls)-1])
+	}
+}
+
+func TestRealControllerApplyStopsOnValidationFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "test", Protocol: "vmess", Port: 8443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	configDir := t.TempDir()
+	var calls []string
+	mockRun := func(name string, args ...string) (string, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if len(calls) == 1 {
+			return "FAILED", fmt.Errorf("xray validation failed")
+		}
+		return "ok", nil
+	}
+
+	controller := web.NewRealController(store, configDir, mockRun)
+	result := controller.Apply(context.Background())
+
+	if len(calls) != 1 {
+		t.Fatalf("expected only 1 call (validation), got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(result.Status, "failed") {
+		t.Fatalf("expected status to indicate failure, got %q", result.Status)
 	}
 }
