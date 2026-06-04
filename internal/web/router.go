@@ -1430,8 +1430,8 @@ const panelHTML = `<!doctype html>
             '</div>' +
           '</div>' +
           '<div class="resource-actions">' +
-            '<button class="icon-btn" onclick="copySubUrl(\'' + subUrl + '\')" title="复制订阅链接">Sub</button>' +
-            '<button class="icon-btn" onclick="copySubUrl(\'' + shareLink + '\')" title="复制分享链接">Link</button>' +
+            '<button class="icon-btn" onclick="copySubUrl(' + jsString(subUrl) + ')" title="复制订阅链接">Sub</button>' +
+            '<button class="icon-btn" onclick="copySubUrl(' + jsString(shareLink) + ')" title="复制分享链接">Link</button>' +
             '<button class="icon-btn" onclick="editClient(' + c.id + ',' + inbound.id + ')" title="编辑">Edit</button>' +
             '<button class="icon-btn" onclick="toggleClient(' + c.id + ')" title="启用/禁用">' + (c.enabled ? 'ON' : 'OFF') + '</button>' +
             '<button class="danger-icon-btn" onclick="deleteClient(' + inbound.id + ',' + c.id + ')" title="删除">DEL</button>' +
@@ -1447,16 +1447,42 @@ const panelHTML = `<!doctype html>
       return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
     }
 
-    function copySubUrl(text) {
-      navigator.clipboard.writeText(text).then(() => {
-      }).catch(() => {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
+    function jsString(value) {
+      return JSON.stringify(String(value || ''));
+    }
+
+    function copyTextFallback(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        return document.execCommand('copy');
+      } finally {
         document.body.removeChild(ta);
-      });
+      }
+    }
+
+    async function copySubUrl(text) {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else if (!copyTextFallback(text)) {
+          throw new Error('copy fallback failed');
+        }
+        showToast('已复制链接', 'success');
+      } catch (e) {
+        try {
+          if (copyTextFallback(text)) {
+            showToast('已复制链接', 'success');
+            return;
+          }
+        } catch (_) {}
+        showToast('复制失败，请手动复制', 'error');
+      }
     }
 
     async function deleteInbound(id) {
@@ -1483,13 +1509,24 @@ const panelHTML = `<!doctype html>
       renderInbounds(data.inbounds || []);
     }
 
-    function populateInboundSelect() {
+    async function populateInboundSelect(selectedInboundId) {
       const sel = document.getElementById('client-inbound-select');
-      fetch('/api/inbounds').then(r => r.json()).then(data => {
-        const inbounds = data.inbounds || [];
-        sel.innerHTML = '<option value="">--选择入站--</option>' +
-          inbounds.map(i => '<option value="' + i.id + '">' + escapeHtml(i.remark) + ' (' + i.protocol + ' :' + i.port + ')</option>').join('');
-      });
+      const keep = selectedInboundId !== undefined && selectedInboundId !== null ? String(selectedInboundId) : sel.value;
+      const response = await fetch('/api/inbounds');
+      const data = await response.json();
+      const inbounds = data.inbounds || [];
+      sel.innerHTML = '<option value="">--选择入站--</option>' +
+        inbounds.map(i => '<option value="' + i.id + '">' + escapeHtml(i.remark) + ' (' + i.protocol + ' :' + i.port + ')</option>').join('');
+      if (keep && inbounds.some(i => String(i.id) === keep)) {
+        sel.value = keep;
+      }
+    }
+
+    async function refreshPanelData(selectedInboundId) {
+      await loadInbounds();
+      await populateInboundSelect(selectedInboundId);
+      await loadClients();
+      await loadSubSummary();
     }
 
     // === Edit & toggle functions ===
@@ -1692,10 +1729,7 @@ const panelHTML = `<!doctype html>
       }
       event.currentTarget.reset();
       showToast('客户端创建成功', 'success');
-      await loadClients();
-      const inboundResponse = await fetch('/api/inbounds');
-      const data = await inboundResponse.json();
-      renderInbounds(data.inbounds || []);
+      await refreshPanelData(sel.value);
     });
 
     populateInboundSelect();
@@ -1760,7 +1794,7 @@ const panelHTML = `<!doctype html>
       }
       event.currentTarget.reset();
       showToast('入站创建成功', 'success');
-      await loadInbounds();
+      await refreshPanelData();
     });
 
     // === Xray status & apply ===

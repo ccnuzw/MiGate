@@ -105,6 +105,34 @@ func TestPanelWiresClientManagement(t *testing.T) {
 	}
 }
 
+func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(page, req)
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d", page.Code)
+	}
+	body := page.Body.String()
+	for _, want := range []string{
+		`async function refreshPanelData`,
+		`await refreshPanelData();`,
+		`populateInboundSelect(selectedInboundId)`,
+		`await loadSubSummary();`,
+		`function copyTextFallback(text)`,
+		`if (navigator.clipboard && navigator.clipboard.writeText)`,
+		`showToast('已复制链接', 'success')`,
+		`showToast('复制失败，请手动复制', 'error')`,
+		`function jsString(value)`,
+		`onclick="copySubUrl(' + jsString(subUrl) + ')"`,
+		`onclick="copySubUrl(' + jsString(shareLink) + ')"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing create-refresh/copy safety contract %q", want)
+		}
+	}
+}
+
 func TestPanelWiresDeleteInboundButton(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
