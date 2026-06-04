@@ -3,6 +3,8 @@ package web_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -289,6 +291,199 @@ func TestSubscriptionEndpointRejectsUnknownClient(t *testing.T) {
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestSubscriptionVlessFormat(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "vless-node", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "user1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "panel.example.com"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	prefix := "vless://" + client.UUID + "@panel.example.com:443?"
+	if !strings.HasPrefix(body, prefix) {
+		t.Fatalf("vless format mismatch, want prefix %q, got %s", prefix, body)
+	}
+	if !strings.Contains(body, "type=tcp") {
+		t.Fatalf("vless missing type=tcp: %s", body)
+	}
+	if !strings.Contains(body, "security=reality") {
+		t.Fatalf("vless missing security=reality: %s", body)
+	}
+	if !strings.HasSuffix(body, "#user1") {
+		t.Fatalf("vless missing remark fragment: %s", body)
+	}
+}
+
+func TestSubscriptionVmessReturnsBase64JSON(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "vmess-node", Protocol: "vmess", Port: 8443, Network: "ws", Security: "tls",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "vmess-user"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "panel.example.com"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.HasPrefix(body, "vmess://") {
+		t.Fatalf("vmess should start with vmess://, got: %s", body)
+	}
+	// Decode base64 part
+	b64 := body[len("vmess://"):]
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		// Try URL-safe variant
+		decoded, err = base64.URLEncoding.DecodeString(b64)
+		if err != nil {
+			t.Fatalf("vmess link is not valid base64: %s, error: %v", b64, err)
+		}
+	}
+	var vmessData map[string]interface{}
+	if err := json.Unmarshal(decoded, &vmessData); err != nil {
+		t.Fatalf("vmess decoded data is not valid JSON: %s, error: %v", string(decoded), err)
+	}
+	for _, want := range []struct{ k, v string }{
+		{"v", "2"}, {"ps", "vmess-user"}, {"add", "panel.example.com"},
+		{"id", client.UUID}, {"aid", "0"}, {"scy", "auto"},
+		{"net", "ws"}, {"tls", "tls"},
+	} {
+		if got, ok := vmessData[want.k]; !ok || fmt.Sprint(got) != want.v {
+			t.Fatalf("vmess JSON field %q expected %q, got %q (value: %v)", want.k, want.v, got, got)
+		}
+	}
+}
+
+func TestSubscriptionTrojanReturnsTrojanLink(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "trojan-node", Protocol: "trojan", Port: 443, Network: "tcp", Security: "tls",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "trojan-user"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "panel.example.com"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	prefix := "trojan://" + client.UUID + "@panel.example.com:443?"
+	if !strings.HasPrefix(body, prefix) {
+		t.Fatalf("trojan format mismatch, want prefix %q, got %s", prefix, body)
+	}
+	if !strings.Contains(body, "security=tls") {
+		t.Fatalf("trojan missing security=tls: %s", body)
+	}
+	if !strings.HasSuffix(body, "#trojan-user") {
+		t.Fatalf("trojan missing remark fragment: %s", body)
+	}
+}
+
+func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "ss-node", Protocol: "shadowsocks", Port: 8388, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "ss-user"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "panel.example.com"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.HasPrefix(body, "ss://") {
+		t.Fatalf("shadowsocks should start with ss://, got: %s", body)
+	}
+	// Verify base64 encoded method:password@host:port
+	after := body[len("ss://"):]
+	atIdx := strings.Index(after, "@")
+	if atIdx < 0 {
+		t.Fatalf("ss:// missing @ sign: %s", body)
+	}
+	encodedCreds := after[:atIdx]
+	decoded, err := base64.StdEncoding.DecodeString(encodedCreds)
+	if err != nil {
+		decoded, err = base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(encodedCreds)
+		if err != nil {
+			t.Fatalf("ss:// credentials not valid base64: %s, error: %v", encodedCreds, err)
+		}
+	}
+	creds := string(decoded)
+	if !strings.Contains(creds, ":") || !strings.Contains(creds, client.UUID) {
+		t.Fatalf("ss:// decoded credentials %q should contain method:password with UUID", creds)
+	}
+	if !strings.HasSuffix(body, "#ss-user") {
+		t.Fatalf("ss:// missing remark fragment: %s", body)
 	}
 }
 

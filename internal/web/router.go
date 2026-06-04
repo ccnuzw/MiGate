@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -422,7 +423,49 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 
 func shareLink(host string, inbound db.Inbound, client db.Client) string {
 	host = subscriptionHost(host)
-	return inbound.Protocol + "://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?type=" + inbound.Network + "&security=" + inbound.Security + "#" + client.Email
+	switch inbound.Protocol {
+	case "vmess":
+		return vmessShareLink(host, inbound, client)
+	case "shadowsocks":
+		return ssShareLink(host, inbound, client)
+	default:
+		// vless, trojan, etc. use universal link format
+		return inbound.Protocol + "://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?type=" + inbound.Network + "&security=" + inbound.Security + "#" + client.Email
+	}
+}
+
+func vmessShareLink(host string, inbound db.Inbound, client db.Client) string {
+	inboundPort := inbound.Port
+	portStr := strconv.Itoa(inboundPort)
+	tls := ""
+	if inbound.Security == "tls" || inbound.Security == "reality" {
+		tls = "tls"
+	}
+	vmessData := map[string]interface{}{
+		"v":    "2",
+		"ps":   client.Email,
+		"add":  host,
+		"port": portStr,
+		"id":   client.UUID,
+		"aid":  "0",
+		"scy":  "auto",
+		"net":  inbound.Network,
+		"type": "none",
+		"host": "",
+		"path": "",
+		"tls":  tls,
+	}
+	b, _ := json.Marshal(vmessData)
+	encoded := base64.StdEncoding.EncodeToString(b)
+	return "vmess://" + encoded
+}
+
+func ssShareLink(host string, inbound db.Inbound, client db.Client) string {
+	// Default method used by Xray config builder: 2022-blake3-aes-128-gcm
+	method := "2022-blake3-aes-128-gcm"
+	userPass := method + ":" + client.UUID
+	encoded := base64.StdEncoding.EncodeToString([]byte(userPass))
+	return "ss://" + encoded + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + client.Email
 }
 
 func subscriptionHost(host string) string {
