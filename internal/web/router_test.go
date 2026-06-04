@@ -77,6 +77,32 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 	}
 }
 
+func TestPanelWiresClientManagement(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(page, req)
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
+	}
+	body := page.Body.String()
+	for _, want := range []string{
+		`id="client-section"`,
+		`id="client-form"`,
+		`name="email"`,
+		`id="client-list"`,
+		`loadClients()`,
+		`renderClients`,
+		`订阅链接`,
+		`copy-link`,
+		`subscriptionHost`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel client management missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {
 	router := web.NewRouter()
 	for _, path := range []string{"/api/remote/readiness", "/api/leak-check", "/api/egress/status", "/api/openvpn/status", "/api/proxy/status"} {

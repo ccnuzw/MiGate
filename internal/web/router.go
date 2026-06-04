@@ -428,6 +428,20 @@ const panelHTML = `<!doctype html>
         </form>
         <div id="inbound-list" class="list muted">正在加载入站...</div>
       </section>
+      <section id="client-section" class="card">
+        <h2 class="section-title">客户端管理</h2>
+        <p class="muted">选择入站 → 创建客户端 → 获取订阅链接</p>
+        <div class="actions">
+          <select id="client-inbound-select" onchange="loadClients()">
+            <option value="">--选择入站--</option>
+          </select>
+        </div>
+        <form id="client-form">
+          <input name="email" placeholder="客户端标识，例如 user01" required>
+          <button type="submit">创建客户端</button>
+        </form>
+        <div id="client-list" class="list muted">选择一个入站以查看客户端...</div>
+      </section>
     </main>
   </div>
   <script>
@@ -473,6 +487,95 @@ const panelHTML = `<!doctype html>
     });
 
     loadInbounds();
+
+    async function loadClients() {
+      const sel = document.getElementById('client-inbound-select');
+      const list = document.getElementById('client-list');
+      if (!sel.value) {
+        list.className = 'list muted';
+        list.textContent = '选择一个入站以查看客户端...';
+        return;
+      }
+      const response = await fetch('/api/inbounds');
+      const data = await response.json();
+      const inbound = (data.inbounds || []).find(i => i.id === parseInt(sel.value));
+      if (!inbound) {
+        list.className = 'list muted';
+        list.textContent = '入站未找到。';
+        return;
+      }
+      renderClients(inbound, list);
+    }
+
+    function renderClients(inbound, list) {
+      const subscriptionHost = window.location.host;
+      const clients = inbound.clients || [];
+      if (clients.length === 0) {
+        list.className = 'list muted';
+        list.textContent = '暂无客户端，在该入站下创建一个。';
+        return;
+      }
+      list.className = 'list';
+      list.innerHTML = clients.map(c => {
+        const subUrl = window.location.protocol + '//' + subscriptionHost + '/sub/' + c.uuid;
+        const shareLink = inbound.protocol + '://' + c.uuid + '@' + subscriptionHost + ':' + inbound.port + '?type=' + (inbound.network||'tcp') + '&security=' + (inbound.security||'none') + '#' + escapeHtml(c.email);
+        return '<div class="row" style="grid-template-columns:1.2fr .8fr .8fr 1.5fr .4fr">' +
+          '<strong>' + escapeHtml(c.email) + '</strong>' +
+          '<span class="muted" style="font-size:11px;word-break:break-all">' + c.uuid + '</span>' +
+          '<span class="muted" style="font-size:11px">订阅链接</span>' +
+          '<span class="copy-link" style="font-size:11px;cursor:pointer;color:var(--accent);word-break:break-all" onclick="copySubUrl(\'' + subUrl + '\')" title="点击复制订阅链接">' + subUrl + '</span>' +
+          '<span class="copy-link" style="font-size:11px;cursor:pointer;color:var(--accent2)" onclick="copySubUrl(\'' + shareLink + '\')" title="点击复制分享链接">🔗</span>' +
+          '</div>';
+      }).join('');
+    }
+
+    function copySubUrl(text) {
+      navigator.clipboard.writeText(text).then(() => {
+      }).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      });
+    }
+
+    function populateInboundSelect() {
+      const sel = document.getElementById('client-inbound-select');
+      fetch('/api/inbounds').then(r => r.json()).then(data => {
+        const inbounds = data.inbounds || [];
+        sel.innerHTML = '<option value="">--选择入站--</option>' +
+          inbounds.map(i => '<option value="' + i.id + '">' + escapeHtml(i.remark) + ' (' + i.protocol + ' :' + i.port + ')</option>').join('');
+      });
+    }
+
+    document.getElementById('client-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const sel = document.getElementById('client-inbound-select');
+      if (!sel.value) {
+        alert('请先选择一个入站');
+        return;
+      }
+      const form = new FormData(event.currentTarget);
+      const email = form.get('email');
+      const response = await fetch('/api/inbounds/' + sel.value + '/clients', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email: email})
+      });
+      if (!response.ok) {
+        alert('创建客户端失败：' + await response.text());
+        return;
+      }
+      event.currentTarget.reset();
+      await loadClients();
+      const inboundResponse = await fetch('/api/inbounds');
+      const data = await inboundResponse.json();
+      renderInbounds(data.inbounds || []);
+    });
+
+    populateInboundSelect();
   </script>
 </body>
 </html>`
