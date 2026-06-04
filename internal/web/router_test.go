@@ -314,7 +314,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Edit and toggle buttons for inbound and client rows
-	for _, want := range []string{"toggleInbound(", "editInbound(", "toggleClient(", "editClient("} {
+	for _, want := range []string{"toggleInbound(", "editInbound(", "toggleClient(", "editClient(", `'/enabled'`, `method: 'PATCH'`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing edit/toggle function %q", want)
 		}

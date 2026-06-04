@@ -553,6 +553,99 @@ func TestUpdateInboundAPIUpdatesFields(t *testing.T) {
 	}
 }
 
+func TestPatchInboundEnabledAPIPartiallyUpdatesEnabledOnly(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark:             "ws-entry",
+		Protocol:           "vless",
+		Port:               8443,
+		Network:            "ws",
+		Security:           "reality",
+		WsPath:             "/migate",
+		WsHost:             "example.com",
+		RealityDest:        "www.cloudflare.com:443",
+		RealityServerNames: "www.cloudflare.com",
+		RealityShortID:     "abcd1234",
+		XHTTPPath:          "/xhttp",
+		XHTTPMode:          "stream-one",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/enabled", bytes.NewReader([]byte(`{"enabled":false}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	resp := response.Body.String()
+	for _, want := range []string{`"remark":"ws-entry"`, `"protocol":"vless"`, `"port":8443`, `"network":"ws"`, `"security":"reality"`, `"ws_path":"/migate"`, `"ws_host":"example.com"`, `"reality_dest":"www.cloudflare.com:443"`, `"xhttp_path":"/xhttp"`, `"xhttp_mode":"stream-one"`, `"enabled":false`} {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("patch enabled response missing preserved field %q: %s", want, resp)
+		}
+	}
+
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Enabled || loaded[0].Remark != "ws-entry" || loaded[0].WsPath != "/migate" || loaded[0].XHTTPMode != "stream-one" {
+		t.Fatalf("PATCH enabled did not preserve inbound fields: %+v", loaded)
+	}
+}
+
+func TestPatchClientEnabledAPIPartiallyUpdatesEnabledOnly(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "test", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "old@test.com", TrafficLimit: 12345, ExpiryAt: 1893456000})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10)+"/enabled", bytes.NewReader([]byte(`{"enabled":false}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	resp := response.Body.String()
+	for _, want := range []string{`"email":"old@test.com"`, `"traffic_limit":12345`, `"expiry_at":1893456000`, `"enabled":false`} {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("patch client response missing preserved field %q: %s", want, resp)
+		}
+	}
+
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(loaded) != 1 || len(loaded[0].Clients) != 1 || loaded[0].Clients[0].Enabled || loaded[0].Clients[0].Email != "old@test.com" || loaded[0].Clients[0].TrafficLimit != 12345 {
+		t.Fatalf("PATCH enabled did not preserve client fields: %+v", loaded)
+	}
+}
+
 func TestUpdateInboundAPIRejectsUnknownInbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

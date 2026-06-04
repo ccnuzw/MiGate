@@ -376,6 +376,61 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	return client, nil
 }
 
+func (s *Store) SetInboundEnabled(ctx context.Context, id int64, enabled bool) (Inbound, error) {
+	dbEnabled := 0
+	if enabled {
+		dbEnabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET enabled=? WHERE id=?`, dbEnabled, id)
+	if err != nil {
+		return Inbound{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Inbound{}, err
+	}
+	if n == 0 {
+		return Inbound{}, fmt.Errorf("inbound not found: %d", id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
+		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, ss_method,
+		tls_cert_file, tls_key_file, xhttp_path, xhttp_mode FROM inbounds WHERE id=?`, id)
+	var inbound Inbound
+	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
+		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.SSMethod,
+		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode); err != nil {
+		return Inbound{}, err
+	}
+	inbound.Enabled = dbEnabled != 0
+	inbound.Clients = []Client{}
+	return inbound, nil
+}
+
+func (s *Store) SetClientEnabled(ctx context.Context, id int64, enabled bool) (Client, error) {
+	dbEnabled := 0
+	if enabled {
+		dbEnabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE clients SET enabled=? WHERE id=?`, dbEnabled, id)
+	if err != nil {
+		return Client{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Client{}, err
+	}
+	if n == 0 {
+		return Client{}, fmt.Errorf("client not found: %d", id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	var client Client
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		return Client{}, err
+	}
+	client.Enabled = dbEnabled != 0
+	return client, nil
+}
+
 func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, uuid, remark, protocol, port, network, security, enabled,

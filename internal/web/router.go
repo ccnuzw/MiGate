@@ -23,6 +23,8 @@ type Store interface {
 	DeleteClient(ctx context.Context, id int64) error
 	UpdateInbound(ctx context.Context, id int64, params db.UpdateInboundParams) (db.Inbound, error)
 	UpdateClient(ctx context.Context, id int64, params db.UpdateClientParams) (db.Client, error)
+	SetInboundEnabled(ctx context.Context, id int64, enabled bool) (db.Inbound, error)
+	SetClientEnabled(ctx context.Context, id int64, enabled bool) (db.Client, error)
 }
 
 type XrayController interface {
@@ -192,6 +194,24 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 				return
 			}
 			createClient(w, r, store, inboundID)
+		case http.MethodPatch:
+			if len(parts) == 2 && parts[1] == "enabled" {
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				patchInboundEnabled(w, r, store, inboundID)
+			} else if len(parts) == 4 && parts[1] == "clients" && parts[3] == "enabled" {
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				patchClientEnabled(w, r, store, clientID)
+			} else {
+				http.NotFound(w, r)
+			}
 		case http.MethodPut:
 			if len(parts) == 1 {
 				// PUT /api/inbounds/{id}
@@ -282,6 +302,48 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(created)
+}
+
+func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) {
+	if store == nil {
+		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	updated, err := store.SetInboundEnabled(r.Context(), inboundID, payload.Enabled)
+	if err != nil {
+		http.Error(w, `{"error":"inbound_not_found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+}
+
+func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, clientID int64) {
+	if store == nil {
+		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	updated, err := store.SetClientEnabled(r.Context(), clientID, payload.Enabled)
+	if err != nil {
+		http.Error(w, `{"error":"client_not_found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
 }
 
 func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
@@ -1452,29 +1514,10 @@ const panelHTML = `<!doctype html>
       const inbound = (data.inbounds || []).find(i => i.id === id);
       if (!inbound) return;
       inbound.enabled = !inbound.enabled;
-      const res = await fetch('/api/inbounds/' + id, {
-        method: 'PUT',
+      const res = await fetch('/api/inbounds/' + id + '/enabled', {
+        method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          remark: inbound.remark,
-          protocol: inbound.protocol,
-          port: inbound.port,
-          network: inbound.network || 'tcp',
-          security: inbound.security || 'none',
-          enabled: inbound.enabled,
-          ws_path: inbound.ws_path || '',
-          ws_host: inbound.ws_host || '',
-          grpc_service_name: inbound.grpc_service_name || '',
-          xhttp_path: inbound.xhttp_path || '',
-          xhttp_mode: inbound.xhttp_mode || '',
-          reality_dest: inbound.reality_dest || '',
-          reality_server_names: inbound.reality_server_names || '',
-          reality_short_id: inbound.reality_short_id || '',
-          reality_private_key: inbound.reality_private_key || '',
-          ss_method: inbound.ss_method || '',
-          tls_cert_file: inbound.tls_cert_file || '',
-          tls_key_file: inbound.tls_key_file || ''
-        })
+        body: JSON.stringify({enabled: inbound.enabled})
       });
       if (!res.ok) {
         showToast('开关入站失败', 'error');
@@ -1542,15 +1585,10 @@ const panelHTML = `<!doctype html>
       const client = (inbound.clients || []).find(c => c.id === id);
       if (!client) return;
       client.enabled = !client.enabled;
-      const res = await fetch('/api/inbounds/' + inbound.id + '/clients/' + id, {
-        method: 'PUT',
+      const res = await fetch('/api/inbounds/' + inbound.id + '/clients/' + id + '/enabled', {
+        method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          email: client.email,
-          enabled: client.enabled,
-          traffic_limit: client.traffic_limit || 0,
-          expiry_at: client.expiry_at || 0
-        })
+        body: JSON.stringify({enabled: client.enabled})
       });
       if (!res.ok) {
         showToast('开关客户端失败', 'error');
