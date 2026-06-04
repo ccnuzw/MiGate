@@ -16,6 +16,8 @@ type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
 	CreateInbound(ctx context.Context, params db.CreateInboundParams) (db.Inbound, error)
 	CreateClient(ctx context.Context, params db.CreateClientParams) (db.Client, error)
+	DeleteInbound(ctx context.Context, id int64) error
+	DeleteClient(ctx context.Context, id int64) error
 }
 
 type XrayController interface {
@@ -156,22 +158,62 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 
 func inboundChildrenHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
 		path := strings.TrimPrefix(r.URL.Path, "/api/inbounds/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) != 2 || parts[1] != "clients" {
-			http.NotFound(w, r)
-			return
+
+		switch r.Method {
+		case http.MethodPost:
+			if len(parts) != 2 || parts[1] != "clients" {
+				http.NotFound(w, r)
+				return
+			}
+			inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil || inboundID <= 0 {
+				http.NotFound(w, r)
+				return
+			}
+			createClient(w, r, store, inboundID)
+		case http.MethodDelete:
+			if len(parts) == 1 {
+				// DELETE /api/inbounds/{id}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if store == nil {
+					http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+					return
+				}
+				if err := store.DeleteInbound(r.Context(), inboundID); err != nil {
+					http.Error(w, `{"error":"inbound_not_found"}`, http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+			} else if len(parts) == 3 && parts[1] == "clients" {
+				// DELETE /api/inbounds/{id}/clients/{clientId}
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if store == nil {
+					http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+					return
+				}
+				if err := store.DeleteClient(r.Context(), clientID); err != nil {
+					http.Error(w, `{"error":"client_not_found"}`, http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+			} else {
+				http.NotFound(w, r)
+			}
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
-		inboundID, err := strconv.ParseInt(parts[0], 10, 64)
-		if err != nil || inboundID <= 0 {
-			http.NotFound(w, r)
-			return
-		}
-		createClient(w, r, store, inboundID)
 	}
 }
 
@@ -369,9 +411,10 @@ const panelHTML = `<!doctype html>
     form { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; margin:16px 0; }
     input, select { width:100%; border:1px solid var(--line); background:rgba(7,11,20,.72); color:var(--text); border-radius:12px; padding:10px 12px; }
     .list { display:grid; gap:10px; margin-top:14px; }
-    .row { display:grid; grid-template-columns:1.2fr .8fr .8fr .8fr .8fr; gap:10px; align-items:center; padding:12px; border:1px solid rgba(148,163,184,.14); border-radius:14px; background:rgba(148,163,184,.07); }
+    .row { display:grid; grid-template-columns:1.2fr .8fr .8fr .8fr .8fr .6fr; gap:10px; align-items:center; padding:12px; border:1px solid rgba(148,163,184,.14); border-radius:14px; background:rgba(148,163,184,.07); }
     .muted { color:var(--muted); }
     .error { color:#fecaca; }
+    .btn-del { background:var(--danger); border:none; color:white; padding:4px 10px; border-radius:8px; font-size:12px; cursor:pointer; }
     @media (max-width: 900px) { .shell { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .grid,.protocols { grid-template-columns:1fr 1fr; } }
     @media (max-width: 560px) { .grid,.protocols { grid-template-columns:1fr; } main { padding:18px; } }
   </style>
@@ -465,7 +508,7 @@ const panelHTML = `<!doctype html>
         return;
       }
       inboundList.className = 'list';
-      inboundList.innerHTML = inbounds.map((inbound) => '<div class="row"><strong>' + escapeHtml(inbound.remark || '-') + '</strong><span>' + escapeHtml(inbound.protocol) + '</span><span>:' + inbound.port + '</span><span>' + escapeHtml(inbound.network || 'tcp') + '/' + escapeHtml(inbound.security || 'none') + '</span><span>' + ((inbound.clients || []).length) + ' 客户端</span></div>').join('');
+      inboundList.innerHTML = inbounds.map((inbound) => '<div class="row"><strong>' + escapeHtml(inbound.remark || '-') + '</strong><span>' + escapeHtml(inbound.protocol) + '</span><span>:' + inbound.port + '</span><span>' + escapeHtml(inbound.network || 'tcp') + '/' + escapeHtml(inbound.security || 'none') + '</span><span>' + ((inbound.clients || []).length) + ' 客户端</span><button class="btn-del" onclick="deleteInbound(' + inbound.id + ')">删除</button></div>').join('');
     }
 
     function escapeHtml(value) {
@@ -526,13 +569,13 @@ const panelHTML = `<!doctype html>
       list.innerHTML = clients.map(c => {
         const subUrl = window.location.protocol + '//' + subscriptionHost + '/sub/' + c.uuid;
         const shareLink = inbound.protocol + '://' + c.uuid + '@' + subscriptionHost + ':' + inbound.port + '?type=' + (inbound.network||'tcp') + '&security=' + (inbound.security||'none') + '#' + escapeHtml(c.email);
-        return '<div class="row" style="grid-template-columns:1.2fr .8fr .8fr 1.5fr .4fr">' +
+        return '<div class="row" style="grid-template-columns:1.2fr .8fr .8fr 1.5fr .4fr .5fr">' +
           '<strong>' + escapeHtml(c.email) + '</strong>' +
           '<span class="muted" style="font-size:11px;word-break:break-all">' + c.uuid + '</span>' +
           '<span class="muted" style="font-size:11px">订阅链接</span>' +
           '<span class="copy-link" style="font-size:11px;cursor:pointer;color:var(--accent);word-break:break-all" onclick="copySubUrl(\'' + subUrl + '\')" title="点击复制订阅链接">' + subUrl + '</span>' +
           '<span class="copy-link" style="font-size:11px;cursor:pointer;color:var(--accent2)" onclick="copySubUrl(\'' + shareLink + '\')" title="点击复制分享链接">🔗</span>' +
-          '</div>';
+          '<button class="btn-del" style="padding:4px 8px;font-size:11px;background:var(--danger)" onclick="deleteClient(' + inbound.id + ',' + c.id + ')">删除</button></div>';
       }).join('');
     }
 
@@ -546,6 +589,30 @@ const panelHTML = `<!doctype html>
         document.execCommand('copy');
         document.body.removeChild(ta);
       });
+    }
+
+    async function deleteInbound(id) {
+      if (!confirm('确认删除入站 ' + id + '？此操作不可撤销，其下的客户端也将被删除。')) return;
+      const response = await fetch('/api/inbounds/' + id, {method: 'DELETE'});
+      if (!response.ok) {
+        alert('删除失败：' + await response.text());
+        return;
+      }
+      await loadInbounds();
+      populateInboundSelect();
+    }
+
+    async function deleteClient(inboundId, clientId) {
+      if (!confirm('确认删除客户端 ' + clientId + '？')) return;
+      const response = await fetch('/api/inbounds/' + inboundId + '/clients/' + clientId, {method: 'DELETE'});
+      if (!response.ok) {
+        alert('删除失败：' + await response.text());
+        return;
+      }
+      await loadClients();
+      const inboundResponse = await fetch('/api/inbounds');
+      const data = await inboundResponse.json();
+      renderInbounds(data.inbounds || []);
     }
 
     function populateInboundSelect() {

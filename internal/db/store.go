@@ -162,6 +162,36 @@ VALUES (?, ?, ?, 1, ?)
 	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, Email: email, Enabled: true}, nil
 }
 
+func (s *Store) DeleteClient(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM clients WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("client not found: %d", id)
+	}
+	return nil
+}
+
+func (s *Store) DeleteInbound(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM inbounds WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("inbound not found: %d", id)
+	}
+	return nil
+}
+
 func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, uuid, remark, protocol, port, network, security, enabled

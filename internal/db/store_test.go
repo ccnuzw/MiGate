@@ -59,12 +59,108 @@ func TestStoreRejectsUnsupportedProtocol(t *testing.T) {
 	defer store.Close()
 
 	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
-		Remark:   "legacy",
-		Protocol: "openvpn",
-		Port:     1194,
-		Network:  "udp",
+		Protocol: "http",
+		Port:     8080,
 	})
 	if err == nil {
-		t.Fatal("expected unsupported protocol error")
+		t.Fatal("expected error for unsupported protocol")
+	}
+}
+
+func TestStoreDeletesClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "test", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "del@test.com",
+	})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	if err := store.DeleteClient(context.Background(), client.ID); err != nil {
+		t.Fatalf("delete client: %v", err)
+	}
+
+	// Verify client is gone
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	for _, ib := range inbounds {
+		for _, c := range ib.Clients {
+			if c.ID == client.ID {
+				t.Fatalf("client %d still present after deletion", client.ID)
+			}
+		}
+	}
+}
+
+func TestStoreDeletesInboundAndCascadesClients(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "to-delete", Protocol: "vmess", Port: 8443, Network: "ws", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "orphan@test.com",
+	})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	if err := store.DeleteInbound(context.Background(), inbound.ID); err != nil {
+		t.Fatalf("delete inbound: %v", err)
+	}
+
+	// Verify inbound and its clients are gone
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	for _, ib := range inbounds {
+		if ib.ID == inbound.ID {
+			t.Fatalf("inbound %d still present after deletion", inbound.ID)
+		}
+	}
+}
+
+func TestStoreDeleteInboundRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.DeleteInbound(context.Background(), 99999); err == nil {
+		t.Fatal("expected error when deleting non-existent inbound")
+	}
+}
+
+func TestStoreDeleteClientRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.DeleteClient(context.Background(), 99999); err == nil {
+		t.Fatal("expected error when deleting non-existent client")
 	}
 }

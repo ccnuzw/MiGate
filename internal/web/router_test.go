@@ -103,6 +103,48 @@ func TestPanelWiresClientManagement(t *testing.T) {
 	}
 }
 
+func TestPanelWiresDeleteInboundButton(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(page, req)
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", page.Code)
+	}
+	body := page.Body.String()
+	for _, want := range []string{
+		`deleteInbound`,
+		`确认删除`,
+		`method: 'DELETE'`,
+		`/api/inbounds/`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel inbound delete missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestPanelWiresDeleteClientButton(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(page, req)
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", page.Code)
+	}
+	body := page.Body.String()
+	for _, want := range []string{
+		`deleteClient`,
+		`确认删除`,
+		`method: 'DELETE'`,
+		`/api/inbounds/`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel client delete missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {
 	router := web.NewRouter()
 	for _, path := range []string{"/api/remote/readiness", "/api/leak-check", "/api/egress/status", "/api/openvpn/status", "/api/proxy/status"} {

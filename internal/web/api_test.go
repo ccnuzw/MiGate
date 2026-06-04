@@ -452,3 +452,117 @@ func TestRealControllerApplyStopsOnValidationFailure(t *testing.T) {
 		t.Fatalf("expected status to indicate failure, got %q", result.Status)
 	}
 }
+
+func TestDeleteInboundAPIRemovesInboundAndReturns200(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "to-delete", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(web.NewRealController(store, t.TempDir(), func(name string, args ...string) (string, error) {
+		return "ok", nil
+	})))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	// Verify inbound is gone
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	for _, ib := range inbounds {
+		if ib.ID == inbound.ID {
+			t.Fatal("inbound still present after DELETE")
+		}
+	}
+}
+
+func TestDeleteInboundAPIRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/99999", nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown inbound, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDeleteClientAPIRemovesClientAndReturns200(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "parent", Protocol: "vmess", Port: 8443, Network: "ws", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "del@test.com",
+	})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10), nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	// Verify client is gone
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	for _, ib := range inbounds {
+		for _, c := range ib.Clients {
+			if c.ID == client.ID {
+				t.Fatal("client still present after DELETE")
+			}
+		}
+	}
+}
+
+func TestDeleteClientAPIRejectsUnknownClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "parent", Protocol: "trojan", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/99999", nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown client, got %d: %s", response.Code, response.Body.String())
+	}
+}
