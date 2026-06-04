@@ -47,6 +47,9 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 		"systemctl enable migate",
 		"systemctl start migate",
 		"WebUI",
+		"xray.json",
+		"install_xray",
+		"Xray-install",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer missing %q", want)

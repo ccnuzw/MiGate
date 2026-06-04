@@ -37,10 +37,42 @@ write_config() {
   "panel_password": "$(json_escape "$panel_password")",
   "web_base_path": "$(json_escape "$web_base_path")",
   "database_path": "/usr/local/migate/migate.db",
-  "xray_config_path": "/usr/local/migate/xray.json"
+  "xray_config_path": "/usr/local/migate"
 }
 JSON
   chmod 600 "$CONFIG_PATH"
+}
+
+install_xray() {
+  echo ""
+  echo "Xray 是 MiGate 代理协议（VLESS / VMess / Trojan / Shadowsocks）的运行时引擎。"
+  echo "未安装 Xray 时，面板仍可管理入站和客户端，但无法实际提供代理服务。"
+  read -r -p "是否安装 Xray？[Y/n]: " install_xray_choice
+  install_xray_choice="${install_xray_choice:-Y}"
+  if [ "$install_xray_choice" != "Y" ] && [ "$install_xray_choice" != "y" ] && [ "$install_xray_choice" != "" ]; then
+    echo "跳过 Xray 安装。可通过后续手动安装："
+    echo "  bash -c \"\$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)\""
+    return
+  fi
+
+  if command -v xray &>/dev/null; then
+    echo "Xray 已安装 ($(xray --version 2>/dev/null | head -1))"
+  else
+    echo "正在安装 Xray..."
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" 2>&1
+    echo "Xray 安装完成"
+  fi
+
+  # Symlink MiGate's xray.json to xray's default config path
+  # MiGate Apply() writes to /usr/local/migate/xray.json
+  # Xray reads from /usr/local/etc/xray/config.json
+  mkdir -p /usr/local/etc/xray
+  ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
+  echo "Xray 配置已关联到 MiGate: /usr/local/etc/xray/config.json → /usr/local/migate/xray.json"
+
+  systemctl enable xray 2>/dev/null || true
+  systemctl restart xray 2>/dev/null || true
+  echo "Xray 服务已启动"
 }
 
 main() {
@@ -87,13 +119,19 @@ main() {
   systemctl enable migate
   systemctl start migate
 
+  install_xray
+
   host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
   if [ -z "$host_ip" ]; then
     host_ip="SERVER_IP"
   fi
+  echo ""
   echo "MiGate installed: /usr/local/bin/migate"
   echo "WebUI: http://${host_ip}:${panel_port}${web_base_path}"
   echo "Username: ${panel_username}"
+  if command -v xray &>/dev/null; then
+    echo "Xray: $(xray --version 2>/dev/null | head -1)"
+  fi
 }
 
 main "$@"
