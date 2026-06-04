@@ -92,6 +92,39 @@ func TestCreateInboundAPIStoresInbound(t *testing.T) {
 	}
 }
 
+func TestCreateInboundAPIStoresXHTTPFieldsFromJSON(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"remark":"XHTTP入口","protocol":"vless","port":30040,"network":"xhttp","security":"reality","reality_dest":"www.cloudflare.com:443","reality_server_names":"www.cloudflare.com","xhttp_path":"/migate-xhttp","xhttp_mode":"stream-one"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"network":"xhttp"`, `"xhttp_path":"/migate-xhttp"`, `"xhttp_mode":"stream-one"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("create response missing %q: %s", want, body)
+		}
+	}
+
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].XHTTPPath != "/migate-xhttp" || inbounds[0].XHTTPMode != "stream-one" {
+		t.Fatalf("JSON API did not persist xhttp fields: %+v", inbounds)
+	}
+}
+
 func TestCreateInboundAPIRejectsUnsupportedProtocol(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -593,8 +626,6 @@ func TestUpdateClientAPIRejectsUnknownClient(t *testing.T) {
 		t.Fatalf("expected 404 for unknown client, got %d: %s", response.Code, response.Body.String())
 	}
 }
-
-
 
 type fakeXrayController struct {
 	statusCalls int

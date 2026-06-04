@@ -24,24 +24,27 @@ type Store struct {
 }
 
 type Inbound struct {
-	ID               int64    `json:"id"`
-	UUID             string   `json:"uuid"`
-	Remark           string   `json:"remark"`
-	Protocol         string   `json:"protocol"`
-	Port             int      `json:"port"`
-	Network          string   `json:"network"`
-	Security         string   `json:"security"`
-	Enabled          bool     `json:"enabled"`
-	WsPath           string   `json:"ws_path"`
-	WsHost           string   `json:"ws_host"`
-	GrpcServiceName  string   `json:"grpc_service_name"`
-	RealityDest      string   `json:"reality_dest"`
-	RealityServerNames string `json:"reality_server_names"`
-	RealityShortID   string   `json:"reality_short_id"`
-	SSMethod         string   `json:"ss_method"`
-	TLSCertFile      string   `json:"tls_cert_file"`
-	TLSKeyFile       string   `json:"tls_key_file"`
-	Clients          []Client `json:"clients"`
+	ID                 int64    `json:"id"`
+	UUID               string   `json:"uuid"`
+	Remark             string   `json:"remark"`
+	Protocol           string   `json:"protocol"`
+	Port               int      `json:"port"`
+	Network            string   `json:"network"`
+	Security           string   `json:"security"`
+	Enabled            bool     `json:"enabled"`
+	WsPath             string   `json:"ws_path"`
+	WsHost             string   `json:"ws_host"`
+	GrpcServiceName    string   `json:"grpc_service_name"`
+	RealityDest        string   `json:"reality_dest"`
+	RealityServerNames string   `json:"reality_server_names"`
+	RealityShortID     string   `json:"reality_short_id"`
+	RealityPrivateKey  string   `json:"reality_private_key"`
+	SSMethod           string   `json:"ss_method"`
+	TLSCertFile        string   `json:"tls_cert_file"`
+	TLSKeyFile         string   `json:"tls_key_file"`
+	XHTTPPath          string   `json:"xhttp_path"`
+	XHTTPMode          string   `json:"xhttp_mode"`
+	Clients            []Client `json:"clients"`
 }
 
 type Client struct {
@@ -68,9 +71,12 @@ type CreateInboundParams struct {
 	RealityDest        string `json:"reality_dest"`
 	RealityServerNames string `json:"reality_server_names"`
 	RealityShortID     string `json:"reality_short_id"`
+	RealityPrivateKey  string `json:"reality_private_key"`
 	SSMethod           string `json:"ss_method"`
 	TLSCertFile        string `json:"tls_cert_file"`
 	TLSKeyFile         string `json:"tls_key_file"`
+	XHTTPPath          string `json:"xhttp_path"`
+	XHTTPMode          string `json:"xhttp_mode"`
 }
 
 type CreateClientParams struct {
@@ -93,9 +99,12 @@ type UpdateInboundParams struct {
 	RealityDest        string `json:"reality_dest"`
 	RealityServerNames string `json:"reality_server_names"`
 	RealityShortID     string `json:"reality_short_id"`
+	RealityPrivateKey  string `json:"reality_private_key"`
 	SSMethod           string `json:"ss_method"`
 	TLSCertFile        string `json:"tls_cert_file"`
 	TLSKeyFile         string `json:"tls_key_file"`
+	XHTTPPath          string `json:"xhttp_path"`
+	XHTTPMode          string `json:"xhttp_mode"`
 }
 
 type UpdateClientParams struct {
@@ -165,9 +174,12 @@ CREATE INDEX IF NOT EXISTS idx_clients_inbound_id ON clients(inbound_id);
 		{"reality_dest", "TEXT", "DEFAULT ''"},
 		{"reality_server_names", "TEXT", "DEFAULT ''"},
 		{"reality_short_id", "TEXT", "DEFAULT ''"},
+		{"reality_private_key", "TEXT", "DEFAULT ''"},
 		{"ss_method", "TEXT", "DEFAULT '2022-blake3-aes-128-gcm'"},
 		{"tls_cert_file", "TEXT", "DEFAULT ''"},
 		{"tls_key_file", "TEXT", "DEFAULT ''"},
+		{"xhttp_path", "TEXT", "DEFAULT ''"},
+		{"xhttp_mode", "TEXT", "DEFAULT ''"},
 	} {
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE inbounds ADD COLUMN %s %s %s", col.name, col.typ, col.def))
 	}
@@ -193,28 +205,30 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 	}
 	id, uuid, err := s.insertInbound(ctx, remark, protocol, params.Port, network, security,
 		params.WsPath, params.WsHost, params.GrpcServiceName,
-		params.RealityDest, params.RealityServerNames, params.RealityShortID,
-		params.SSMethod, params.TLSCertFile, params.TLSKeyFile)
+		params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey,
+		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.XHTTPPath, params.XHTTPMode)
 	if err != nil {
 		return Inbound{}, err
 	}
 	return Inbound{ID: id, UUID: uuid, Remark: remark, Protocol: protocol, Port: params.Port, Network: network, Security: security, Enabled: true,
 		WsPath: params.WsPath, WsHost: params.WsHost, GrpcServiceName: params.GrpcServiceName,
 		RealityDest: params.RealityDest, RealityServerNames: params.RealityServerNames, RealityShortID: params.RealityShortID,
-		SSMethod: params.SSMethod,
-		TLSCertFile: params.TLSCertFile, TLSKeyFile: params.TLSKeyFile,
+		RealityPrivateKey: params.RealityPrivateKey,
+		SSMethod:          params.SSMethod,
+		TLSCertFile:       params.TLSCertFile, TLSKeyFile: params.TLSKeyFile,
+		XHTTPPath: params.XHTTPPath, XHTTPMode: params.XHTTPMode,
 		Clients: []Client{}}, nil
 }
 
 func (s *Store) insertInbound(ctx context.Context, remark, protocol string, port int, network, security string,
-	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, ssMethod, tlsCertFile, tlsKeyFile string) (int64, string, error) {
+	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, ssMethod, tlsCertFile, tlsKeyFile, xhttpPath, xhttpMode string) (int64, string, error) {
 	uuid := newUUID()
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO inbounds (uuid, remark, protocol, port, network, security, enabled, created_at,
-  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, ss_method, tls_cert_file, tls_key_file)
-VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, ss_method, tls_cert_file, tls_key_file, xhttp_path, xhttp_mode)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, uuid, remark, protocol, port, network, security, time.Now().UTC().Format(time.RFC3339),
-		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, ssMethod, tlsCertFile, tlsKeyFile)
+		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, ssMethod, tlsCertFile, tlsKeyFile, xhttpPath, xhttpMode)
 	if err != nil {
 		return 0, "", err
 	}
@@ -300,11 +314,11 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 		enabled = 1
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
-		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, ss_method=?,
-		tls_cert_file=?, tls_key_file=? WHERE id=?`,
+		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, reality_private_key=?, ss_method=?,
+		tls_cert_file=?, tls_key_file=?, xhttp_path=?, xhttp_mode=? WHERE id=?`,
 		remark, protocol, params.Port, network, security, enabled,
-		params.WsPath, params.WsHost, params.GrpcServiceName, params.RealityDest, params.RealityServerNames, params.RealityShortID, params.SSMethod,
-		params.TLSCertFile, params.TLSKeyFile, id)
+		params.WsPath, params.WsHost, params.GrpcServiceName, params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.SSMethod,
+		params.TLSCertFile, params.TLSKeyFile, params.XHTTPPath, params.XHTTPMode, id)
 	if err != nil {
 		return Inbound{}, err
 	}
@@ -317,13 +331,13 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	}
 	// Reload to get the full row
 	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
-		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, ss_method,
-		tls_cert_file, tls_key_file FROM inbounds WHERE id=?`, id)
+		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, ss_method,
+		tls_cert_file, tls_key_file, xhttp_path, xhttp_mode FROM inbounds WHERE id=?`, id)
 	var inbound Inbound
 	var dbEnabled int
 	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
-		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.SSMethod,
-		&inbound.TLSCertFile, &inbound.TLSKeyFile); err != nil {
+		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.SSMethod,
+		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -365,8 +379,8 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, uuid, remark, protocol, port, network, security, enabled,
-  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, ss_method,
-  tls_cert_file, tls_key_file
+  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, ss_method,
+  tls_cert_file, tls_key_file, xhttp_path, xhttp_mode
 FROM inbounds
 ORDER BY id ASC
 `)
@@ -381,8 +395,8 @@ ORDER BY id ASC
 		var inbound Inbound
 		var enabled int
 		if err := rows.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled,
-			&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.SSMethod,
-			&inbound.TLSCertFile, &inbound.TLSKeyFile); err != nil {
+			&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.SSMethod,
+			&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode); err != nil {
 			return nil, err
 		}
 		inbound.Enabled = enabled != 0

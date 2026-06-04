@@ -161,7 +161,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	for _, want := range []string{
 		`<select name="network"`,
 		`value="tcp"`, `value="ws"`, `value="kcp"`,
-		`value="grpc"`, `value="quic"`, `value="h2"`,
+		`value="grpc"`, `value="quic"`, `value="h2"`, `value="xhttp"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel advanced UI missing network select option %q", want)
@@ -172,6 +172,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	for _, want := range []string{
 		`id="ws-settings"`,
 		`id="grpc-settings"`,
+		`id="xhttp-settings"`,
 		`id="reality-settings"`,
 		`id="ss-settings"`,
 		`id="tls-settings"`,
@@ -235,6 +236,22 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing TLS edit field %q", want)
+		}
+	}
+
+	// XHTTP create/edit modal fields
+	for _, want := range []string{
+		`id="xhttp-settings"`,
+		`name="xhttp_path"`,
+		`name="xhttp_mode"`,
+		`id="ei-xhttp-settings"`,
+		`id="ei-xhttp-path"`,
+		`id="ei-xhttp-mode"`,
+		`xhttp_path:`,
+		`xhttp_mode:`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing XHTTP field %q", want)
 		}
 	}
 
@@ -334,7 +351,7 @@ func TestSettingsAPI(t *testing.T) {
 	router := web.NewRouter(web.WithConfigDir(tmp))
 
 	// GET should return settings without password, but has_password=true
-// GET returns settings including has_password
+	// GET returns settings including has_password
 	t.Run("GET returns settings including has_password", func(t *testing.T) {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)

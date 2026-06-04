@@ -175,6 +175,19 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 		}
 		settings["grpcSettings"] = grpcSettings
 	}
+	if network == "xhttp" {
+		xhttpSettings := map[string]interface{}{
+			"path": "/",
+			"mode": "stream-one",
+		}
+		if inbound.XHTTPPath != "" {
+			xhttpSettings["path"] = inbound.XHTTPPath
+		}
+		if inbound.XHTTPMode != "" {
+			xhttpSettings["mode"] = inbound.XHTTPMode
+		}
+		settings["xhttpSettings"] = xhttpSettings
+	}
 	if security == "reality" {
 		dest := "www.cloudflare.com:443"
 		if inbound.RealityDest != "" {
@@ -191,6 +204,9 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 		}
 		if inbound.RealityShortID != "" {
 			realitySettings["shortId"] = inbound.RealityShortID
+		}
+		if inbound.RealityPrivateKey != "" {
+			realitySettings["privateKey"] = inbound.RealityPrivateKey
 		}
 		settings["realitySettings"] = realitySettings
 	}

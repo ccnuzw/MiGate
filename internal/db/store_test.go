@@ -452,3 +452,59 @@ func TestStoreCreateInboundWithTLSFields(t *testing.T) {
 		t.Fatalf("update tls_key_file: got %q", updated.TLSKeyFile)
 	}
 }
+
+func TestStoreCreateInboundWithXHTTPFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark:             "xhttp-test",
+		Protocol:           "vless",
+		Port:               30040,
+		Network:            "xhttp",
+		Security:           "reality",
+		RealityDest:        "www.cloudflare.com:443",
+		RealityServerNames: "www.cloudflare.com",
+		XHTTPPath:          "/migate-xhttp",
+		XHTTPMode:          "stream-one",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if inbound.XHTTPPath != "/migate-xhttp" {
+		t.Fatalf("xhttp_path: got %q, want /migate-xhttp", inbound.XHTTPPath)
+	}
+	if inbound.XHTTPMode != "stream-one" {
+		t.Fatalf("xhttp_mode: got %q, want stream-one", inbound.XHTTPMode)
+	}
+
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].XHTTPPath != "/migate-xhttp" || loaded[0].XHTTPMode != "stream-one" {
+		t.Fatalf("xhttp fields not persisted via list: %+v", loaded)
+	}
+
+	updated, err := store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark:             "xhttp-updated",
+		Protocol:           "vless",
+		Port:               30041,
+		Network:            "xhttp",
+		Security:           "reality",
+		Enabled:            true,
+		RealityDest:        "www.microsoft.com:443",
+		RealityServerNames: "www.microsoft.com",
+		XHTTPPath:          "/updated-xhttp",
+		XHTTPMode:          "packet-up",
+	})
+	if err != nil {
+		t.Fatalf("update inbound: %v", err)
+	}
+	if updated.XHTTPPath != "/updated-xhttp" || updated.XHTTPMode != "packet-up" {
+		t.Fatalf("xhttp fields not updated: %+v", updated)
+	}
+}

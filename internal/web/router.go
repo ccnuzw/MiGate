@@ -159,6 +159,12 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
+	// Auto-generate REALITY private key if missing
+	if payload.Security == "reality" && payload.RealityPrivateKey == "" {
+		if key, _, err := xray.GenerateRealityKey(); err == nil {
+			payload.RealityPrivateKey = key
+		}
+	}
 	created, err := store.CreateInbound(r.Context(), payload)
 	if err != nil {
 		http.Error(w, `{"error":"unsupported_protocol"}`, http.StatusBadRequest)
@@ -300,6 +306,12 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
+	}
+	// Auto-generate REALITY private key if switching to reality without one
+	if payload.Security == "reality" && payload.RealityPrivateKey == "" {
+		if key, _, err := xray.GenerateRealityKey(); err == nil {
+			payload.RealityPrivateKey = key
+		}
 	}
 	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)
 	if err != nil {
@@ -677,6 +689,7 @@ const panelHTML = `<!doctype html>
           <option value="grpc">gRPC</option>
           <option value="quic">QUIC</option>
           <option value="h2">HTTP/2</option>
+          <option value="xhttp">XHTTP</option>
         </select>
         <select id="ei-security">
           <option value="none">none</option>
@@ -691,10 +704,19 @@ const panelHTML = `<!doctype html>
           <div id="ei-grpc-settings" class="hidden">
             <input id="ei-grpc-service-name" value="migate" placeholder="gRPC ServiceName">
           </div>
+          <div id="ei-xhttp-settings" class="hidden">
+            <input id="ei-xhttp-path" value="/" placeholder="XHTTP Path (默认 /)">
+            <select id="ei-xhttp-mode">
+              <option value="stream-one">stream-one</option>
+              <option value="packet-up">packet-up</option>
+              <option value="stream-up">stream-up</option>
+            </select>
+          </div>
           <div id="ei-reality-settings" class="hidden">
             <input id="ei-reality-dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
             <input id="ei-reality-server-names" value="www.cloudflare.com" placeholder="ServerNames (逗号分隔)">
             <input id="ei-reality-short-id" placeholder="ShortId (可选)">
+            <input type="hidden" id="ei-reality-private-key">
           </div>
           <div id="ei-ss-settings" class="hidden">
             <select id="ei-ss-method">
@@ -781,6 +803,7 @@ const panelHTML = `<!doctype html>
             <option value="grpc">gRPC</option>
             <option value="quic">QUIC</option>
             <option value="h2">HTTP/2</option>
+            <option value="xhttp">XHTTP</option>
           </select>
           <select name="security">
             <option value="none">none</option>
@@ -794,6 +817,14 @@ const panelHTML = `<!doctype html>
             </div>
             <div id="grpc-settings" class="hidden">
               <input name="grpc_service_name" value="migate" placeholder="gRPC ServiceName">
+            </div>
+            <div id="xhttp-settings" class="hidden">
+              <input name="xhttp_path" value="/" placeholder="XHTTP Path (默认 /)">
+              <select name="xhttp_mode">
+                <option value="stream-one">stream-one</option>
+                <option value="packet-up">packet-up</option>
+                <option value="stream-up">stream-up</option>
+              </select>
             </div>
             <div id="reality-settings" class="hidden">
               <input name="reality_dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
@@ -1078,6 +1109,7 @@ const panelHTML = `<!doctype html>
       const sec = document.getElementById('ei-security').value;
       document.getElementById('ei-ws-settings').classList.toggle('hidden', net !== 'ws' && net !== 'h2');
       document.getElementById('ei-grpc-settings').classList.toggle('hidden', net !== 'grpc');
+      document.getElementById('ei-xhttp-settings').classList.toggle('hidden', net !== 'xhttp');
       document.getElementById('ei-reality-settings').classList.toggle('hidden', sec !== 'reality');
       document.getElementById('ei-ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
       document.getElementById('ei-tls-settings').classList.toggle('hidden', sec !== 'tls');
@@ -1097,9 +1129,12 @@ const panelHTML = `<!doctype html>
       document.getElementById('ei-ws-path').value = inbound.ws_path || '';
       document.getElementById('ei-ws-host').value = inbound.ws_host || '';
       document.getElementById('ei-grpc-service-name').value = inbound.grpc_service_name || 'migate';
+      document.getElementById('ei-xhttp-path').value = inbound.xhttp_path || '/';
+      document.getElementById('ei-xhttp-mode').value = inbound.xhttp_mode || 'stream-one';
       document.getElementById('ei-reality-dest').value = inbound.reality_dest || '';
       document.getElementById('ei-reality-server-names').value = inbound.reality_server_names || '';
       document.getElementById('ei-reality-short-id').value = inbound.reality_short_id || '';
+      document.getElementById('ei-reality-private-key').value = inbound.reality_private_key || '';
       document.getElementById('ei-ss-method').value = inbound.ss_method || '2022-blake3-aes-128-gcm';
       document.getElementById('ei-tls-cert-file').value = inbound.tls_cert_file || '';
       document.getElementById('ei-tls-key-file').value = inbound.tls_key_file || '';
@@ -1122,9 +1157,12 @@ const panelHTML = `<!doctype html>
         ws_path: document.getElementById('ei-ws-path').value,
         ws_host: document.getElementById('ei-ws-host').value,
         grpc_service_name: document.getElementById('ei-grpc-service-name').value,
+        xhttp_path: document.getElementById('ei-xhttp-path').value,
+        xhttp_mode: document.getElementById('ei-xhttp-mode').value,
         reality_dest: document.getElementById('ei-reality-dest').value,
         reality_server_names: document.getElementById('ei-reality-server-names').value,
         reality_short_id: document.getElementById('ei-reality-short-id').value,
+        reality_private_key: document.getElementById('ei-reality-private-key').value,
         ss_method: document.getElementById('ei-ss-method').value,
         tls_cert_file: document.getElementById('ei-tls-cert-file').value,
         tls_key_file: document.getElementById('ei-tls-key-file').value,
@@ -1163,9 +1201,12 @@ const panelHTML = `<!doctype html>
           ws_path: inbound.ws_path || '',
           ws_host: inbound.ws_host || '',
           grpc_service_name: inbound.grpc_service_name || '',
+          xhttp_path: inbound.xhttp_path || '',
+          xhttp_mode: inbound.xhttp_mode || '',
           reality_dest: inbound.reality_dest || '',
           reality_server_names: inbound.reality_server_names || '',
           reality_short_id: inbound.reality_short_id || '',
+          reality_private_key: inbound.reality_private_key || '',
           ss_method: inbound.ss_method || '',
           tls_cert_file: inbound.tls_cert_file || '',
           tls_key_file: inbound.tls_key_file || ''
@@ -1325,6 +1366,7 @@ const panelHTML = `<!doctype html>
       const sec = document.querySelector('[name=security]').value;
       document.getElementById('ws-settings').classList.toggle('hidden', net !== 'ws' && net !== 'h2');
       document.getElementById('grpc-settings').classList.toggle('hidden', net !== 'grpc');
+      document.getElementById('xhttp-settings').classList.toggle('hidden', net !== 'xhttp');
       document.getElementById('reality-settings').classList.toggle('hidden', sec !== 'reality');
       document.getElementById('ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
       document.getElementById('tls-settings').classList.toggle('hidden', sec !== 'tls');
