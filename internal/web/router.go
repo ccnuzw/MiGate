@@ -678,6 +678,12 @@ const panelHTML = `<!doctype html>
     .empty-state-title { color:var(--fg); font-size:16px; font-weight:600; letter-spacing:-0.32px; }
     .empty-state-copy { max-width:560px; color:var(--muted); font-size:13px; line-height:1.6; }
     .empty-state-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:4px; }
+    .notice-slot { margin-top:12px; }
+    .notice { display:grid; gap:8px; padding:16px; border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent); }
+    .notice-title { color:var(--fg); font-size:14px; font-weight:600; letter-spacing:-0.14px; }
+    .notice-copy { color:var(--muted); font-size:13px; line-height:1.55; white-space:pre-wrap; }
+    .notice.success { box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent2); }
+    .notice.error { box-shadow:var(--shadow-sm), inset 3px 0 0 var(--danger); }
     .muted { color:var(--muted); }
     .error { color:#b91c1c; }
     .btn-del { background:var(--danger); border:none; color:white; padding:4px 10px; border-radius:var(--radius-sm); font-size:12px; cursor:pointer; }
@@ -981,7 +987,7 @@ const panelHTML = `<!doctype html>
           <button onclick="fetchXrayStatus()">刷新状态</button>
           <button class="secondary" onclick="applyXrayConfig()">应用配置</button>
         </div>
-        <div id="xray-result" class="list muted" style="margin-top:12px"></div>
+        <div id="xray-result" class="notice-slot"></div>
         <div style="margin-top:16px">
           <button class="secondary" onclick="previewXrayConfig()">预览配置</button>
         </div>
@@ -1021,7 +1027,7 @@ const panelHTML = `<!doctype html>
             <button type="submit" onclick="saveSettings()">保存设置</button>
           </div>
         </form>
-        <div id="settings-status" class="list muted" style="margin-top:12px"></div>
+        <div id="settings-status" class="notice-slot"></div>
       </section>
     </main>
   </div>
@@ -1091,6 +1097,14 @@ const panelHTML = `<!doctype html>
         '<div class="empty-state-title">' + escapeHtml(title) + '</div>' +
         '<div class="empty-state-copy">' + escapeHtml(copy) + '</div>' +
         (actionHtml ? '<div class="empty-state-actions">' + actionHtml + '</div>' : '') +
+      '</div>';
+    }
+
+    function renderNotice(title, copy, type) {
+      const cls = type ? ' ' + type : '';
+      return '<div class="notice' + cls + '">' +
+        '<div class="notice-title">' + escapeHtml(title) + '</div>' +
+        '<div class="notice-copy">' + escapeHtml(copy || '') + '</div>' +
       '</div>';
     }
 
@@ -1563,18 +1577,16 @@ const panelHTML = `<!doctype html>
       }
     }
     async function applyXrayConfig() {
-      document.getElementById('xray-result').textContent = '正在应用...';
+      document.getElementById('xray-result').innerHTML = renderNotice('正在应用', '正在写入 xray.json、执行配置校验并尝试重启 Xray。');
       try {
         const res = await fetch('/api/xray/apply', {method: 'POST'});
         const data = await res.json();
-        document.getElementById('xray-result').innerHTML = '<div>状态：' + (data.status || '完成') + '</div>' +
-          (data.commands_executed && data.commands_executed.length
-            ? '<div style="margin-top:8px;font-size:12px">' + data.commands_executed.join('<br>') + '</div>'
-            : '');
+        const commands = data.commands_executed && data.commands_executed.length ? '\n' + data.commands_executed.join('\n') : '';
+        document.getElementById('xray-result').innerHTML = renderNotice('应用完成', '状态：' + (data.status || '完成') + commands, 'success');
         showToast('配置已应用', 'success');
         await fetchXrayStatus();
       } catch (e) {
-        document.getElementById('xray-result').textContent = '应用失败';
+        document.getElementById('xray-result').innerHTML = renderNotice('应用失败', '请检查 Xray 配置目录、xray 命令和 systemd 服务状态。', 'error');
         showToast('应用配置失败', 'error');
       }
     }
@@ -1641,10 +1653,10 @@ const panelHTML = `<!doctype html>
         document.getElementById('set-xray-config-path').value = data.xray_config_path || '';
         document.getElementById('set-web-path').value = data.web_base_path || '';
         if (data.database_path) {
-          document.getElementById('settings-status').innerHTML = '<span class="muted">数据库：' + escapeHtml(data.database_path) + (data.has_password ? ' | 密码已设置' : ' | 无密码') + '</span>';
+          document.getElementById('settings-status').innerHTML = renderNotice('数据库', data.database_path + (data.has_password ? ' | 密码已设置' : ' | 无密码'), 'success');
         }
       } catch (e) {
-        document.getElementById('settings-status').textContent = '设置页面不可用：需要在 panel.json 配置文件下运行';
+        document.getElementById('settings-status').innerHTML = renderNotice('设置不可用', '需要在 panel.json 配置文件下运行，或检查配置目录是否已传入。', 'error');
       }
     }
     async function saveSettings() {

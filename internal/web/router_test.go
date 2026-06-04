@@ -428,6 +428,27 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		}
 	}
 
+	// Vercel-style notice/status feedback cards
+	for _, want := range []string{
+		`.notice`,
+		`.notice-title`,
+		`.notice-copy`,
+		`.notice.success`,
+		`.notice.error`,
+		`function renderNotice`,
+		`renderNotice('正在应用'`,
+		`renderNotice('应用完成'`,
+		`renderNotice('应用失败'`,
+		`renderNotice('数据库'`,
+		`renderNotice('设置不可用'`,
+		`id="xray-result" class="notice-slot"`,
+		`id="settings-status" class="notice-slot"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing notice/status feedback contract %q", want)
+		}
+	}
+
 	// Traffic/expiry UI elements
 	for _, want := range []string{"ec-traffic-limit", "ec-expiry-at", "formatBytes", "traffic_limit", "bar-low"} {
 		if !strings.Contains(body, want) {
