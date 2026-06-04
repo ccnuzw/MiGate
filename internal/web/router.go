@@ -1704,12 +1704,14 @@ const panelHTML = `<!doctype html>
 
     document.getElementById('client-form').addEventListener('submit', async (event) => {
       event.preventDefault();
+      const formEl = event.currentTarget;
       const sel = document.getElementById('client-inbound-select');
       if (!sel.value) {
         showToast('请先选择一个入站', 'error');
         return;
       }
-      const form = new FormData(event.currentTarget);
+      const selectedInboundId = sel.value;
+      const form = new FormData(formEl);
       const email = form.get('email');
       const tl = parseInt(form.get('traffic_limit')) || 0;
       const eaStr = document.getElementById('client-expiry').value;
@@ -1724,9 +1726,9 @@ const panelHTML = `<!doctype html>
         showToast('创建客户端失败：' + await response.text(), 'error');
         return;
       }
-      event.currentTarget.reset();
+      formEl.reset();
       showToast('客户端创建成功', 'success');
-      await refreshPanelData(sel.value);
+      await refreshPanelData(selectedInboundId);
     });
 
     populateInboundSelect();
@@ -1781,7 +1783,8 @@ const panelHTML = `<!doctype html>
     const origSubmit = document.getElementById('inbound-form').onsubmit;
     document.getElementById('inbound-form').addEventListener('submit', async (event) => {
       event.preventDefault();
-      const form = new FormData(event.currentTarget);
+      const formEl = event.currentTarget;
+      const form = new FormData(formEl);
       const payload = Object.fromEntries(form.entries());
       payload.port = Number(payload.port);
       const response = await fetch('/api/inbounds', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
@@ -1789,7 +1792,7 @@ const panelHTML = `<!doctype html>
         showToast('创建入站失败', 'error');
         return;
       }
-      event.currentTarget.reset();
+      formEl.reset();
       showToast('入站创建成功', 'success');
       await refreshPanelData();
     });

@@ -417,16 +417,21 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	// Create actions must refresh visible lists immediately rather than requiring a manual reload.
 	for _, want := range []string{
 		`await refreshPanelData();`,
-		`await refreshPanelData(sel.value);`,
+		`await refreshPanelData(selectedInboundId);`,
 		`async function refreshPanelData(selectedInboundId)`,
 		`await loadInbounds();`,
 		`await populateInboundSelect(selectedInboundId);`,
 		`await loadClients();`,
 		`await loadSubSummary();`,
+		`const formEl = event.currentTarget;`,
+		`const selectedInboundId = sel.value;`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing immediate post-create refresh contract %q", want)
 		}
+	}
+	if strings.Contains(body, `event.currentTarget.reset()`) {
+		t.Fatalf("panel submit handlers must cache event.currentTarget before await; currentTarget is null after async resume")
 	}
 
 	// Page reload should restore the hash-selected section, not always return to overview.
