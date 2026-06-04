@@ -415,11 +415,19 @@ const panelHTML = `<!doctype html>
     .muted { color:var(--muted); }
     .error { color:#fecaca; }
     .btn-del { background:var(--danger); border:none; color:white; padding:4px 10px; border-radius:8px; font-size:12px; cursor:pointer; }
+    .hidden { display:none; }
+    #toast-container { position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:10px; }
+    .toast { background:var(--card); border:1px solid var(--accent); color:var(--text); padding:12px 18px; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,.4); animation: toastIn .3s ease, toastOut .3s ease 2.7s forwards; }
+    .toast.error { border-color:var(--danger); }
+    .toast.success { border-color:var(--accent2); }
+    @keyframes toastIn { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:translateX(0); } }
+    @keyframes toastOut { from { opacity:1; } to { opacity:0; transform:translateX(40px); } }
     @media (max-width: 900px) { .shell { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .grid,.protocols { grid-template-columns:1fr 1fr; } }
     @media (max-width: 560px) { .grid,.protocols { grid-template-columns:1fr; } main { padding:18px; } }
   </style>
 </head>
 <body>
+  <div id="toast-container"></div>
   <div class="shell">
     <aside>
       <div class="brand">MiGate</div>
@@ -468,12 +476,37 @@ const panelHTML = `<!doctype html>
             <option value="shadowsocks">Shadowsocks</option>
           </select>
           <input name="port" type="number" min="1" max="65535" placeholder="端口" required>
-          <input name="network" value="tcp" placeholder="network">
+          <select name="network">
+            <option value="tcp">TCP</option>
+            <option value="ws">WebSocket</option>
+            <option value="kcp">mKCP</option>
+            <option value="grpc">gRPC</option>
+            <option value="quic">QUIC</option>
+            <option value="h2">HTTP/2</option>
+          </select>
           <select name="security">
             <option value="none">none</option>
             <option value="tls">tls</option>
             <option value="reality">reality</option>
           </select>
+          <div id="dynamic-fields">
+            <div id="ws-settings" class="hidden">
+              <input name="ws_path" placeholder="WS Path (默认 /)">
+              <input name="ws_host" placeholder="WS Host (可选)">
+            </div>
+            <div id="reality-settings" class="hidden">
+              <input name="reality_dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
+              <input name="reality_server_names" value="www.cloudflare.com" placeholder="ServerNames (逗号分隔)">
+              <input name="reality_short_id" placeholder="ShortId (可选)">
+            </div>
+            <div id="ss-settings" class="hidden">
+              <select name="ss_method">
+                <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
+                <option value="aes-256-gcm">aes-256-gcm</option>
+                <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
+              </select>
+            </div>
+          </div>
           <button type="submit">保存入站</button>
         </form>
         <div id="inbound-list" class="list muted">正在加载入站...</div>
@@ -520,21 +553,6 @@ const panelHTML = `<!doctype html>
       const data = await response.json();
       renderInbounds(data.inbounds || []);
     }
-
-    document.getElementById('inbound-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const payload = Object.fromEntries(form.entries());
-      payload.port = Number(payload.port);
-      const response = await fetch('/api/inbounds', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-      if (!response.ok) {
-        inboundList.className = 'list error';
-        inboundList.textContent = '创建失败：' + await response.text();
-        return;
-      }
-      event.currentTarget.reset();
-      await loadInbounds();
-    });
 
     loadInbounds();
 
@@ -650,6 +668,48 @@ const panelHTML = `<!doctype html>
     });
 
     populateInboundSelect();
+
+    // === Toast notification ===
+    function showToast(msg, type) {
+      const container = document.getElementById('toast-container');
+      const el = document.createElement('div');
+      el.className = 'toast' + (type === 'error' ? ' error' : type === 'success' ? ' success' : '');
+      el.textContent = msg;
+      container.appendChild(el);
+      setTimeout(() => el.remove(), 3000);
+    }
+
+    // === Dynamic transport/security fields ===
+    function updateDynamicFields() {
+      const proto = document.querySelector('[name=protocol]').value;
+      const net = document.querySelector('[name=network]').value;
+      const sec = document.querySelector('[name=security]').value;
+      document.getElementById('ws-settings').classList.toggle('hidden', net !== 'ws' && net !== 'h2');
+      document.getElementById('reality-settings').classList.toggle('hidden', sec !== 'reality');
+      document.getElementById('ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
+    }
+
+    document.querySelector('[name=protocol]').addEventListener('change', updateDynamicFields);
+    document.querySelector('[name=network]').addEventListener('change', updateDynamicFields);
+    document.querySelector('[name=security]').addEventListener('change', updateDynamicFields);
+    updateDynamicFields();
+
+    // Replace inbound creation alert with toast
+    const origSubmit = document.getElementById('inbound-form').onsubmit;
+    document.getElementById('inbound-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const payload = Object.fromEntries(form.entries());
+      payload.port = Number(payload.port);
+      const response = await fetch('/api/inbounds', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      if (!response.ok) {
+        showToast('创建入站失败', 'error');
+        return;
+      }
+      event.currentTarget.reset();
+      showToast('入站创建成功', 'success');
+      await loadInbounds();
+    });
   </script>
 </body>
 </html>`

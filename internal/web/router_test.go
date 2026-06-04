@@ -145,6 +145,54 @@ func TestPanelWiresDeleteClientButton(t *testing.T) {
 	}
 }
 
+func TestPanelWiresAdvancedWebUI(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(page, req)
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d", page.Code)
+	}
+	body := page.Body.String()
+
+	// Network is a select with all transport options
+	for _, want := range []string{
+		`<select name="network"`,
+		`value="tcp"`, `value="ws"`, `value="kcp"`,
+		`value="grpc"`, `value="quic"`, `value="h2"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel advanced UI missing network select option %q", want)
+		}
+	}
+
+	// Dynamic config fields present
+	for _, want := range []string{
+		`id="ws-settings"`,
+		`id="reality-settings"`,
+		`id="ss-settings"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel advanced UI missing dynamic field container %q", want)
+		}
+	}
+
+	// Toast notification function exists
+	if !strings.Contains(body, "showToast(") {
+		t.Fatalf("panel advanced UI missing showToast function")
+	}
+	if !strings.Contains(body, "toast-container") {
+		t.Fatalf("panel advanced UI missing toast-container div")
+	}
+
+	// JS function to show/hide conditional fields
+	for _, want := range []string{"updateDynamicFields("} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel advanced UI missing dynamic field logic %q", want)
+		}
+	}
+}
+
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {
 	router := web.NewRouter()
 	for _, path := range []string{"/api/remote/readiness", "/api/leak-check", "/api/egress/status", "/api/openvpn/status", "/api/proxy/status"} {
