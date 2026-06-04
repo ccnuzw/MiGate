@@ -646,6 +646,44 @@ func TestPatchClientEnabledAPIPartiallyUpdatesEnabledOnly(t *testing.T) {
 	}
 }
 
+func TestPatchClientEnabledAPIRejectsClientOutsideInbound(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inboundA, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "a", Protocol: "vless", Port: 443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound a: %v", err)
+	}
+	inboundB, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "b", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound b: %v", err)
+	}
+	clientB, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inboundB.ID, Email: "b@test.com"})
+	if err != nil {
+		t.Fatalf("create client b: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/inbounds/"+strconv.FormatInt(inboundA.ID, 10)+"/clients/"+strconv.FormatInt(clientB.ID, 10)+"/enabled", bytes.NewReader([]byte(`{"enabled":false}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for client outside inbound, got %d: %s", response.Code, response.Body.String())
+	}
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(loaded) != 2 || len(loaded[1].Clients) != 1 || !loaded[1].Clients[0].Enabled {
+		t.Fatalf("cross-inbound PATCH changed the wrong client: %+v", loaded)
+	}
+}
+
 func TestUpdateInboundAPIRejectsUnknownInbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

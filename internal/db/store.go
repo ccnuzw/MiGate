@@ -406,12 +406,12 @@ func (s *Store) SetInboundEnabled(ctx context.Context, id int64, enabled bool) (
 	return inbound, nil
 }
 
-func (s *Store) SetClientEnabled(ctx context.Context, id int64, enabled bool) (Client, error) {
+func (s *Store) SetClientEnabled(ctx context.Context, inboundID int64, id int64, enabled bool) (Client, error) {
 	dbEnabled := 0
 	if enabled {
 		dbEnabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE clients SET enabled=? WHERE id=?`, dbEnabled, id)
+	result, err := s.db.ExecContext(ctx, `UPDATE clients SET enabled=? WHERE inbound_id=? AND id=?`, dbEnabled, inboundID, id)
 	if err != nil {
 		return Client{}, err
 	}
@@ -422,7 +422,7 @@ func (s *Store) SetClientEnabled(ctx context.Context, id int64, enabled bool) (C
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE inbound_id=? AND id=?`, inboundID, id)
 	var client Client
 	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err

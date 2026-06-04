@@ -24,7 +24,7 @@ type Store interface {
 	UpdateInbound(ctx context.Context, id int64, params db.UpdateInboundParams) (db.Inbound, error)
 	UpdateClient(ctx context.Context, id int64, params db.UpdateClientParams) (db.Client, error)
 	SetInboundEnabled(ctx context.Context, id int64, enabled bool) (db.Inbound, error)
-	SetClientEnabled(ctx context.Context, id int64, enabled bool) (db.Client, error)
+	SetClientEnabled(ctx context.Context, inboundID int64, id int64, enabled bool) (db.Client, error)
 }
 
 type XrayController interface {
@@ -208,7 +208,12 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
-				patchClientEnabled(w, r, store, clientID)
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				patchClientEnabled(w, r, store, inboundID, clientID)
 			} else {
 				http.NotFound(w, r)
 			}
@@ -325,7 +330,7 @@ func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, in
 	_ = json.NewEncoder(w).Encode(updated)
 }
 
-func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, clientID int64) {
+func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64, clientID int64) {
 	if store == nil {
 		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
 		return
@@ -337,7 +342,7 @@ func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, cli
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
-	updated, err := store.SetClientEnabled(r.Context(), clientID, payload.Enabled)
+	updated, err := store.SetClientEnabled(r.Context(), inboundID, clientID, payload.Enabled)
 	if err != nil {
 		http.Error(w, `{"error":"client_not_found"}`, http.StatusNotFound)
 		return
