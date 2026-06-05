@@ -1355,31 +1355,30 @@ const panelHTML = `<!doctype html>
             <div class="advanced-fieldset-copy">填写伪装目标、SNI 与短 ID，避免与客户端参数不一致。</div>
             <input name="reality_dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
             <input name="reality_server_names" value="www.cloudflare.com" placeholder="ServerNames (逗号分隔)">
-            <input name="reality_short_id" placeholder="ShortId (可选)">
+            <div class="inline-field-tools"><input id="inbound-reality-short-id" name="reality_short_id" placeholder="ShortId (可选)"><button type="button" class="btn-mini" onclick="regenerateField('inbound-reality-short-id')">重新生成</button></div>
           </div>
           <div id="ss-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">Shadowsocks 设置</div>
             <div class="advanced-fieldset-copy">选择客户端支持的加密方法。</div>
-            <select name="ss_method">
+            <div class="inline-field-tools"><select id="inbound-ss-method" name="ss_method">
               <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
               <option value="aes-256-gcm">aes-256-gcm</option>
               <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
-            </select>
-          </div>
+            </select><button type="button" class="btn-mini" onclick="regenerateField('inbound-ss-method')">重新生成</button></div>
           <div id="hy2-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">Hysteria2 设置</div>
             <div class="advanced-fieldset-copy">Hysteria2 使用 QUIC 传输，以下为可选参数。</div>
             <input name="hy2_up_mbps" type="number" min="0" placeholder="上行速率 mbps (0=不限) 默认 0">
             <input name="hy2_down_mbps" type="number" min="0" placeholder="下行速率 mbps (0=不限) 默认 0">
             <input name="hy2_obfs" placeholder="混淆类型 (如 salamander, 可选)">
-            <input name="hy2_obfs_password" placeholder="混淆密码 (可选)">
+            <div class="inline-field-tools"><input id="inbound-hy2-obfs-password" name="hy2_obfs_password" type="password" placeholder="混淆密码 (可选)"><button type="button" class="btn-mini" onclick="regenerateField('inbound-hy2-obfs-password')">重新生成</button><button type="button" class="btn-mini" onclick="toggleSecretField('inbound-hy2-obfs-password')">显示/隐藏</button></div>
             <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander。</p>
           </div>
           <div id="tls-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">TLS 设置</div>
             <div class="advanced-fieldset-copy">填写证书和私钥路径，应用前会交给 Xray 校验。</div>
             <input name="tls_cert_file" placeholder="TLS 证书路径 (如 /etc/.../fullchain.pem)">
-            <input name="tls_key_file" placeholder="TLS 密钥路径 (如 /etc/.../privkey.key)">
+            <div class="inline-field-tools"><input name="tls_key_file" placeholder="TLS 密钥路径 (如 /etc/.../privkey.key)"></div>
           </div>
         </div>
         <div class="advanced-fieldset field-group span-2" style="border-left:2px solid var(--accent);padding-left:12px;margin-bottom:0">
@@ -1387,7 +1386,7 @@ const panelHTML = `<!doctype html>
             <span class="chevron">▶</span> 同时添加首个客户端
           </div>
           <div id="init-client-fields" class="hidden" style="margin-top:8px;display:grid;gap:10px">
-            <input id="init-client-email" placeholder="客户端邮箱 (必填，如 sam@example.com)" style="grid-column:1/-1">
+            <div class="inline-field-tools" style="grid-column:1/-1"><input id="init-client-email" placeholder="客户端邮箱 (必填，如 sam@example.com)"><button type="button" class="btn-mini" onclick="regenerateField('init-client-email')">重新生成</button><button type="button" class="btn-mini" onclick="regenerateField('init-client-email')">重新生成</button></div>
             <input id="init-client-traffic" type="number" min="0" placeholder="流量上限，单位字节；0=无限" value="0">
             <input id="init-client-expiry" type="datetime-local">
             <p class="field-help" style="grid-column:1/-1">创建入站后自动生成第一个客户端。流量上限设置后可在概览页查看使用比例。</p>
@@ -2499,6 +2498,29 @@ const panelHTML = `<!doctype html>
       const isHidden = fields.classList.contains('hidden');
       fields.classList.toggle('hidden');
       chevron.textContent = isHidden ? '\u25BC' : '\u25B6';
+    }
+    function randHex(n) {
+      return Array.from(crypto.getRandomValues(new Uint8Array(Math.ceil(n / 2)))).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+    }
+    function makeFieldTools(id, secret) {
+      const buttons = ['<button type="button" class="btn-mini" onclick="regenerateField(\'' + id + '\')">重新生成</button>'];
+      if (secret) buttons.push('<button type="button" class="btn-mini" onclick="toggleSecretField(\'' + id + '\')">显示/隐藏</button>');
+      return '<span style="display:inline-flex;gap:6px;align-items:center;margin-left:8px;flex-wrap:wrap">' + buttons.join('') + '</span>';
+    }
+    function regenerateField(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (id === 'inbound-reality-short-id' || id === 'ei-reality-short-id') el.value = randHex(8);
+      else if (id === 'inbound-hy2-obfs-password' || id === 'ei-hy2-obfs-password') el.value = randHex(12);
+      else if (id === 'inbound-init-client-email' || id === 'init-client-email') el.value = 'user@example.com';
+      else if (id === 'inbound-ss-method' || id === 'ei-ss-method') el.value = '2022-blake3-aes-128-gcm';
+      else el.value = randHex(8);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    function toggleSecretField(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.type = el.type === 'password' ? 'text' : 'password';
     }
     function fillRandomDefaults(formEl) {
       const proto = document.getElementById('inbound-protocol').value;
