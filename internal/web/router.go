@@ -95,6 +95,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/login", loginHandler(&cfg))
 	mux.HandleFunc("/api/login", loginHandler(&cfg))
 	mux.HandleFunc("/api/logout", logoutHandler())
+	mux.HandleFunc("/api/session", sessionHandler(&cfg))
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store))
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store))
@@ -113,6 +114,29 @@ func panelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(panelHTML))
+}
+
+
+func sessionHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		resp := map[string]interface{}{
+			"auth_enabled":   cfg.authEnabled,
+			"authenticated":  false,
+			"username":       "",
+		}
+		if !cfg.authEnabled {
+			resp["username"] = "未启用认证"
+		} else if cookie, err := r.Cookie("migate_session"); err == nil && validateSessionToken(cookie.Value, cfg.sessionSecret) {
+			resp["authenticated"] = true
+			resp["username"] = cfg.authUsername
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -663,7 +687,7 @@ const panelHTML = `<!doctype html>
   <title>MiGate</title>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    :root {
+    :root, :root[data-theme="light"] {
       color-scheme: light;
       --bg: #ffffff;
       --fg: #171717;
@@ -698,6 +722,22 @@ const panelHTML = `<!doctype html>
       --panel-padding: var(--space-5);
       --row-padding: var(--space-4);
     }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0a0a0a;
+      --fg: #ededed;
+      --surface: #111111;
+      --surface-subtle: #18181b;
+      --muted: #a1a1aa;
+      --line: rgba(255,255,255,.10);
+      --line-strong: rgba(255,255,255,.14);
+      --accent: #ededed;
+      --accent2: #22c55e;
+      --danger: #ef4444;
+      --focus: rgba(99,102,241,.36);
+      --shadow-sm: 0 0 0 1px rgba(255,255,255,.10);
+      --shadow-md: 0 0 0 1px rgba(255,255,255,.10), 0 12px 28px rgba(0,0,0,.35);
+    }
     * { box-sizing: border-box; }
     html { background: var(--bg); }
     body { margin:0; min-height:100vh; font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--fg); }
@@ -708,6 +748,11 @@ const panelHTML = `<!doctype html>
     .sidebar { border-right:1px solid var(--line-strong); padding:var(--space-6) 18px; background:var(--surface); }
     .brand { font-size:24px; font-weight:600; letter-spacing:-0.96px; margin-bottom:var(--space-1); color:var(--fg); }
     .subtitle { color:var(--muted); font-size:var(--text-sm); line-height:1.5; margin-bottom:28px; }
+    .account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin:0 0 var(--space-4); border-radius:var(--radius-lg); background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
+    .account-label { color:var(--muted); font-size:var(--text-xs); }
+    .account-name { color:var(--fg); font-size:var(--text-sm); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .account-actions button { min-height:34px; padding:0 10px; font-size:var(--text-xs); }
     nav a { display:block; color:var(--fg); text-decoration:none; padding:10px var(--space-3); border-radius:var(--radius-md); margin:var(--space-1) 0; box-shadow:none; font-size:var(--text-md); font-weight:500; }
     nav a.active, nav a:hover { background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
     main { padding:var(--space-6); background:var(--bg); }
@@ -1100,6 +1145,15 @@ const panelHTML = `<!doctype html>
     <aside class="sidebar">
       <div class="brand">MiGate</div>
       <div class="subtitle">轻量单二进制面板，专注协议、客户端与 Xray 管理。</div>
+      <div class="account-panel" aria-label="当前账号">
+        <div class="account-label">当前用户</div>
+        <div id="current-username" class="account-name">加载中...</div>
+        <div class="account-actions">
+          <button id="login-button" class="secondary" onclick="window.location.href='/login'">登录</button>
+          <button id="logout-button" class="secondary" onclick="logoutPanel()">登出</button>
+          <button id="theme-toggle" class="secondary" onclick="toggleTheme()">深色模式</button>
+        </div>
+      </div>
       <nav>
         <a class="active" href="/">概览</a>
         <a href="/#inbounds">入站</a>
@@ -1367,6 +1421,52 @@ const panelHTML = `<!doctype html>
         xrayStatusMetric.textContent = '无法连接';
       }
     }
+
+
+    function preferredTheme() {
+      const saved = localStorage.getItem('migate-theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function applyTheme(theme) {
+      if (theme !== 'dark') theme = 'light';
+      document.documentElement.dataset.theme = theme;
+      localStorage.setItem('migate-theme', theme);
+      const btn = document.getElementById('theme-toggle');
+      if (btn) btn.textContent = theme === 'dark' ? '浅色模式' : '深色模式';
+    }
+
+    function toggleTheme() {
+      applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+    }
+
+    async function loadSession() {
+      try {
+        const res = await fetch('/api/session');
+        const session = await res.json();
+        const name = document.getElementById('current-username');
+        const loginBtn = document.getElementById('login-button');
+        const logoutBtn = document.getElementById('logout-button');
+        const authenticated = !!session.authenticated;
+        if (name) name.textContent = session.username || (session.auth_enabled ? '未登录' : '未启用认证');
+        if (loginBtn) loginBtn.style.display = authenticated ? 'none' : '';
+        if (logoutBtn) logoutBtn.style.display = authenticated ? '' : 'none';
+      } catch (e) {
+        const name = document.getElementById('current-username');
+        if (name) name.textContent = '无法读取用户';
+      }
+    }
+
+    async function logoutPanel() {
+      const res = await fetch('/api/logout', {method: 'POST'});
+      if (!res.ok) { showToast('登出失败', 'error'); return; }
+      showToast('已登出', 'success');
+      window.location.href = '/login';
+    }
+
+    applyTheme(preferredTheme());
+    loadSession();
 
     loadInbounds();
 

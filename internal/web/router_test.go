@@ -46,6 +46,43 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 	}
 }
 
+
+func TestSessionAPIReportsAuthUser(t *testing.T) {
+	router := web.NewRouter(web.WithAuth("sam", "secret"))
+
+	unauth := httptest.NewRecorder()
+	router.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/api/session", nil))
+	if unauth.Code != http.StatusOK {
+		t.Fatalf("expected public session endpoint 200, got %d: %s", unauth.Code, unauth.Body.String())
+	}
+	if !strings.Contains(unauth.Body.String(), `"authenticated":false`) || !strings.Contains(unauth.Body.String(), `"auth_enabled":true`) {
+		t.Fatalf("unexpected unauthenticated session body: %s", unauth.Body.String())
+	}
+
+	login := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"sam","password":"secret"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(login, req)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
+	}
+
+	sess := httptest.NewRecorder()
+	sessReq := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	for _, c := range login.Result().Cookies() {
+		sessReq.AddCookie(c)
+	}
+	router.ServeHTTP(sess, sessReq)
+	if sess.Code != http.StatusOK {
+		t.Fatalf("expected authenticated session 200, got %d: %s", sess.Code, sess.Body.String())
+	}
+	for _, want := range []string{`"authenticated":true`, `"auth_enabled":true`, `"username":"sam"`} {
+		if !strings.Contains(sess.Body.String(), want) {
+			t.Fatalf("session response missing %q: %s", want, sess.Body.String())
+		}
+	}
+}
+
 func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
@@ -209,13 +246,19 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 	body := page.Body.String()
 
-	// Vercel-style shell and design tokens
+	// Vercel-style shell, light/dark themes, user/account controls.
 	for _, want := range []string{
 		`fonts.googleapis.com/css2?family=Geist`,
+		`:root[data-theme="light"]`,
+		`:root[data-theme="dark"]`,
 		`--bg: #ffffff;`,
 		`--fg: #171717;`,
 		`--surface: #ffffff;`,
 		`--muted: #666666;`,
+		`--bg: #0a0a0a;`,
+		`--fg: #ededed;`,
+		`--surface: #111111;`,
+		`--muted: #a1a1aa;`,
 		`--line: rgba(0,0,0,.08);`,
 		`--shadow-sm: 0 0 0 1px rgba(0,0,0,.08);`,
 		`--shadow-md: 0 0 0 1px rgba(0,0,0,.08), 0 2px 2px rgba(0,0,0,.04), 0 8px 8px -8px rgba(0,0,0,.04);`,
@@ -223,6 +266,19 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`font-family:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;`,
 		`class="app-shell"`,
 		`class="sidebar"`,
+		`class="account-panel"`,
+		`id="current-username"`,
+		`id="login-button"`,
+		`id="logout-button"`,
+		`id="theme-toggle"`,
+		`function loadSession()`,
+		`fetch('/api/session')`,
+		`function logoutPanel()`,
+		`fetch('/api/logout', {method: 'POST'})`,
+		`function applyTheme(theme)`,
+		`function toggleTheme()`,
+		`localStorage.getItem('migate-theme')`,
+		`document.documentElement.dataset.theme = theme`,
 		`class="card panel"`,
 		`class="section-heading"`,
 	} {
