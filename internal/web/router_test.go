@@ -624,7 +624,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Settings section
-	for _, want := range []string{`href="/#settings"`, `id="settings"`, "loadSettings", "saveSettings"} {
+	for _, want := range []string{`href="/#settings"`, `id="settings"`, "loadSettings", "saveSettings", "restartService"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing settings element %q", want)
 		}
@@ -743,6 +743,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`class="action-toolbar settings-toolbar span-2"`,
 		`应用、预览与刷新统一集中在右侧操作区。`,
 		`保存配置后按需重启 MiGate 服务。`,
+		`重启服务`,
+		`button.danger`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing shared action-toolbar contract %q", want)
@@ -953,6 +955,43 @@ func TestSettingsPreservesDatabasePath(t *testing.T) {
 	if saved["panel_port"] != float64(8888) {
 		t.Fatalf("expected panel_port=8888, got %v", saved["panel_port"])
 	}
+}
+
+// TestRestartEndpoint tests the /api/restart endpoint
+func TestRestartEndpoint(t *testing.T) {
+	t.Run("POST returns restarting status", func(t *testing.T) {
+		router := web.NewRouter(web.WithRestartCmd(""))
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/restart", nil)
+		router.ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "restarting") {
+			t.Fatalf("expected restarting status, got %s", response.Body.String())
+		}
+	})
+	t.Run("GET returns 405", func(t *testing.T) {
+		router := web.NewRouter()
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/restart", nil)
+		router.ServeHTTP(response, req)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", response.Code)
+		}
+	})
+	t.Run("restartService JS function exists", func(t *testing.T) {
+		router := web.NewRouter()
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		router.ServeHTTP(response, req)
+		body := response.Body.String()
+		for _, want := range []string{"restartService", "/api/restart", "重启服务", "重启中"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("panel missing restart element %q", want)
+			}
+		}
+	})
 }
 
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {

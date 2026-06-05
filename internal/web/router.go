@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +64,7 @@ type routerConfig struct {
 	authPassword   string
 	sessionSecret  []byte
 	configDir      string
+	restartCmd     string
 }
 
 type Option func(*routerConfig)
@@ -85,8 +87,17 @@ func WithConfigDir(dir string) Option {
 	}
 }
 
+func WithRestartCmd(cmd string) Option {
+	return func(cfg *routerConfig) {
+		cfg.restartCmd = cmd
+	}
+}
+
 func NewRouter(options ...Option) http.Handler {
-	cfg := routerConfig{xrayController: defaultXrayController{}}
+	cfg := routerConfig{
+		xrayController: defaultXrayController{},
+		restartCmd:     "systemctl restart migate",
+	}
 	for _, option := range options {
 		option(&cfg)
 	}
@@ -103,6 +114,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
 	mux.HandleFunc("/api/settings", settingsHandler(&cfg))
+	mux.HandleFunc("/api/restart", restartHandler(cfg.restartCmd))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	return authMiddleware(mux, &cfg)
 }
@@ -587,6 +599,31 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 	}
 }
 
+func restartHandler(cmd string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"restarting"}`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Fork a child that restarts after a brief delay so the response is sent first
+		if cmd != "" {
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				_ = exec.Command("bash", "-c", cmd).Run()
+			}()
+			go func() {
+				time.Sleep(2 * time.Second)
+				os.Exit(0)
+			}()
+		}
+	}
+}
+
 func subscriptionHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -842,6 +879,7 @@ const panelHTML = `<!doctype html>
     button { appearance:none; border:none; background:var(--accent); color:var(--bg); min-height:var(--control-height); padding:0 14px; border-radius:var(--control-radius); font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:var(--text-md); font-weight:500; cursor:pointer; box-shadow:var(--shadow-sm); }
     button:hover { opacity:.96; }
     button.secondary, .btn-cancel { background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); }
+    button.danger { background:var(--danger); color:#fff; }
     .btn-confirm { background:var(--danger); color:#fff; }
     form { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:var(--space-3); margin:var(--space-4) 0; }
     .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-4); margin:18px 0; }
@@ -1375,6 +1413,7 @@ const panelHTML = `<!doctype html>
             <div class="toolbar-actions">
               <button type="button" class="secondary" onclick="loadSettings()">刷新</button>
               <button type="submit" onclick="saveSettings()">保存设置</button>
+              <button type="button" class="danger" onclick="restartService()">重启服务</button>
             </div>
           </div>
         </form>
@@ -2223,6 +2262,21 @@ const panelHTML = `<!doctype html>
         await loadSettings();
       } catch (e) {
         showToast('保存设置失败', 'error');
+      }
+    }
+    async function restartService() {
+      const btn = document.querySelector('button.danger');
+      btn.disabled = true;
+      btn.textContent = '重启中…';
+      try {
+        const res = await fetch('/api/restart', { method: 'POST' });
+        if (!res.ok) { showToast('重启失败', 'error'); btn.disabled = false; btn.textContent = '重启服务'; return; }
+        showToast('正在重启 MiGate 服务…', 'success');
+        location.reload();
+      } catch (e) {
+        showToast('重启请求失败', 'error');
+        btn.disabled = false;
+        btn.textContent = '重启服务';
       }
     }
 
