@@ -83,10 +83,10 @@ type CreateInboundParams struct {
 }
 
 type CreateClientParams struct {
-	InboundID    int64
-	Email        string
-	TrafficLimit int64
-	ExpiryAt     int64
+	InboundID    int64 `json:"inbound_id,omitempty"`
+	Email        string `json:"email"`
+	TrafficLimit int64  `json:"traffic_limit,omitempty"`
+	ExpiryAt     int64  `json:"expiry_at,omitempty"`
 }
 
 type UpdateInboundParams struct {
