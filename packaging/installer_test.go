@@ -70,6 +70,25 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 	}
 }
 
+func TestInstallerGeneratesRandomPasswordWhenBlank(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"generate_password()",
+		"panel_password=\"$(generate_password)\"",
+		"No password entered; generated a random panel password.",
+		"Password: ${panel_password}",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer random password contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"super-secret-password", "hidden default"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not contain fixed/default password marker %q", forbidden)
+		}
+	}
+}
+
 func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{

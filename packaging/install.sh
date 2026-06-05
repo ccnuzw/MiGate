@@ -24,6 +24,14 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+generate_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 24 | tr -d '\n'
+  else
+    LC_ALL=C tr -dc 'A-Za-z0-9_@%+=:,.-' < /dev/urandom | head -c 32
+  fi
+}
+
 write_config() {
   local panel_port="$1"
   local panel_username="$2"
@@ -87,9 +95,12 @@ main() {
   panel_port="${panel_port:-9999}"
   read -r -p "Panel username [admin]: " panel_username
   panel_username="${panel_username:-admin}"
-  read -r -s -p "Panel password [hidden default]: " panel_password
+  read -r -s -p "Panel password [leave blank to generate]: " panel_password
   printf '\n'
-  panel_password="${panel_password:-super-secret-password}"
+  if [ -z "$panel_password" ]; then
+    panel_password="$(generate_password)"
+    echo "No password entered; generated a random panel password."
+  fi
   read -r -p "Web base path [/]: " web_base_path
   web_base_path="${web_base_path:-/}"
 
@@ -129,6 +140,7 @@ main() {
   echo "MiGate installed: /usr/local/bin/migate"
   echo "WebUI: http://${host_ip}:${panel_port}${web_base_path}"
   echo "Username: ${panel_username}"
+  echo "Password: ${panel_password}"
   if command -v xray &>/dev/null; then
     echo "Xray: $(xray --version 2>/dev/null | head -1)"
   fi
