@@ -745,10 +745,11 @@ const panelHTML = `<!doctype html>
     a { color:inherit; }
     p { color:var(--muted); line-height:1.6; }
     .app-shell { display:grid; grid-template-columns: var(--sidebar-width) 1fr; min-height:100vh; }
-    .sidebar { border-right:1px solid var(--line-strong); padding:var(--space-6) 18px; background:var(--surface); }
+    .sidebar { border-right:1px solid var(--line-strong); padding:var(--space-6) 18px; background:var(--surface); display:flex; flex-direction:column; }
     .brand { font-size:24px; font-weight:600; letter-spacing:-0.96px; margin-bottom:var(--space-1); color:var(--fg); }
     .subtitle { color:var(--muted); font-size:var(--text-sm); line-height:1.5; margin-bottom:28px; }
-    .account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin:0 0 var(--space-4); border-radius:var(--radius-lg); background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
+    nav { flex:1; }
+    .account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin-top:auto; margin-bottom:0; border-radius:var(--radius-lg); background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
     .account-label { color:var(--muted); font-size:var(--text-xs); }
     .account-name { color:var(--fg); font-size:var(--text-sm); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .account-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
@@ -1145,6 +1146,14 @@ const panelHTML = `<!doctype html>
     <aside class="sidebar">
       <div class="brand">MiGate</div>
       <div class="subtitle">轻量单二进制面板，专注协议、客户端与 Xray 管理。</div>
+      <nav>
+        <a class="active" href="/">概览</a>
+        <a href="/#inbounds">入站</a>
+        <a href="/#clients">客户端</a>
+        <a href="/#subscriptions">订阅</a>
+        <a href="/#xray">Xray</a>
+        <a href="/#settings">设置</a>
+      </nav>
       <div class="account-panel" aria-label="当前账号">
         <div class="account-label">当前用户</div>
         <div id="current-username" class="account-name">加载中...</div>
@@ -1154,14 +1163,6 @@ const panelHTML = `<!doctype html>
           <button id="theme-toggle" class="secondary" onclick="toggleTheme()">深色模式</button>
         </div>
       </div>
-      <nav>
-        <a class="active" href="/">概览</a>
-        <a href="/#inbounds">入站</a>
-        <a href="/#clients">客户端</a>
-        <a href="/#subscriptions">订阅</a>
-        <a href="/#xray">Xray</a>
-        <a href="/#settings">设置</a>
-      </nav>
     </aside>
     <main>
       <section id="overview" class="overview-grid" aria-label="概览指标">
