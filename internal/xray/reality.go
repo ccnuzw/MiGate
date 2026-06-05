@@ -7,6 +7,23 @@ import (
 	"strings"
 )
 
+// DeriveRealityPublicKey derives the REALITY public key from a private key using xray x25519 -i.
+func DeriveRealityPublicKey(privateKey string) (string, error) {
+	cmd := exec.Command("xray", "x25519", "-i", privateKey)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("xray x25519 -i: %w", err)
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Password (PublicKey):") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Password (PublicKey):")), nil
+		}
+	}
+	return "", fmt.Errorf("could not parse xray x25519 -i output: %s", out.String())
+}
+
 // GenerateRealityKey generates a REALITY X25519 key pair using xray x25519.
 // Returns the private key and public key on success.
 func GenerateRealityKey() (privateKey, publicKey string, err error) {

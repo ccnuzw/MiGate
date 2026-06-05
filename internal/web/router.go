@@ -169,6 +169,14 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store) {
 			http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
 			return
 		}
+		// Derive reality public key from private key for existing inbounds
+		for i := range loaded {
+			if loaded[i].Security == "reality" && loaded[i].RealityPublicKey == "" && loaded[i].RealityPrivateKey != "" {
+				if pubKey, err := xray.DeriveRealityPublicKey(loaded[i].RealityPrivateKey); err == nil {
+					loaded[i].RealityPublicKey = pubKey
+				}
+			}
+		}
 		inbounds = loaded
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -187,8 +195,9 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 	}
 	// Auto-generate REALITY private key if missing
 	if payload.Security == "reality" && payload.RealityPrivateKey == "" {
-		if key, _, err := xray.GenerateRealityKey(); err == nil {
-			payload.RealityPrivateKey = key
+		if privKey, pubKey, err := xray.GenerateRealityKey(); err == nil {
+			payload.RealityPrivateKey = privKey
+			payload.RealityPublicKey = pubKey
 		}
 	}
 	created, err := store.CreateInbound(r.Context(), payload)
@@ -630,7 +639,49 @@ func shareLink(host string, inbound db.Inbound, client db.Client) string {
 		return ssShareLink(host, inbound, client)
 	default:
 		// vless, trojan, etc. use universal link format
-		return inbound.Protocol + "://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?type=" + inbound.Network + "&security=" + inbound.Security + "#" + client.Email
+		var params []string
+		params = append(params, "type="+inbound.Network)
+		params = append(params, "security="+inbound.Security)
+		if inbound.Security == "reality" {
+			params = append(params, "flow=xtls-rprx-vision")
+			if inbound.RealityServerNames != "" {
+				params = append(params, "sni="+inbound.RealityServerNames)
+			}
+			params = append(params, "fp=chrome")
+			if inbound.RealityPublicKey != "" {
+				params = append(params, "pbk="+inbound.RealityPublicKey)
+			}
+			if inbound.RealityShortID != "" {
+				params = append(params, "sid="+inbound.RealityShortID)
+			}
+		} else if inbound.Security == "tls" {
+			if inbound.RealityServerNames != "" {
+				params = append(params, "sni="+inbound.RealityServerNames)
+			}
+			params = append(params, "allowInsecure=1")
+		}
+		// Transport-specific params
+		if inbound.Network == "ws" {
+			if inbound.WsPath != "" {
+				params = append(params, "path="+inbound.WsPath)
+			}
+			if inbound.WsHost != "" {
+				params = append(params, "host="+inbound.WsHost)
+			}
+		} else if inbound.Network == "grpc" {
+			if inbound.GrpcServiceName != "" {
+				params = append(params, "serviceName="+inbound.GrpcServiceName)
+			}
+		} else if inbound.Network == "xhttp" {
+			if inbound.XHTTPPath != "" {
+				params = append(params, "path="+inbound.XHTTPPath)
+			}
+			if inbound.XHTTPMode != "" {
+				params = append(params, "mode="+inbound.XHTTPMode)
+			}
+		}
+		query := strings.Join(params, "&")
+		return inbound.Protocol + "://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?" + query + "#" + client.Email
 	}
 }
 
@@ -766,7 +817,7 @@ const panelHTML = `<!doctype html>
     .overview-insights { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:var(--space-4); grid-column:1 / -1; }
     .overview-card { display:grid; gap:var(--space-3); align-content:start; background:var(--surface); border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:var(--panel-padding); min-height:156px; }
     .overview-card-title { color:var(--fg); font-size:var(--text-lg); font-weight:600; letter-spacing:-0.24px; }
-    .overview-pill { display:inline-flex; align-items:center; width:max-content; min-height:26px; padding:0 10px; border-radius:9999px; background:#f5f5f5; color:var(--fg); box-shadow:var(--shadow-sm); font-size:var(--text-xs); font-weight:500; }
+    .overview-pill { display:inline-flex; align-items:center; width:max-content; min-height:26px; padding:0 10px; border-radius:9999px; background:var(--surface-subtle); color:var(--fg); box-shadow:var(--shadow-sm); font-size:var(--text-xs); font-weight:500; }
     .protocol-breakdown { display:grid; gap:8px; }
     .protocol-breakdown-row { display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; color:var(--muted); font-size:var(--text-sm); }
     .panel, .card { background:var(--surface); border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:var(--panel-padding); }
@@ -1559,7 +1610,38 @@ const panelHTML = `<!doctype html>
       list.className = 'list';
       list.innerHTML = clients.map(c => {
         const subUrl = window.location.protocol + '//' + subscriptionHost + '/sub/' + c.uuid;
-        const shareLink = inbound.protocol + '://' + c.uuid + '@' + hostName + ':' + inbound.port + '?type=' + (inbound.network||'tcp') + '&security=' + (inbound.security||'none') + '#' + escapeHtml(c.email);
+        let shareLink;
+        if (inbound.protocol === 'vmess') {
+          var vmessData = {v:'2',ps:c.email,add:hostName,port:String(inbound.port),id:c.uuid,aid:'0',scy:'auto',net:inbound.network||'tcp',type:'none',host:'',path:'',tls:(inbound.security==='tls'||inbound.security==='reality')?'tls':''};
+          try { shareLink = 'vmess://' + btoa(JSON.stringify(vmessData)); } catch(e) { shareLink = ''; }
+        } else if (inbound.protocol === 'shadowsocks') {
+          var userPass = '2022-blake3-aes-128-gcm:' + c.uuid;
+          try { shareLink = 'ss://' + btoa(userPass) + '@' + hostName + ':' + inbound.port + '#' + escapeHtml(c.email); } catch(e) { shareLink = ''; }
+        } else {
+          var p = [];
+          p.push('type=' + (inbound.network||'tcp'));
+          p.push('security=' + (inbound.security||'none'));
+          if (inbound.security === 'reality') {
+            p.push('flow=xtls-rprx-vision');
+            if (inbound.reality_server_names) p.push('sni=' + encodeURIComponent(inbound.reality_server_names));
+            p.push('fp=chrome');
+            if (inbound.reality_public_key) p.push('pbk=' + encodeURIComponent(inbound.reality_public_key));
+            if (inbound.reality_short_id) p.push('sid=' + encodeURIComponent(inbound.reality_short_id));
+          } else if (inbound.security === 'tls') {
+            if (inbound.reality_server_names) p.push('sni=' + encodeURIComponent(inbound.reality_server_names));
+            p.push('allowInsecure=1');
+          }
+          if (inbound.network === 'ws') {
+            if (inbound.ws_path) p.push('path=' + encodeURIComponent(inbound.ws_path));
+            if (inbound.ws_host) p.push('host=' + encodeURIComponent(inbound.ws_host));
+          } else if (inbound.network === 'grpc') {
+            if (inbound.grpc_service_name) p.push('serviceName=' + encodeURIComponent(inbound.grpc_service_name));
+          } else if (inbound.network === 'xhttp') {
+            if (inbound.xhttp_path) p.push('path=' + encodeURIComponent(inbound.xhttp_path));
+            if (inbound.xhttp_mode) p.push('mode=' + encodeURIComponent(inbound.xhttp_mode));
+          }
+          shareLink = inbound.protocol + '://' + c.uuid + '@' + hostName + ':' + inbound.port + '?' + p.join('&') + '#' + escapeHtml(c.email);
+        }
         const used = (c.up||0) + (c.down||0);
         const limit = c.traffic_limit || 0;
         const pct = limit > 0 ? Math.min(100, used / limit * 100) : 0;

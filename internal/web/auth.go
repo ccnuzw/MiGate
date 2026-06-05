@@ -184,7 +184,7 @@ button:hover{opacity:.85}
 <p>面板登录</p>
 <form id="loginForm">
 <div class="form-group"><label for="username">用户名</label><input type="text" id="username" name="username" placeholder="admin" autocomplete="username" required></div>
-<div class="form-group"><label for="password">密码</label><input type="password" id="password" name="password" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" autocomplete="current-password" required></div>
+<div class="form-group"><label for="password">密码</label><input type="password" id="password" name="password" placeholder="........" autocomplete="current-password" required></div>
 <button type="submit">登录</button>
 <div class="error" id="errorMsg"></div>
 </form>
