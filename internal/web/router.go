@@ -161,6 +161,16 @@ func inboundsHandler(store Store) http.HandlerFunc {
 	}
 }
 
+func deriveRealityPublicKeys(inbounds []db.Inbound) {
+	for i := range inbounds {
+		if inbounds[i].Security == "reality" && inbounds[i].RealityPublicKey == "" && inbounds[i].RealityPrivateKey != "" {
+			if pubKey, err := xray.DeriveRealityPublicKey(inbounds[i].RealityPrivateKey); err == nil {
+				inbounds[i].RealityPublicKey = pubKey
+			}
+		}
+	}
+}
+
 func listInbounds(w http.ResponseWriter, r *http.Request, store Store) {
 	inbounds := []db.Inbound{}
 	if store != nil {
@@ -169,14 +179,7 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store) {
 			http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
 			return
 		}
-		// Derive reality public key from private key for existing inbounds
-		for i := range loaded {
-			if loaded[i].Security == "reality" && loaded[i].RealityPublicKey == "" && loaded[i].RealityPrivateKey != "" {
-				if pubKey, err := xray.DeriveRealityPublicKey(loaded[i].RealityPrivateKey); err == nil {
-					loaded[i].RealityPublicKey = pubKey
-				}
-			}
-		}
+		deriveRealityPublicKeys(loaded)
 		inbounds = loaded
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -596,6 +599,7 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 			http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
 			return
 		}
+		deriveRealityPublicKeys(inbounds)
 		for _, inbound := range inbounds {
 			if !inbound.Enabled {
 				continue
