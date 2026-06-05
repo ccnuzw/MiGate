@@ -1412,7 +1412,7 @@ const panelHTML = `<!doctype html>
           </div>
         </div>
       </section>
-      <div id="version-banner" class="version-banner"></div>
+      <div id="version-banner" class="version-banner" style="display:none"></div>
       <section id="inbounds" class="card panel">
         <h2 class="section-heading">核心协议</h2>
         <div class="protocols">
