@@ -907,24 +907,25 @@ const panelHTML = `<!doctype html>
     .toolbar-copy { display:grid; gap:var(--space-1); min-width:0; color:var(--muted); font-size:var(--text-sm); line-height:1.5; }
     .toolbar-copy strong { color:var(--fg); font-size:var(--text-md); font-weight:600; letter-spacing:-0.14px; }
     .toolbar-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
-    .ui-control, input, select, textarea { width:100%; min-height:var(--control-height); border:none; outline:none; background:var(--surface); color:var(--fg); border-radius:var(--control-radius); padding:0 var(--space-3); box-shadow:var(--shadow-sm); font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:var(--text-md); line-height:1.4; }
+    .ui-control, input, select, textarea { width:100%; min-height:var(--control-height); border:1px solid var(--line-strong); outline:none; background:var(--surface); color:var(--fg); border-radius:var(--control-radius); padding:0 var(--space-3); box-shadow:none; font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:var(--text-md); line-height:1.4; transition:border-color .15s, box-shadow .15s; }
     textarea { padding-top:10px; padding-bottom:10px; }
     input:focus, select:focus, textarea:focus, button:focus { box-shadow:var(--shadow-sm), 0 0 0 2px var(--focus); }
     .list { display:grid; gap:10px; margin-top:14px; }
     .row { display:grid; grid-template-columns:1.2fr .8fr .8fr .8fr .8fr .6fr; gap:10px; align-items:center; padding:var(--row-padding); border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm); }
     .resource-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--space-4); align-items:center; padding:var(--row-padding); border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm); transition:box-shadow .16s ease, transform .16s ease; }
+    .client-resource-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--space-3); align-items:center; padding:10px var(--space-3); border-radius:var(--radius-md); background:var(--surface-subtle); box-shadow:var(--shadow-sm); border-left:3px solid var(--accent2); font-size:var(--text-sm); }
     .resource-row:hover { box-shadow:var(--shadow-md); transform:translateY(-1px); }
     .resource-main { min-width:0; display:grid; gap:var(--space-2); }
     .resource-title { display:flex; align-items:center; gap:var(--space-2); min-width:0; font-size:15px; font-weight:600; color:var(--fg); }
     .resource-title strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .resource-meta { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); color:var(--muted); font-size:var(--text-xs); line-height:1.5; }
     .status-badge { display:inline-flex; align-items:center; height:22px; padding:0 var(--space-2); border-radius:9999px; font-size:var(--text-xs); font-weight:500; box-shadow:var(--shadow-sm); }
-    .status-badge.enabled { color:#047857; background:#ecfdf5; }
-    .status-badge.disabled { color:#6b7280; background:#f3f4f6; }
+    .status-badge.enabled { color:#047857; background:rgba(16,185,129,.14); }
+    .status-badge.disabled { color:#6b7280; background:rgba(107,114,128,.14); }
     .resource-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
     .icon-btn, .danger-icon-btn { display:inline-flex; align-items:center; justify-content:center; min-width:32px; min-height:32px; height:32px; padding:0 var(--space-2); border-radius:var(--control-radius); font-size:var(--text-xs); }
     .icon-btn { background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); }
-    .danger-icon-btn { background:#fff5f5; color:var(--danger); box-shadow:var(--shadow-sm); }
+    .danger-icon-btn { background:rgba(239,68,68,.12); color:var(--danger); box-shadow:var(--shadow-sm); }
     .traffic-track { width:128px; height:4px; margin-top:5px; overflow:hidden; border-radius:9999px; background:#f3f4f6; }
     .traffic-fill { height:100%; border-radius:9999px; background:var(--accent2); }
     .empty-state { display:grid; gap:10px; justify-items:start; padding:22px; border-radius:var(--radius-xl); background:var(--surface); box-shadow:var(--shadow-sm), inset 0 0 0 1px rgba(250,250,250,.9); color:var(--muted); }
@@ -965,7 +966,7 @@ const panelHTML = `<!doctype html>
     .modal-form { margin:0; grid-template-columns:repeat(2,minmax(0,1fr)); }
     #create-inbound-form.modal-form, #create-client-form.modal-form, #edit-inbound-form.modal-form, #edit-client-form.modal-form { gap:var(--space-4); }
     .modal-actions { margin-top:0; }
-    .advanced-fieldset { padding:var(--space-4); border-radius:var(--radius-lg); background:rgba(250,250,250,.72); box-shadow:var(--shadow-sm), inset 0 0 0 1px var(--line); }
+    .advanced-fieldset { padding:var(--space-4); border-radius:var(--radius-lg); background:var(--surface-subtle); box-shadow:var(--shadow-sm), inset 0 0 0 1px var(--line); }
     .advanced-fieldset-title { color:var(--fg); font-size:var(--text-sm); font-weight:600; letter-spacing:-0.12px; }
     .advanced-fieldset-copy { color:var(--muted); font-size:var(--text-xs); line-height:1.55; }
     #dynamic-fields, #ei-dynamic-fields { display:contents; }
@@ -1611,7 +1612,7 @@ const panelHTML = `<!doctype html>
         return;
       }
       el.style.display = 'block';
-      el.innerHTML = '<div class="list" style="margin:10px 0 0">正在加载客户端...</div>';
+      el.innerHTML = '<div style="display:flex;justify-content:flex-end;padding:8px 16px 0"><button onclick="openCreateClient(' + inboundId + ')" style="height:28px;font-size:12px;padding:0 10px">新增客户端</button></div><div class="list" style="margin:6px 0 0">正在加载客户端...</div>';
       fetch('/api/inbounds').then(r => r.json()).then(data => {
         const inbound = (data.inbounds || []).find(i => i.id === inboundId);
         if (!inbound) { el.innerHTML = '<div class="muted" style="padding:12px">入站未找到</div>'; return; }
@@ -1730,7 +1731,7 @@ const panelHTML = `<!doctype html>
         const badgeClass = c.enabled && !isExpired && !isOverLimit ? 'enabled' : 'disabled';
         const badgeText = c.enabled ? (isExpired ? 'Expired' : (isOverLimit ? 'Limited' : 'Enabled')) : 'Disabled';
         const fillClass = isOverLimit ? 'bar-high' : (pct >= 85 ? 'bar-mid' : 'bar-low');
-        return '<div class="resource-row">' +
+        return '<div class="client-resource-row">' +
           '<div class="resource-main">' +
             '<div class="resource-title"><strong>' + escapeHtml(c.email) + '</strong><span class="status-badge ' + badgeClass + '">' + badgeText + '</span></div>' +
             '<div class="resource-meta">' +
