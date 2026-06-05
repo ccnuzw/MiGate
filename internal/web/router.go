@@ -67,6 +67,7 @@ type routerConfig struct {
 	sessionSecret  []byte
 	configDir      string
 	restartCmd     string
+	version        string
 }
 
 type Option func(*routerConfig)
@@ -74,6 +75,12 @@ type Option func(*routerConfig)
 func WithStore(store Store) Option {
 	return func(cfg *routerConfig) {
 		cfg.store = store
+	}
+}
+
+func WithVersion(version string) Option {
+	return func(cfg *routerConfig) {
+		cfg.version = version
 	}
 }
 
@@ -118,6 +125,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/xray/logs", xrayLogsHandler())
 	mux.HandleFunc("/api/settings", settingsHandler(&cfg))
 	mux.HandleFunc("/api/restart", restartHandler(cfg.restartCmd))
+	mux.HandleFunc("/api/version", versionHandler(cfg.version))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	return authMiddleware(mux, &cfg)
 }
@@ -576,6 +584,20 @@ func xrayLogsHandler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"logs": string(out)})
+	}
+}
+
+func versionHandler(version string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if version == "" {
+			version = "dev"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": version})
 	}
 }
 
@@ -1379,6 +1401,7 @@ const panelHTML = `<!doctype html>
           </div>
         </div>
       </section>
+      <div id="version-banner" style="display:none;margin-bottom:12px;padding:12px 16px;border-radius:12px;background:rgba(99,102,241,.10);border:1px solid rgba(99,102,241,.25);font-size:13px"></div>
       <section id="inbounds" class="card panel">
         <h2 class="section-heading">核心协议</h2>
         <div class="protocols">
@@ -1390,6 +1413,13 @@ const panelHTML = `<!doctype html>
         <div class="actions">
           <button onclick="openCreateInbound()">新增入站</button>
           <button class="secondary" onclick="navigateTo('outbound')">出站</button>
+          <input id="inbound-search" type="text" placeholder="搜索入站..." style="height:36px;min-width:160px;border:1px solid var(--line-strong);border-radius:8px;padding:0 10px;font-size:13px;background:var(--surface);color:var(--fg);outline:none" oninput="filterInbounds()">
+          <select id="inbound-sort" style="height:36px;border:1px solid var(--line-strong);border-radius:8px;padding:0 8px;font-size:13px;background:var(--surface);color:var(--fg);cursor:pointer" onchange="sortInbounds()">
+            <option value="id">默认排序</option>
+            <option value="port">按端口</option>
+            <option value="protocol">按协议</option>
+            <option value="clients">按客户端数</option>
+          </select>
         </div>
         <div id="inbound-list" class="list muted">正在加载入站...</div>
       </section>
@@ -1418,10 +1448,12 @@ const panelHTML = `<!doctype html>
             <button onclick="fetchXrayStatus()">刷新状态</button>
             <button class="secondary" onclick="previewXrayConfig()">预览配置</button>
             <button class="secondary" onclick="applyXrayConfig()">应用配置</button>
+            <button class="secondary" onclick="loadXrayLogs()">查看日志</button>
           </div>
         </div>
         <div id="xray-result" class="notice-slot"></div>
         <div id="xray-config-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-config-json" style="background:rgba(148,163,184,.06);border-radius:12px;padding:16px;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:400px;overflow-y:auto"></pre></div>
+        <div id="xray-logs-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-logs-text" style="background:rgba(148,163,184,.06);border-radius:12px;padding:16px;font-size:11px;overflow-x:auto;white-space:pre-wrap;max-height:400px;overflow-y:auto;font-family:monospace"></pre></div>
       </section>
       <section id="settings" class="card panel">
         <h2 class="section-title">面板设置</h2>
@@ -1524,6 +1556,57 @@ const panelHTML = `<!doctype html>
         '</div>' +
         '<div id="client-section-' + inbound.id + '" class="client-subsection" style="display:none;padding:0 16px 12px;border-top:1px solid var(--line)"></div>';
       }).join('');
+    }
+
+    function filterInbounds() { applyInboundFilterSort(); }
+    function sortInbounds() { applyInboundFilterSort(); }
+    function applyInboundFilterSort() {
+      const q = (document.getElementById('inbound-search').value || '').toLowerCase();
+      const sortBy = (document.getElementById('inbound-sort').value || 'id');
+      let list = (window._cachedInbounds || []).slice();
+      if (q) {
+        list = list.filter(ib =>
+          (ib.remark || '').toLowerCase().includes(q) ||
+          (ib.protocol || '').toLowerCase().includes(q) ||
+          String(ib.port).includes(q) ||
+          (ib.network || '').toLowerCase().includes(q)
+        );
+      }
+      list.sort((a, b) => {
+        if (sortBy === 'port') return a.port - b.port;
+        if (sortBy === 'protocol') return (a.protocol || '').localeCompare(b.protocol || '');
+        if (sortBy === 'clients') return (b.clients || []).length - (a.clients || []).length;
+        return a.id - b.id;
+      });
+      renderInbounds(window._cachedInbounds);  // re-render full list (stats etc.)
+      // Now filter the DOM rows
+      const allowedIds = new Set(list.map(ib => ib.id));
+      const rows = inboundList.querySelectorAll('.resource-row');
+      rows.forEach(row => {
+        const idMatch = row.querySelector('[onclick*="editInbound"]');
+        if (idMatch) {
+          const m = idMatch.getAttribute('onclick').match(/editInbound\((\d+)\)/);
+          if (m) row.style.display = allowedIds.has(Number(m[1])) ? '' : 'none';
+        }
+      });
+      // Also hide/show client subsections
+      const subs = inboundList.querySelectorAll('.client-subsection');
+      subs.forEach(el => {
+        const m = el.id.match(/client-section-(\d+)/);
+        if (m) el.style.display = (!allowedIds.has(Number(m[1])) || el.style.display === 'none') ? 'none' : el.style.display;
+      });
+      // Reorder rows to match sort order
+      const allEls = Array.from(inboundList.children);
+      const orderMap = {};
+      list.forEach((ib, i) => orderMap[ib.id] = i);
+      allEls.sort((a, b) => {
+        const mA = a.id ? a.id.match(/client-section-(\d+)/) : null;
+        const mB = b.id ? b.id.match(/client-section-(\d+)/) : null;
+        const idA = mA ? Number(mA[1]) : (a.querySelector('[onclick*="editInbound"]')?.getAttribute('onclick')?.match(/editInbound\((\d+)\)/)?.[1] || 9999);
+        const idB = mB ? Number(mB[1]) : (b.querySelector('[onclick*="editInbound"]')?.getAttribute('onclick')?.match(/editInbound\((\d+)\)/)?.[1] || 9999);
+        return (orderMap[idA] ?? 9999) - (orderMap[idB] ?? 9999);
+      });
+      allEls.forEach(el => inboundList.appendChild(el));
     }
 
     function renderOverviewInsights(inbounds, allClients, active) {
@@ -1781,7 +1864,8 @@ const panelHTML = `<!doctype html>
             '<div class="resource-title"><strong>' + escapeHtml(c.email) + '</strong><span class="status-badge ' + badgeClass + '">' + badgeText + '</span></div>' +
             '<div class="resource-meta">' +
               '<span class="mono">' + c.uuid.substring(0,8) + '…</span>' +
-              '<span style="' + trafficStyle + '">' + formatBytes(used) + ' / ' + (limit > 0 ? formatBytes(limit) : '∞') + '</span>' +
+              '<span style="' + trafficStyle + '">↑' + formatBytes(c.up||0) + ' ↓' + formatBytes(c.down||0) + '</span>' +
+              '<span>' + formatBytes(used) + ' / ' + (limit > 0 ? formatBytes(limit) : '∞') + '</span>' +
               '<span style="' + expireStyle + '">到期 ' + expiredText + '</span>' +
               (limit > 0 ? '<span><div class="traffic-track"><div class="traffic-fill ' + fillClass + '" style="width:' + pct + '%"></div></div></span>' : '') +
             '</div>' +
@@ -2241,6 +2325,26 @@ const panelHTML = `<!doctype html>
         _configVisible = true;
       }
     }
+    var _logsVisible = false;
+    async function loadXrayLogs() {
+      const el = document.getElementById('xray-logs-preview');
+      const pre = document.getElementById('xray-logs-text');
+      if (_logsVisible) {
+        el.style.display = 'none';
+        _logsVisible = false;
+        return;
+      }
+      pre.textContent = '加载中...';
+      el.style.display = '';
+      _logsVisible = true;
+      try {
+        const res = await fetch('/api/xray/logs?lines=80');
+        const data = await res.json();
+        pre.textContent = data.logs || '暂无日志';
+      } catch (e) {
+        pre.textContent = '加载日志失败';
+      }
+    }
 
     // === Settings ===
     async function loadSettings() {
@@ -2298,6 +2402,28 @@ const panelHTML = `<!doctype html>
         btn.textContent = '重启服务';
       }
     }
+
+    // === Version check ===
+    async function checkVersion() {
+      try {
+        const res = await fetch('/api/version');
+        const data = await res.json();
+        const current = data.version || 'dev';
+        if (current === 'dev') return;
+        // Check GitHub for latest release
+        const ghRes = await fetch('https://api.github.com/repos/imzyb/MiGate/releases/latest');
+        if (!ghRes.ok) return;
+        const gh = await ghRes.json();
+        const latest = (gh.tag_name || '').replace(/^v/, '');
+        const cur = current.replace(/^v/, '');
+        if (latest && latest !== cur) {
+          const banner = document.getElementById('version-banner');
+          banner.innerHTML = '🚀 新版本 <strong>v' + escapeHtml(latest) + '</strong> 已发布（当前 v' + escapeHtml(cur) + '）。查看 <a href="' + gh.html_url + '" target="_blank" style="color:var(--accent);text-decoration:underline">更新日志</a>';
+          banner.style.display = 'block';
+        }
+      } catch (e) { /* silent */ }
+    }
+    checkVersion();
 
     fetchXrayStatus();
     loadSettings();

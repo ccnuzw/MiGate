@@ -14,7 +14,7 @@ build_one() {
   work_dir="$(mktemp -d)"
 
   echo "Building MiGate ${VERSION} linux/${arch}"
-  GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$work_dir/migate" ./cmd/migate
+  GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" -o "$work_dir/migate" ./cmd/migate
 
   mkdir -p "$work_dir/packaging"
   cp "$ROOT_DIR/packaging/migate.service" "$work_dir/packaging/migate.service"

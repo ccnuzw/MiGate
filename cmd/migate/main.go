@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"context"
 	"encoding/json"
@@ -14,6 +15,9 @@ import (
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/web"
 )
+
+// Version is set via ldflags at build time.
+var Version = "dev"
 
 type panelConfig struct {
 	PanelPort      int    `json:"panel_port"`
@@ -76,7 +80,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	}
 	closeStore := func() { _ = store.Close() }
 
-	opts := []web.Option{web.WithStore(store)}
+	opts := []web.Option{web.WithStore(store), web.WithVersion(Version)}
 	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
 		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
 	}
