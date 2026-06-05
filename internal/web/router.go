@@ -1177,10 +1177,11 @@ const panelHTML = `<!doctype html>
           <div onclick="toggleInitClient(this)" style="cursor:pointer;color:var(--accent);user-select:none;font-size:13px">
             <span class="chevron">▶</span> 同时添加首个客户端
           </div>
-          <div id="init-client-fields" class="hidden" style="margin-top:8px">
-            <input id="init-client-email" placeholder="客户端邮箱 (必填，如 sam@example.com)">
-            <input id="init-client-traffic" type="number" min="0" placeholder="流量上限 (字节, 0=无限)" value="0">
-            <p class="field-help">创建入站后自动生成第一个客户端，省去后续再添加的步骤。</p>
+          <div id="init-client-fields" class="hidden" style="margin-top:8px;display:grid;gap:10px">
+            <input id="init-client-email" placeholder="客户端邮箱 (必填，如 sam@example.com)" style="grid-column:1/-1">
+            <input id="init-client-traffic" type="number" min="0" placeholder="流量上限，单位字节；0=无限" value="0">
+            <input id="init-client-expiry" type="datetime-local">
+            <p class="field-help" style="grid-column:1/-1">创建入站后自动生成第一个客户端。流量上限设置后可在概览页查看使用比例。</p>
           </div>
         </div>
         <div class="form-actions modal-actions">
@@ -1750,11 +1751,16 @@ const panelHTML = `<!doctype html>
         return;
       }
       el.style.display = 'block';
-      el.innerHTML = '<div style="display:flex;justify-content:flex-end;padding:8px 16px 0"><button onclick="openCreateClient(' + inboundId + ')" style="height:28px;font-size:12px;padding:0 10px">新增客户端</button></div><div class="list" style="margin:6px 0 0">正在加载客户端...</div>';
+      el.innerHTML = '<div class="list" style="margin:0">正在加载客户端...</div>';
       fetch('/api/inbounds').then(r => r.json()).then(data => {
         const inbound = (data.inbounds || []).find(i => i.id === inboundId);
         if (!inbound) { el.innerHTML = '<div class="muted" style="padding:12px">入站未找到</div>'; return; }
         renderClients(inbound, el.querySelector('.list') || el);
+        // Append "新增客户端" button at bottom
+        const btnWrap = document.createElement('div');
+        btnWrap.style.cssText = 'display:flex;justify-content:flex-end;padding:4px 8px 0';
+        btnWrap.innerHTML = '<button onclick="openCreateClient(' + inboundId + ')" class="btn-sm">新增客户端</button>';
+        el.appendChild(btnWrap);
       }).catch(() => {
         el.innerHTML = '<div class="muted" style="padding:12px">加载失败</div>';
       });
@@ -1798,7 +1804,6 @@ const panelHTML = `<!doctype html>
     navigateTo(currentSectionFromLocation());
 
     function renderClients(inbound, list) {
-      const subscriptionHost = window.location.host;
       const hostName = window.location.hostname;
       const clients = inbound.clients || [];
       if (clients.length === 0) {
@@ -1810,7 +1815,6 @@ const panelHTML = `<!doctype html>
       }
       list.className = 'list';
       list.innerHTML = clients.map(c => {
-        const subUrl = window.location.protocol + '//' + subscriptionHost + '/sub/' + c.uuid;
         let shareLink;
         if (inbound.protocol === 'vmess') {
           var vmessHost = '', vmessPath = '', vmessSni = '';
@@ -1881,7 +1885,6 @@ const panelHTML = `<!doctype html>
             '</div>' +
           '</div>' +
           '<div class="resource-actions">' +
-            '<button class="icon-btn" onclick="copySubUrl(' + htmlAttrString(subUrl) + ')" title="复制订阅链接">Sub</button>' +
             '<button class="icon-btn" onclick="copySubUrl(' + htmlAttrString(shareLink) + ')" title="复制分享链接">Link</button>' +
             '<button class="icon-btn" onclick="editClient(' + c.id + ',' + inbound.id + ')" title="编辑">Edit</button>' +
             '<button class="icon-btn" onclick="toggleClient(' + c.id + ')" title="启用/禁用">' + (c.enabled ? 'ON' : 'OFF') + '</button>' +
@@ -2255,9 +2258,15 @@ const panelHTML = `<!doctype html>
       // Pack initial client if email is provided
       const initEmail = document.getElementById('init-client-email').value.trim();
       if (initEmail) {
+        const initExpiryStr = document.getElementById('init-client-expiry').value;
+        let initExpiry = 0;
+        if (initExpiryStr) {
+          initExpiry = Math.floor(new Date(initExpiryStr).getTime() / 1000);
+        }
         payload.initial_client = {
           email: initEmail,
-          traffic_limit: Number(document.getElementById('init-client-traffic').value || 0)
+          traffic_limit: Number(document.getElementById('init-client-traffic').value || 0),
+          expiry_at: initExpiry
         };
       }
       delete payload.init_email;

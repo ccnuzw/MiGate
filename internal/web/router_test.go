@@ -146,9 +146,6 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`closeCreateClient()`,
 		`saveCreateClient()`,
 		`name="email"`,
-		`订阅链接`,
-		`copy-link`,
-		`subscriptionHost`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel client management missing %q: %s", want, body)
@@ -209,14 +206,13 @@ func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 		`showToast('复制失败，请手动复制', 'error')`,
 		`function jsString(value)`,
 		`function htmlAttrString(value)`,
-		`onclick="copySubUrl(' + htmlAttrString(subUrl) + ')"`,
 		`onclick="copySubUrl(' + htmlAttrString(shareLink) + ')"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing create-refresh/copy safety contract %q", want)
 		}
 	}
-	if strings.Contains(body, `onclick="copySubUrl(' + jsString(subUrl) + ')"`) || strings.Contains(body, `onclick="copySubUrl(' + jsString(shareLink) + ')"`) {
+	if strings.Contains(body, `onclick="copySubUrl(' + jsString(shareLink) + ')"`) {
 		t.Fatalf("copy button onclick must HTML-escape quoted JS strings before placing them in double-quoted attributes")
 	}
 }
