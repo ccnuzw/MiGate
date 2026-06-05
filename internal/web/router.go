@@ -1133,14 +1133,20 @@ const panelHTML = `<!doctype html>
     main > section{display:none}
     #overview.overview-grid{display:grid}
     .overview-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:var(--space-4); margin-bottom:var(--space-4); }
-    .sidebar { box-shadow:inset -1px 0 0 var(--line-strong); padding:var(--space-6) 18px; background:var(--surface); display:flex; flex-direction:column; }
     .sidebar { position:sticky; top:0; height:100vh; overflow:auto; box-shadow:inset -1px 0 0 var(--line-strong); padding:var(--space-6) 18px; background:var(--surface); display:flex; flex-direction:column; }
+    .brand { font-size:24px; font-weight:600; letter-spacing:-0.96px; margin-bottom:var(--space-1); color:var(--fg); }
     .subtitle { color:var(--muted); font-size:var(--text-sm); line-height:1.5; margin-bottom:var(--space-4); }
     nav { flex:1; overflow:visible; }
+    #sidebar-toggle { display:none; align-items:center; justify-content:center; width:36px; height:36px; border:none; background:var(--surface); color:var(--fg); font-size:22px; cursor:pointer; border-radius:var(--radius-sm); box-shadow:var(--shadow-md); z-index:101; position:fixed; top:12px; left:12px; }
     .account-panel { display:grid; gap:var(--space-3); padding:var(--space-4); margin-top:var(--space-4); margin-bottom:0; border-radius:var(--radius-xl); background:var(--surface); box-shadow:var(--shadow-md), inset 0 0 0 1px var(--line); }
     .account-panel::before { content:''; display:block; height:1px; margin-bottom:var(--space-1); background:var(--line); opacity:.8; }
     .account-label { color:var(--muted); font-size:var(--text-xs); text-transform:uppercase; letter-spacing:.08em; }
+    .account-name { color:var(--fg); font-size:var(--text-sm); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
     .account-actions button { min-height:34px; padding:0 10px; font-size:var(--text-xs); border-radius:var(--radius-md); }
+    nav a { display:block; color:var(--fg); text-decoration:none; padding:10px var(--space-3); border-radius:var(--radius-md); margin:var(--space-1) 0; box-shadow:none; font-size:var(--text-md); font-weight:500; }
+    nav a.active, nav a:hover { background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
+    .grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:var(--space-4); margin-bottom:var(--space-4); }
     .version-banner { margin-bottom:var(--space-3); padding:14px 18px; border-radius:var(--radius-md); background:var(--surface-subtle); box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent); font-size:var(--text-sm); line-height:1.5; color:var(--fg); }
     .notice-slot { margin-top:12px; }
     .client-subsection { box-shadow:inset 0 1px 0 var(--line); padding:0 var(--space-4) var(--space-2); }
@@ -1630,7 +1636,6 @@ const panelHTML = `<!doctype html>
           </div>
         </div>
       </section>
-      <div id="version-banner" class="version-banner" style="display:none"></div>
       <section id="inbounds" class="card panel">
         <h2 class="section-heading">核心协议</h2>
         <div class="protocols">
