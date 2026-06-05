@@ -162,6 +162,36 @@ func TestPanelWiresClientManagement(t *testing.T) {
 	}
 }
 
+func TestLoginPageVercelStyle(t *testing.T) {
+	router := web.NewRouter()
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	body := resp.Body.String()
+	for _, want := range []string{
+		`fonts.googleapis.com/css2?family=Geist`,
+		`MiGate`,
+		`面板登录`,
+		`--bg`,
+		`--fg`,
+		`--surface`,
+		`@media (max-width:`,
+		`type="text" id="username"`,
+		`type="password" id="password"`,
+		`id="errorMsg"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("login page missing %q", want)
+		}
+	}
+	if !strings.Contains(body, `[data-theme="dark"]`) {
+		t.Fatalf(`login page should support dark theme with [data-theme="dark"]`)
+	}
+}
+
 func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
@@ -769,6 +799,29 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing overview insight contract %q", want)
+		}
+	}
+
+	// Mobile-responsive sidebar toggle + overlay
+	for _, want := range []string{
+		`id="sidebar-toggle"`,
+		`id="sidebar-overlay"`,
+		`.sidebar-open`,
+		`function toggleSidebar()`,
+		`@media (max-width: 768px)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing mobile sidebar contract %q", want)
+		}
+	}
+
+	// Touch-friendly control heights
+	for _, want := range []string{
+		`var(--control-height)`,
+		`min-height:var(--control-height)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing touch-friendly control height %q", want)
 		}
 	}
 }

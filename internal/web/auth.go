@@ -149,26 +149,34 @@ func logoutHandler() http.HandlerFunc {
 }
 
 // loginPageHTML is a self-contained login form served at /login.
+// Vercel-style design with Geist font, CSS variables, light/dark support, and mobile responsive.
 var loginPageHTML = []byte(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>MiGate - Login</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f1117;color:#e4e4e7;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.login-card{background:#1a1b23;border:1px solid #27272a;border-radius:12px;padding:40px;width:360px;box-shadow:0 4px 24px rgba(0,0,0,.4)}
-.login-card h1{font-size:22px;font-weight:600;margin-bottom:8px;text-align:center}
-.login-card p{color:#71717a;font-size:14px;text-align:center;margin-bottom:28px}
-.form-group{margin-bottom:20px}
-.form-group label{display:block;font-size:13px;font-weight:500;color:#a1a1aa;margin-bottom:6px}
-.form-group input{width:100%;padding:10px 14px;background:#0f1117;border:1px solid #27272a;border-radius:8px;color:#e4e4e7;font-size:14px;outline:none;transition:border-color .2s}
-.form-group input:focus{border-color:#6366f1}
-button{width:100%;padding:10px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:background .2s}
-button:hover{background:#4f46e5}
-.error{color:#ef4444;font-size:13px;text-align:center;margin-top:12px;display:none}
+:root{--bg:#ffffff;--fg:#171717;--surface:#ffffff;--surface-subtle:#fafafa;--muted:#666666;--line:rgba(0,0,0,.08);--line-strong:#ebebeb;--accent:#171717;--danger:#dc2626;--focus:hsla(212,100%,48%,1);--shadow-sm:0 0 0 1px rgba(0,0,0,.08);--shadow-md:0 0 0 1px rgba(0,0,0,.08),0 2px 2px rgba(0,0,0,.04),0 8px 8px -8px rgba(0,0,0,.04);--radius-sm:6px;--radius-lg:12px;--space-4:16px;--space-5:20px;--space-6:24px;--text-sm:13px;--text-md:14px;--control-height:40px}
+:root[data-theme="dark"]{--bg:#0a0a0a;--fg:#ededed;--surface:#111111;--surface-subtle:#18181b;--muted:#a1a1aa;--line:rgba(255,255,255,.10);--line-strong:rgba(255,255,255,.14);--accent:#ededed;--danger:#ef4444;--focus:rgba(99,102,241,.36);--shadow-sm:0 0 0 1px rgba(255,255,255,.10);--shadow-md:0 0 0 1px rgba(255,255,255,.10),0 12px 28px rgba(0,0,0,0)}
+body{font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--fg);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:var(--space-4)}
+.login-card{background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-lg);padding:var(--space-6);width:360px;max-width:100%;box-shadow:var(--shadow-md)}
+.login-card h1{font-size:22px;font-weight:600;margin-bottom:4px;text-align:center;color:var(--fg)}
+.login-card p{color:var(--muted);font-size:var(--text-sm);text-align:center;margin-bottom:var(--space-6);line-height:1.5}
+.form-group{display:grid;gap:6px;margin-bottom:var(--space-4)}
+.form-group label{font-size:var(--text-sm);font-weight:500;color:var(--fg)}
+.form-group input{width:100%;min-height:var(--control-height);padding:0 12px;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--radius-sm);color:var(--fg);font-size:var(--text-md);font-family:inherit;outline:none;transition:border-color .15s;box-shadow:var(--shadow-sm)}
+.form-group input:focus{border-color:var(--focus);box-shadow:0 0 0 3px var(--focus)}
+button{width:100%;min-height:var(--control-height);padding:0 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-sm);font-size:var(--text-md);font-weight:500;font-family:inherit;cursor:pointer;transition:opacity .15s}
+button:hover{opacity:.85}
+.error{color:var(--danger);font-size:var(--text-sm);text-align:center;margin-top:var(--space-4);display:none;line-height:1.5}
+@media (max-width: 480px){.login-card{padding:var(--space-5)}}
 </style>
+<script>
+(function(){try{var t=localStorage.getItem('migate-theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');document.documentElement.dataset.theme=t}catch(e){}})()
+</script>
 </head>
 <body>
 <div class="login-card">
@@ -176,7 +184,7 @@ button:hover{background:#4f46e5}
 <p>面板登录</p>
 <form id="loginForm">
 <div class="form-group"><label for="username">用户名</label><input type="text" id="username" name="username" placeholder="admin" autocomplete="username" required></div>
-<div class="form-group"><label for="password">密码</label><input type="password" id="password" name="password" placeholder="••••••••" autocomplete="current-password" required></div>
+<div class="form-group"><label for="password">密码</label><input type="password" id="password" name="password" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" autocomplete="current-password" required></div>
 <button type="submit">登录</button>
 <div class="error" id="errorMsg"></div>
 </form>

@@ -749,6 +749,7 @@ const panelHTML = `<!doctype html>
     .brand { font-size:24px; font-weight:600; letter-spacing:-0.96px; margin-bottom:var(--space-1); color:var(--fg); }
     .subtitle { color:var(--muted); font-size:var(--text-sm); line-height:1.5; margin-bottom:28px; }
     nav { flex:1; }
+    #sidebar-toggle { display:none; align-items:center; justify-content:center; width:36px; height:36px; border:none; background:transparent; color:var(--fg); font-size:22px; cursor:pointer; border-radius:var(--radius-sm); margin-bottom:var(--space-3); }
     .account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin-top:auto; margin-bottom:0; border-radius:var(--radius-lg); background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
     .account-label { color:var(--muted); font-size:var(--text-xs); }
     .account-name { color:var(--fg); font-size:var(--text-sm); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -855,7 +856,19 @@ const panelHTML = `<!doctype html>
     #dynamic-fields, #ei-dynamic-fields { display:contents; }
     #create-inbound-dialog input, #create-inbound-dialog select, #create-client-dialog input, #create-client-dialog select, #edit-inbound-dialog input, #edit-inbound-dialog select, #edit-client-dialog input, #edit-client-dialog select { width:100%; box-sizing:border-box; margin-bottom:0; }
     @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
-    @media (max-width: 900px) { .app-shell { grid-template-columns:1fr; } .sidebar { border-right:0; border-bottom:1px solid var(--line-strong); } .grid,.overview-grid,.protocols { grid-template-columns:1fr 1fr; } .overview-insights { grid-template-columns:1fr; } form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    /* Mobile sidebar overlay */
+    #sidebar-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:99; }
+    @media (max-width: 768px) {
+      .app-shell { grid-template-columns:1fr; }
+      .sidebar { position:fixed; top:0; left:0; bottom:0; width:var(--sidebar-width); z-index:100; transform:translateX(-100%); transition:transform .25s ease; border-right:1px solid var(--line-strong); }
+      .sidebar-open .sidebar { transform:translateX(0); }
+      #sidebar-overlay { display:block; opacity:0; pointer-events:none; transition:opacity .25s ease; }
+      .sidebar-open #sidebar-overlay { opacity:1; pointer-events:auto; }
+      #sidebar-toggle { display:flex; }
+      .grid,.overview-grid,.protocols { grid-template-columns:1fr 1fr; }
+      .overview-insights { grid-template-columns:1fr; }
+      form { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    }
     @media (max-width: 560px) { .grid,.overview-grid,.protocols, form { grid-template-columns:1fr; } main { padding:18px; } }
   </style>
 </head>
@@ -1144,6 +1157,7 @@ const panelHTML = `<!doctype html>
 
   <div class="app-shell">
     <aside class="sidebar">
+      <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="展开菜单">☰</button>
       <div class="brand">MiGate</div>
       <div class="subtitle">轻量单二进制面板，专注协议、客户端与 Xray 管理。</div>
       <nav>
@@ -1164,6 +1178,7 @@ const panelHTML = `<!doctype html>
         </div>
       </div>
     </aside>
+    <div id="sidebar-overlay" onclick="closeSidebar()"></div>
     <main>
       <section id="overview" class="overview-grid" aria-label="概览指标">
         <div class="card panel"><div>入站</div><div id="inbound-count" class="metric">0</div><p>VLESS / VMess / Trojan / Shadowsocks</p></div>
@@ -1464,6 +1479,13 @@ const panelHTML = `<!doctype html>
       if (!res.ok) { showToast('登出失败', 'error'); return; }
       showToast('已登出', 'success');
       window.location.href = '/login';
+    }
+
+    function toggleSidebar() {
+      document.querySelector('.app-shell').classList.toggle('sidebar-open');
+    }
+    function closeSidebar() {
+      document.querySelector('.app-shell').classList.remove('sidebar-open');
     }
 
     applyTheme(preferredTheme());
