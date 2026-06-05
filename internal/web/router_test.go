@@ -59,7 +59,12 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 		`id="inbound-count"`,
 		`id="client-count"`,
 		`id="inbound-list"`,
-		`id="inbound-form"`,
+		`id="create-inbound-overlay"`,
+		`id="create-inbound-form"`,
+		`openCreateInbound()`,
+		`closeCreateInbound()`,
+		`saveCreateInbound()`,
+		`onclick="openCreateInbound()"`,
 		`name="remark"`,
 		`name="protocol"`,
 		`name="port"`,
@@ -70,6 +75,11 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel inbound management missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`id="inbound-form"`, `document.getElementById('inbound-form')`, `document.querySelector('[name=protocol]')`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("panel should move inbound creation into modal and remove old inline form contract, found %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{"npm", "node_modules", "openvpn", "leak-check", "remote/readiness"} {
@@ -90,7 +100,12 @@ func TestPanelWiresClientManagement(t *testing.T) {
 	body := page.Body.String()
 	for _, want := range []string{
 		`id="clients"`,
-		`id="client-form"`,
+		`id="create-client-overlay"`,
+		`id="create-client-form"`,
+		`openCreateClient()`,
+		`closeCreateClient()`,
+		`saveCreateClient()`,
+		`onclick="openCreateClient()"`,
 		`name="email"`,
 		`id="client-list"`,
 		`loadClients()`,
@@ -101,6 +116,11 @@ func TestPanelWiresClientManagement(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel client management missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`id="client-form"`, `document.getElementById('client-form')`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("panel should move client creation into modal and remove old inline form contract, found %q", forbidden)
 		}
 	}
 }
@@ -427,7 +447,10 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`await populateInboundSelect(selectedInboundId);`,
 		`await loadClients();`,
 		`await loadSubSummary();`,
-		`const formEl = event.currentTarget;`,
+		`async function saveCreateInbound()`,
+		`async function saveCreateClient()`,
+		`const formEl = document.getElementById('create-inbound-form');`,
+		`const formEl = document.getElementById('create-client-form');`,
 		`const selectedInboundId = sel.value;`,
 	} {
 		if !strings.Contains(body, want) {
@@ -566,7 +589,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`class="field-group"`,
 		`class="field-label"`,
 		`class="field-help"`,
-		`class="form-actions"`,
+		`class="form-actions modal-actions"`,
 		`for="inbound-remark"`,
 		`id="inbound-remark"`,
 		`for="client-email"`,

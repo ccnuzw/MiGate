@@ -791,21 +791,23 @@ const panelHTML = `<!doctype html>
     @keyframes toastIn { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:translateX(0); } }
     @keyframes toastOut { from { opacity:1; } to { opacity:0; transform:translateX(40px); } }
     #confirm-overlay.hidden { display:none; }
+    #create-inbound-overlay.hidden { display:none; }
+    #create-client-overlay.hidden { display:none; }
     #edit-inbound-overlay.hidden { display:none; }
     #edit-client-overlay.hidden { display:none; }
-    #confirm-overlay, #edit-inbound-overlay, #edit-client-overlay { position:fixed; inset:0; z-index:10000; background:rgba(23,23,23,.12); backdrop-filter: blur(6px); display:flex; align-items:center; justify-content:center; animation:fadeIn .2s; }
-    #confirm-dialog, #edit-inbound-dialog, #edit-client-dialog { background:var(--surface); box-shadow:var(--shadow-md); border-radius:var(--radius-xl); padding:var(--space-6); min-width:360px; max-width:520px; max-height:80vh; overflow-y:auto; }
+    #confirm-overlay, #create-inbound-overlay, #create-client-overlay, #edit-inbound-overlay, #edit-client-overlay { position:fixed; inset:0; z-index:10000; background:rgba(23,23,23,.12); backdrop-filter: blur(6px); display:flex; align-items:center; justify-content:center; animation:fadeIn .2s; }
+    #confirm-dialog, #create-inbound-dialog, #create-client-dialog, #edit-inbound-dialog, #edit-client-dialog { background:var(--surface); box-shadow:var(--shadow-md); border-radius:var(--radius-xl); padding:var(--space-6); min-width:360px; max-width:520px; max-height:80vh; overflow-y:auto; }
     #confirm-dialog p { margin:0 0 20px; font-size:15px; line-height:1.6; color:var(--fg); }
     #confirm-dialog .actions { display:flex; gap:10px; justify-content:flex-end; }
     .modal-title { margin:0 0 var(--space-4); font-size:var(--text-lg); line-height:1.3; font-weight:600; letter-spacing:-0.2px; color:var(--fg); }
     .modal-form { margin:0; grid-template-columns:repeat(2,minmax(0,1fr)); }
-    #edit-inbound-form.modal-form, #edit-client-form.modal-form { gap:var(--space-4); }
+    #create-inbound-form.modal-form, #create-client-form.modal-form, #edit-inbound-form.modal-form, #edit-client-form.modal-form { gap:var(--space-4); }
     .modal-actions { margin-top:0; }
     .advanced-fieldset { padding:var(--space-4); border-radius:var(--radius-lg); background:rgba(250,250,250,.72); box-shadow:var(--shadow-sm), inset 0 0 0 1px var(--line); }
     .advanced-fieldset-title { color:var(--fg); font-size:var(--text-sm); font-weight:600; letter-spacing:-0.12px; }
     .advanced-fieldset-copy { color:var(--muted); font-size:var(--text-xs); line-height:1.55; }
-    #ei-dynamic-fields { display:contents; }
-    #edit-inbound-dialog input, #edit-inbound-dialog select, #edit-client-dialog input, #edit-client-dialog select { width:100%; box-sizing:border-box; margin-bottom:0; }
+    #dynamic-fields, #ei-dynamic-fields { display:contents; }
+    #create-inbound-dialog input, #create-inbound-dialog select, #create-client-dialog input, #create-client-dialog select, #edit-inbound-dialog input, #edit-inbound-dialog select, #edit-client-dialog input, #edit-client-dialog select { width:100%; box-sizing:border-box; margin-bottom:0; }
     @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
     @media (max-width: 900px) { .app-shell { grid-template-columns:1fr; } .sidebar { border-right:0; border-bottom:1px solid var(--line-strong); } .grid,.overview-grid,.protocols { grid-template-columns:1fr 1fr; } .overview-insights { grid-template-columns:1fr; } form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width: 560px) { .grid,.overview-grid,.protocols, form { grid-template-columns:1fr; } main { padding:18px; } }
@@ -822,6 +824,136 @@ const panelHTML = `<!doctype html>
       </div>
     </div>
   </div>
+
+  <!-- Create Inbound Modal -->
+  <div id="create-inbound-overlay" class="hidden" onclick="if(event.target===this)closeCreateInbound()">
+    <div id="create-inbound-dialog">
+      <h3 class="modal-title">新增入站</h3>
+      <form id="create-inbound-form" class="form-grid modal-form" onsubmit="return false">
+        <div class="field-group">
+          <label class="field-label" for="inbound-remark">入站备注</label>
+          <input id="inbound-remark" name="remark" placeholder="例如 主入口" required>
+          <p class="field-help">用于列表识别，不会写入客户端密钥。</p>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="inbound-protocol">协议</label>
+          <select id="inbound-protocol" name="protocol">
+            <option value="vless">VLESS</option>
+            <option value="vmess">VMess</option>
+            <option value="trojan">Trojan</option>
+            <option value="shadowsocks">Shadowsocks</option>
+          </select>
+          <p class="field-help">选择 Xray 入站协议。</p>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="inbound-port">监听端口</label>
+          <input id="inbound-port" name="port" type="number" min="1" max="65535" placeholder="例如 443" required>
+          <p class="field-help">建议使用未被占用的公网端口。</p>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="inbound-network">传输方式</label>
+          <select name="network" id="inbound-network">
+            <option value="tcp">TCP</option>
+            <option value="ws">WebSocket</option>
+            <option value="kcp">mKCP</option>
+            <option value="grpc">gRPC</option>
+            <option value="quic">QUIC</option>
+            <option value="h2">HTTP/2</option>
+            <option value="xhttp">XHTTP</option>
+          </select>
+          <p class="field-help">切换后会显示对应的高级字段。</p>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="inbound-security">安全层</label>
+          <select id="inbound-security" name="security">
+            <option value="none">none</option>
+            <option value="tls">tls</option>
+            <option value="reality">reality</option>
+          </select>
+          <p class="field-help">REALITY/TLS 会展开证书或伪装目标字段。</p>
+        </div>
+        <div id="dynamic-fields">
+          <div id="ws-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">WebSocket 设置</div>
+            <div class="advanced-fieldset-copy">适合 CDN、反向代理或路径分流场景。</div>
+            <input name="ws_path" placeholder="WS Path (默认 /)">
+            <input name="ws_host" placeholder="WS Host (可选)">
+            <p class="field-help">路径和 Host 用于 CDN 或反代场景。</p>
+          </div>
+          <div id="grpc-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">gRPC 设置</div>
+            <div class="advanced-fieldset-copy">用于 gRPC 传输的服务名，客户端需保持一致。</div>
+            <input name="grpc_service_name" value="migate" placeholder="gRPC ServiceName">
+          </div>
+          <div id="xhttp-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">XHTTP 设置</div>
+            <div class="advanced-fieldset-copy">配置 XHTTP 路径与上传模式。</div>
+            <input name="xhttp_path" value="/" placeholder="XHTTP Path (默认 /)">
+            <select name="xhttp_mode">
+              <option value="stream-one">stream-one</option>
+              <option value="packet-up">packet-up</option>
+              <option value="stream-up">stream-up</option>
+            </select>
+          </div>
+          <div id="reality-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">REALITY 设置</div>
+            <div class="advanced-fieldset-copy">填写伪装目标、SNI 与短 ID，避免与客户端参数不一致。</div>
+            <input name="reality_dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
+            <input name="reality_server_names" value="www.cloudflare.com" placeholder="ServerNames (逗号分隔)">
+            <input name="reality_short_id" placeholder="ShortId (可选)">
+          </div>
+          <div id="ss-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">Shadowsocks 设置</div>
+            <div class="advanced-fieldset-copy">选择客户端支持的加密方法。</div>
+            <select name="ss_method">
+              <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
+              <option value="aes-256-gcm">aes-256-gcm</option>
+              <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
+            </select>
+          </div>
+          <div id="tls-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">TLS 设置</div>
+            <div class="advanced-fieldset-copy">填写证书和私钥路径，应用前会交给 Xray 校验。</div>
+            <input name="tls_cert_file" placeholder="TLS 证书路径 (如 /etc/.../fullchain.pem)">
+            <input name="tls_key_file" placeholder="TLS 密钥路径 (如 /etc/.../privkey.key)">
+          </div>
+        </div>
+        <div class="form-actions modal-actions">
+          <button type="button" class="btn-cancel" onclick="closeCreateInbound()">取消</button>
+          <button type="submit" class="btn-confirm" style="background:var(--accent)" onclick="saveCreateInbound()">保存入站</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Create Client Modal -->
+  <div id="create-client-overlay" class="hidden" onclick="if(event.target===this)closeCreateClient()">
+    <div id="create-client-dialog">
+      <h3 class="modal-title">创建客户端</h3>
+      <form id="create-client-form" class="form-grid modal-form" onsubmit="return false">
+        <div class="field-group span-2">
+          <label class="field-label" for="client-email">客户端标识</label>
+          <input id="client-email" name="email" placeholder="例如 user01" required>
+          <p class="field-help">用于区分设备或用户，也会出现在分享链接备注中。</p>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="client-traffic-limit">流量限额</label>
+          <input id="client-traffic-limit" name="traffic_limit" type="number" min="0" placeholder="0 = 不限">
+          <p class="field-help">单位为字节；留空或 0 表示不限流量。</p>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="client-expiry">到期时间</label>
+          <input name="expiry_at" type="datetime-local" id="client-expiry" placeholder="到期时间">
+          <p class="field-help">到期后订阅会返回明确的过期提示。</p>
+        </div>
+        <div class="form-actions modal-actions">
+          <button type="button" class="btn-cancel" onclick="closeCreateClient()">取消</button>
+          <button type="submit" class="btn-confirm" style="background:var(--accent)" onclick="saveCreateClient()">创建客户端</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
 
   <!-- Edit Inbound Modal -->
   <div id="edit-inbound-overlay" class="hidden" onclick="if(event.target===this)closeEditInbound()">
@@ -1012,92 +1144,10 @@ const panelHTML = `<!doctype html>
           <div class="protocol"><strong>Shadowsocks</strong><span>轻量转发协议</span></div>
         </div>
         <div class="actions">
-          <button onclick="document.getElementById('inbound-form').scrollIntoView({behavior:'smooth'});document.getElementById('inbound-form').querySelector('[name=remark]').focus()">新增入站</button>
+          <button onclick="openCreateInbound()">新增入站</button>
           <button class="secondary" onclick="navigateTo('xray');setTimeout(previewXrayConfig,200)">生成 Xray 配置</button>
           <button class="secondary" onclick="navigateTo('subscriptions')">查看订阅</button>
         </div>
-        <form id="inbound-form" class="form-grid">
-          <div class="field-group">
-            <label class="field-label" for="inbound-remark">入站备注</label>
-            <input id="inbound-remark" name="remark" placeholder="例如 主入口" required>
-            <p class="field-help">用于列表识别，不会写入客户端密钥。</p>
-          </div>
-          <div class="field-group">
-            <label class="field-label" for="inbound-protocol">协议</label>
-            <select id="inbound-protocol" name="protocol">
-              <option value="vless">VLESS</option>
-              <option value="vmess">VMess</option>
-              <option value="trojan">Trojan</option>
-              <option value="shadowsocks">Shadowsocks</option>
-            </select>
-            <p class="field-help">选择 Xray 入站协议。</p>
-          </div>
-          <div class="field-group">
-            <label class="field-label" for="inbound-port">监听端口</label>
-            <input id="inbound-port" name="port" type="number" min="1" max="65535" placeholder="例如 443" required>
-            <p class="field-help">建议使用未被占用的公网端口。</p>
-          </div>
-          <div class="field-group">
-            <label class="field-label" for="inbound-network">传输方式</label>
-            <select name="network" id="inbound-network">
-              <option value="tcp">TCP</option>
-              <option value="ws">WebSocket</option>
-              <option value="kcp">mKCP</option>
-              <option value="grpc">gRPC</option>
-              <option value="quic">QUIC</option>
-              <option value="h2">HTTP/2</option>
-              <option value="xhttp">XHTTP</option>
-            </select>
-            <p class="field-help">切换后会显示对应的高级字段。</p>
-          </div>
-          <div class="field-group">
-            <label class="field-label" for="inbound-security">安全层</label>
-            <select id="inbound-security" name="security">
-              <option value="none">none</option>
-              <option value="tls">tls</option>
-              <option value="reality">reality</option>
-            </select>
-            <p class="field-help">REALITY/TLS 会展开证书或伪装目标字段。</p>
-          </div>
-          <div id="dynamic-fields" class="field-group span-2">
-            <label class="field-label">高级传输字段</label>
-            <p class="field-help">仅在对应 network/security/protocol 下生效，留空则使用安全默认值。</p>
-            <div id="ws-settings" class="hidden">
-              <input name="ws_path" placeholder="WS Path (默认 /)">
-              <input name="ws_host" placeholder="WS Host (可选)">
-            </div>
-            <div id="grpc-settings" class="hidden">
-              <input name="grpc_service_name" value="migate" placeholder="gRPC ServiceName">
-            </div>
-            <div id="xhttp-settings" class="hidden">
-              <input name="xhttp_path" value="/" placeholder="XHTTP Path (默认 /)">
-              <select name="xhttp_mode">
-                <option value="stream-one">stream-one</option>
-                <option value="packet-up">packet-up</option>
-                <option value="stream-up">stream-up</option>
-              </select>
-            </div>
-            <div id="reality-settings" class="hidden">
-              <input name="reality_dest" value="www.cloudflare.com:443" placeholder="目标 (dest)">
-              <input name="reality_server_names" value="www.cloudflare.com" placeholder="ServerNames (逗号分隔)">
-              <input name="reality_short_id" placeholder="ShortId (可选)">
-            </div>
-            <div id="ss-settings" class="hidden">
-              <select name="ss_method">
-                <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
-                <option value="aes-256-gcm">aes-256-gcm</option>
-                <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
-              </select>
-            </div>
-            <div id="tls-settings" class="hidden">
-              <input name="tls_cert_file" placeholder="TLS 证书路径 (如 /etc/.../fullchain.pem)">
-              <input name="tls_key_file" placeholder="TLS 密钥路径 (如 /etc/.../privkey.key)">
-            </div>
-          </div>
-          <div class="form-actions">
-            <button type="submit">保存入站</button>
-          </div>
-        </form>
         <div id="inbound-list" class="list muted">正在加载入站...</div>
       </section>
       <section id="clients" class="card panel">
@@ -1107,27 +1157,8 @@ const panelHTML = `<!doctype html>
           <select id="client-inbound-select" onchange="loadClients()">
             <option value="">--选择入站--</option>
           </select>
+          <button onclick="openCreateClient()">创建客户端</button>
         </div>
-        <form id="client-form" class="form-grid">
-          <div class="field-group">
-            <label class="field-label" for="client-email">客户端标识</label>
-            <input id="client-email" name="email" placeholder="例如 user01" required>
-            <p class="field-help">用于区分设备或用户，也会出现在分享链接备注中。</p>
-          </div>
-          <div class="field-group">
-            <label class="field-label" for="client-traffic-limit">流量限额</label>
-            <input id="client-traffic-limit" name="traffic_limit" type="number" min="0" placeholder="0 = 不限">
-            <p class="field-help">单位为字节；留空或 0 表示不限流量。</p>
-          </div>
-          <div class="field-group">
-            <label class="field-label" for="client-expiry">到期时间</label>
-            <input name="expiry_at" type="datetime-local" id="client-expiry" placeholder="到期时间">
-            <p class="field-help">到期后订阅会返回明确的过期提示。</p>
-          </div>
-          <div class="form-actions">
-            <button type="submit">创建客户端</button>
-          </div>
-        </form>
         <div id="client-list" class="list muted">选择一个入站以查看客户端...</div>
       </section>
       <section id="subscriptions" class="card panel">
@@ -1240,7 +1271,7 @@ const panelHTML = `<!doctype html>
       if (inbounds.length === 0) {
         inboundList.className = 'list';
         inboundList.innerHTML = renderEmptyState('暂无入站', '先创建一个 VLESS / VMess / Trojan / Shadowsocks 节点；MiGate 会自动生成客户端与 Xray 配置。', [
-          {label:'创建入站', onclick:"document.getElementById('inbound-form').scrollIntoView({behavior:'smooth'});document.getElementById('inbound-remark').focus()"},
+          {label:'创建入站', onclick:"openCreateInbound()"},
           {label:'查看 Xray', onclick:"navigateTo('xray')", secondary:true}
         ]);
         return;
@@ -1397,7 +1428,7 @@ const panelHTML = `<!doctype html>
       if (clients.length === 0) {
         list.className = 'list';
         list.innerHTML = renderEmptyState('暂无客户端', '在当前入站下创建第一个客户端后，即可复制订阅或分享链接。', [
-          {label:'创建客户端', onclick:"document.getElementById('client-email').focus()"}
+          {label:'创建客户端', onclick:"openCreateClient()"}
         ]);
         return;
       }
@@ -1706,17 +1737,32 @@ const panelHTML = `<!doctype html>
       renderInbounds(inboundData.inbounds || []);
     }
 
-    document.getElementById('client-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const formEl = event.currentTarget;
+    function openCreateClient() {
       const sel = document.getElementById('client-inbound-select');
       if (!sel.value) {
         showToast('请先选择一个入站', 'error');
         return;
       }
+      const formEl = document.getElementById('create-client-form');
+      formEl.reset();
+      document.getElementById('create-client-overlay').classList.remove('hidden');
+      document.getElementById('client-email').focus();
+    }
+    function closeCreateClient() {
+      document.getElementById('create-client-overlay').classList.add('hidden');
+    }
+    async function saveCreateClient() {
+      const formEl = document.getElementById('create-client-form');
+      const sel = document.getElementById('client-inbound-select');
+      if (!sel.value) {
+        showToast('请先选择一个入站', 'error');
+        closeCreateClient();
+        return;
+      }
       const selectedInboundId = sel.value;
       const form = new FormData(formEl);
       const email = form.get('email');
+      if (!email) { showToast('请输入客户端标识', 'error'); return; }
       const tl = parseInt(form.get('traffic_limit')) || 0;
       const eaStr = document.getElementById('client-expiry').value;
       let ea = 0;
@@ -1731,9 +1777,10 @@ const panelHTML = `<!doctype html>
         return;
       }
       formEl.reset();
+      closeCreateClient();
       showToast('客户端创建成功', 'success');
       await refreshPanelData(selectedInboundId);
-    });
+    }
 
     populateInboundSelect();
 
@@ -1767,9 +1814,9 @@ const panelHTML = `<!doctype html>
 
     // === Dynamic transport/security fields ===
     function updateDynamicFields() {
-      const proto = document.querySelector('[name=protocol]').value;
-      const net = document.querySelector('[name=network]').value;
-      const sec = document.querySelector('[name=security]').value;
+      const proto = document.getElementById('inbound-protocol').value;
+      const net = document.getElementById('inbound-network').value;
+      const sec = document.getElementById('inbound-security').value;
       document.getElementById('ws-settings').classList.toggle('hidden', net !== 'ws' && net !== 'h2');
       document.getElementById('grpc-settings').classList.toggle('hidden', net !== 'grpc');
       document.getElementById('xhttp-settings').classList.toggle('hidden', net !== 'xhttp');
@@ -1778,28 +1825,39 @@ const panelHTML = `<!doctype html>
       document.getElementById('tls-settings').classList.toggle('hidden', sec !== 'tls');
     }
 
-    document.querySelector('[name=protocol]').addEventListener('change', updateDynamicFields);
-    document.querySelector('[name=network]').addEventListener('change', updateDynamicFields);
-    document.querySelector('[name=security]').addEventListener('change', updateDynamicFields);
-    updateDynamicFields();
-
-    // Replace inbound creation alert with toast
-    const origSubmit = document.getElementById('inbound-form').onsubmit;
-    document.getElementById('inbound-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const formEl = event.currentTarget;
+    function openCreateInbound() {
+      const formEl = document.getElementById('create-inbound-form');
+      formEl.reset();
+      document.getElementById('inbound-network').value = 'tcp';
+      document.getElementById('inbound-security').value = 'none';
+      updateDynamicFields();
+      document.getElementById('create-inbound-overlay').classList.remove('hidden');
+      document.getElementById('inbound-remark').focus();
+    }
+    function closeCreateInbound() {
+      document.getElementById('create-inbound-overlay').classList.add('hidden');
+    }
+    async function saveCreateInbound() {
+      const formEl = document.getElementById('create-inbound-form');
       const form = new FormData(formEl);
       const payload = Object.fromEntries(form.entries());
       payload.port = Number(payload.port);
+      if (!payload.remark || !payload.port) { showToast('请填写备注和端口', 'error'); return; }
       const response = await fetch('/api/inbounds', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
       if (!response.ok) {
         showToast('创建入站失败', 'error');
         return;
       }
       formEl.reset();
+      closeCreateInbound();
       showToast('入站创建成功', 'success');
       await refreshPanelData();
-    });
+    }
+
+    document.getElementById('inbound-protocol').addEventListener('change', updateDynamicFields);
+    document.getElementById('inbound-network').addEventListener('change', updateDynamicFields);
+    document.getElementById('inbound-security').addEventListener('change', updateDynamicFields);
+    updateDynamicFields();
 
     // === Xray status & apply ===
     async function fetchXrayStatus() {
