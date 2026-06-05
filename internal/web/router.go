@@ -895,6 +895,7 @@ const panelHTML = `<!doctype html>
     button.secondary, .btn-cancel { background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); }
     button.danger { background:var(--danger); color:#fff; }
     .btn-confirm { background:var(--danger); color:#fff; }
+    .btn-modal-primary { background:var(--accent); color:var(--bg); }
     form { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:var(--space-3); margin:var(--space-4) 0; }
     .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-4); margin:18px 0; }
     .field-group { display:grid; gap:var(--space-2); min-width:0; }
@@ -1105,7 +1106,7 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="form-actions modal-actions">
           <button type="button" class="btn-cancel" onclick="closeCreateInbound()">取消</button>
-          <button type="submit" class="btn-confirm" style="background:var(--accent)" onclick="saveCreateInbound()">保存入站</button>
+          <button type="submit" class="btn-modal-primary" onclick="saveCreateInbound()">保存入站</button>
         </div>
       </form>
     </div>
@@ -1134,7 +1135,7 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="form-actions modal-actions">
           <button type="button" class="btn-cancel" onclick="closeCreateClient()">取消</button>
-          <button type="submit" class="btn-confirm" style="background:var(--accent)" onclick="saveCreateClient()">创建客户端</button>
+          <button type="submit" class="btn-modal-primary" onclick="saveCreateClient()">创建客户端</button>
         </div>
       </form>
     </div>
@@ -1248,7 +1249,7 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="form-actions modal-actions">
           <button type="button" class="btn-cancel" onclick="closeEditInbound()">取消</button>
-          <button type="submit" class="btn-confirm" style="background:var(--accent)" onclick="saveEditInbound()">保存</button>
+          <button type="submit" class="btn-modal-primary" onclick="saveEditInbound()">保存</button>
         </div>
       </form>
     </div>
@@ -1276,7 +1277,7 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="form-actions modal-actions">
           <button type="button" class="btn-cancel" onclick="closeEditClient()">取消</button>
-          <button type="submit" class="btn-confirm" style="background:var(--accent)" onclick="saveEditClient()">保存</button>
+          <button type="submit" class="btn-modal-primary" onclick="saveEditClient()">保存</button>
         </div>
       </form>
     </div>
@@ -1290,7 +1291,7 @@ const panelHTML = `<!doctype html>
       <nav>
         <a class="active" href="/">概览</a>
         <a href="/#inbounds">入站</a>
-        <a href="/#subscriptions">订阅</a>
+        <a href="/#outbound">出站</a>
         <a href="/#xray">Xray</a>
         <a href="/#settings">设置</a>
       </nav>
@@ -1341,20 +1342,16 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="actions">
           <button onclick="openCreateInbound()">新增入站</button>
-          <button class="secondary" onclick="navigateTo('subscriptions')">查看订阅</button>
+          <button class="secondary" onclick="navigateTo('outbound')">出站</button>
         </div>
         <div id="inbound-list" class="list muted">正在加载入站...</div>
       </section>
-      <section id="subscriptions" class="card panel">
-        <h2 class="section-title">订阅管理</h2>
-        <p class="muted" style="margin-bottom:16px">每个客户端自动生成订阅链接和分享链接，可在客户端列表中查看和复制。</p>
-        <div id="subscription-info" style="background:rgba(148,163,184,.06); border-radius:16px; padding:20px; line-height:2">
-          <div><strong>订阅格式</strong>：<code>/sub/{uuid}</code> — 返回对应协议的分享链接</div>
-          <div><strong>支持协议</strong>：VLESS / VMess / Trojan / Shadowsocks</div>
-          <div><strong>使用方式</strong>：将订阅链接填入 V2Ray / Clash Meta / Nekoray 等客户端</div>
-        </div>
-        <div class="list" style="margin-top:16px">
-          <div id="sub-inbound-summary" class="empty-state"><div class="empty-state-title">正在加载订阅概况</div><div class="empty-state-copy">正在读取入站与客户端数据，用于生成订阅入口概览。</div></div>
+      <section id="outbound" class="card panel">
+        <h2 class="section-title">出站管理</h2>
+        <p class="muted" style="margin-bottom:16px">配置链式代理转发（SOCKS5 / HTTP），实现流量经外部代理链路中转。功能开发中，敬请期待。</p>
+        <div class="empty-state">
+          <div class="empty-state-title">功能开发中</div>
+          <div class="empty-state-copy">出站转发（链式代理）即将上线，届时可在此配置 SOCKS5 / HTTP 出站代理链，将流量通过上游代理中转。</div>
         </div>
       </section>
       <section id="xray" class="card panel">
@@ -1634,7 +1631,7 @@ const panelHTML = `<!doctype html>
     }
 
     function navigateTo(sectionId) {
-      const validSections = ['overview', 'inbounds', 'subscriptions', 'xray', 'settings'];
+      const validSections = ['overview', 'inbounds', 'outbound', 'xray', 'settings'];
       if (!validSections.includes(sectionId)) sectionId = 'overview';
       document.querySelectorAll('main > section').forEach((el) => {
         const display = el.classList.contains('overview-grid') ? 'grid' : 'block';
@@ -2158,32 +2155,7 @@ const panelHTML = `<!doctype html>
       }
     }
 
-    // === Subscription summary ===
-    async function loadSubSummary() {
-      try {
-        const res = await fetch('/api/inbounds');
-        const data = await res.json();
-        const inbounds = data.inbounds || [];
-        const host = window.location.host;
-        const el = document.getElementById('sub-inbound-summary');
-        if (inbounds.length === 0) {
-          el.innerHTML = renderEmptyState('正在加载订阅概况', '还没有可生成订阅的入站。请先创建入站和客户端，再回到这里查看订阅概览。', [
-            {label:'去创建入站', onclick:"navigateTo('inbounds')"}
-          ]);
-          return;
-        }
-        el.innerHTML = inbounds.map(inb => {
-          const count = (inb.clients || []).length;
-          return '<div style="background:rgba(148,163,184,.06); border-radius:12px; padding:14px; margin-bottom:10px">' +
-            '<strong>' + escapeHtml(inb.remark || inb.protocol) + '</strong> ' +
-            '<span class="muted">' + inb.protocol.toUpperCase() + ' / ' + (inb.port||'') + '</span>' +
-            ' <span class="muted">(' + count + ' 个客户端)</span>' +
-            '</div>';
-        }).join('');
-      } catch (e) {
-        document.getElementById('sub-inbound-summary').textContent = '加载失败';
-      }
-    }
+
 
     // === Xray config preview ===
     let _configVisible = false;
@@ -2266,7 +2238,6 @@ const panelHTML = `<!doctype html>
     }
 
     fetchXrayStatus();
-    loadSubSummary();
     loadSettings();
   </script>
 </body>

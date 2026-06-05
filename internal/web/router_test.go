@@ -21,7 +21,7 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
 	}
 	body := page.Body.String()
-	for _, want := range []string{"MiGate", "概览", "入站", "客户端", "订阅", "Xray", "VLESS", "VMess", "Trojan", "Shadowsocks"} {
+	for _, want := range []string{"MiGate", "概览", "入站", "客户端", "出站", "Xray", "VLESS", "VMess", "Trojan", "Shadowsocks"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing %q: %s", want, body)
 		}
@@ -554,7 +554,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Nav links work with section switching
-	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#subscriptions"`, `href="/#xray"`, `href="/#settings"`} {
+	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#outbound"`, `href="/#xray"`, `href="/#settings"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing nav link %q", want)
 		}
@@ -574,15 +574,15 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		t.Fatalf("panel CSS must use #confirm-overlay.hidden (not .hidden) to override ID selector display:flex")
 	}
 
-	// New sections: subscriptions and xray
-	for _, want := range []string{`id="subscriptions"`, `id="xray"`, `id="sub-inbound-summary"`, `id="xray-status"`} {
+	// New sections: outbound and xray
+	for _, want := range []string{`id="outbound"`, `id="xray"`,  `id="xray-status"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing section/element %q", want)
 		}
 	}
 
-	// Xray and subscription JS functions
-	for _, want := range []string{"fetchXrayStatus", "applyXrayConfig", "loadSubSummary"} {
+	// Xray JS functions
+	for _, want := range []string{"fetchXrayStatus", "applyXrayConfig"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing JS function %q", want)
 		}
@@ -686,7 +686,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`function renderEmptyState`,
 		`renderEmptyState('暂无入站'`,
 		`renderEmptyState('暂无客户端'`,
-		`renderEmptyState('正在加载订阅概况'`,
+		`功能开发中`,
 		`class="empty-state"`,
 		`class="empty-state-title"`,
 		`class="empty-state-copy"`,
