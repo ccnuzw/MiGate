@@ -45,6 +45,7 @@ type XrayApplyResult struct {
 	Status           string   `json:"status"`
 	Service          string   `json:"service"`
 	CommandsExecuted []string `json:"commands_executed"`
+	ErrorOutput      string   `json:"error_output,omitempty"`
 }
 
 type defaultXrayController struct{}
@@ -114,6 +115,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
+	mux.HandleFunc("/api/xray/logs", xrayLogsHandler())
 	mux.HandleFunc("/api/settings", settingsHandler(&cfg))
 	mux.HandleFunc("/api/restart", restartHandler(cfg.restartCmd))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
@@ -549,6 +551,31 @@ func xrayApplyHandler(controller XrayController) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(controller.Apply(r.Context()))
+	}
+}
+
+func xrayLogsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		lines := r.URL.Query().Get("lines")
+		if lines == "" {
+			lines = "50"
+		}
+		out, err := exec.Command("journalctl", "-u", "xray", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		if err != nil {
+			// Fallback: try reading from syslog
+			out, err = exec.Command("tail", "-n", lines, "/var/log/syslog").CombinedOutput()
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"logs": "无法读取 Xray 日志：journalctl 和 syslog 均不可用。"})
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"logs": string(out)})
 	}
 }
 
@@ -2175,8 +2202,14 @@ const panelHTML = `<!doctype html>
         const res = await fetch('/api/xray/apply', {method: 'POST'});
         const data = await res.json();
         const commands = data.commands_executed && data.commands_executed.length ? '\n' + data.commands_executed.join('\n') : '';
-        document.getElementById('xray-result').innerHTML = renderNotice('应用完成', '状态：' + (data.status || '完成') + commands, 'success');
-        showToast('配置已应用', 'success');
+        if (data.status && data.status.startsWith('failed')) {
+          const errDetail = data.error_output ? '\n\n' + data.error_output : '';
+          document.getElementById('xray-result').innerHTML = renderNotice('应用失败', '状态：' + data.status + errDetail + commands, 'error');
+          showToast('应用配置失败', 'error');
+        } else {
+          document.getElementById('xray-result').innerHTML = renderNotice('应用完成', '状态：' + (data.status || '完成') + commands, 'success');
+          showToast('配置已应用', 'success');
+        }
         await fetchXrayStatus();
       } catch (e) {
         document.getElementById('xray-result').innerHTML = renderNotice('应用失败', '请检查 Xray 配置目录、xray 命令和 systemd 服务状态。', 'error');

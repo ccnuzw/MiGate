@@ -110,9 +110,10 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	executed = append(executed, fmt.Sprintf("xray run -test -c %s", configPath))
 	if err != nil {
 		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: validation: %s", validateOut),
+			Status:           "failed: validation",
 			Service:          "xray",
 			CommandsExecuted: executed,
+			ErrorOutput:      validateOut,
 		}
 	}
 
@@ -121,9 +122,10 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	executed = append(executed, "systemctl restart xray")
 	if err != nil {
 		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: restart: %s", restartOut),
+			Status:           "failed: restart",
 			Service:          "xray",
 			CommandsExecuted: executed,
+			ErrorOutput:      restartOut,
 		}
 	}
 
