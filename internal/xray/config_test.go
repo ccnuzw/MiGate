@@ -35,13 +35,24 @@ func TestBuildConfigIncludesSupportedProtocolInboundsAndFreedomOutbound(t *testi
 		t.Fatalf("marshal config: %v", err)
 	}
 	text := string(encoded)
-	for _, want := range []string{"vless", "vmess", "trojan", "shadowsocks", "a@example.com", "b@example.com", "c@example.com", "d@example.com", "trojan-reality@test.com", "trojan-reality"} {
+	for _, want := range []string{"vless", "vmess", "trojan", "shadowsocks", "a@example.com", "b@example.com", "c@example.com", "trojan-reality@test.com", "trojan-reality"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q: %s", want, text)
 		}
 	}
 	if strings.Contains(text, "disabled@example.com") {
 		t.Fatalf("disabled inbound leaked into xray config: %s", text)
+	}
+	// Shadowsocks should use single-user mode (method + password, no clients array)
+	if strings.Contains(text, "\"clients\"") && strings.Contains(text, "\"shadowsocks\"") {
+		// Check that the clients block is NOT inside the SS inbound
+		// Split by inbound tags and check the SS section
+		if strings.Index(text, "inbound-4") < strings.Index(text, "inbound-5") {
+			ssSection := text[strings.Index(text, "inbound-4"):strings.Index(text, "inbound-5")]
+			if strings.Contains(ssSection, "\"clients\"") {
+				t.Fatalf("Shadowsocks config should not contain clients array: %s", ssSection)
+			}
+		}
 	}
 	// Verify Trojan+REALITY has realitySettings with privateKey and shortIds
 	if !strings.Contains(text, "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg") {
