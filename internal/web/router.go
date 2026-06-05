@@ -2483,6 +2483,23 @@ const panelHTML = `<!doctype html>
     }
 
     // === Dynamic transport/security fields ===
+    const protocolPresets = {
+      vless: {network: 'tcp', security: 'reality'},
+      vmess: {network: 'ws', security: 'tls'},
+      trojan: {network: 'tcp', security: 'tls'},
+      shadowsocks: {network: 'tcp', security: 'none'},
+      hysteria2: {network: 'quic', security: 'tls'},
+    };
+    function applyProtocolPreset(proto) {
+      const preset = protocolPresets[proto];
+      if (!preset) return;
+      document.getElementById('inbound-network').value = preset.network;
+      document.getElementById('inbound-security').value = preset.security;
+      const inboundCredential = document.getElementById('inbound-uuid');
+      const initCredential = document.getElementById('init-client-uuid');
+      if (inboundCredential) inboundCredential.value = '';
+      if (initCredential) initCredential.value = '';
+    }
     function updateDynamicFields() {
       const proto = document.getElementById('inbound-protocol').value;
       const net = document.getElementById('inbound-network').value;
@@ -2501,8 +2518,7 @@ const panelHTML = `<!doctype html>
     function openCreateInbound() {
       const formEl = document.getElementById('create-inbound-form');
       formEl.reset();
-      document.getElementById('inbound-network').value = 'tcp';
-      document.getElementById('inbound-security').value = 'none';
+      applyProtocolPreset(document.getElementById('inbound-protocol').value);
       document.getElementById('init-client-fields').classList.remove('hidden');
       document.querySelector('#create-inbound-dialog .chevron').textContent = '\u25BC';
       updateDynamicFields();
@@ -2645,7 +2661,7 @@ const panelHTML = `<!doctype html>
       await loadInbounds();
     }
 
-    document.getElementById('inbound-protocol').addEventListener('change', updateDynamicFields);
+    document.getElementById('inbound-protocol').addEventListener('change', () => { applyProtocolPreset(document.getElementById('inbound-protocol').value); updateDynamicFields(); });
     document.getElementById('inbound-network').addEventListener('change', updateDynamicFields);
     document.getElementById('inbound-security').addEventListener('change', updateDynamicFields);
     updateDynamicFields();
