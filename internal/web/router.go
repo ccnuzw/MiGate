@@ -1369,6 +1369,7 @@ const panelHTML = `<!doctype html>
               <option value="aes-256-gcm">aes-256-gcm</option>
               <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
             </select><button type="button" class="btn-mini" onclick="regenerateField('inbound-ss-method')">重新生成</button></div>
+          </div>
           <div id="hy2-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">Hysteria2 设置</div>
             <div class="advanced-fieldset-copy">Hysteria2 使用 QUIC 传输，以下为可选参数。</div>
@@ -1390,7 +1391,7 @@ const panelHTML = `<!doctype html>
             <span class="chevron">▶</span> 同时添加首个客户端
           </div>
           <div id="init-client-fields" class="hidden" style="margin-top:8px;display:grid;gap:10px">
-            <div class="inline-field-tools" style="grid-column:1/-1"><input id="init-client-email" placeholder="客户端邮箱 (必填，如 sam@example.com)"><button type="button" class="btn-mini" onclick="regenerateField('init-client-email')">重新生成</button><button type="button" class="btn-mini" onclick="regenerateField('init-client-email')">重新生成</button></div>
+            <div class="inline-field-tools" style="grid-column:1/-1"><input id="init-client-email" placeholder="客户端邮箱 (必填，如 sam@example.com)"><button type="button" class="btn-mini" onclick="regenerateField('init-client-email')">重新生成</button></div>
             <input id="init-client-traffic" type="number" min="0" placeholder="流量上限，单位字节；0=无限" value="0">
             <input id="init-client-expiry" type="datetime-local">
             <p class="field-help" style="grid-column:1/-1">创建入站后自动生成第一个客户端。流量上限设置后可在概览页查看使用比例。</p>
