@@ -56,21 +56,23 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	}
 }
 
-func TestReadmeDeclaresLiteScopeAndExplicitlyExcludesLegacyHeavyFeatures(t *testing.T) {
+func TestReadmeIncludesSimpleInstallAndUsage(t *testing.T) {
 	readme := read(t, "README.md")
-	for _, want := range []string{"Go single-binary", "lightweight-panel-style", "VLESS", "VMess", "Trojan", "Shadowsocks"} {
+	for _, want := range []string{
+		"bash <(curl -Ls https://raw.githubusercontent.com/imzyb/MiGate/main/packaging/install.sh)",
+		"MIGATE_VERSION=",
+		"http://SERVER_IP:9999/",
+		"systemctl status migate",
+		"systemctl restart migate",
+		"/etc/migate/panel.json",
+	} {
 		if !strings.Contains(readme, want) {
-			t.Fatalf("README missing scope marker %q", want)
+			t.Fatalf("README missing simple usage marker %q", want)
 		}
 	}
 	for _, forbiddenName := range []string{"MiGate Go Lite", "Go Lite"} {
 		if strings.Contains(readme, forbiddenName) {
 			t.Fatalf("README should use MiGate as the product name, found %q", forbiddenName)
-		}
-	}
-	for _, removed := range []string{"OpenVPN", "TUN", "egress tunnel", "remote readiness", "leak check", "rollout plan", "proxy service", "multi-node remote checks"} {
-		if !strings.Contains(readme, "Not included: "+removed) {
-			t.Fatalf("README must explicitly exclude %q", removed)
 		}
 	}
 }
