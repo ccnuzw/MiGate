@@ -146,6 +146,11 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`closeCreateClient()`,
 		`saveCreateClient()`,
 		`name="email"`,
+		`.client-subsection { margin:8px 0 var(--space-3) var(--space-5);`,
+		`border-left:1px solid var(--line); box-shadow:none;`,
+		`.client-subsection .list { margin-top:0; gap:8px; }`,
+		`.client-add-row { display:flex; justify-content:flex-start;`,
+		`btnWrap.className = 'client-add-row';`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel client management missing %q: %s", want, body)
@@ -332,6 +337,10 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`class="app-shell"`,
 		`class="sidebar"`,
 		`class="account-panel"`,
+		`<a href="/#xray">核心</a>`,
+		`.account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin-top:auto;`,
+		`background:transparent; box-shadow:inset 0 1px 0 var(--line);`,
+		`.account-actions button { min-height:32px;`,
 		`id="current-username"`,
 		`id="login-button"`,
 		`id="logout-button"`,

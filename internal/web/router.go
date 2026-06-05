@@ -1138,18 +1138,17 @@ const panelHTML = `<!doctype html>
     .subtitle { color:var(--muted); font-size:var(--text-sm); line-height:1.5; margin-bottom:var(--space-4); }
     nav { flex:1; overflow:visible; }
     #sidebar-toggle { display:none; align-items:center; justify-content:center; width:36px; height:36px; border:none; background:var(--surface); color:var(--fg); font-size:22px; cursor:pointer; border-radius:var(--radius-sm); box-shadow:var(--shadow-md); z-index:101; position:fixed; top:12px; left:12px; }
-    .account-panel { display:grid; gap:var(--space-3); padding:var(--space-4); margin-top:var(--space-4); margin-bottom:0; border-radius:var(--radius-xl); background:var(--surface); box-shadow:var(--shadow-md), inset 0 0 0 1px var(--line); }
-    .account-panel::before { content:''; display:block; height:1px; margin-bottom:var(--space-1); background:var(--line); opacity:.8; }
+    .account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin-top:auto; border-radius:var(--radius-md); background:transparent; box-shadow:inset 0 1px 0 var(--line); }
     .account-label { color:var(--muted); font-size:var(--text-xs); text-transform:uppercase; letter-spacing:.08em; }
     .account-name { color:var(--fg); font-size:var(--text-sm); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .account-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-    .account-actions button { min-height:34px; padding:0 10px; font-size:var(--text-xs); border-radius:var(--radius-md); }
+    .account-actions button { min-height:32px; padding:0 10px; font-size:var(--text-xs); border-radius:var(--radius-md); background:var(--surface-subtle); color:var(--fg); box-shadow:none; }
     nav a { display:block; color:var(--fg); text-decoration:none; padding:10px var(--space-3); border-radius:var(--radius-md); margin:var(--space-1) 0; box-shadow:none; font-size:var(--text-md); font-weight:500; }
     nav a.active, nav a:hover { background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
     .grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:var(--space-4); margin-bottom:var(--space-4); }
     .version-banner { margin-bottom:var(--space-3); padding:14px 18px; border-radius:var(--radius-md); background:var(--surface-subtle); box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent); font-size:var(--text-sm); line-height:1.5; color:var(--fg); }
     .notice-slot { margin-top:12px; }
-    .client-subsection { box-shadow:inset 0 1px 0 var(--line); padding:0 var(--space-4) var(--space-2); }
+    .client-subsection { margin:8px 0 var(--space-3) var(--space-5); padding:var(--space-3) 0 0 var(--space-4); border-left:1px solid var(--line); box-shadow:none; }
 
     .overview-insights { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:var(--space-4); grid-column:1 / -1; }
     .overview-card { display:grid; gap:var(--space-3); align-content:start; background:var(--surface); border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:var(--panel-padding); min-height:156px; }
@@ -1189,6 +1188,9 @@ const panelHTML = `<!doctype html>
     .row { display:grid; grid-template-columns:1.2fr .8fr .8fr .8fr .8fr .6fr; gap:10px; align-items:center; padding:var(--row-padding); border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm); }
     .resource-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--space-4); align-items:center; padding:var(--row-padding); border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm); transition:box-shadow .16s ease, transform .16s ease; }
     .client-resource-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--space-3); align-items:center; padding:10px var(--space-3); border-radius:var(--radius-md); background:var(--surface-subtle); box-shadow:var(--shadow-sm); border-left:3px solid var(--accent2); font-size:var(--text-sm); }
+    .client-subsection .list { margin-top:0; gap:8px; }
+    .client-add-row { display:flex; justify-content:flex-start; padding-top:var(--space-2); }
+    .client-add-row .btn-sm { background:var(--surface-subtle); color:var(--fg); box-shadow:var(--shadow-sm); }
     .resource-row:hover { box-shadow:var(--shadow-md); transform:translateY(-1px); }
     .resource-main { min-width:0; display:grid; gap:var(--space-2); }
     .resource-title { display:flex; align-items:center; gap:var(--space-2); min-width:0; font-size:15px; font-weight:600; color:var(--fg); }
@@ -1215,7 +1217,6 @@ const panelHTML = `<!doctype html>
     .search-input:focus { box-shadow:var(--shadow-sm), 0 0 0 2px var(--focus); }
     .sort-select { height:36px; border:none; border-radius:var(--radius-md); padding:0 10px; font-size:var(--text-sm); background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); cursor:pointer; outline:none; font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; transition:box-shadow .15s; }
     .xray-preview-pre { background:var(--surface-subtle); border-radius:var(--radius-lg); padding:16px; font-size:12px; overflow-x:auto; white-space:pre-wrap; max-height:400px; overflow-y:auto; box-shadow:var(--shadow-sm); margin:0; }
-    .client-subsection { box-shadow:inset 0 1px 0 var(--line); padding:0 var(--space-4) var(--space-2); }
     .notice { display:grid; gap:8px; padding:16px; border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent); }
     .notice-title { color:var(--fg); font-size:14px; font-weight:600; letter-spacing:-0.14px; }
     .notice-copy { color:var(--muted); font-size:13px; line-height:1.55; white-space:pre-wrap; }
@@ -1596,7 +1597,7 @@ const panelHTML = `<!doctype html>
         <a class="active" href="/">概览</a>
         <a href="/#inbounds">入站</a>
         <a href="/#outbound">出站</a>
-        <a href="/#xray">Xray</a>
+        <a href="/#xray">核心</a>
         <a href="/#settings">设置</a>
       </nav>
       <div class="account-panel" aria-label="当前账号">
@@ -2004,7 +2005,7 @@ const panelHTML = `<!doctype html>
         renderClients(inbound, el.querySelector('.list') || el);
         // Append "新增客户端" button at bottom
         const btnWrap = document.createElement('div');
-        btnWrap.style.cssText = 'display:flex;justify-content:flex-end;padding:4px 8px 0';
+        btnWrap.className = 'client-add-row';
         btnWrap.innerHTML = '<button onclick="openCreateClient(' + inboundId + ')" class="btn-sm">新增客户端</button>';
         el.appendChild(btnWrap);
       }).catch(() => {
