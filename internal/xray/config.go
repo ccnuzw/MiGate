@@ -197,13 +197,15 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 		if inbound.RealityServerNames != "" {
 			serverNames = strings.Split(inbound.RealityServerNames, ",")
 		}
+		shortIds := []string{""}
+		if inbound.RealityShortID != "" {
+			shortIds = []string{inbound.RealityShortID}
+		}
 		realitySettings := map[string]interface{}{
 			"show":        false,
 			"dest":        dest,
 			"serverNames": serverNames,
-		}
-		if inbound.RealityShortID != "" {
-			realitySettings["shortId"] = inbound.RealityShortID
+			"shortIds":    shortIds,
 		}
 		if inbound.RealityPrivateKey != "" {
 			realitySettings["privateKey"] = inbound.RealityPrivateKey

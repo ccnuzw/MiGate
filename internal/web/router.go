@@ -97,8 +97,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/logout", logoutHandler())
 	mux.HandleFunc("/api/session", sessionHandler(&cfg))
 	mux.HandleFunc("/api/health", healthHandler)
-	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store))
-	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store))
+	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store, cfg.xrayController))
+	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
@@ -148,13 +148,14 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok","mode":"single-binary"}`))
 }
 
-func inboundsHandler(store Store) http.HandlerFunc {
+func inboundsHandler(store Store, ctrl XrayController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			listInbounds(w, r, store)
 		case http.MethodPost:
 			createInbound(w, r, store)
+			go ctrl.Apply(context.Background())
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -213,7 +214,7 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 	_ = json.NewEncoder(w).Encode(created)
 }
 
-func inboundChildrenHandler(store Store) http.HandlerFunc {
+func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/inbounds/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -230,6 +231,7 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 				return
 			}
 			createClient(w, r, store, inboundID)
+			go ctrl.Apply(context.Background())
 		case http.MethodPatch:
 			if len(parts) == 2 && parts[1] == "enabled" {
 				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
@@ -238,6 +240,7 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 					return
 				}
 				patchInboundEnabled(w, r, store, inboundID)
+				go ctrl.Apply(context.Background())
 			} else if len(parts) == 4 && parts[1] == "clients" && parts[3] == "enabled" {
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
 				if err != nil || clientID <= 0 {
@@ -250,6 +253,7 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 					return
 				}
 				patchClientEnabled(w, r, store, inboundID, clientID)
+				go ctrl.Apply(context.Background())
 			} else {
 				http.NotFound(w, r)
 			}
@@ -262,6 +266,7 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 					return
 				}
 				updateInbound(w, r, store, inboundID)
+				go ctrl.Apply(context.Background())
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// PUT /api/inbounds/{id}/clients/{clientId}
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
@@ -270,6 +275,7 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 					return
 				}
 				updateClient(w, r, store, clientID)
+				go ctrl.Apply(context.Background())
 			} else {
 				http.NotFound(w, r)
 			}
@@ -291,6 +297,7 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+				go ctrl.Apply(context.Background())
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// DELETE /api/inbounds/{id}/clients/{clientId}
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
@@ -308,6 +315,7 @@ func inboundChildrenHandler(store Store) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+				go ctrl.Apply(context.Background())
 			} else {
 				http.NotFound(w, r)
 			}

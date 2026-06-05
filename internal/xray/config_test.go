@@ -43,12 +43,15 @@ func TestBuildConfigIncludesSupportedProtocolInboundsAndFreedomOutbound(t *testi
 	if strings.Contains(text, "disabled@example.com") {
 		t.Fatalf("disabled inbound leaked into xray config: %s", text)
 	}
-	// Verify Trojan+REALITY has realitySettings with privateKey
+	// Verify Trojan+REALITY has realitySettings with privateKey and shortIds
 	if !strings.Contains(text, "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg") {
 		t.Fatalf("Trojan+REALITY config missing privateKey: %s", text)
 	}
 	if !strings.Contains(text, "realitySettings") {
 		t.Fatalf("Trojan+REALITY config missing realitySettings: %s", text)
+	}
+	if !strings.Contains(text, "shortIds") {
+		t.Fatalf("Trojan+REALITY config missing shortIds: %s", text)
 	}
 	if !strings.Contains(text, "password") {
 		t.Fatalf("Trojan+REALITY config missing password field: %s", text)
@@ -87,7 +90,7 @@ func TestBuildConfigIncludesXHTTPSettingsForVLESSReality(t *testing.T) {
 		t.Fatalf("marshal config: %v", err)
 	}
 	text := string(encoded)
-	for _, want := range []string{`"network":"xhttp"`, `"xhttpSettings"`, `"path":"/migate-xhttp"`, `"mode":"stream-one"`, `"realitySettings"`} {
+	for _, want := range []string{`"network":"xhttp"`, `"xhttpSettings"`, `"path":"/migate-xhttp"`, `"mode":"stream-one"`, `"realitySettings"`, `"shortIds"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("XHTTP config missing %q: %s", want, text)
 		}
