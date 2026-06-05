@@ -17,6 +17,7 @@ var supportedProtocols = map[string]bool{
 	"vmess":       true,
 	"trojan":      true,
 	"shadowsocks": true,
+	"hysteria2":   true,
 }
 
 type Store struct {
@@ -45,6 +46,10 @@ type Inbound struct {
 	TLSKeyFile         string `json:"tls_key_file"`
 	XHTTPPath          string `json:"xhttp_path"`
 	XHTTPMode          string `json:"xhttp_mode"`
+	Hy2UpMbps          int    `json:"hy2_up_mbps"`
+	Hy2DownMbps        int    `json:"hy2_down_mbps"`
+	Hy2Obfs            string `json:"hy2_obfs"`
+	Hy2ObfsPassword    string `json:"hy2_obfs_password"`
 	Clients            []Client `json:"clients"`
 }
 
@@ -79,6 +84,10 @@ type CreateInboundParams struct {
 	TLSKeyFile         string `json:"tls_key_file"`
 	XHTTPPath          string `json:"xhttp_path"`
 	XHTTPMode          string `json:"xhttp_mode"`
+	Hy2UpMbps          int    `json:"hy2_up_mbps"`
+	Hy2DownMbps        int    `json:"hy2_down_mbps"`
+	Hy2Obfs            string `json:"hy2_obfs"`
+	Hy2ObfsPassword    string `json:"hy2_obfs_password"`
 	InitialClient      *CreateClientParams `json:"initial_client,omitempty"`
 }
 
@@ -109,6 +118,10 @@ type UpdateInboundParams struct {
 	TLSKeyFile         string `json:"tls_key_file"`
 	XHTTPPath          string `json:"xhttp_path"`
 	XHTTPMode          string `json:"xhttp_mode"`
+	Hy2UpMbps          int    `json:"hy2_up_mbps"`
+	Hy2DownMbps        int    `json:"hy2_down_mbps"`
+	Hy2Obfs            string `json:"hy2_obfs"`
+	Hy2ObfsPassword    string `json:"hy2_obfs_password"`
 }
 
 type UpdateClientParams struct {
@@ -185,6 +198,10 @@ CREATE INDEX IF NOT EXISTS idx_clients_inbound_id ON clients(inbound_id);
 		{"tls_key_file", "TEXT", "DEFAULT ''"},
 		{"xhttp_path", "TEXT", "DEFAULT ''"},
 		{"xhttp_mode", "TEXT", "DEFAULT ''"},
+		{"hy2_up_mbps", "INTEGER", "DEFAULT 0"},
+		{"hy2_down_mbps", "INTEGER", "DEFAULT 0"},
+		{"hy2_obfs", "TEXT", "DEFAULT ''"},
+		{"hy2_obfs_password", "TEXT", "DEFAULT ''"},
 	} {
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE inbounds ADD COLUMN %s %s %s", col.name, col.typ, col.def))
 	}
@@ -211,7 +228,8 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 	id, uuid, err := s.insertInbound(ctx, remark, protocol, params.Port, network, security,
 		params.WsPath, params.WsHost, params.GrpcServiceName,
 		params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey,
-		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.XHTTPPath, params.XHTTPMode)
+		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.XHTTPPath, params.XHTTPMode,
+		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword)
 	if err != nil {
 		return Inbound{}, err
 	}
@@ -232,18 +250,25 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		SSMethod:          params.SSMethod,
 		TLSCertFile:       params.TLSCertFile, TLSKeyFile: params.TLSKeyFile,
 		XHTTPPath: params.XHTTPPath, XHTTPMode: params.XHTTPMode,
+		Hy2UpMbps: params.Hy2UpMbps, Hy2DownMbps: params.Hy2DownMbps,
+		Hy2Obfs: params.Hy2Obfs, Hy2ObfsPassword: params.Hy2ObfsPassword,
 		Clients: clients}, nil
 }
 
 func (s *Store) insertInbound(ctx context.Context, remark, protocol string, port int, network, security string,
-	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, xhttpPath, xhttpMode string) (int64, string, error) {
+	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, xhttpPath, xhttpMode string,
+	hy2UpMbps, hy2DownMbps int, hy2Obfs, hy2ObfsPassword string) (int64, string, error) {
 	uuid := newUUID()
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO inbounds (uuid, remark, protocol, port, network, security, enabled, created_at,
-  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method, tls_cert_file, tls_key_file, xhttp_path, xhttp_mode)
-VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, uuid, remark, protocol, port, network, security, time.Now().UTC().Format(time.RFC3339),
-		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, xhttpPath, xhttpMode)
+  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method, tls_cert_file, tls_key_file, xhttp_path, xhttp_mode,
+  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?,
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+  ?, ?, ?, ?)`,
+		uuid, remark, protocol, port, network, security, time.Now().UTC().Format(time.RFC3339),
+		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, xhttpPath, xhttpMode,
+		hy2UpMbps, hy2DownMbps, hy2Obfs, hy2ObfsPassword)
 	if err != nil {
 		return 0, "", err
 	}
@@ -330,10 +355,12 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
 		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, reality_private_key=?, reality_public_key=?, ss_method=?,
-		tls_cert_file=?, tls_key_file=?, xhttp_path=?, xhttp_mode=? WHERE id=?`,
+		tls_cert_file=?, tls_key_file=?, xhttp_path=?, xhttp_mode=?,
+		hy2_up_mbps=?, hy2_down_mbps=?, hy2_obfs=?, hy2_obfs_password=? WHERE id=?`,
 		remark, protocol, params.Port, network, security, enabled,
 		params.WsPath, params.WsHost, params.GrpcServiceName, params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey, params.SSMethod,
-		params.TLSCertFile, params.TLSKeyFile, params.XHTTPPath, params.XHTTPMode, id)
+		params.TLSCertFile, params.TLSKeyFile, params.XHTTPPath, params.XHTTPMode,
+		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword, id)
 	if err != nil {
 		return Inbound{}, err
 	}
@@ -347,12 +374,14 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	// Reload to get the full row
 	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
-		tls_cert_file, tls_key_file, xhttp_path, xhttp_mode FROM inbounds WHERE id=?`, id)
+		tls_cert_file, tls_key_file, xhttp_path, xhttp_mode,
+		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password FROM inbounds WHERE id=?`, id)
 	var inbound Inbound
 	var dbEnabled int
 	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
 		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
-		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode); err != nil {
+		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode,
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -409,11 +438,13 @@ func (s *Store) SetInboundEnabled(ctx context.Context, id int64, enabled bool) (
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
-		tls_cert_file, tls_key_file, xhttp_path, xhttp_mode FROM inbounds WHERE id=?`, id)
+		tls_cert_file, tls_key_file, xhttp_path, xhttp_mode,
+		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password FROM inbounds WHERE id=?`, id)
 	var inbound Inbound
 	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
 		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
-		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode); err != nil {
+		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode,
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -450,7 +481,8 @@ func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, uuid, remark, protocol, port, network, security, enabled,
   ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
-  tls_cert_file, tls_key_file, xhttp_path, xhttp_mode
+  tls_cert_file, tls_key_file, xhttp_path, xhttp_mode,
+  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password
 FROM inbounds
 ORDER BY id ASC
 `)
@@ -466,7 +498,8 @@ ORDER BY id ASC
 		var enabled int
 		if err := rows.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled,
 			&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
-			&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode); err != nil {
+			&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.XHTTPPath, &inbound.XHTTPMode,
+			&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword); err != nil {
 			return nil, err
 		}
 		inbound.Enabled = enabled != 0

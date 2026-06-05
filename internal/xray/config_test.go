@@ -177,3 +177,94 @@ func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
 		t.Fatalf("auto-key inbound missing auto-generated privateKey: %s", text)
 	}
 }
+
+func TestBuildConfigHysteria2WithTLSUsesCorrectSettings(t *testing.T) {
+	config, err := xray.BuildConfig([]db.Inbound{{
+		ID:       11,
+		UUID:     "11111111-1111-4111-8111-111111111111",
+		Remark:   "hy2-tls",
+		Protocol: "hysteria2",
+		Port:     43001,
+		Network:  "quic",
+		Security: "tls",
+		Hy2UpMbps:    50,
+		Hy2DownMbps:  100,
+		TLSCertFile:    "/etc/cert.pem",
+		TLSKeyFile:     "/etc/key.pem",
+		Enabled:  true,
+		Clients:  []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "hy2-tls@test.com", Enabled: true}},
+	}})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	if len(config.Inbounds) != 1 {
+		t.Fatalf("expected 1 inbound, got %d", len(config.Inbounds))
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	for _, want := range []string{`"protocol":"hysteria2"`, `"password":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"`, `"up_mbps":50`, `"down_mbps":100`, `"security":"tls"`, `"tlsSettings"`, `"certificateFile":"/etc/cert.pem"`, `"keyFile":"/etc/key.pem"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Hysteria2+TLS config missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestBuildConfigHysteria2NoTLSUsesPasswordAuthOnly(t *testing.T) {
+	config, err := xray.BuildConfig([]db.Inbound{{
+		ID:       12,
+		UUID:     "22222222-2222-4222-8222-222222222222",
+		Remark:   "hy2-notls",
+		Protocol: "hysteria2",
+		Port:     43002,
+		Network:  "quic",
+		Security: "none",
+		Enabled:  true,
+		Clients:  []db.Client{{UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Email: "hy2-notls@test.com", Enabled: true}},
+	}})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	if len(config.Inbounds) != 1 {
+		t.Fatalf("expected 1 inbound, got %d", len(config.Inbounds))
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	for _, want := range []string{`"protocol":"hysteria2"`, `"password":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"`, `"security":"none"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Hysteria2+noTLS config missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "tlsSettings") {
+		t.Fatalf("Hysteria2+noTLS should not have tlsSettings: %s", text)
+	}
+}
+
+func TestBuildConfigHysteria2WithObfsIncludesObfuscationSettings(t *testing.T) {
+	config, err := xray.BuildConfig([]db.Inbound{{
+		ID:       13,
+		UUID:     "33333333-3333-4333-8333-333333333333",
+		Remark:   "hy2-obfs",
+		Protocol: "hysteria2",
+		Port:     43003,
+		Network:  "quic",
+		Security: "tls",
+		Hy2UpMbps:     30,
+		Hy2DownMbps:   50,
+		Hy2Obfs:       "salamander",
+		Hy2ObfsPassword: "my-obfs-key",
+		TLSCertFile:    "/etc/cert.pem",
+		TLSKeyFile:     "/etc/key.pem",
+		Enabled:  true,
+		Clients:  []db.Client{{UUID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Email: "hy2-obfs@test.com", Enabled: true}},
+	}})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	for _, want := range []string{`"obfs":"salamander"`, `"obfs_password":"my-obfs-key"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Hysteria2+obfs config missing %q: %s", want, text)
+		}
+	}
+}

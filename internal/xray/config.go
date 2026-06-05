@@ -122,6 +122,25 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 			"password": password,
 			// Xray Shadowsocks only supports single-user mode (no "clients" array)
 		}
+	case "hysteria2":
+		settings := map[string]interface{}{
+			"clients": clientsAsPasswordEmail(clients),
+		}
+		if inbound.Hy2UpMbps > 0 {
+			settings["up_mbps"] = inbound.Hy2UpMbps
+		}
+		if inbound.Hy2DownMbps > 0 {
+			settings["down_mbps"] = inbound.Hy2DownMbps
+		}
+		if inbound.Hy2Obfs != "" {
+			settings["obfs"] = inbound.Hy2Obfs
+			if inbound.Hy2ObfsPassword != "" {
+				settings["obfs_password"] = inbound.Hy2ObfsPassword
+			}
+		}
+		base.Settings = settings
+		// Hysteria2 uses its own QUIC transport; build stream settings without network field
+		base.StreamSettings = buildHy2StreamSettings(inbound)
 	default:
 		return InboundConfig{}, fmt.Errorf("unsupported protocol: %s", inbound.Protocol)
 	}
@@ -242,6 +261,31 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 			realitySettings["privateKey"] = inbound.RealityPrivateKey
 		}
 		settings["realitySettings"] = realitySettings
+	}
+	if security == "tls" {
+		tlsSettings := map[string]interface{}{}
+		if inbound.TLSCertFile != "" && inbound.TLSKeyFile != "" {
+			tlsSettings["certificates"] = []map[string]interface{}{
+				{
+					"certificateFile": inbound.TLSCertFile,
+					"keyFile":         inbound.TLSKeyFile,
+				},
+			}
+		}
+		if len(tlsSettings) > 0 {
+			settings["tlsSettings"] = tlsSettings
+		}
+	}
+	return settings
+}
+
+func buildHy2StreamSettings(inbound db.Inbound) map[string]interface{} {
+	security := strings.ToLower(strings.TrimSpace(inbound.Security))
+	if security == "" {
+		security = "none"
+	}
+	settings := map[string]interface{}{
+		"security": security,
 	}
 	if security == "tls" {
 		tlsSettings := map[string]interface{}{}

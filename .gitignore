@@ -8,3 +8,5 @@ venv/
 build/
 dist/
 migate
+migate_amd64
+test_*.py

@@ -756,6 +756,33 @@ func shareLink(host string, inbound db.Inbound, client db.Client) string {
 		return vmessShareLink(host, inbound, client)
 	case "shadowsocks":
 		return ssShareLink(host, inbound, client)
+	case "hysteria2":
+		// hy2://password@host:port/?params#name
+		var params []string
+		addParam := func(k, v string) {
+			if v != "" {
+				params = append(params, k+"="+url.QueryEscape(v))
+			}
+		}
+		if inbound.Hy2UpMbps > 0 {
+			params = append(params, "up_mbps="+strconv.Itoa(inbound.Hy2UpMbps))
+		}
+		if inbound.Hy2DownMbps > 0 {
+			params = append(params, "down_mbps="+strconv.Itoa(inbound.Hy2DownMbps))
+		}
+		addParam("obfs", inbound.Hy2Obfs)
+		addParam("obfs-password", inbound.Hy2ObfsPassword)
+		if inbound.Security == "tls" {
+			params = append(params, "security=tls")
+			addParam("sni", inbound.RealityServerNames)
+			params = append(params, "allowInsecure=1")
+		}
+		query := strings.Join(params, "&")
+		suffix := ""
+		if query != "" {
+			suffix = "?" + query
+		}
+		return "hy2://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + suffix + "#" + url.QueryEscape(client.Email)
 	default:
 		// vless, trojan, etc. use universal link format
 		var params []string
@@ -1097,6 +1124,7 @@ const panelHTML = `<!doctype html>
             <option value="vmess">VMess</option>
             <option value="trojan">Trojan</option>
             <option value="shadowsocks">Shadowsocks</option>
+            <option value="hysteria2">Hysteria2</option>
           </select>
           <p class="field-help">选择 Xray 入站协议。</p>
         </div>
@@ -1165,6 +1193,15 @@ const panelHTML = `<!doctype html>
               <option value="aes-256-gcm">aes-256-gcm</option>
               <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
             </select>
+          </div>
+          <div id="hy2-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">Hysteria2 设置</div>
+            <div class="advanced-fieldset-copy">Hysteria2 使用 QUIC 传输，以下为可选参数。</div>
+            <input name="hy2_up_mbps" type="number" min="0" placeholder="上行速率 mbps (0=不限) 默认 0">
+            <input name="hy2_down_mbps" type="number" min="0" placeholder="下行速率 mbps (0=不限) 默认 0">
+            <input name="hy2_obfs" placeholder="混淆类型 (如 salamander, 可选)">
+            <input name="hy2_obfs_password" placeholder="混淆密码 (可选)">
+            <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander。</p>
           </div>
           <div id="tls-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">TLS 设置</div>
@@ -1239,6 +1276,7 @@ const panelHTML = `<!doctype html>
             <option value="vmess">VMess</option>
             <option value="trojan">Trojan</option>
             <option value="shadowsocks">Shadowsocks</option>
+            <option value="hysteria2">Hysteria2</option>
           </select>
           <p class="field-help">保存后会影响客户端链接格式。</p>
         </div>
@@ -1317,6 +1355,16 @@ const panelHTML = `<!doctype html>
               <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
             </select>
             <p class="field-help">选择与客户端兼容的加密方法。</p>
+          </div>
+          <div id="ei-hy2-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">Hysteria2 设置</div>
+            <div class="advanced-fieldset-copy">Hysteria2 使用 QUIC 传输，以下为可选参数。</div>
+            <label class="field-label" for="ei-hy2-up">Hysteria2 上行/下行</label>
+            <input id="ei-hy2-up" type="number" min="0" placeholder="上行速率 mbps (0=不限) 默认 0">
+            <input id="ei-hy2-down" type="number" min="0" placeholder="下行速率 mbps (0=不限) 默认 0">
+            <input id="ei-hy2-obfs" placeholder="混淆类型 (如 salamander, 可选)">
+            <input id="ei-hy2-obfs-password" placeholder="混淆密码 (可选)">
+            <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander。</p>
           </div>
           <div id="ei-tls-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">TLS 设置</div>
@@ -1977,6 +2025,7 @@ const panelHTML = `<!doctype html>
       document.getElementById('ei-reality-settings').classList.toggle('hidden', sec !== 'reality');
       document.getElementById('ei-ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
       document.getElementById('ei-tls-settings').classList.toggle('hidden', sec !== 'tls');
+      document.getElementById('ei-hy2-settings').classList.toggle('hidden', proto !== 'hysteria2');
     }
 
     async function editInbound(id) {
@@ -2002,6 +2051,10 @@ const panelHTML = `<!doctype html>
       document.getElementById('ei-ss-method').value = inbound.ss_method || '2022-blake3-aes-128-gcm';
       document.getElementById('ei-tls-cert-file').value = inbound.tls_cert_file || '';
       document.getElementById('ei-tls-key-file').value = inbound.tls_key_file || '';
+      document.getElementById('ei-hy2-up').value = inbound.hy2_up_mbps || 0;
+      document.getElementById('ei-hy2-down').value = inbound.hy2_down_mbps || 0;
+      document.getElementById('ei-hy2-obfs').value = inbound.hy2_obfs || '';
+      document.getElementById('ei-hy2-obfs-password').value = inbound.hy2_obfs_password || '';
       eiUpdateDynamicFields();
       document.getElementById('edit-inbound-overlay').classList.remove('hidden');
     }
@@ -2030,6 +2083,10 @@ const panelHTML = `<!doctype html>
         ss_method: document.getElementById('ei-ss-method').value,
         tls_cert_file: document.getElementById('ei-tls-cert-file').value,
         tls_key_file: document.getElementById('ei-tls-key-file').value,
+        hy2_up_mbps: Number(document.getElementById('ei-hy2-up').value) || 0,
+        hy2_down_mbps: Number(document.getElementById('ei-hy2-down').value) || 0,
+        hy2_obfs: document.getElementById('ei-hy2-obfs').value,
+        hy2_obfs_password: document.getElementById('ei-hy2-obfs-password').value,
       };
       if (!data.remark || !data.port) { showToast('请填写备注和端口', 'error'); return; }
       // Port conflict check (client-side, exclude current inbound)
@@ -2221,6 +2278,7 @@ const panelHTML = `<!doctype html>
       document.getElementById('reality-settings').classList.toggle('hidden', sec !== 'reality');
       document.getElementById('ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
       document.getElementById('tls-settings').classList.toggle('hidden', sec !== 'tls');
+      document.getElementById('hy2-settings').classList.toggle('hidden', proto !== 'hysteria2');
     }
 
     function openCreateInbound() {
@@ -2250,6 +2308,8 @@ const panelHTML = `<!doctype html>
       const form = new FormData(formEl);
       const payload = Object.fromEntries(form.entries());
       payload.port = Number(payload.port);
+      payload.hy2_up_mbps = Number(payload.hy2_up_mbps) || 0;
+      payload.hy2_down_mbps = Number(payload.hy2_down_mbps) || 0;
       if (!payload.remark || !payload.port) { showToast('请填写备注和端口', 'error'); return; }
       // Port conflict check (client-side)
       const existingInbounds = window._cachedInbounds || [];
