@@ -849,7 +849,7 @@ const panelHTML = `<!doctype html>
     .brand { font-size:24px; font-weight:600; letter-spacing:-0.96px; margin-bottom:var(--space-1); color:var(--fg); }
     .subtitle { color:var(--muted); font-size:var(--text-sm); line-height:1.5; margin-bottom:28px; }
     nav { flex:1; }
-    #sidebar-toggle { display:none; align-items:center; justify-content:center; width:36px; height:36px; border:none; background:transparent; color:var(--fg); font-size:22px; cursor:pointer; border-radius:var(--radius-sm); margin-bottom:var(--space-3); }
+    #sidebar-toggle { display:none; align-items:center; justify-content:center; width:36px; height:36px; border:none; background:var(--surface); color:var(--fg); font-size:22px; cursor:pointer; border-radius:var(--radius-sm); box-shadow:var(--shadow-md); z-index:101; position:fixed; top:12px; left:12px; }
     .account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin-top:auto; margin-bottom:0; border-radius:var(--radius-lg); background:var(--surface-subtle); box-shadow:var(--shadow-sm); }
     .account-label { color:var(--muted); font-size:var(--text-xs); }
     .account-name { color:var(--fg); font-size:var(--text-sm); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1101,6 +1101,7 @@ const panelHTML = `<!doctype html>
     <div id="create-client-dialog">
       <h3 class="modal-title">创建客户端</h3>
       <form id="create-client-form" class="form-grid modal-form" onsubmit="return false">
+        <input id="client-inbound-id" type="hidden" value="">
         <div class="field-group span-2">
           <label class="field-label" for="client-email">客户端标识</label>
           <input id="client-email" name="email" placeholder="例如 user01" required>
@@ -1267,14 +1268,13 @@ const panelHTML = `<!doctype html>
   </div>
 
   <div class="app-shell">
+    <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="展开菜单">☰</button>
     <aside class="sidebar">
-      <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="展开菜单">☰</button>
       <div class="brand">MiGate</div>
       <div class="subtitle">轻量单二进制面板，专注协议、客户端与 Xray 管理。</div>
       <nav>
         <a class="active" href="/">概览</a>
         <a href="/#inbounds">入站</a>
-        <a href="/#clients">客户端</a>
         <a href="/#subscriptions">订阅</a>
         <a href="/#xray">Xray</a>
         <a href="/#settings">设置</a>
@@ -1330,17 +1330,6 @@ const panelHTML = `<!doctype html>
           <button class="secondary" onclick="navigateTo('subscriptions')">查看订阅</button>
         </div>
         <div id="inbound-list" class="list muted">正在加载入站...</div>
-      </section>
-      <section id="clients" class="card panel">
-        <h2 class="section-title">客户端管理</h2>
-        <p class="muted">选择入站 → 创建客户端 → 获取订阅链接</p>
-        <div class="actions">
-          <select id="client-inbound-select" onchange="loadClients()">
-            <option value="">--选择入站--</option>
-          </select>
-          <button onclick="openCreateClient()">创建客户端</button>
-        </div>
-        <div id="client-list" class="list muted">选择一个入站以查看客户端...</div>
       </section>
       <section id="subscriptions" class="card panel">
         <h2 class="section-title">订阅管理</h2>
@@ -1468,11 +1457,13 @@ const panelHTML = `<!doctype html>
             '<div class="resource-meta"><span>' + escapeHtml(inbound.protocol) + '</span><span>:' + inbound.port + '</span><span>' + escapeHtml(inbound.network || 'tcp') + ' / ' + escapeHtml(inbound.security || 'none') + '</span><span>' + ((inbound.clients || []).length) + ' 客户端</span></div>' +
           '</div>' +
           '<div class="resource-actions">' +
+            '<button class="icon-btn" onclick="toggleClientSection(' + inbound.id + ')" title="展开客户端">' + ((inbound.clients || []).length) + 'C</button>' +
             '<button class="icon-btn" onclick="editInbound(' + inbound.id + ')" title="编辑">Edit</button>' +
             '<button class="icon-btn" onclick="toggleInbound(' + inbound.id + ')" title="启用/禁用">' + (inbound.enabled ? 'ON' : 'OFF') + '</button>' +
             '<button class="danger-icon-btn" onclick="deleteInbound(' + inbound.id + ')" title="删除">DEL</button>' +
           '</div>' +
-        '</div>';
+        '</div>' +
+        '<div id="client-section-' + inbound.id + '" class="client-subsection" style="display:none;padding:0 16px 12px;border-top:1px solid var(--line)"></div>';
       }).join('');
     }
 
@@ -1599,6 +1590,23 @@ const panelHTML = `<!doctype html>
     function closeSidebar() {
       document.querySelector('.app-shell').classList.remove('sidebar-open');
     }
+    function toggleClientSection(inboundId) {
+      const el = document.getElementById('client-section-' + inboundId);
+      if (!el) return;
+      if (el.style.display !== 'none') {
+        el.style.display = 'none';
+        return;
+      }
+      el.style.display = 'block';
+      el.innerHTML = '<div class="list" style="margin:10px 0 0">正在加载客户端...</div>';
+      fetch('/api/inbounds').then(r => r.json()).then(data => {
+        const inbound = (data.inbounds || []).find(i => i.id === inboundId);
+        if (!inbound) { el.innerHTML = '<div class="muted" style="padding:12px">入站未找到</div>'; return; }
+        renderClients(inbound, el.querySelector('.list') || el);
+      }).catch(() => {
+        el.innerHTML = '<div class="muted" style="padding:12px">加载失败</div>';
+      });
+    }
 
     applyTheme(preferredTheme());
     loadSession();
@@ -1612,7 +1620,7 @@ const panelHTML = `<!doctype html>
     }
 
     function navigateTo(sectionId) {
-      const validSections = ['overview', 'inbounds', 'clients', 'subscriptions', 'xray', 'settings'];
+      const validSections = ['overview', 'inbounds', 'subscriptions', 'xray', 'settings'];
       if (!validSections.includes(sectionId)) sectionId = 'overview';
       document.querySelectorAll('main > section').forEach((el) => {
         const display = el.classList.contains('overview-grid') ? 'grid' : 'block';
@@ -1627,6 +1635,7 @@ const panelHTML = `<!doctype html>
     document.querySelectorAll('nav a').forEach((a) => {
       a.addEventListener('click', (e) => {
         e.preventDefault();
+        closeSidebar();
         const href = a.getAttribute('href');
         if (href === '/') { navigateTo('overview'); return; }
         const id = href.replace('/#', '');
@@ -1636,27 +1645,6 @@ const panelHTML = `<!doctype html>
     window.addEventListener('hashchange', () => navigateTo(currentSectionFromLocation()));
     navigateTo(currentSectionFromLocation());
 
-    async function loadClients() {
-      const sel = document.getElementById('client-inbound-select');
-      const list = document.getElementById('client-list');
-      if (!sel.value) {
-        list.className = 'list';
-        list.innerHTML = renderEmptyState('选择入站', '先从上方下拉框选择一个入站，再查看、创建或编辑该入站下的客户端。');
-        return;
-      }
-      const response = await fetch('/api/inbounds');
-      const data = await response.json();
-      const inbound = (data.inbounds || []).find(i => i.id === parseInt(sel.value));
-      if (!inbound) {
-        list.className = 'list';
-        list.innerHTML = renderEmptyState('入站未找到', '这个入站可能已被删除，请刷新列表后重新选择。', [
-          {label:'刷新入站', onclick:'populateInboundSelect();loadClients()'}
-        ]);
-        return;
-      }
-      renderClients(inbound, list);
-    }
-
     function renderClients(inbound, list) {
       const subscriptionHost = window.location.host;
       const hostName = window.location.hostname;
@@ -1664,7 +1652,7 @@ const panelHTML = `<!doctype html>
       if (clients.length === 0) {
         list.className = 'list';
         list.innerHTML = renderEmptyState('暂无客户端', '在当前入站下创建第一个客户端后，即可复制订阅或分享链接。', [
-          {label:'创建客户端', onclick:"openCreateClient()"}
+          {label:'创建客户端', onclick:"openCreateClient(" + inbound.id + ")"}
         ]);
         return;
       }
@@ -1792,7 +1780,6 @@ const panelHTML = `<!doctype html>
         return;
       }
       await loadInbounds();
-      populateInboundSelect();
     }
 
     async function deleteClient(inboundId, clientId) {
@@ -1802,30 +1789,7 @@ const panelHTML = `<!doctype html>
         showToast('删除失败：' + await response.text(), 'error');
         return;
       }
-      await loadClients();
-      const inboundResponse = await fetch('/api/inbounds');
-      const data = await inboundResponse.json();
-      renderInbounds(data.inbounds || []);
-    }
-
-    async function populateInboundSelect(selectedInboundId) {
-      const sel = document.getElementById('client-inbound-select');
-      const keep = selectedInboundId !== undefined && selectedInboundId !== null ? String(selectedInboundId) : sel.value;
-      const response = await fetch('/api/inbounds');
-      const data = await response.json();
-      const inbounds = data.inbounds || [];
-      sel.innerHTML = '<option value="">--选择入站--</option>' +
-        inbounds.map(i => '<option value="' + i.id + '">' + escapeHtml(i.remark) + ' (' + i.protocol + ' :' + i.port + ')</option>').join('');
-      if (keep && inbounds.some(i => String(i.id) === keep)) {
-        sel.value = keep;
-      }
-    }
-
-    async function refreshPanelData(selectedInboundId) {
       await loadInbounds();
-      await populateInboundSelect(selectedInboundId);
-      await loadClients();
-      await loadSubSummary();
     }
 
     // === Edit & toggle functions ===
@@ -1976,40 +1940,35 @@ const panelHTML = `<!doctype html>
       if (!res.ok) { showToast('编辑客户端失败', 'error'); return; }
       showToast('客户端已更新', 'success');
       closeEditClient();
-      await loadClients();
+      await loadInbounds();
     }
 
     async function toggleClient(id) {
-      const sel = document.getElementById('client-inbound-select');
       const inboundRes = await fetch('/api/inbounds');
       const data = await inboundRes.json();
-      const inbound = (data.inbounds || []).find(i => i.id === parseInt(sel.value));
-      if (!inbound) return;
-      const client = (inbound.clients || []).find(c => c.id === id);
-      if (!client) return;
-      client.enabled = !client.enabled;
-      const res = await fetch('/api/inbounds/' + inbound.id + '/clients/' + id + '/enabled', {
+      const inbounds = data.inbounds || [];
+      let foundInbound = null, foundClient = null;
+      for (const ib of inbounds) {
+        const c = (ib.clients || []).find(c => c.id === id);
+        if (c) { foundInbound = ib; foundClient = c; break; }
+      }
+      if (!foundInbound || !foundClient) return;
+      foundClient.enabled = !foundClient.enabled;
+      const res = await fetch('/api/inbounds/' + foundInbound.id + '/clients/' + id + '/enabled', {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: client.enabled})
+        body: JSON.stringify({enabled: foundClient.enabled})
       });
       if (!res.ok) {
         showToast('开关客户端失败', 'error');
         return;
       }
-      showToast('客户端 ' + (client.enabled ? '已启用' : '已禁用'), 'success');
-      await loadClients();
-      const inboundResponse = await fetch('/api/inbounds');
-      const inboundData = await inboundResponse.json();
-      renderInbounds(inboundData.inbounds || []);
+      showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success');
+      await loadInbounds();
     }
 
-    function openCreateClient() {
-      const sel = document.getElementById('client-inbound-select');
-      if (!sel.value) {
-        showToast('请先选择一个入站', 'error');
-        return;
-      }
+    function openCreateClient(inboundId) {
+      document.getElementById('client-inbound-id').value = inboundId || '';
       const formEl = document.getElementById('create-client-form');
       formEl.reset();
       document.getElementById('create-client-overlay').classList.remove('hidden');
@@ -2020,13 +1979,12 @@ const panelHTML = `<!doctype html>
     }
     async function saveCreateClient() {
       const formEl = document.getElementById('create-client-form');
-      const sel = document.getElementById('client-inbound-select');
-      if (!sel.value) {
-        showToast('请先选择一个入站', 'error');
+      const inboundId = document.getElementById('client-inbound-id').value;
+      if (!inboundId) {
+        showToast('请先展开入站再创建客户端', 'error');
         closeCreateClient();
         return;
       }
-      const selectedInboundId = sel.value;
       const form = new FormData(formEl);
       const email = form.get('email');
       if (!email) { showToast('请输入客户端标识', 'error'); return; }
@@ -2034,7 +1992,7 @@ const panelHTML = `<!doctype html>
       const eaStr = document.getElementById('client-expiry').value;
       let ea = 0;
       if (eaStr) { ea = Math.floor(new Date(eaStr).getTime() / 1000); }
-      const response = await fetch('/api/inbounds/' + sel.value + '/clients', {
+      const response = await fetch('/api/inbounds/' + inboundId + '/clients', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({email: email, traffic_limit: tl, expiry_at: ea})
@@ -2046,10 +2004,8 @@ const panelHTML = `<!doctype html>
       formEl.reset();
       closeCreateClient();
       showToast('客户端创建成功', 'success');
-      await refreshPanelData(selectedInboundId);
+      await loadInbounds();
     }
-
-    populateInboundSelect();
 
     // === Toast notification ===
     function showToast(msg, type) {
@@ -2138,7 +2094,7 @@ const panelHTML = `<!doctype html>
       formEl.reset();
       closeCreateInbound();
       showToast('入站创建成功', 'success');
-      await refreshPanelData();
+      await loadInbounds();
     }
 
     document.getElementById('inbound-protocol').addEventListener('change', updateDynamicFields);

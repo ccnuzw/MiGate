@@ -139,17 +139,13 @@ func TestPanelWiresClientManagement(t *testing.T) {
 	}
 	body := page.Body.String()
 	for _, want := range []string{
-		`id="clients"`,
 		`id="create-client-overlay"`,
 		`id="create-client-form"`,
-		`openCreateClient()`,
+		`client-inbound-id`,
+		`openCreateClient(inboundId)`,
 		`closeCreateClient()`,
 		`saveCreateClient()`,
-		`onclick="openCreateClient()"`,
 		`name="email"`,
-		`id="client-list"`,
-		`loadClients()`,
-		`renderClients`,
 		`订阅链接`,
 		`copy-link`,
 		`subscriptionHost`,
@@ -205,10 +201,8 @@ func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 	}
 	body := page.Body.String()
 	for _, want := range []string{
-		`async function refreshPanelData`,
-		`await refreshPanelData();`,
-		`populateInboundSelect(selectedInboundId)`,
-		`await loadSubSummary();`,
+		`async function loadInbounds`,
+		`await loadInbounds()`,
 		`function copyTextFallback(text)`,
 		`if (navigator.clipboard && navigator.clipboard.writeText)`,
 		`showToast('已复制链接', 'success')`,
@@ -529,18 +523,11 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 
 	// Create actions must refresh visible lists immediately rather than requiring a manual reload.
 	for _, want := range []string{
-		`await refreshPanelData();`,
-		`await refreshPanelData(selectedInboundId);`,
-		`async function refreshPanelData(selectedInboundId)`,
 		`await loadInbounds();`,
-		`await populateInboundSelect(selectedInboundId);`,
-		`await loadClients();`,
-		`await loadSubSummary();`,
 		`async function saveCreateInbound()`,
 		`async function saveCreateClient()`,
 		`const formEl = document.getElementById('create-inbound-form');`,
 		`const formEl = document.getElementById('create-client-form');`,
-		`const selectedInboundId = sel.value;`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing immediate post-create refresh contract %q", want)
@@ -567,7 +554,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Nav links work with section switching
-	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#clients"`, `href="/#subscriptions"`, `href="/#xray"`, `href="/#settings"`} {
+	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#subscriptions"`, `href="/#xray"`, `href="/#settings"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing nav link %q", want)
 		}
@@ -698,7 +685,6 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`.empty-state-actions`,
 		`function renderEmptyState`,
 		`renderEmptyState('暂无入站'`,
-		`renderEmptyState('选择入站'`,
 		`renderEmptyState('暂无客户端'`,
 		`renderEmptyState('正在加载订阅概况'`,
 		`class="empty-state"`,
@@ -757,7 +743,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 	for _, want := range []string{
 		`showToast('入站 ' + (inbound.enabled ? '已启用' : '已禁用'), 'success')`,
-		`showToast('客户端 ' + (client.enabled ? '已启用' : '已禁用'), 'success')`,
+		`showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success')`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing safe toggle toast expression %q", want)
