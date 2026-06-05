@@ -162,13 +162,13 @@ var loginPageHTML = []byte(`<!DOCTYPE html>
 :root{--bg:#ffffff;--fg:#171717;--surface:#ffffff;--surface-subtle:#fafafa;--muted:#666666;--line:rgba(0,0,0,.08);--line-strong:#ebebeb;--accent:#171717;--danger:#dc2626;--focus:hsla(212,100%,48%,1);--shadow-sm:0 0 0 1px rgba(0,0,0,.08);--shadow-md:0 0 0 1px rgba(0,0,0,.08),0 2px 2px rgba(0,0,0,.04),0 8px 8px -8px rgba(0,0,0,.04);--radius-sm:6px;--radius-lg:12px;--space-4:16px;--space-5:20px;--space-6:24px;--text-sm:13px;--text-md:14px;--control-height:40px}
 :root[data-theme="dark"]{--bg:#0a0a0a;--fg:#ededed;--surface:#111111;--surface-subtle:#18181b;--muted:#a1a1aa;--line:rgba(255,255,255,.10);--line-strong:rgba(255,255,255,.14);--accent:#ededed;--danger:#ef4444;--focus:rgba(99,102,241,.36);--shadow-sm:0 0 0 1px rgba(255,255,255,.10);--shadow-md:0 0 0 1px rgba(255,255,255,.10),0 12px 28px rgba(0,0,0,0)}
 body{font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--fg);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:var(--space-4)}
-.login-card{background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-lg);padding:var(--space-6);width:360px;max-width:100%;box-shadow:var(--shadow-md)}
+.login-card{background:var(--surface);border:none;border-radius:var(--radius-lg);padding:var(--space-6);width:360px;max-width:100%;box-shadow:var(--shadow-md)}
 .login-card h1{font-size:22px;font-weight:600;margin-bottom:4px;text-align:center;color:var(--fg)}
 .login-card p{color:var(--muted);font-size:var(--text-sm);text-align:center;margin-bottom:var(--space-6);line-height:1.5}
 .form-group{display:grid;gap:6px;margin-bottom:var(--space-4)}
 .form-group label{font-size:var(--text-sm);font-weight:500;color:var(--fg)}
-.form-group input{width:100%;min-height:var(--control-height);padding:0 12px;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--radius-sm);color:var(--fg);font-size:var(--text-md);font-family:inherit;outline:none;transition:border-color .15s;box-shadow:var(--shadow-sm)}
-.form-group input:focus{border-color:var(--focus);box-shadow:0 0 0 3px var(--focus)}
+.form-group input{width:100%;min-height:var(--control-height);padding:0 12px;background:var(--bg);border:none;border-radius:var(--radius-sm);color:var(--fg);font-size:var(--text-md);font-family:inherit;outline:none;transition:box-shadow .15s;box-shadow:var(--shadow-sm)}
+.form-group input:focus{box-shadow:var(--shadow-sm),0 0 0 2px var(--focus)}
 button{width:100%;min-height:var(--control-height);padding:0 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-sm);font-size:var(--text-md);font-weight:500;font-family:inherit;cursor:pointer;transition:opacity .15s}
 button:hover{opacity:.85}
 .error{color:var(--danger);font-size:var(--text-sm);text-align:center;margin-top:var(--space-4);display:none;line-height:1.5}

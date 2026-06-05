@@ -928,7 +928,7 @@ const panelHTML = `<!doctype html>
     a { color:inherit; }
     p { color:var(--muted); line-height:1.6; }
     .app-shell { display:grid; grid-template-columns: var(--sidebar-width) 1fr; min-height:100vh; }
-    .sidebar { border-right:1px solid var(--line-strong); padding:var(--space-6) 18px; background:var(--surface); display:flex; flex-direction:column; }
+    .sidebar { box-shadow:inset -1px 0 0 var(--line-strong); padding:var(--space-6) 18px; background:var(--surface); display:flex; flex-direction:column; }
     .brand { font-size:24px; font-weight:600; letter-spacing:-0.96px; margin-bottom:var(--space-1); color:var(--fg); }
     .subtitle { color:var(--muted); font-size:var(--text-sm); line-height:1.5; margin-bottom:28px; }
     nav { flex:1; }
@@ -972,12 +972,12 @@ const panelHTML = `<!doctype html>
     .field-label { color:var(--fg); font-size:var(--text-sm); font-weight:500; line-height:1.3; }
     .field-help { color:var(--muted); font-size:var(--text-xs); line-height:1.45; margin:0; }
     .form-actions { grid-column:1 / -1; display:flex; justify-content:flex-end; align-items:center; gap:10px; padding-top:var(--space-1); margin-top:2px; }
-    .action-toolbar { display:flex; align-items:center; justify-content:space-between; gap:var(--space-4); padding:var(--space-4); border-radius:var(--radius-lg); background:rgba(148,163,184,.06); box-shadow:var(--shadow-sm); margin:var(--space-4) 0; }
+    .action-toolbar { display:flex; align-items:center; justify-content:space-between; gap:var(--space-4); padding:var(--space-4); border-radius:var(--radius-lg); background:var(--surface-subtle); box-shadow:var(--shadow-sm); margin:var(--space-4) 0; }
     .action-toolbar.span-2 { grid-column:1 / -1; }
     .toolbar-copy { display:grid; gap:var(--space-1); min-width:0; color:var(--muted); font-size:var(--text-sm); line-height:1.5; }
     .toolbar-copy strong { color:var(--fg); font-size:var(--text-md); font-weight:600; letter-spacing:-0.14px; }
     .toolbar-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
-    .ui-control, input, select, textarea { width:100%; min-height:var(--control-height); border:1px solid var(--line-strong); outline:none; background:var(--surface); color:var(--fg); border-radius:var(--control-radius); padding:0 var(--space-3); box-shadow:none; font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:var(--text-md); line-height:1.4; transition:border-color .15s, box-shadow .15s; }
+    .ui-control, input, select, textarea { width:100%; min-height:var(--control-height); border:none; outline:none; background:var(--surface); color:var(--fg); border-radius:var(--control-radius); padding:0 var(--space-3); box-shadow:var(--shadow-sm); font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:var(--text-md); line-height:1.4; transition:box-shadow .15s; }
     textarea { padding-top:10px; padding-bottom:10px; }
     input:focus, select:focus, textarea:focus, button:focus { box-shadow:var(--shadow-sm), 0 0 0 2px var(--focus); }
     .list { display:grid; gap:10px; margin-top:14px; }
@@ -996,13 +996,20 @@ const panelHTML = `<!doctype html>
     .icon-btn, .danger-icon-btn { display:inline-flex; align-items:center; justify-content:center; min-width:32px; min-height:32px; height:32px; padding:0 var(--space-2); border-radius:var(--control-radius); font-size:var(--text-xs); }
     .icon-btn { background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); }
     .danger-icon-btn { background:rgba(239,68,68,.12); color:var(--danger); box-shadow:var(--shadow-sm); }
-    .traffic-track { width:128px; height:4px; margin-top:5px; overflow:hidden; border-radius:9999px; background:#f3f4f6; }
+    .traffic-track { width:128px; height:4px; margin-top:5px; overflow:hidden; border-radius:9999px; background:var(--line-strong); }
     .traffic-fill { height:100%; border-radius:9999px; background:var(--accent2); }
-    .empty-state { display:grid; gap:10px; justify-items:start; padding:22px; border-radius:var(--radius-xl); background:var(--surface); box-shadow:var(--shadow-sm), inset 0 0 0 1px rgba(250,250,250,.9); color:var(--muted); }
+    .empty-state { display:grid; gap:10px; justify-items:start; padding:22px; border-radius:var(--radius-xl); background:var(--surface); box-shadow:var(--shadow-sm); color:var(--muted); }
     .empty-state-title { color:var(--fg); font-size:16px; font-weight:600; letter-spacing:-0.32px; }
     .empty-state-copy { max-width:560px; color:var(--muted); font-size:13px; line-height:1.6; }
     .empty-state-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:4px; }
+    .version-banner { margin-bottom:var(--space-3); padding:14px 18px; border-radius:var(--radius-md); background:var(--surface-subtle); box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent); font-size:var(--text-sm); line-height:1.5; color:var(--fg); }
+    .version-banner a { color:var(--fg); text-decoration:underline; }
     .notice-slot { margin-top:12px; }
+    .xray-status-panel { box-shadow:var(--shadow-sm); border-radius:var(--radius-xl); padding:var(--space-5); margin-bottom:var(--space-4); display:grid; gap:5px; font-size:var(--text-sm); line-height:1.7; }
+    .search-input { height:36px; min-width:160px; border:none; border-radius:var(--radius-md); padding:0 12px; font-size:var(--text-sm); background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); outline:none; font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; transition:box-shadow .15s; }
+    .search-input:focus { box-shadow:var(--shadow-sm), 0 0 0 2px var(--focus); }
+    .sort-select { height:36px; border:none; border-radius:var(--radius-md); padding:0 10px; font-size:var(--text-sm); background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); cursor:pointer; outline:none; font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; transition:box-shadow .15s; }
+    .xray-preview-pre { background:var(--surface-subtle); border-radius:var(--radius-lg); padding:16px; font-size:12px; overflow-x:auto; white-space:pre-wrap; max-height:400px; overflow-y:auto; box-shadow:var(--shadow-sm); margin:0; }
     .notice { display:grid; gap:8px; padding:16px; border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent); }
     .notice-title { color:var(--fg); font-size:14px; font-weight:600; letter-spacing:-0.14px; }
     .notice-copy { color:var(--muted); font-size:13px; line-height:1.55; white-space:pre-wrap; }
@@ -1018,9 +1025,9 @@ const panelHTML = `<!doctype html>
     .btn-sm { border:none; color:var(--bg); padding:4px 8px; border-radius:var(--radius-sm); font-size:11px; cursor:pointer; }
     .hidden { display:none; }
     #toast-container { position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:10px; }
-    .toast { background:var(--surface); border:none; color:var(--fg); padding:12px 18px; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); animation: toastIn .3s ease, toastOut .3s ease 2.7s forwards; }
-    .toast.error { box-shadow:var(--shadow-sm), inset 0 0 0 1px rgba(220,38,38,.18); }
-    .toast.success { box-shadow:var(--shadow-sm), inset 0 0 0 1px rgba(22,163,74,.18); }
+    .toast { background:var(--surface); border:none; color:var(--fg); padding:12px 18px; border-radius:var(--radius-md); box-shadow:var(--shadow-md); animation: toastIn .3s ease, toastOut .3s ease 2.7s forwards; }
+    .toast.error { box-shadow:var(--shadow-md), inset 3px 0 0 rgba(220,38,38,.55); }
+    .toast.success { box-shadow:var(--shadow-md), inset 3px 0 0 rgba(22,163,74,.55); }
     @keyframes toastIn { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:translateX(0); } }
     @keyframes toastOut { from { opacity:1; } to { opacity:0; transform:translateX(40px); } }
     #confirm-overlay.hidden { display:none; }
@@ -1028,7 +1035,7 @@ const panelHTML = `<!doctype html>
     #create-client-overlay.hidden { display:none; }
     #edit-inbound-overlay.hidden { display:none; }
     #edit-client-overlay.hidden { display:none; }
-    #confirm-overlay, #create-inbound-overlay, #create-client-overlay, #edit-inbound-overlay, #edit-client-overlay { position:fixed; inset:0; z-index:10000; background:rgba(23,23,23,.12); backdrop-filter: blur(6px); display:flex; align-items:center; justify-content:center; animation:fadeIn .2s; }
+    #confirm-overlay, #create-inbound-overlay, #create-client-overlay, #edit-inbound-overlay, #edit-client-overlay { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.12); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; animation:fadeIn .2s; }
     #confirm-dialog, #create-inbound-dialog, #create-client-dialog, #edit-inbound-dialog, #edit-client-dialog { background:var(--surface); box-shadow:var(--shadow-md); border-radius:var(--radius-xl); padding:var(--space-6); min-width:360px; max-width:520px; max-height:80vh; overflow-y:auto; }
     #confirm-dialog p { margin:0 0 20px; font-size:15px; line-height:1.6; color:var(--fg); }
     #confirm-dialog .actions { display:flex; gap:10px; justify-content:flex-end; }
@@ -1043,10 +1050,10 @@ const panelHTML = `<!doctype html>
     #create-inbound-dialog input, #create-inbound-dialog select, #create-client-dialog input, #create-client-dialog select, #edit-inbound-dialog input, #edit-inbound-dialog select, #edit-client-dialog input, #edit-client-dialog select { width:100%; box-sizing:border-box; margin-bottom:0; }
     @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
     /* Mobile sidebar overlay */
-    #sidebar-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:99; }
+    #sidebar-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.12); backdrop-filter:blur(4px); z-index:99; }
     @media (max-width: 768px) {
       .app-shell { grid-template-columns:1fr; }
-      .sidebar { position:fixed; top:0; left:0; bottom:0; width:var(--sidebar-width); z-index:100; transform:translateX(-100%); transition:transform .25s ease; border-right:1px solid var(--line-strong); }
+      .sidebar { position:fixed; top:0; left:0; bottom:0; width:var(--sidebar-width); z-index:100; transform:translateX(-100%); transition:transform .25s ease; box-shadow:inset -1px 0 0 var(--line-strong); }
       .sidebar-open .sidebar { transform:translateX(0); }
       #sidebar-overlay { display:block; opacity:0; pointer-events:none; transition:opacity .25s ease; }
       .sidebar-open #sidebar-overlay { opacity:1; pointer-events:auto; }
@@ -1401,7 +1408,7 @@ const panelHTML = `<!doctype html>
           </div>
         </div>
       </section>
-      <div id="version-banner" style="display:none;margin-bottom:12px;padding:12px 16px;border-radius:12px;background:rgba(99,102,241,.10);border:1px solid rgba(99,102,241,.25);font-size:13px"></div>
+      <div id="version-banner" class="version-banner"></div>
       <section id="inbounds" class="card panel">
         <h2 class="section-heading">核心协议</h2>
         <div class="protocols">
@@ -1413,8 +1420,8 @@ const panelHTML = `<!doctype html>
         <div class="actions">
           <button onclick="openCreateInbound()">新增入站</button>
           <button class="secondary" onclick="navigateTo('outbound')">出站</button>
-          <input id="inbound-search" type="text" placeholder="搜索入站..." style="height:36px;min-width:160px;border:1px solid var(--line-strong);border-radius:8px;padding:0 10px;font-size:13px;background:var(--surface);color:var(--fg);outline:none" oninput="filterInbounds()">
-          <select id="inbound-sort" style="height:36px;border:1px solid var(--line-strong);border-radius:8px;padding:0 8px;font-size:13px;background:var(--surface);color:var(--fg);cursor:pointer" onchange="sortInbounds()">
+          <input id="inbound-search" type="text" placeholder="搜索入站..." class="search-input" oninput="filterInbounds()">
+          <select id="inbound-sort" class="sort-select" onchange="sortInbounds()">
             <option value="id">默认排序</option>
             <option value="port">按端口</option>
             <option value="protocol">按协议</option>
@@ -1434,7 +1441,7 @@ const panelHTML = `<!doctype html>
       <section id="xray" class="card panel">
         <h2 class="section-title">Xray 管理</h2>
         <p class="muted" style="margin-bottom:16px">查看 Xray 服务状态，应用配置变更。</p>
-        <div style="background:rgba(148,163,184,.06); border-radius:16px; padding:20px; margin-bottom:16px">
+        <div class="xray-status-panel">
           <div><strong>状态</strong>：<span id="xray-status">未知</span></div>
           <div><strong>托管</strong>：<span id="xray-managed">-</span></div>
           <div><strong>服务</strong>：<span id="xray-service">xray</span></div>
@@ -1452,8 +1459,8 @@ const panelHTML = `<!doctype html>
           </div>
         </div>
         <div id="xray-result" class="notice-slot"></div>
-        <div id="xray-config-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-config-json" style="background:rgba(148,163,184,.06);border-radius:12px;padding:16px;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:400px;overflow-y:auto"></pre></div>
-        <div id="xray-logs-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-logs-text" style="background:rgba(148,163,184,.06);border-radius:12px;padding:16px;font-size:11px;overflow-x:auto;white-space:pre-wrap;max-height:400px;overflow-y:auto;font-family:monospace"></pre></div>
+        <div id="xray-config-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-config-json" class="xray-preview-pre"></pre></div>
+        <div id="xray-logs-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-logs-text" class="xray-preview-pre mono"></pre></div>
       </section>
       <section id="settings" class="card panel">
         <h2 class="section-title">面板设置</h2>
@@ -2418,7 +2425,7 @@ const panelHTML = `<!doctype html>
         const cur = current.replace(/^v/, '');
         if (latest && latest !== cur) {
           const banner = document.getElementById('version-banner');
-          banner.innerHTML = '🚀 新版本 <strong>v' + escapeHtml(latest) + '</strong> 已发布（当前 v' + escapeHtml(cur) + '）。查看 <a href="' + gh.html_url + '" target="_blank" style="color:var(--accent);text-decoration:underline">更新日志</a>';
+          banner.innerHTML = '🚀 新版本 <strong>v' + escapeHtml(latest) + '</strong> 已发布（当前 v' + escapeHtml(cur) + '）。查看 <a href="' + gh.html_url + '" target="_blank">更新日志</a>';
           banner.style.display = 'block';
         }
       } catch (e) { /* silent */ }
