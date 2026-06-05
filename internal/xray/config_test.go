@@ -97,6 +97,48 @@ func TestBuildConfigIncludesXHTTPSettingsForVLESSReality(t *testing.T) {
 	}
 }
 
+func TestBuildConfigVLESSRealityHasFlowInClients(t *testing.T) {
+	inbounds := []db.Inbound{
+		{
+			ID: 9, UUID: "99999999-9999-4999-8999-999999999999",
+			Remark: "vless-tcp-reality-flow", Protocol: "vless", Port: 30110,
+			Network: "tcp", Security: "reality",
+			RealityDest:        "www.cloudflare.com:443",
+			RealityServerNames: "www.cloudflare.com",
+			RealityPrivateKey:  "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg",
+			Enabled: true,
+			Clients: []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "flow-test@test.com", Enabled: true}},
+		},
+		{
+			ID: 10, UUID: "10101010-1010-4010-8010-101010101010",
+			Remark: "vless-xhttp-reality-flow", Protocol: "vless", Port: 30120,
+			Network: "xhttp", Security: "reality",
+			XHTTPPath:          "/migate",
+			XHTTPMode:          "stream-one",
+			RealityDest:        "www.cloudflare.com:443",
+			RealityServerNames: "www.cloudflare.com",
+			RealityPrivateKey:  "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg",
+			Enabled: true,
+			Clients: []db.Client{{UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Email: "xhttp-flow@test.com", Enabled: true}},
+		},
+	}
+	config, err := xray.BuildConfig(inbounds)
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	for _, want := range []string{`"flow":"xtls-rprx-vision"`, `"network":"xhttp"`, `"network":"tcp"`, `xhttpSettings`, `realitySettings`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("VLESS+REALITY config missing %q: %s", want, text)
+		}
+	}
+	// Verify non-REALITY inbounds don't get flow
+	if strings.Contains(text, `"flow":"`) && !strings.Contains(text, `"flow":"xtls-rprx-vision"`) {
+		t.Fatalf("unexpected flow value in config: %s", text)
+	}
+}
+
 func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
 	inbounds := []db.Inbound{
 		{

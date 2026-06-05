@@ -1340,7 +1340,6 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="actions">
           <button onclick="openCreateInbound()">新增入站</button>
-          <button class="secondary" onclick="navigateTo('xray');setTimeout(previewXrayConfig,200)">生成 Xray 配置</button>
           <button class="secondary" onclick="navigateTo('subscriptions')">查看订阅</button>
         </div>
         <div id="inbound-list" class="list muted">正在加载入站...</div>

@@ -82,8 +82,12 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 
 	switch protocol {
 	case "vless":
+		flow := ""
+		if strings.ToLower(strings.TrimSpace(inbound.Security)) == "reality" {
+			flow = "xtls-rprx-vision"
+		}
 		base.Settings = map[string]interface{}{
-			"clients":    clientsAsIDEmail(clients),
+			"clients":    clientsAsIDEmail(clients, flow),
 			"decryption": "none",
 		}
 	case "vmess":
@@ -120,13 +124,17 @@ func enabledClients(clients []db.Client) []db.Client {
 	return result
 }
 
-func clientsAsIDEmail(clients []db.Client) []map[string]interface{} {
+func clientsAsIDEmail(clients []db.Client, flow string) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(clients))
 	for _, client := range clients {
-		result = append(result, map[string]interface{}{
+		entry := map[string]interface{}{
 			"id":    client.UUID,
 			"email": client.Email,
-		})
+		}
+		if flow != "" {
+			entry["flow"] = flow
+		}
+		result = append(result, entry)
 	}
 	return result
 }
