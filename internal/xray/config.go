@@ -2,7 +2,6 @@ package xray
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -106,17 +105,6 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 			ssMethod = inbound.SSMethod
 		}
 		password := inbound.UUID
-		// SS2022 methods require a base64-encoded key of specific byte length
-		if strings.HasPrefix(ssMethod, "2022-blake3") {
-			keyLen := 16 // 2022-blake3-aes-128-gcm
-			if strings.Contains(ssMethod, "aes-256-gcm") {
-				keyLen = 32
-			}
-			key := make([]byte, keyLen)
-			if _, err := rand.Read(key); err == nil {
-				password = base64.StdEncoding.EncodeToString(key)
-			}
-		}
 		base.Settings = map[string]interface{}{
 			"method":   ssMethod,
 			"password": password,

@@ -525,6 +525,7 @@ func TestStoreCreateInboundWithInitialClient(t *testing.T) {
 		Security: "none",
 		InitialClient: &db.CreateClientParams{
 			Email:        "init@test.com",
+			UUID:         "11111111-2222-4333-8444-555555555555",
 			TrafficLimit: 100_000_000_000,
 		},
 	})
@@ -539,6 +540,9 @@ func TestStoreCreateInboundWithInitialClient(t *testing.T) {
 	}
 	if inbound.Clients[0].Email != "init@test.com" {
 		t.Fatalf("unexpected client email: %s", inbound.Clients[0].Email)
+	}
+	if inbound.Clients[0].UUID != "11111111-2222-4333-8444-555555555555" {
+		t.Fatalf("expected custom initial client uuid to be preserved, got %s", inbound.Clients[0].UUID)
 	}
 	if inbound.Clients[0].TrafficLimit != 100_000_000_000 {
 		t.Fatalf("unexpected traffic limit: %d", inbound.Clients[0].TrafficLimit)

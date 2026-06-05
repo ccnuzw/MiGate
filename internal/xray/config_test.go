@@ -14,7 +14,7 @@ func TestBuildConfigIncludesSupportedProtocolInboundsAndFreedomOutbound(t *testi
 		{ID: 1, UUID: "11111111-1111-4111-8111-111111111111", Remark: "vless-reality", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality", Enabled: true, Clients: []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "a@example.com", Enabled: true}}},
 		{ID: 2, UUID: "22222222-2222-4222-8222-222222222222", Remark: "vmess-ws", Protocol: "vmess", Port: 8443, Network: "ws", Security: "tls", Enabled: true, Clients: []db.Client{{UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Email: "b@example.com", Enabled: true}}},
 		{ID: 3, UUID: "33333333-3333-4333-8333-333333333333", Remark: "trojan", Protocol: "trojan", Port: 9443, Network: "tcp", Security: "tls", Enabled: true, Clients: []db.Client{{UUID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Email: "c@example.com", Enabled: true}}},
-		{ID: 4, UUID: "44444444-4444-4444-8444-444444444444", Remark: "ss", Protocol: "shadowsocks", Port: 1080, Network: "tcp", Security: "none", Enabled: true, Clients: []db.Client{{UUID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Email: "d@example.com", Enabled: true}}},
+		{ID: 4, UUID: "manual-ss-password", Remark: "ss", Protocol: "shadowsocks", Port: 1080, Network: "tcp", Security: "none", Enabled: true, Clients: []db.Client{{UUID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Email: "d@example.com", Enabled: true}}},
 		{ID: 5, UUID: "55555555-5555-4555-8555-555555555555", Remark: "disabled", Protocol: "vless", Port: 1443, Network: "tcp", Security: "none", Enabled: false, Clients: []db.Client{{UUID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", Email: "disabled@example.com", Enabled: true}}},
 		{ID: 6, UUID: "66666666-6666-4666-8666-666666666666", Remark: "trojan-reality", Protocol: "trojan", Port: 30030, Network: "tcp", Security: "reality", RealityDest: "www.microsoft.com:443", RealityServerNames: "www.microsoft.com", RealityShortID: "", RealityPrivateKey: "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg", Enabled: true, Clients: []db.Client{{UUID: "ffffffff-ffff-4fff-8fff-ffffffffffff", Email: "trojan-reality@test.com", Enabled: true}}},
 	}
@@ -63,6 +63,9 @@ func TestBuildConfigIncludesSupportedProtocolInboundsAndFreedomOutbound(t *testi
 	}
 	if !strings.Contains(text, "shortIds") {
 		t.Fatalf("Trojan+REALITY config missing shortIds: %s", text)
+	}
+	if !strings.Contains(text, "manual-ss-password") {
+		t.Fatalf("Shadowsocks config should preserve user-visible password/key: %s", text)
 	}
 	if !strings.Contains(text, "password") {
 		t.Fatalf("Trojan+REALITY config missing password field: %s", text)
@@ -117,8 +120,8 @@ func TestBuildConfigVLESSRealityHasFlowInClients(t *testing.T) {
 			RealityDest:        "www.cloudflare.com:443",
 			RealityServerNames: "www.cloudflare.com",
 			RealityPrivateKey:  "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg",
-			Enabled: true,
-			Clients: []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "flow-test@test.com", Enabled: true}},
+			Enabled:            true,
+			Clients:            []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "flow-test@test.com", Enabled: true}},
 		},
 		{
 			ID: 10, UUID: "10101010-1010-4010-8010-101010101010",
@@ -129,8 +132,8 @@ func TestBuildConfigVLESSRealityHasFlowInClients(t *testing.T) {
 			RealityDest:        "www.cloudflare.com:443",
 			RealityServerNames: "www.cloudflare.com",
 			RealityPrivateKey:  "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg",
-			Enabled: true,
-			Clients: []db.Client{{UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Email: "xhttp-flow@test.com", Enabled: true}},
+			Enabled:            true,
+			Clients:            []db.Client{{UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Email: "xhttp-flow@test.com", Enabled: true}},
 		},
 	}
 	config, err := xray.BuildConfig(inbounds)
@@ -180,19 +183,19 @@ func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
 
 func TestBuildConfigHysteria2WithTLSUsesCorrectSettings(t *testing.T) {
 	config, err := xray.BuildConfig([]db.Inbound{{
-		ID:       11,
-		UUID:     "11111111-1111-4111-8111-111111111111",
-		Remark:   "hy2-tls",
-		Protocol: "hysteria2",
-		Port:     43001,
-		Network:  "quic",
-		Security: "tls",
-		Hy2UpMbps:    50,
-		Hy2DownMbps:  100,
-		TLSCertFile:    "/etc/cert.pem",
-		TLSKeyFile:     "/etc/key.pem",
-		Enabled:  true,
-		Clients:  []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "hy2-tls@test.com", Enabled: true}},
+		ID:          11,
+		UUID:        "11111111-1111-4111-8111-111111111111",
+		Remark:      "hy2-tls",
+		Protocol:    "hysteria2",
+		Port:        43001,
+		Network:     "quic",
+		Security:    "tls",
+		Hy2UpMbps:   50,
+		Hy2DownMbps: 100,
+		TLSCertFile: "/etc/cert.pem",
+		TLSKeyFile:  "/etc/key.pem",
+		Enabled:     true,
+		Clients:     []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "hy2-tls@test.com", Enabled: true}},
 	}})
 	if err != nil {
 		t.Fatalf("build config: %v", err)
@@ -241,21 +244,21 @@ func TestBuildConfigHysteria2NoTLSUsesPasswordAuthOnly(t *testing.T) {
 
 func TestBuildConfigHysteria2WithObfsIncludesObfuscationSettings(t *testing.T) {
 	config, err := xray.BuildConfig([]db.Inbound{{
-		ID:       13,
-		UUID:     "33333333-3333-4333-8333-333333333333",
-		Remark:   "hy2-obfs",
-		Protocol: "hysteria2",
-		Port:     43003,
-		Network:  "quic",
-		Security: "tls",
-		Hy2UpMbps:     30,
-		Hy2DownMbps:   50,
-		Hy2Obfs:       "salamander",
+		ID:              13,
+		UUID:            "33333333-3333-4333-8333-333333333333",
+		Remark:          "hy2-obfs",
+		Protocol:        "hysteria2",
+		Port:            43003,
+		Network:         "quic",
+		Security:        "tls",
+		Hy2UpMbps:       30,
+		Hy2DownMbps:     50,
+		Hy2Obfs:         "salamander",
 		Hy2ObfsPassword: "my-obfs-key",
-		TLSCertFile:    "/etc/cert.pem",
-		TLSKeyFile:     "/etc/key.pem",
-		Enabled:  true,
-		Clients:  []db.Client{{UUID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Email: "hy2-obfs@test.com", Enabled: true}},
+		TLSCertFile:     "/etc/cert.pem",
+		TLSKeyFile:      "/etc/key.pem",
+		Enabled:         true,
+		Clients:         []db.Client{{UUID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Email: "hy2-obfs@test.com", Enabled: true}},
 	}})
 	if err != nil {
 		t.Fatalf("build config: %v", err)

@@ -1041,9 +1041,11 @@ func vmessShareLink(host string, inbound db.Inbound, client db.Client) string {
 }
 
 func ssShareLink(host string, inbound db.Inbound, client db.Client) string {
-	// Default method used by Xray config builder: 2022-blake3-aes-128-gcm
-	method := "2022-blake3-aes-128-gcm"
-	userPass := method + ":" + client.UUID
+	method := inbound.SSMethod
+	if method == "" {
+		method = "2022-blake3-aes-128-gcm"
+	}
+	userPass := method + ":" + inbound.UUID
 	encoded := base64.StdEncoding.EncodeToString([]byte(userPass))
 	return "ss://" + encoded + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + client.Email
 }
@@ -1332,6 +1334,11 @@ const panelHTML = `<!doctype html>
           </select>
           <p class="field-help">REALITY/TLS 会展开证书或伪装目标字段。</p>
         </div>
+        <div class="field-group span-2">
+          <label class="field-label" for="inbound-uuid">入站 UUID / Shadowsocks 密码</label>
+          <div class="inline-field-tools"><input id="inbound-uuid" name="uuid" placeholder="自动生成；Shadowsocks 会作为单用户密码/密钥"><button type="button" class="btn-mini" onclick="regenerateField('inbound-uuid')">重新生成</button><button type="button" class="btn-mini" onclick="toggleSecretField('inbound-uuid')">显示/隐藏</button></div>
+          <p class="field-help">普通协议可保持默认；Shadowsocks 单用户模式会使用这里的值作为密码/密钥。</p>
+        </div>
         <div id="dynamic-fields">
           <div id="ws-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">WebSocket 设置</div>
@@ -1389,13 +1396,14 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="advanced-fieldset field-group span-2" style="border-left:2px solid var(--accent);padding-left:12px;margin-bottom:0">
           <div onclick="toggleInitClient(this)" style="cursor:pointer;color:var(--accent);user-select:none;font-size:13px">
-            <span class="chevron">▶</span> 同时添加首个客户端
+            <span class="chevron">▼</span> 同时添加首个客户端（推荐）
           </div>
-          <div id="init-client-fields" class="hidden" style="margin-top:8px;display:grid;gap:10px">
-            <div class="inline-field-tools" style="grid-column:1/-1"><input id="init-client-email" placeholder="客户端邮箱 (必填，如 sam@example.com)"><button type="button" class="btn-mini" onclick="regenerateField('init-client-email')">重新生成</button></div>
+          <div id="init-client-fields" style="margin-top:8px;display:grid;gap:10px">
+            <div class="inline-field-tools" style="grid-column:1/-1"><input id="init-client-email" placeholder="客户端标识 (如 user01 或 sam@example.com)"><button type="button" class="btn-mini" onclick="regenerateField('init-client-email')">重新生成</button></div>
+            <div class="inline-field-tools" style="grid-column:1/-1"><input id="init-client-uuid" placeholder="客户端 UUID / 密码 / 密钥（自动生成，可修改）"><button type="button" class="btn-mini" onclick="regenerateField('init-client-uuid')">重新生成</button><button type="button" class="btn-mini" onclick="toggleSecretField('init-client-uuid')">显示/隐藏</button></div>
             <input id="init-client-traffic" type="number" min="0" placeholder="流量上限，单位字节；0=无限" value="0">
             <input id="init-client-expiry" type="datetime-local">
-            <p class="field-help" style="grid-column:1/-1">创建入站后自动生成第一个客户端。流量上限设置后可在概览页查看使用比例。</p>
+            <p id="init-client-credential-help" class="field-help" style="grid-column:1/-1">客户端凭据会自动生成。VLESS/VMess 使用 UUID，Trojan/Shadowsocks/Hysteria2 使用密码或密钥；不懂时保持默认即可。</p>
           </div>
         </div>
         <div class="form-actions modal-actions">
@@ -1416,6 +1424,11 @@ const panelHTML = `<!doctype html>
           <label class="field-label" for="client-email">客户端标识</label>
           <input id="client-email" name="email" placeholder="例如 user01" required>
           <p class="field-help">用于区分设备或用户，也会出现在分享链接备注中。</p>
+        </div>
+        <div class="field-group span-2">
+          <label class="field-label" for="client-uuid">客户端 UUID / 密码 / 密钥</label>
+          <div class="inline-field-tools"><input id="client-uuid" name="uuid" placeholder="自动生成，可手动修改"><button type="button" class="btn-mini" onclick="regenerateField('client-uuid')">重新生成</button><button type="button" class="btn-mini" onclick="toggleSecretField('client-uuid')">显示/隐藏</button></div>
+          <p class="field-help">VLESS/VMess 使用 UUID；Trojan、Shadowsocks、Hysteria2 可当作密码或密钥，不懂时保持默认即可。</p>
         </div>
         <div class="field-group">
           <label class="field-label" for="client-traffic-limit">流量限额</label>
@@ -2079,7 +2092,8 @@ const panelHTML = `<!doctype html>
           var vmessData = {v:'2',ps:c.email,add:hostName,port:String(inbound.port),id:c.uuid,aid:'0',scy:'auto',net:inbound.network||'tcp',type:'none',host:vmessHost,path:vmessPath,tls:(inbound.security==='tls'||inbound.security==='reality')?'tls':'',sni:vmessSni};
           try { shareLink = 'vmess://' + btoa(JSON.stringify(vmessData)); } catch(e) { shareLink = ''; }
         } else if (inbound.protocol === 'shadowsocks') {
-          var userPass = '2022-blake3-aes-128-gcm:' + c.uuid;
+          var ssMethod = inbound.ss_method || '2022-blake3-aes-128-gcm';
+          var userPass = ssMethod + ':' + inbound.uuid;
           try { shareLink = 'ss://' + btoa(userPass) + '@' + hostName + ':' + inbound.port + '#' + escapeHtml(c.email); } catch(e) { shareLink = ''; }
         } else {
           var p = [];
@@ -2402,6 +2416,7 @@ const panelHTML = `<!doctype html>
       document.getElementById('client-inbound-id').value = inboundId || '';
       const formEl = document.getElementById('create-client-form');
       formEl.reset();
+      regenerateField('client-uuid');
       document.getElementById('create-client-overlay').classList.remove('hidden');
       document.getElementById('client-email').focus();
     }
@@ -2420,13 +2435,14 @@ const panelHTML = `<!doctype html>
       const email = form.get('email');
       if (!email) { showToast('请输入客户端标识', 'error'); return; }
       const tl = parseInt(form.get('traffic_limit')) || 0;
+      const clientUUID = String(form.get('uuid') || '').trim();
       const eaStr = document.getElementById('client-expiry').value;
       let ea = 0;
       if (eaStr) { ea = Math.floor(new Date(eaStr).getTime() / 1000); }
       const response = await fetch('/api/inbounds/' + inboundId + '/clients', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({email: email, traffic_limit: tl, expiry_at: ea})
+        body: JSON.stringify({email: email, uuid: clientUUID, traffic_limit: tl, expiry_at: ea})
       });
       if (!response.ok) {
         showToast('创建客户端失败：' + await response.text(), 'error');
@@ -2487,6 +2503,8 @@ const panelHTML = `<!doctype html>
       formEl.reset();
       document.getElementById('inbound-network').value = 'tcp';
       document.getElementById('inbound-security').value = 'none';
+      document.getElementById('init-client-fields').classList.remove('hidden');
+      document.querySelector('#create-inbound-dialog .chevron').textContent = '\u25BC';
       updateDynamicFields();
       fillRandomDefaults(formEl);
       document.getElementById('create-inbound-overlay').classList.remove('hidden');
@@ -2494,9 +2512,6 @@ const panelHTML = `<!doctype html>
     }
     function closeCreateInbound() {
       document.getElementById('create-inbound-overlay').classList.add('hidden');
-      // Hide and reset initial client fields on close
-      document.getElementById('init-client-fields').classList.add('hidden');
-      document.querySelector('#create-inbound-dialog .chevron').textContent = '\u25B6';
     }
     function toggleInitClient(el) {
       const fields = document.getElementById('init-client-fields');
@@ -2508,6 +2523,22 @@ const panelHTML = `<!doctype html>
     function randHex(n) {
       return Array.from(crypto.getRandomValues(new Uint8Array(Math.ceil(n / 2)))).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, n);
     }
+    function randBase64(byteLen) {
+      const bytes = crypto.getRandomValues(new Uint8Array(byteLen));
+      let s = '';
+      bytes.forEach((b) => { s += String.fromCharCode(b); });
+      return btoa(s);
+    }
+    function credentialForProtocol(proto) {
+      if (proto === 'shadowsocks') return randBase64(16);
+      if (proto === 'trojan' || proto === 'hysteria2') return randHex(16);
+      return crypto.randomUUID ? crypto.randomUUID() : randHex(32);
+    }
+    function protocolForClientModal() {
+      const inboundId = Number(document.getElementById('client-inbound-id')?.value || 0);
+      const inbound = (window._cachedInbounds || []).find((ib) => ib.id === inboundId);
+      return inbound ? inbound.protocol : 'vless';
+    }
     function makeFieldTools(id, secret) {
       const buttons = ['<button type="button" class="btn-mini" onclick="regenerateField(\'' + id + '\')">重新生成</button>'];
       if (secret) buttons.push('<button type="button" class="btn-mini" onclick="toggleSecretField(\'' + id + '\')">显示/隐藏</button>');
@@ -2518,7 +2549,10 @@ const panelHTML = `<!doctype html>
       if (!el) return;
       if (id === 'inbound-reality-short-id' || id === 'ei-reality-short-id') el.value = randHex(8);
       else if (id === 'inbound-hy2-obfs-password' || id === 'ei-hy2-obfs-password') el.value = randHex(12);
-      else if (id === 'inbound-init-client-email' || id === 'init-client-email') el.value = 'user@example.com';
+      else if (id === 'inbound-uuid') el.value = credentialForProtocol(document.getElementById('inbound-protocol').value);
+      else if (id === 'init-client-uuid') el.value = credentialForProtocol(document.getElementById('inbound-protocol').value);
+      else if (id === 'client-uuid') el.value = credentialForProtocol(protocolForClientModal());
+      else if (id === 'inbound-init-client-email' || id === 'init-client-email' || id === 'client-email') el.value = 'user@example.com';
       else if (id === 'inbound-ss-method' || id === 'ei-ss-method') el.value = '2022-blake3-aes-128-gcm';
       else el.value = randHex(8);
       el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2532,10 +2566,12 @@ const panelHTML = `<!doctype html>
       const proto = document.getElementById('inbound-protocol').value;
       const sec = document.getElementById('inbound-security').value;
       const randHex = (n) => Array.from(crypto.getRandomValues(new Uint8Array(Math.ceil(n/2)))).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+      const randCredential = () => credentialForProtocol(proto);
       const setIfEmpty = (sel, val) => {
         const el = formEl.querySelector(sel);
         if (el && !el.value) el.value = val;
       };
+      setIfEmpty('[name="uuid"]', randCredential());
       if (sec === 'reality') {
         setIfEmpty('[name="reality_dest"]', 'www.cloudflare.com:443');
         setIfEmpty('[name="reality_server_names"]', 'www.cloudflare.com');
@@ -2559,6 +2595,13 @@ const panelHTML = `<!doctype html>
       if (initFields && !initFields.classList.contains('hidden')) {
         const emailEl = document.getElementById('init-client-email');
         if (emailEl && !emailEl.value) emailEl.value = 'user@example.com';
+        const uuidEl = document.getElementById('init-client-uuid');
+        if (uuidEl && !uuidEl.value) uuidEl.value = randCredential();
+      }
+      const credentialHelp = document.getElementById('init-client-credential-help');
+      if (credentialHelp) {
+        const label = proto === 'vless' || proto === 'vmess' ? 'UUID' : proto === 'shadowsocks' ? '密码/密钥' : '密码';
+        credentialHelp.textContent = '客户端凭据已自动生成为 ' + label + '，可以手动修改；不懂时保持默认即可。';
       }
     }
 
@@ -2584,6 +2627,7 @@ const panelHTML = `<!doctype html>
         }
         payload.initial_client = {
           email: initEmail,
+          uuid: document.getElementById('init-client-uuid').value.trim(),
           traffic_limit: Number(document.getElementById('init-client-traffic').value || 0),
           expiry_at: initExpiry
         };

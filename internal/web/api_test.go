@@ -475,7 +475,7 @@ func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
 	defer store.Close()
 
 	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
-		Remark: "ss-node", Protocol: "shadowsocks", Port: 8388, Network: "tcp", Security: "none",
+		UUID: "manual-ss-password", Remark: "ss-node", Protocol: "shadowsocks", Port: 8388, Network: "tcp", Security: "none",
 	})
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
@@ -513,8 +513,8 @@ func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
 		}
 	}
 	creds := string(decoded)
-	if !strings.Contains(creds, ":") || !strings.Contains(creds, client.UUID) {
-		t.Fatalf("ss:// decoded credentials %q should contain method:password with UUID", creds)
+	if !strings.Contains(creds, ":") || !strings.Contains(creds, inbound.UUID) {
+		t.Fatalf("ss:// decoded credentials %q should contain method:password with inbound password/key", creds)
 	}
 	if !strings.HasSuffix(body, "#ss-user") {
 		t.Fatalf("ss:// missing remark fragment: %s", body)

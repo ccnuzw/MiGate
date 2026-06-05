@@ -38,18 +38,18 @@ type Inbound struct {
 	GrpcServiceName    string   `json:"grpc_service_name"`
 	RealityDest        string   `json:"reality_dest"`
 	RealityServerNames string   `json:"reality_server_names"`
-	RealityShortID     string `json:"reality_short_id"`
-	RealityPrivateKey  string `json:"reality_private_key"`
-	RealityPublicKey   string `json:"reality_public_key"`
-	SSMethod           string `json:"ss_method"`
-	TLSCertFile        string `json:"tls_cert_file"`
-	TLSKeyFile         string `json:"tls_key_file"`
-	XHTTPPath          string `json:"xhttp_path"`
-	XHTTPMode          string `json:"xhttp_mode"`
-	Hy2UpMbps          int    `json:"hy2_up_mbps"`
-	Hy2DownMbps        int    `json:"hy2_down_mbps"`
-	Hy2Obfs            string `json:"hy2_obfs"`
-	Hy2ObfsPassword    string `json:"hy2_obfs_password"`
+	RealityShortID     string   `json:"reality_short_id"`
+	RealityPrivateKey  string   `json:"reality_private_key"`
+	RealityPublicKey   string   `json:"reality_public_key"`
+	SSMethod           string   `json:"ss_method"`
+	TLSCertFile        string   `json:"tls_cert_file"`
+	TLSKeyFile         string   `json:"tls_key_file"`
+	XHTTPPath          string   `json:"xhttp_path"`
+	XHTTPMode          string   `json:"xhttp_mode"`
+	Hy2UpMbps          int      `json:"hy2_up_mbps"`
+	Hy2DownMbps        int      `json:"hy2_down_mbps"`
+	Hy2Obfs            string   `json:"hy2_obfs"`
+	Hy2ObfsPassword    string   `json:"hy2_obfs_password"`
 	Clients            []Client `json:"clients"`
 }
 
@@ -66,33 +66,35 @@ type Client struct {
 }
 
 type CreateInboundParams struct {
-	Remark             string `json:"remark"`
-	Protocol           string `json:"protocol"`
-	Port               int    `json:"port"`
-	Network            string `json:"network"`
-	Security           string `json:"security"`
-	WsPath             string `json:"ws_path"`
-	WsHost             string `json:"ws_host"`
-	GrpcServiceName    string `json:"grpc_service_name"`
-	RealityDest        string `json:"reality_dest"`
-	RealityServerNames string `json:"reality_server_names"`
-	RealityShortID     string `json:"reality_short_id"`
-	RealityPrivateKey  string `json:"reality_private_key"`
-	RealityPublicKey   string `json:"reality_public_key"`
-	SSMethod           string `json:"ss_method"`
-	TLSCertFile        string `json:"tls_cert_file"`
-	TLSKeyFile         string `json:"tls_key_file"`
-	XHTTPPath          string `json:"xhttp_path"`
-	XHTTPMode          string `json:"xhttp_mode"`
-	Hy2UpMbps          int    `json:"hy2_up_mbps"`
-	Hy2DownMbps        int    `json:"hy2_down_mbps"`
-	Hy2Obfs            string `json:"hy2_obfs"`
-	Hy2ObfsPassword    string `json:"hy2_obfs_password"`
+	UUID               string              `json:"uuid,omitempty"`
+	Remark             string              `json:"remark"`
+	Protocol           string              `json:"protocol"`
+	Port               int                 `json:"port"`
+	Network            string              `json:"network"`
+	Security           string              `json:"security"`
+	WsPath             string              `json:"ws_path"`
+	WsHost             string              `json:"ws_host"`
+	GrpcServiceName    string              `json:"grpc_service_name"`
+	RealityDest        string              `json:"reality_dest"`
+	RealityServerNames string              `json:"reality_server_names"`
+	RealityShortID     string              `json:"reality_short_id"`
+	RealityPrivateKey  string              `json:"reality_private_key"`
+	RealityPublicKey   string              `json:"reality_public_key"`
+	SSMethod           string              `json:"ss_method"`
+	TLSCertFile        string              `json:"tls_cert_file"`
+	TLSKeyFile         string              `json:"tls_key_file"`
+	XHTTPPath          string              `json:"xhttp_path"`
+	XHTTPMode          string              `json:"xhttp_mode"`
+	Hy2UpMbps          int                 `json:"hy2_up_mbps"`
+	Hy2DownMbps        int                 `json:"hy2_down_mbps"`
+	Hy2Obfs            string              `json:"hy2_obfs"`
+	Hy2ObfsPassword    string              `json:"hy2_obfs_password"`
 	InitialClient      *CreateClientParams `json:"initial_client,omitempty"`
 }
 
 type CreateClientParams struct {
-	InboundID    int64 `json:"inbound_id,omitempty"`
+	InboundID    int64  `json:"inbound_id,omitempty"`
+	UUID         string `json:"uuid,omitempty"`
 	Email        string `json:"email"`
 	TrafficLimit int64  `json:"traffic_limit,omitempty"`
 	ExpiryAt     int64  `json:"expiry_at,omitempty"`
@@ -225,7 +227,7 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 	if remark == "" {
 		remark = protocol
 	}
-	id, uuid, err := s.insertInbound(ctx, remark, protocol, params.Port, network, security,
+	id, uuid, err := s.insertInbound(ctx, params.UUID, remark, protocol, params.Port, network, security,
 		params.WsPath, params.WsHost, params.GrpcServiceName,
 		params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey,
 		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.XHTTPPath, params.XHTTPMode,
@@ -255,10 +257,13 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		Clients: clients}, nil
 }
 
-func (s *Store) insertInbound(ctx context.Context, remark, protocol string, port int, network, security string,
+func (s *Store) insertInbound(ctx context.Context, inboundUUID, remark, protocol string, port int, network, security string,
 	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, xhttpPath, xhttpMode string,
 	hy2UpMbps, hy2DownMbps int, hy2Obfs, hy2ObfsPassword string) (int64, string, error) {
-	uuid := newUUID()
+	uuid := strings.TrimSpace(inboundUUID)
+	if uuid == "" {
+		uuid = newUUID()
+	}
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO inbounds (uuid, remark, protocol, port, network, security, enabled, created_at,
   ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method, tls_cert_file, tls_key_file, xhttp_path, xhttp_mode,
@@ -287,7 +292,10 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 	if email == "" {
 		email = "client"
 	}
-	uuid := newUUID()
+	uuid := strings.TrimSpace(params.UUID)
+	if uuid == "" {
+		uuid = newUUID()
+	}
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO clients (inbound_id, uuid, email, enabled, created_at, traffic_limit, expiry_at)
 VALUES (?, ?, ?, 1, ?, ?, ?)

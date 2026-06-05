@@ -46,7 +46,6 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 	}
 }
 
-
 func TestSessionAPIReportsAuthUser(t *testing.T) {
 	router := web.NewRouter(web.WithAuth("sam", "secret"))
 
@@ -146,6 +145,12 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`closeCreateClient()`,
 		`saveCreateClient()`,
 		`name="email"`,
+		`id="client-uuid"`,
+		`name="uuid"`,
+		`客户端 UUID / 密码 / 密钥`,
+		`regenerateField('client-uuid')`,
+		`uuid: clientUUID`,
+		`protocolForClientModal()`,
 		`.client-subsection { margin:8px 0 var(--space-3) var(--space-5);`,
 		`border-left:1px solid var(--line); box-shadow:none;`,
 		`.client-subsection .list { margin-top:0; gap:8px; }`,
@@ -177,6 +182,13 @@ func TestCreateInboundFormShowsRandomizableDefaults(t *testing.T) {
 		`reality_short_id`,
 		`ss_method`,
 		`hy2_obfs_password`,
+		`id="inbound-uuid"`,
+		`入站 UUID / Shadowsocks 密码`,
+		`id="init-client-uuid"`,
+		`客户端 UUID / 密码 / 密钥（自动生成，可修改）`,
+		`credentialForProtocol(proto)`,
+		`randBase64(16)`,
+		`uuid: document.getElementById('init-client-uuid').value.trim()`,
 		`init-client-email`,
 		`参数类型 / 传输方式`,
 		`名称`,
@@ -186,7 +198,7 @@ func TestCreateInboundFormShowsRandomizableDefaults(t *testing.T) {
 			t.Fatalf("create inbound form missing %q: %s", want, body)
 		}
 	}
-	for _, forbidden := range []string{`id="inbound-form"`, `document.getElementById('inbound-form')`, `name="uuid"`} {
+	for _, forbidden := range []string{`id="inbound-form"`, `document.getElementById('inbound-form')`} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("create inbound form should not expose legacy contracts, found %q", forbidden)
 		}
@@ -622,7 +634,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// New sections: outbound and xray
-	for _, want := range []string{`id="outbound"`, `id="xray"`,  `id="xray-status"`} {
+	for _, want := range []string{`id="outbound"`, `id="xray"`, `id="xray-status"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing section/element %q", want)
 		}
