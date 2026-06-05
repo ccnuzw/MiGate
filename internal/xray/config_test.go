@@ -96,3 +96,31 @@ func TestBuildConfigIncludesXHTTPSettingsForVLESSReality(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
+	inbounds := []db.Inbound{
+		{
+			ID: 8, UUID: "88888888-8888-4888-8888-888888888888",
+			Remark: "auto-key-reality", Protocol: "vless", Port: 30050,
+			Network: "tcp", Security: "reality",
+			RealityDest: "www.example.com:443", RealityServerNames: "www.example.com",
+			Enabled: true,
+			Clients: []db.Client{{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "auto-key@test.com", Enabled: true}},
+		},
+	}
+	config, err := xray.BuildConfig(inbounds)
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	if len(config.Inbounds) != 1 {
+		t.Fatalf("expected 1 inbound, got %d", len(config.Inbounds))
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	if !strings.Contains(text, "realitySettings") {
+		t.Fatalf("auto-key inbound missing realitySettings: %s", text)
+	}
+	if !strings.Contains(text, "privateKey") {
+		t.Fatalf("auto-key inbound missing auto-generated privateKey: %s", text)
+	}
+}

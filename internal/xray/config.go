@@ -63,6 +63,15 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 	}
 
 	clients := enabledClients(inbound.Clients)
+
+	// Auto-generate REALITY private key if security=reality but key is missing
+	if strings.ToLower(strings.TrimSpace(inbound.Security)) == "reality" && inbound.RealityPrivateKey == "" {
+		if privKey, pubKey, err := GenerateRealityKey(); err == nil {
+			inbound.RealityPrivateKey = privKey
+			inbound.RealityPublicKey = pubKey
+		}
+	}
+
 	base := InboundConfig{
 		Tag:            fmt.Sprintf("inbound-%d-%s", inbound.ID, protocol),
 		Listen:         "0.0.0.0",
