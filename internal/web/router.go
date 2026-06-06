@@ -2611,7 +2611,9 @@ const panelHTML = `<!doctype html>
           </div>
           <div class="field-group">
             <label class="field-label" for="crr-inbound">来源入站</label>
-            <input id="crr-inbound" placeholder="留空 = 所有入站">
+            <select id="crr-inbound">
+              <option value="">留空 = 所有入站</option>
+            </select>
           </div>
           <div class="field-group">
             <label class="field-label" for="crr-protocol">协议匹配</label>
@@ -2652,7 +2654,9 @@ const panelHTML = `<!doctype html>
           </div>
           <div class="field-group">
             <label class="field-label" for="err-inbound">来源入站</label>
-            <input id="err-inbound" placeholder="留空 = 所有入站">
+            <select id="err-inbound">
+              <option value="">留空 = 所有入站</option>
+            </select>
           </div>
           <div class="field-group">
             <label class="field-label" for="err-protocol">协议匹配</label>
@@ -3275,13 +3279,13 @@ const panelHTML = `<!doctype html>
         }).catch(function() { showToast('排序保存失败', 'error'); loadRoutingRules(); });
       });
     }
-    function openCreateRoutingRule() {
+function openCreateRoutingRule() {
       document.getElementById('crr-domain').value = '';
-      document.getElementById('crr-inbound').value = '';
+      document.getElementById('crr-inbound').innerHTML = '<option value="">留空 = 所有入站</option>';
       document.getElementById('crr-protocol').value = '';
       document.getElementById('crr-enabled').checked = true;
       var sel = document.getElementById('crr-outbound');
-      sel.innerHTML = '<option value=\"\">-- 选择出站 --</option>';
+      sel.innerHTML = '<option value="">-- 选择出站 --</option>';
       // Load outbounds for the dropdown
       fetch(apiPath('/api/outbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var obs = Array.isArray(data) ? data : (data.outbounds || []);
@@ -3292,6 +3296,17 @@ const panelHTML = `<!doctype html>
           sel.appendChild(opt);
         });
         sel.value = '';
+      }).catch(function() {});
+      // Load inbounds for the inbound dropdown
+      fetch(apiPath('/api/inbounds')).then(function(r) { return r.json(); }).then(function(data) {
+        var ibs = Array.isArray(data) ? data : (data.inbounds || []);
+        var ibSel = document.getElementById('crr-inbound');
+        ibs.forEach(function(ib) {
+          var opt = document.createElement('option');
+          opt.value = ib.remark || '';
+          opt.textContent = (ib.remark || '未命名') + ' (端口 ' + ib.port + ')';
+          ibSel.appendChild(opt);
+        });
       }).catch(function() {});
       showModal('create-routing-rule-dialog');
     }
@@ -3336,7 +3351,7 @@ const panelHTML = `<!doctype html>
       var enabled = btn.getAttribute('data-rule-enabled') !== 'false';
       document.getElementById('err-id').value = id;
       document.getElementById('err-domain').value = domain || '';
-      document.getElementById('err-inbound').value = inboundTag || '';
+      document.getElementById('err-inbound').innerHTML = '<option value="">留空 = 所有入站</option>';
       document.getElementById('err-protocol').value = protocol || '';
       document.getElementById('err-enabled').checked = enabled !== false;
       var sel = document.getElementById('err-outbound');
@@ -3349,6 +3364,18 @@ const panelHTML = `<!doctype html>
           opt.textContent = (ob.remark || ob.tag) + ' (' + ob.protocol + ')';
           sel.appendChild(opt);
           if (ob.tag === outboundTag) opt.selected = true;
+        });
+      }).catch(function() {});
+      // Load inbounds for the inbound dropdown
+      fetch(apiPath('/api/inbounds')).then(function(r) { return r.json(); }).then(function(data) {
+        var ibs = Array.isArray(data) ? data : (data.inbounds || []);
+        var ibSel = document.getElementById('err-inbound');
+        ibs.forEach(function(ib) {
+          var opt = document.createElement('option');
+          opt.value = ib.remark || '';
+          opt.textContent = (ib.remark || '未命名') + ' (端口 ' + ib.port + ')';
+          ibSel.appendChild(opt);
+          if ((ib.remark || '') === (inboundTag || '')) opt.selected = true;
         });
       }).catch(function() {});
       showModal('edit-routing-rule-dialog');
