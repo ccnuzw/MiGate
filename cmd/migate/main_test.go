@@ -92,6 +92,38 @@ func TestRouterFromPanelConfigEnablesAuthWhenCredentialsPresent(t *testing.T) {
 	}
 }
 
+func TestRouterFromPanelConfigMountsConfiguredWebBasePath(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel_base_path.json")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/migate","database_path":"` + filepath.Join(tmp, "migate.db") + `"}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config: %v", err)
+	}
+	defer cleanup()
+
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{path: "/migate/login", want: http.StatusOK},
+		{path: "/migate/api/health", want: http.StatusOK},
+		{path: "/migate", want: http.StatusUnauthorized},
+		{path: "/migate/", want: http.StatusUnauthorized},
+	} {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		router.ServeHTTP(resp, req)
+		if resp.Code != tc.want {
+			t.Fatalf("%s: expected %d, got %d: %s", tc.path, tc.want, resp.Code, resp.Body.String())
+		}
+	}
+}
+
 func TestRouterFromPanelConfigSkipsAuthWhenNoCredentials(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "panel_noauth.json")

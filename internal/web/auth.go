@@ -190,7 +190,7 @@ button:hover{opacity:.85}
 </form>
 </div>
 <script>
-document.getElementById('loginForm').addEventListener('submit',async function(e){e.preventDefault();const u=document.getElementById('username').value;const p=document.getElementById('password').value;try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){window.location.href='/'}else{const d=await r.json();const err=document.getElementById('errorMsg');err.textContent=d.error||'登录失败';err.style.display='block'}}catch{const err=document.getElementById('errorMsg');err.textContent='网络错误';err.style.display='block'}})
+document.getElementById('loginForm').addEventListener('submit',async function(e){e.preventDefault();const u=document.getElementById('username').value;const p=document.getElementById('password').value;try{const r=await fetch('api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){window.location.href=window.location.pathname.replace(/\/login$/,'/')||'/'}else{const d=await r.json();const err=document.getElementById('errorMsg');err.textContent=d.error||'登录失败';err.style.display='block'}}catch{const err=document.getElementById('errorMsg');err.textContent='网络错误';err.style.display='block'}})
 </script>
 </body>
 </html>`)

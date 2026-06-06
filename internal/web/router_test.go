@@ -105,7 +105,7 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 		`name="protocol"`,
 		`name="port"`,
 		`loadInbounds()`,
-		`fetch('/api/inbounds')`,
+		`fetch(apiPath('/api/inbounds'))`,
 		`method: 'POST'`,
 		`renderInbounds`,
 		`toggleInitClient`,
@@ -359,7 +359,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`class="app-shell"`,
 		`class="sidebar"`,
 		`class="account-panel"`,
-		`<a href="/#xray">核心</a>`,
+		`<a href="#xray">核心</a>`,
 		`.account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin-top:auto;`,
 		`background:transparent; box-shadow:inset 0 1px 0 var(--line);`,
 		`.account-actions button { min-height:32px;`,
@@ -368,9 +368,9 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`id="logout-button"`,
 		`id="theme-toggle"`,
 		`function loadSession()`,
-		`fetch('/api/session')`,
+		`fetch(apiPath('/api/session'))`,
 		`function logoutPanel()`,
-		`fetch('/api/logout', {method: 'POST'})`,
+		`fetch(apiPath('/api/logout'), {method: 'POST'})`,
 		`function applyTheme(theme)`,
 		`function toggleTheme()`,
 		`localStorage.getItem('migate-theme')`,
@@ -615,7 +615,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`window.location.hash`,
 		`navigateTo(currentSectionFromLocation());`,
 		`window.addEventListener('hashchange'`,
-		`history.replaceState(null, '', sectionId === 'overview' ? '/' : '/#' + sectionId)`,
+		`history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId))`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing hash-preserving navigation contract %q", want)
@@ -623,7 +623,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Nav links work with section switching
-	for _, want := range []string{`href="/"`, `href="/#inbounds"`, `href="/#outbound"`, `href="/#xray"`, `href="/#settings"`} {
+	for _, want := range []string{`href="#"`, `href="#inbounds"`, `href="#outbound"`, `href="#xray"`, `href="#settings"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing nav link %q", want)
 		}
@@ -680,7 +680,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Settings section
-	for _, want := range []string{`href="/#settings"`, `id="settings"`, "loadSettings", "saveSettings", "restartService"} {
+	for _, want := range []string{`href="#settings"`, `id="settings"`, "loadSettings", "saveSettings", "restartService"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing settings element %q", want)
 		}

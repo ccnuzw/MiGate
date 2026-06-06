@@ -81,6 +81,9 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	closeStore := func() { _ = store.Close() }
 
 	opts := []web.Option{web.WithStore(store), web.WithVersion(Version)}
+	if cfg.WebPath != "" {
+		opts = append(opts, web.WithBasePath(cfg.WebPath))
+	}
 	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
 		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
 	}

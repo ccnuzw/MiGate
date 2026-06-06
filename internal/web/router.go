@@ -71,6 +71,7 @@ type routerConfig struct {
 	configDir      string
 	restartCmd     string
 	version        string
+	basePath       string
 }
 
 type Option func(*routerConfig)
@@ -105,6 +106,12 @@ func WithRestartCmd(cmd string) Option {
 	}
 }
 
+func WithBasePath(basePath string) Option {
+	return func(cfg *routerConfig) {
+		cfg.basePath = normalizeBasePath(basePath)
+	}
+}
+
 func NewRouter(options ...Option) http.Handler {
 	cfg := routerConfig{
 		xrayController: defaultXrayController{},
@@ -133,7 +140,38 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/restart", restartHandler(cfg.restartCmd))
 	mux.HandleFunc("/api/version", versionHandler(cfg.version))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
-	return authMiddleware(mux, &cfg)
+	handler := authMiddleware(mux, &cfg)
+	if cfg.basePath != "" {
+		return basePathMiddleware(handler, cfg.basePath)
+	}
+	return handler
+}
+
+func normalizeBasePath(basePath string) string {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" || basePath == "/" {
+		return ""
+	}
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+	return strings.TrimRight(basePath, "/")
+}
+
+func basePathMiddleware(next http.Handler, basePath string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != basePath && !strings.HasPrefix(r.URL.Path, basePath+"/") {
+			http.NotFound(w, r)
+			return
+		}
+		cloned := r.Clone(r.Context())
+		cloned.URL.Path = strings.TrimPrefix(r.URL.Path, basePath)
+		if cloned.URL.Path == "" {
+			cloned.URL.Path = "/"
+		}
+		cloned.URL.RawPath = ""
+		next.ServeHTTP(w, cloned)
+	})
 }
 
 func panelHandler(w http.ResponseWriter, r *http.Request) {
@@ -1607,17 +1645,17 @@ const panelHTML = `<!doctype html>
       <div class="brand">MiGate</div>
       <div class="subtitle">轻量单二进制面板，专注协议、客户端与 Xray 管理。</div>
       <nav>
-        <a class="active" href="/">概览</a>
-        <a href="/#inbounds">入站</a>
-        <a href="/#outbound">出站</a>
-        <a href="/#xray">核心</a>
-        <a href="/#settings">设置</a>
+        <a class="active" href="#">概览</a>
+        <a href="#inbounds">入站</a>
+        <a href="#outbound">出站</a>
+        <a href="#xray">核心</a>
+        <a href="#settings">设置</a>
       </nav>
       <div class="account-panel" aria-label="当前账号">
         <div class="account-label">当前用户</div>
         <div id="current-username" class="account-name">加载中...</div>
         <div class="account-actions">
-          <button id="login-button" class="secondary" onclick="window.location.href='/login'">登录</button>
+          <button id="login-button" class="secondary" onclick="window.location.href=panelPath('/login')">登录</button>
           <button id="logout-button" class="secondary" onclick="logoutPanel()">登出</button>
           <button id="theme-toggle" class="secondary" onclick="toggleTheme()">深色模式</button>
         </div>
@@ -1772,6 +1810,16 @@ const panelHTML = `<!doctype html>
     </main>
   </div>
   <script>
+    function basePath() {
+      const pathname = window.location.pathname || '/';
+      const loginIndex = pathname.indexOf('/login');
+      if (loginIndex >= 0) return pathname.slice(0, loginIndex);
+      if (pathname === '/') return '';
+      return pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+    }
+    function apiPath(path) { return basePath() + path; }
+    function panelPath(path) { return basePath() + path; }
+
     const inboundList = document.getElementById('inbound-list');
     const inboundCount = document.getElementById('inbound-count');
     const clientCount = document.getElementById('client-count');
@@ -1939,12 +1987,12 @@ const panelHTML = `<!doctype html>
     }
 
     async function loadInbounds() {
-      const response = await fetch('/api/inbounds');
+      const response = await fetch(apiPath('/api/inbounds'));
       const data = await response.json();
       renderInbounds(data.inbounds || []);
       // Fetch Xray status for overview
       try {
-        const xr = await fetch('/api/xray/status');
+        const xr = await fetch(apiPath('/api/xray/status'));
         const xs = await xr.json();
         if (xs && xs.service !== undefined) {
           xrayStatusMetric.textContent = xs.service === 'running' ? '运行中' : (xs.service === 'stopped' ? '已停止' : xs.service);
@@ -1975,7 +2023,7 @@ const panelHTML = `<!doctype html>
 
     async function loadSession() {
       try {
-        const res = await fetch('/api/session');
+        const res = await fetch(apiPath('/api/session'));
         const session = await res.json();
         const name = document.getElementById('current-username');
         const loginBtn = document.getElementById('login-button');
@@ -1991,10 +2039,10 @@ const panelHTML = `<!doctype html>
     }
 
     async function logoutPanel() {
-      const res = await fetch('/api/logout', {method: 'POST'});
+      const res = await fetch(apiPath('/api/logout'), {method: 'POST'});
       if (!res.ok) { showToast('登出失败', 'error'); return; }
       showToast('已登出', 'success');
-      window.location.href = '/login';
+      window.location.href = panelPath('/login');
     }
 
     function toggleSidebar() {
@@ -2012,7 +2060,7 @@ const panelHTML = `<!doctype html>
       }
       el.style.display = 'block';
       el.innerHTML = '<div class="list" style="margin:0">正在加载客户端...</div>';
-      fetch('/api/inbounds').then(r => r.json()).then(data => {
+      fetch(apiPath('/api/inbounds')).then(r => r.json()).then(data => {
         const inbound = (data.inbounds || []).find(i => i.id === inboundId);
         if (!inbound) { el.innerHTML = '<div class="muted" style="padding:12px">入站未找到</div>'; return; }
         renderClients(inbound, el.querySelector('.list') || el);
@@ -2046,17 +2094,17 @@ const panelHTML = `<!doctype html>
       });
       document.querySelectorAll('nav a').forEach((a) => {
         const href = a.getAttribute('href');
-        a.classList.toggle('active', (sectionId === 'overview' && href === '/') || href === '/#' + sectionId);
+        a.classList.toggle('active', (sectionId === 'overview' && href === '#') || href === '#' + sectionId);
       });
-      history.replaceState(null, '', sectionId === 'overview' ? '/' : '/#' + sectionId);
+      history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId));
     }
     document.querySelectorAll('nav a').forEach((a) => {
       a.addEventListener('click', (e) => {
         e.preventDefault();
         closeSidebar();
         const href = a.getAttribute('href');
-        if (href === '/') { navigateTo('overview'); return; }
-        const id = href.replace('/#', '');
+        if (href === '#') { navigateTo('overview'); return; }
+        const id = href.replace('#', '');
         navigateTo(id);
       });
     });
@@ -2206,7 +2254,7 @@ const panelHTML = `<!doctype html>
 
     async function deleteInbound(id) {
       if (!await showConfirm('确认删除入站 ' + id + '？此操作不可撤销，其下的客户端也将被删除。')) return;
-      const response = await fetch('/api/inbounds/' + id, {method: 'DELETE'});
+      const response = await fetch(apiPath('/api/inbounds/') + id, {method: 'DELETE'});
       if (!response.ok) {
         showToast('删除失败：' + await response.text(), 'error');
         return;
@@ -2216,7 +2264,7 @@ const panelHTML = `<!doctype html>
 
     async function deleteClient(inboundId, clientId) {
       if (!await showConfirm('确认删除客户端 ' + clientId + '？')) return;
-      const response = await fetch('/api/inbounds/' + inboundId + '/clients/' + clientId, {method: 'DELETE'});
+      const response = await fetch(apiPath('/api/inbounds/') + inboundId + '/clients/' + clientId, {method: 'DELETE'});
       if (!response.ok) {
         showToast('删除失败：' + await response.text(), 'error');
         return;
@@ -2242,7 +2290,7 @@ const panelHTML = `<!doctype html>
     }
 
     async function editInbound(id) {
-      const res = await fetch('/api/inbounds');
+      const res = await fetch(apiPath('/api/inbounds'));
       const data = await res.json();
       const inbound = (data.inbounds || []).find(i => i.id === id);
       if (!inbound) { showToast('入站未找到', 'error'); return; }
@@ -2306,7 +2354,7 @@ const panelHTML = `<!doctype html>
       const existingInbounds = window._cachedInbounds || [];
       const conflictInb = existingInbounds.find(ib => ib.id !== id && ib.port === data.port);
       if (conflictInb) { showToast('端口 ' + data.port + ' 已被入站 ' + (conflictInb.remark || conflictInb.id) + ' 使用', 'error'); return; }
-      const res = await fetch('/api/inbounds/' + id, {
+      const res = await fetch(apiPath('/api/inbounds/') + id, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
@@ -2321,12 +2369,12 @@ const panelHTML = `<!doctype html>
     document.getElementById('ei-security').addEventListener('change', eiUpdateDynamicFields);
 
     async function toggleInbound(id) {
-      const response = await fetch('/api/inbounds');
+      const response = await fetch(apiPath('/api/inbounds'));
       const data = await response.json();
       const inbound = (data.inbounds || []).find(i => i.id === id);
       if (!inbound) return;
       inbound.enabled = !inbound.enabled;
-      const res = await fetch('/api/inbounds/' + id + '/enabled', {
+      const res = await fetch(apiPath('/api/inbounds/') + id + '/enabled', {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({enabled: inbound.enabled})
@@ -2340,7 +2388,7 @@ const panelHTML = `<!doctype html>
     }
 
     async function editClient(id, inboundId) {
-      const res = await fetch('/api/inbounds');
+      const res = await fetch(apiPath('/api/inbounds'));
       const data = await res.json();
       const inbound = (data.inbounds || []).find(i => inboundId ? i.id === inboundId : true);
       const allClients = (inbound && inbound.clients) || [];
@@ -2377,7 +2425,7 @@ const panelHTML = `<!doctype html>
       const eaStr = document.getElementById('ec-expiry-at').value;
       let ea = 0;
       if (eaStr) { ea = Math.floor(new Date(eaStr).getTime() / 1000); }
-      const res = await fetch('/api/inbounds/' + d.inboundId + '/clients/' + d.id, {
+      const res = await fetch(apiPath('/api/inbounds/') + d.inboundId + '/clients/' + d.id, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({email: email, traffic_limit: tl, expiry_at: ea})
@@ -2389,7 +2437,7 @@ const panelHTML = `<!doctype html>
     }
 
     async function toggleClient(id) {
-      const inboundRes = await fetch('/api/inbounds');
+      const inboundRes = await fetch(apiPath('/api/inbounds'));
       const data = await inboundRes.json();
       const inbounds = data.inbounds || [];
       let foundInbound = null, foundClient = null;
@@ -2399,7 +2447,7 @@ const panelHTML = `<!doctype html>
       }
       if (!foundInbound || !foundClient) return;
       foundClient.enabled = !foundClient.enabled;
-      const res = await fetch('/api/inbounds/' + foundInbound.id + '/clients/' + id + '/enabled', {
+      const res = await fetch(apiPath('/api/inbounds/') + foundInbound.id + '/clients/' + id + '/enabled', {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({enabled: foundClient.enabled})
@@ -2439,7 +2487,7 @@ const panelHTML = `<!doctype html>
       const eaStr = document.getElementById('client-expiry').value;
       let ea = 0;
       if (eaStr) { ea = Math.floor(new Date(eaStr).getTime() / 1000); }
-      const response = await fetch('/api/inbounds/' + inboundId + '/clients', {
+      const response = await fetch(apiPath('/api/inbounds/') + inboundId + '/clients', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({email: email, uuid: clientUUID, traffic_limit: tl, expiry_at: ea})
@@ -2658,7 +2706,7 @@ const panelHTML = `<!doctype html>
       }
       delete payload.init_email;
       delete payload.init_traffic;
-      const response = await fetch('/api/inbounds', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      const response = await fetch(apiPath('/api/inbounds'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
       if (!response.ok) {
         showToast('创建入站失败', 'error');
         return;
@@ -2677,7 +2725,7 @@ const panelHTML = `<!doctype html>
     // === Xray status & apply ===
     async function fetchXrayStatus() {
       try {
-        const res = await fetch('/api/xray/status');
+        const res = await fetch(apiPath('/api/xray/status'));
         const data = await res.json();
         document.getElementById('xray-status').textContent = data.status || '未知';
         document.getElementById('xray-managed').textContent = data.managed ? '是' : '否';
@@ -2686,7 +2734,7 @@ const panelHTML = `<!doctype html>
         document.getElementById('xray-status').textContent = '连接失败';
       }
       try {
-        const vr = await fetch('/api/xray/version');
+        const vr = await fetch(apiPath('/api/xray/version'));
         const vdata = await vr.json();
         document.getElementById('xray-version').textContent = vdata.version || '-';
         // Hysteria2 is not supported by any current Xray version
@@ -2698,7 +2746,7 @@ const panelHTML = `<!doctype html>
     async function applyXrayConfig() {
       document.getElementById('xray-result').innerHTML = renderNotice('正在应用', '正在写入 xray.json、执行配置校验并尝试重启 Xray。');
       try {
-        const res = await fetch('/api/xray/apply', {method: 'POST'});
+        const res = await fetch(apiPath('/api/xray/apply'), {method: 'POST'});
         const data = await res.json();
         const commands = data.commands_executed && data.commands_executed.length ? '\n' + data.commands_executed.join('\n') : '';
         if (data.status && data.status.startsWith('failed')) {
@@ -2729,7 +2777,7 @@ const panelHTML = `<!doctype html>
         return;
       }
       try {
-        const res = await fetch('/api/xray/config');
+        const res = await fetch(apiPath('/api/xray/config'));
         const json = await res.json();
         pre.textContent = JSON.stringify(json, null, 2);
         el.style.display = '';
@@ -2753,7 +2801,7 @@ const panelHTML = `<!doctype html>
       el.style.display = '';
       _logsVisible = true;
       try {
-        const res = await fetch('/api/xray/logs?lines=80');
+        const res = await fetch(apiPath('/api/xray/logs?lines=80'));
         const data = await res.json();
         pre.textContent = data.logs || '暂无日志';
       } catch (e) {
@@ -2764,7 +2812,7 @@ const panelHTML = `<!doctype html>
     // === Settings ===
     async function loadSettings() {
       try {
-        const res = await fetch('/api/settings');
+        const res = await fetch(apiPath('/api/settings'));
         if (!res.ok) { throw new Error('not available'); }
         const data = await res.json();
         document.getElementById('set-panel-port').value = data.panel_port || '';
@@ -2784,7 +2832,7 @@ const panelHTML = `<!doctype html>
     }
     async function fetchCertStatus() {
       try {
-        const res = await fetch('/api/cert/status');
+        const res = await fetch(apiPath('/api/cert/status'));
         if (!res.ok) { return; }
         const data = await res.json();
         document.getElementById('cert-status-area').style.display = '';
@@ -2817,7 +2865,7 @@ const panelHTML = `<!doctype html>
       btn.textContent = '签发中…';
       document.getElementById('cert-status-label').textContent = '签发中，请等待…';
       try {
-        const res = await fetch('/api/cert/issue', {
+        const res = await fetch(apiPath('/api/cert/issue'), {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({domain, email})
@@ -2849,7 +2897,7 @@ const panelHTML = `<!doctype html>
       };
       if (!data.panel_port) { showToast('请输入面板端口', 'error'); return; }
       try {
-        const res = await fetch('/api/settings', {
+        const res = await fetch(apiPath('/api/settings'), {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(data)
@@ -2867,7 +2915,7 @@ const panelHTML = `<!doctype html>
       btn.disabled = true;
       btn.textContent = '重启中…';
       try {
-        const res = await fetch('/api/restart', { method: 'POST' });
+        const res = await fetch(apiPath('/api/restart'), { method: 'POST' });
         if (!res.ok) { showToast('重启失败', 'error'); btn.disabled = false; btn.textContent = '重启服务'; return; }
         showToast('正在重启 MiGate 服务…', 'success');
         location.reload();
@@ -2881,7 +2929,7 @@ const panelHTML = `<!doctype html>
     // === Version check ===
     async function checkVersion() {
       try {
-        const res = await fetch('/api/version');
+        const res = await fetch(apiPath('/api/version'));
         const data = await res.json();
         const current = data.version || 'dev';
         if (current === 'dev') return;
