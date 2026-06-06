@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
@@ -280,6 +281,7 @@ func outboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc 
 		path := strings.TrimPrefix(r.URL.Path, "/api/outbounds/")
 		// Handle /api/outbounds/reorder
 		if path == "reorder" {
+			// ...existing reorder handler...
 			if r.Method != http.MethodPost {
 				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 				return
@@ -298,6 +300,38 @@ func outboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"reordered"}`))
+			return
+		}
+		// Handle /api/outbounds/speedtest-all
+		if path == "speedtest-all" {
+			if r.Method != http.MethodPost {
+				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+				return
+			}
+			obs, err := store.ListOutbounds(r.Context())
+			if err != nil {
+				http.Error(w, `{"error":"load_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			results := make(map[int64]map[string]interface{})
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			for _, ob := range obs {
+				if ob.Protocol == "freedom" || ob.Protocol == "blackhole" || ob.Address == "" {
+					continue
+				}
+				wg.Add(1)
+				go func(o db.Outbound) {
+					defer wg.Done()
+					r := pingOutbound(o.Address, o.Port)
+					mu.Lock()
+					results[o.ID] = r
+					mu.Unlock()
+				}(ob)
+			}
+			wg.Wait()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(results)
 			return
 		}
 		idStr := strings.TrimSuffix(path, "/")
@@ -1960,6 +1994,7 @@ const panelHTML = `<!doctype html>
         <p class="muted" style="margin-bottom:16px">配置链式代理转发（SOCKS5 / HTTP），实现流量经外部代理链路中转。</p>
         <div class="actions">
           <button onclick="openCreateOutbound()">新建出站</button>
+          <button class="secondary" onclick="batchSpeedTest()">一键测速</button>
         </div>
         <div id="outbound-list" class="list muted">正在加载出站...</div>
       </section>
@@ -2500,6 +2535,41 @@ const panelHTML = `<!doctype html>
         el.textContent = ' 失败';
         el.style.color = 'var(--danger)';
       });
+    }
+
+    async function batchSpeedTest() {
+      var btn = document.querySelector('[onclick*=\"batchSpeedTest\"]');
+      if (btn) btn.disabled = true;
+      document.querySelectorAll('[id^=\"ping-\"]').forEach(function(el) {
+        el.textContent = ' 测速中';
+        el.style.color = 'var(--text)';
+      });
+      try {
+        var resp = await fetch(apiPath('/api/outbounds/speedtest-all'), {method:'POST'});
+        if (!resp.ok) { showToast('测速失败', 'error'); return; }
+        var results = await resp.json();
+        var okCount = 0, failCount = 0;
+        Object.keys(results).forEach(function(id) {
+          var r = results[id];
+          var el = document.getElementById('ping-' + id);
+          if (!el) return;
+          if (r.latency >= 0) {
+            var ms = (r.latency * 1000).toFixed(0);
+            el.textContent = ' ' + ms + 'ms';
+            el.style.color = ms < 200 ? 'var(--green)' : (ms < 500 ? 'orange' : 'var(--danger)');
+            okCount++;
+          } else {
+            el.textContent = ' 失败';
+            el.style.color = 'var(--danger)';
+            failCount++;
+          }
+        });
+        showToast('完成: ' + okCount + ' 成功, ' + failCount + ' 失败', okCount > 0 ? 'success' : 'error');
+      } catch(e) {
+        showToast('测速异常: ' + e.message, 'error');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     function attachOutboundDragHandlers() {
