@@ -3854,7 +3854,8 @@ const panelHTML = `<!doctype html>
     async function resetClientTraffic() {
       const d = _editingClientData;
       if (!d) return;
-      if (!confirm('确定要重置此客户端的流量数据吗？此操作不可恢复。')) return;
+      const confirmed = await showConfirm('确定要重置此客户端的流量数据吗？此操作不可恢复。');
+      if (!confirmed) return;
       const res = await fetch(apiPath('/api/inbounds/') + d.inboundId + '/clients/' + d.id + '/reset-traffic', {
         method: 'POST'
       });
