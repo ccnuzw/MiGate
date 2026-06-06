@@ -143,6 +143,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/outbounds/", outboundChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/routing-rules", routingRulesHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/routing-rules/", routingRuleChildrenHandler(cfg.store, cfg.xrayController))
+	mux.HandleFunc("/api/stats", statsHandler(cfg.store))
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
@@ -485,6 +486,42 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+func statsHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		inb, _ := store.ListInbounds(ctx)
+		obs, _ := store.ListOutbounds(ctx)
+		rules, _ := store.ListRoutingRules(ctx)
+		var clientCount int
+		for _, in := range inb {
+			clientCount += len(in.Clients)
+		}
+		totalObs := len(obs)
+		enabledObs := 0
+		for _, ob := range obs {
+			if ob.Enabled {
+				enabledObs++
+			}
+		}
+		totalRules := len(rules)
+		enabledRules := 0
+		for _, r := range rules {
+			if r.Enabled {
+				enabledRules++
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"inbounds":              len(inb),
+			"clients":               clientCount,
+			"outbounds":             totalObs,
+			"outbounds_enabled":     enabledObs,
+			"routing_rules":         totalRules,
+			"routing_rules_enabled": enabledRules,
+		})
 	}
 }
 
@@ -1947,6 +1984,8 @@ const panelHTML = `<!doctype html>
         <div class="card panel"><div>入站</div><div id="inbound-count" class="metric">0</div><p>VLESS / VMess / Trojan / Shadowsocks</p></div>
         <div class="card panel"><div>客户端</div><div id="client-count" class="metric">0</div><p>活跃 / 总计</p></div>
         <div class="card panel"><div>总流量</div><div id="total-traffic" class="metric">0 B</div><p>所有客户端上行+下行累计</p></div>
+        <div class="card panel"><div>出站</div><div id="outbound-stats" class="metric">0</div><p>已启用 / 总计</p></div>
+        <div class="card panel"><div>路由规则</div><div id="routing-stats" class="metric">0</div><p>已启用 / 总计</p></div>
         <div class="card panel"><div>Xray</div><div id="xray-status-metric" class="metric">检查中...</div><p>运行状态</p></div>
         <div class="overview-insights">
           <div class="overview-card">
@@ -2862,6 +2901,8 @@ const panelHTML = `<!doctype html>
         await Promise.all([loadRoutingRules(), loadXrayStatus()]);
       } catch(e) { showToast('保存失败: ' + e.message, 'error'); }
     }
+
+    function preferredTheme() {
       const saved = localStorage.getItem('migate-theme');
       if (saved === 'dark' || saved === 'light') return saved;
       return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -2932,12 +2973,25 @@ const panelHTML = `<!doctype html>
       });
     }
 
+    async function loadStats() {
+      try {
+        const resp = await fetch(apiPath('/api/stats'));
+        if (!resp.ok) return;
+        const s = await resp.json();
+        document.getElementById('inbound-count').textContent = s.inbounds;
+        document.getElementById('client-count').textContent = s.clients;
+        document.getElementById('outbound-stats').textContent = s.outbounds_enabled + ' / ' + s.outbounds;
+        document.getElementById('routing-stats').textContent = s.routing_rules_enabled + ' / ' + s.routing_rules;
+      } catch(e) {}
+    }
+
     applyTheme(preferredTheme());
     loadSession();
 
     loadInbounds();
     loadOutbounds();
     loadRoutingRules();
+    loadStats();
 
     // === Navigation section switching ===
     function currentSectionFromLocation() {
