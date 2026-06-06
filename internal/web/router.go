@@ -212,6 +212,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/servers", vpngateServersHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/import", vpngateImportHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/probe", vpngateProbeHandler())
+	mux.HandleFunc("/api/vpngate/outbounds/health", vpngateOutboundHealthHandler(cfg.store))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	handler := authMiddleware(mux, &cfg)
 	if cfg.basePath != "" {
@@ -1683,6 +1684,20 @@ type vpngateProbeResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+func probeTCPAddress(address string, port int, timeout time.Duration) (bool, int64, string) {
+	if port == 0 {
+		port = 1080
+	}
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(address, strconv.Itoa(port)), timeout)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return false, latency, err.Error()
+	}
+	_ = conn.Close()
+	return true, latency, ""
+}
+
 func vpngateProbeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1708,19 +1723,66 @@ func vpngateProbeHandler() http.HandlerFunc {
 				port = 1080
 			}
 			res := vpngateProbeResult{HostName: s.HostName, IP: s.IP, Port: port}
-			start := time.Now()
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(s.IP, strconv.Itoa(port)), 1200*time.Millisecond)
-			res.LatencyMS = time.Since(start).Milliseconds()
-			if err != nil {
-				res.Error = err.Error()
-			} else {
-				res.OK = true
-				_ = conn.Close()
-			}
+			res.OK, res.LatencyMS, res.Error = probeTCPAddress(s.IP, port, 1200*time.Millisecond)
 			results = append(results, res)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(results)
+	}
+}
+
+type vpngateOutboundHealthResult struct {
+	ID        int64  `json:"id"`
+	Tag       string `json:"tag"`
+	Address   string `json:"address"`
+	Port      int    `json:"port"`
+	Enabled   bool   `json:"enabled"`
+	OK        bool   `json:"ok"`
+	LatencyMS int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+type vpngateOutboundHealthResponse struct {
+	Results []vpngateOutboundHealthResult `json:"results"`
+	Summary struct {
+		Total int `json:"total"`
+		OK    int `json:"ok"`
+		Fail  int `json:"fail"`
+	} `json:"summary"`
+}
+
+func vpngateOutboundHealthHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if store == nil {
+			http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		outbounds, err := store.ListOutbounds(r.Context())
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed")
+			return
+		}
+		var resp vpngateOutboundHealthResponse
+		for _, ob := range outbounds {
+			if !ob.Enabled || ob.Protocol != "socks" || !strings.HasPrefix(ob.Tag, "vpngate-") || ob.Address == "" {
+				continue
+			}
+			res := vpngateOutboundHealthResult{ID: ob.ID, Tag: ob.Tag, Address: ob.Address, Port: ob.Port, Enabled: ob.Enabled}
+			res.OK, res.LatencyMS, res.Error = probeTCPAddress(ob.Address, ob.Port, 1200*time.Millisecond)
+			resp.Results = append(resp.Results, res)
+			resp.Summary.Total++
+			if res.OK {
+				resp.Summary.OK++
+			} else {
+				resp.Summary.Fail++
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 
@@ -2471,6 +2533,7 @@ const panelHTML = `<!doctype html>
         <div class="actions">
           <button onclick="openCreateOutbound()">新建出站</button>
           <button class="secondary" onclick="batchSpeedTest()">一键测速</button>
+          <button class="secondary" onclick="checkVPNGateOutboundHealth()">检测 VPN Gate</button>
           <button class="secondary" onclick="showVPNGateDialog()">VPN Gate</button>
         </div>
         <div id="outbound-list" class="list muted">正在加载出站...</div>
@@ -3132,6 +3195,37 @@ const panelHTML = `<!doctype html>
         showToast('测速异常: ' + e.message, 'error');
       } finally {
         if (btn) btn.disabled = false;
+      }
+    }
+
+    async function checkVPNGateOutboundHealth() {
+      var btn = document.querySelector('[onclick*=\"checkVPNGateOutboundHealth\"]');
+      if (btn) { btn.disabled = true; btn.textContent = '检测中...'; }
+      try {
+        var resp = await fetch(apiPath('/api/vpngate/outbounds/health'), {method:'POST'});
+        if (!resp.ok) { showToast('VPN Gate 健康检测失败', 'error'); return; }
+        var data = await resp.json();
+        var summary = data.summary || {total:0, ok:0, fail:0};
+        (data.results || []).forEach(function(r) {
+          var el = document.getElementById('ping-' + r.id);
+          if (!el) return;
+          if (r.ok) {
+            el.textContent = ' VPN Gate: ' + r.latency_ms + 'ms';
+            el.style.color = r.latency_ms < 300 ? 'var(--green)' : (r.latency_ms < 800 ? 'orange' : 'var(--danger)');
+          } else {
+            el.textContent = ' VPN Gate: 失败';
+            el.style.color = 'var(--danger)';
+          }
+        });
+        if (summary.total === 0) {
+          showToast('没有已启用的 VPN Gate 出站', 'error');
+        } else {
+          showToast('VPN Gate 健康检测完成：' + summary.ok + '/' + summary.total + ' 可用', summary.ok > 0 ? 'success' : 'error');
+        }
+      } catch(e) {
+        showToast('VPN Gate 健康检测异常: ' + e.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '检测 VPN Gate'; }
       }
     }
 

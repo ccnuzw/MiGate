@@ -1763,6 +1763,91 @@ func TestVPNGateProbeAPI(t *testing.T) {
 	}
 }
 
+func TestVPNGateOutboundHealthAPI(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	host, portText, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portText)
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	okOutbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "vpngate-ok", Protocol: "socks", Address: host, Port: port})
+	if err != nil {
+		t.Fatalf("create ok outbound: %v", err)
+	}
+	_, err = store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "vpngate-disabled", Protocol: "socks", Address: "127.0.0.1", Port: 1})
+	if err != nil {
+		t.Fatalf("create disabled outbound: %v", err)
+	}
+	disabledList, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list outbounds: %v", err)
+	}
+	for _, ob := range disabledList {
+		if ob.Tag == "vpngate-disabled" {
+			_, err = store.UpdateOutbound(context.Background(), ob.ID, db.UpdateOutboundParams{Tag: ob.Tag, Remark: ob.Remark, Protocol: ob.Protocol, Address: ob.Address, Port: ob.Port, Username: ob.Username, Password: ob.Password, Enabled: false})
+			if err != nil {
+				t.Fatalf("disable outbound: %v", err)
+			}
+		}
+	}
+	_, err = store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "other-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1})
+	if err != nil {
+		t.Fatalf("create other outbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/vpngate/outbounds/health", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		Results []struct {
+			ID        int64  `json:"id"`
+			Tag       string `json:"tag"`
+			Address   string `json:"address"`
+			Port      int    `json:"port"`
+			Enabled   bool   `json:"enabled"`
+			OK        bool   `json:"ok"`
+			LatencyMS int64  `json:"latency_ms"`
+			Error     string `json:"error"`
+		} `json:"results"`
+		Summary struct {
+			Total int `json:"total"`
+			OK    int `json:"ok"`
+			Fail  int `json:"fail"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result.Summary.Total != 1 || result.Summary.OK != 1 || result.Summary.Fail != 0 {
+		t.Fatalf("unexpected summary: %+v body=%s", result.Summary, resp.Body.String())
+	}
+	if len(result.Results) != 1 || result.Results[0].ID != okOutbound.ID || result.Results[0].Tag != "vpngate-ok" || !result.Results[0].OK {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+}
+
 func TestVPNGateImportRejectsNonPost(t *testing.T) {
 	router := web.NewRouter()
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
