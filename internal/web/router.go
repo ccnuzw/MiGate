@@ -2441,7 +2441,7 @@ const panelHTML = `<!doctype html>
             <input id="set-xray-config-path" placeholder="例如 /usr/local/migate">
             <p class="field-help">MiGate 会在该目录写入 xray.json。</p>
           </div>
-          <div class="field-group span-2" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-alt, #f8f9fa)">
+          <div class="field-group span-2" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-subtle)">
             <label class="field-label" style="margin-top:0">MiGate 服务状态</label>
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
               <div>
