@@ -154,6 +154,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/cert/issue", certIssueHandler(&cfg))
 	mux.HandleFunc("/api/settings", settingsHandler(&cfg))
 	mux.HandleFunc("/api/restart", restartHandler(cfg.restartCmd))
+	mux.HandleFunc("/api/service/status", serviceStatusHandler())
 	mux.HandleFunc("/api/version", versionHandler(cfg.version))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	handler := authMiddleware(mux, &cfg)
@@ -1246,6 +1247,32 @@ func restartHandler(cmd string) http.HandlerFunc {
 	}
 }
 
+func serviceStatusHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		status, detail := "unknown", ""
+		out, err := exec.Command("systemctl", "is-active", "migate").Output()
+		if err == nil {
+			status = strings.TrimSpace(string(out))
+		}
+		if status == "active" {
+			out2, _ := exec.Command("systemctl", "show", "migate", "--property=ActiveEnterTimestamp", "--value").Output()
+			if len(out2) > 0 {
+				detail = "启动于 " + strings.TrimSpace(string(out2))
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"service": "migate",
+			"status":  status,
+			"detail":  detail,
+		})
+	}
+}
+
 func subscriptionHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -2169,6 +2196,16 @@ const panelHTML = `<!doctype html>
             <label class="field-label" for="set-xray-config-path">Xray 配置目录</label>
             <input id="set-xray-config-path" placeholder="例如 /usr/local/migate">
             <p class="field-help">MiGate 会在该目录写入 xray.json。</p>
+          </div>
+          <div class="field-group span-2" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-alt, #f8f9fa)">
+            <label class="field-label" style="margin-top:0">MiGate 服务状态</label>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+              <div>
+                <span id="svc-status-badge" style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:12px;font-size:13px;background:var(--surface-subtle)">检查中...</span>
+                <span id="svc-status-detail" class="muted" style="margin-left:12px;font-size:13px"></span>
+              </div>
+              <button type="button" class="secondary" onclick="fetchServiceStatus()" style="font-size:12px">刷新状态</button>
+            </div>
           </div>
           <div class="field-group span-2">
             <label class="field-label" for="set-web-path">Web 基础路径</label>
@@ -3849,6 +3886,7 @@ const panelHTML = `<!doctype html>
           document.getElementById('settings-status').innerHTML = renderNotice('数据库', data.database_path + (data.has_password ? ' | 密码已设置' : ' | 无密码'), 'success');
         }
         fetchCertStatus();
+        fetchServiceStatus();
       } catch (e) {
         document.getElementById('settings-status').innerHTML = renderNotice('设置不可用', '需要在 panel.json 配置文件下运行，或检查配置目录是否已传入。', 'error');
       }
@@ -3941,11 +3979,45 @@ const panelHTML = `<!doctype html>
         const res = await fetch(apiPath('/api/restart'), { method: 'POST' });
         if (!res.ok) { showToast('重启失败', 'error'); btn.disabled = false; btn.textContent = '重启服务'; return; }
         showToast('正在重启 MiGate 服务…', 'success');
-        location.reload();
+        // Retry reload until the page comes back up
+        let retries = 0;
+        const maxRetries = 30;
+        const retryDelay = 1500;
+        function tryReload() {
+          retries++;
+          location.reload();
+        }
+        setTimeout(tryReload, 1000);
       } catch (e) {
         showToast('重启请求失败', 'error');
         btn.disabled = false;
         btn.textContent = '重启服务';
+      }
+    }
+
+    async function fetchServiceStatus() {
+      try {
+        const res = await fetch(apiPath('/api/service/status'));
+        if (!res.ok) { throw new Error('not available'); }
+        const data = await res.json();
+        const badge = document.getElementById('svc-status-badge');
+        const detail = document.getElementById('svc-status-detail');
+        if (data.status === 'active') {
+          badge.innerHTML = '<span style="color:var(--accent2)">●</span> 运行中';
+          badge.style.background = 'rgba(0,180,0,0.1)';
+          detail.textContent = data.detail || '';
+        } else if (data.status === 'inactive' || data.status === 'failed') {
+          badge.innerHTML = '<span style="color:var(--danger)">●</span> ' + (data.status === 'failed' ? '异常' : '未运行');
+          badge.style.background = 'rgba(220,40,40,0.1)';
+          detail.textContent = '';
+        } else {
+          badge.textContent = '未知';
+          badge.style.background = 'var(--surface-subtle)';
+          detail.textContent = '非 systemd 环境或服务未安装';
+        }
+      } catch (e) {
+        document.getElementById('svc-status-badge').textContent = '不可用';
+        document.getElementById('svc-status-detail').textContent = '无法查询服务状态';
       }
     }
 

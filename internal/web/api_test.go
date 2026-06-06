@@ -1442,3 +1442,142 @@ func TestCertIssueValidatesRequiredFields(t *testing.T) {
 		t.Fatalf("expected 404 when no configDir, got %d: %s", response3.Code, response3.Body.String())
 	}
 }
+
+func TestSettingsGetReturnsNotFoundWithoutConfigDir(t *testing.T) {
+	router := web.NewRouter()
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 without configDir, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestSettingsGetReturnsPanelConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/panel.json"
+	if err := os.WriteFile(configPath, []byte(`{"panel_port":8888,"panel_username":"admin","has_password":true,"xray_config_path":"/usr/local/migate","web_base_path":"/migate"}`), 0644); err != nil {
+		t.Fatalf("write panel.json: %v", err)
+	}
+	router := web.NewRouter(web.WithConfigDir(dir))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var data map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if data["panel_port"] != float64(8888) {
+		t.Fatalf("expected panel_port=8888, got %v", data["panel_port"])
+	}
+	if _, exists := data["panel_password"]; exists {
+		t.Fatalf("panel_password should be masked in GET response")
+	}
+	if data["has_password"] != true {
+		t.Fatalf("expected has_password=true, got %v", data["has_password"])
+	}
+	if data["xray_config_path"] != "/usr/local/migate" {
+		t.Fatalf("expected xray_config_path=/usr/local/migate, got %v", data["xray_config_path"])
+	}
+}
+
+func TestSettingsPutUpdatesPanelConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/panel.json"
+	if err := os.WriteFile(configPath, []byte(`{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/"}`), 0644); err != nil {
+		t.Fatalf("write panel.json: %v", err)
+	}
+	router := web.NewRouter(web.WithConfigDir(dir))
+	body := `{"panel_port":7777,"panel_username":"newadmin","panel_password":"newpass","xray_config_path":"/opt/xray","web_base_path":"/panel"}`
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	// Verify file was written
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var saved map[string]interface{}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if saved["panel_port"] != float64(7777) {
+		t.Fatalf("expected panel_port=7777, got %v", saved["panel_port"])
+	}
+	if saved["panel_username"] != "newadmin" {
+		t.Fatalf("expected panel_username=newadmin, got %v", saved["panel_username"])
+	}
+	if saved["panel_password"] != "newpass" {
+		t.Fatalf("expected panel_password=newpass, got %v", saved["panel_password"])
+	}
+	if saved["xray_config_path"] != "/opt/xray" {
+		t.Fatalf("expected xray_config_path=/opt/xray, got %v", saved["xray_config_path"])
+	}
+}
+
+func TestSettingsPutPreservesPasswordWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/panel.json"
+	if err := os.WriteFile(configPath, []byte(`{"panel_port":9999,"panel_username":"admin","panel_password":"secret","database_path":"/db/migate.db","web_base_path":"/"}`), 0644); err != nil {
+		t.Fatalf("write panel.json: %v", err)
+	}
+	router := web.NewRouter(web.WithConfigDir(dir))
+	body := `{"panel_port":7777,"panel_username":"admin","panel_password":"","web_base_path":"/"}`
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var saved map[string]interface{}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if saved["panel_password"] != "secret" {
+		t.Fatalf("expected panel_password preserved as 'secret', got %v", saved["panel_password"])
+	}
+	if saved["database_path"] != "/db/migate.db" {
+		t.Fatalf("expected database_path preserved, got %v", saved["database_path"])
+	}
+}
+
+func TestRestartReturnsRestarting(t *testing.T) {
+	router := web.NewRouter()
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/restart", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var data map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if data["status"] != "restarting" {
+		t.Fatalf("expected status=restarting, got %v", data["status"])
+	}
+}
+
+func TestRestartRejectsNonPost(t *testing.T) {
+	router := web.NewRouter()
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/api/restart", nil)
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405 for %s, got %d", method, resp.Code)
+		}
+	}
+}
