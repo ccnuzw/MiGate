@@ -2,6 +2,7 @@ package xray
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -170,7 +171,7 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 		if inbound.SSMethod != "" {
 			ssMethod = inbound.SSMethod
 		}
-		password := inbound.UUID
+		password := ss2022Key(ssMethod, inbound.UUID)
 		base.Settings = map[string]interface{}{
 			"method":   ssMethod,
 			"password": password,
@@ -209,6 +210,30 @@ func enabledClients(clients []db.Client) []db.Client {
 		}
 	}
 	return result
+}
+
+// ss2022Key generates a proper base64-encoded key for SS 2022 ciphers.
+// For 2022-blake3-aes-128-gcm (16-byte key), for 2022-blake3-aes-256-gcm (32-byte key).
+// Non-2022 ciphers fall back to the inbound UUID.
+func ss2022Key(method string, fallback string) string {
+	if !strings.HasPrefix(method, "2022-blake3") {
+		return fallback
+	}
+	var keySize int
+	switch {
+	case strings.Contains(method, "aes-128"):
+		keySize = 16
+	case strings.Contains(method, "aes-256"):
+		keySize = 32
+	default:
+		// For unknown 2022 variants, default to 16 bytes
+		keySize = 16
+	}
+	key := make([]byte, keySize)
+	if _, err := rand.Read(key); err != nil {
+		return fallback
+	}
+	return base64.StdEncoding.EncodeToString(key)
 }
 
 func clientsAsIDEmail(clients []db.Client, flow string) []map[string]interface{} {
