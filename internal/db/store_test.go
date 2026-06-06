@@ -859,3 +859,47 @@ func TestStoreCreateInboundWithoutInitialClient(t *testing.T) {
 		t.Fatalf("expected 0 clients, got %d", len(inbound.Clients))
 	}
 }
+
+func TestStoreCreateRoutingRuleRejectsNonexistentOutboundTag(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	// Default outbounds are "direct" and "blocked" — "nonexistent" should be rejected
+	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundTag: "nonexistent",
+		Domain:      "example.com",
+		Enabled:     true,
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent outbound_tag, got nil")
+	}
+}
+
+func TestStoreUpdateRoutingRuleRejectsNonexistentOutboundTag(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundTag: "blocked",
+		Domain:      "geosite:malware",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+
+	_, err = store.UpdateRoutingRule(context.Background(), rule.ID, db.UpdateRoutingRuleParams{
+		OutboundTag: "nonexistent",
+		Domain:      "geosite:netflix",
+		Enabled:     false,
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent outbound_tag on update, got nil")
+	}
+}

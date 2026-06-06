@@ -509,6 +509,13 @@ func (s *Store) CreateRoutingRule(ctx context.Context, params CreateRoutingRuleP
 	if ob == "" {
 		return RoutingRule{}, fmt.Errorf("outbound_tag cannot be empty")
 	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbounds WHERE tag=?`, ob).Scan(&count); err != nil {
+		return RoutingRule{}, err
+	}
+	if count == 0 {
+		return RoutingRule{}, fmt.Errorf("outbound_tag %q does not match any existing outbound", ob)
+	}
 	var sort int
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort)+1, 0) FROM routing_rules`).Scan(&sort)
 	enabled := 0
@@ -531,6 +538,13 @@ func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRo
 	ob := strings.TrimSpace(params.OutboundTag)
 	if ob == "" {
 		return RoutingRule{}, fmt.Errorf("outbound_tag cannot be empty")
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbounds WHERE tag=?`, ob).Scan(&count); err != nil {
+		return RoutingRule{}, err
+	}
+	if count == 0 {
+		return RoutingRule{}, fmt.Errorf("outbound_tag %q does not match any existing outbound", ob)
 	}
 	enabled := 0
 	if params.Enabled {

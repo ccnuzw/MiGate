@@ -46,6 +46,29 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 	}
 }
 
+func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
+	}
+	body := page.Body.String()
+	for _, want := range []string{
+		`if (!resp.ok) { showToast('排序保存失败', 'error'); await loadOutbounds(); return; }`,
+		`showToast('排序已保存', 'success');`,
+		`catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); })`,
+		`var ms = Number(r.latency).toFixed(0);`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing outbound interaction contract %q", want)
+		}
+	}
+	if strings.Contains(body, `r.latency * 1000`) {
+		t.Fatalf("batch outbound speed test must not multiply millisecond latency by 1000")
+	}
+}
+
 func TestSessionAPIReportsAuthUser(t *testing.T) {
 	router := web.NewRouter(web.WithAuth("sam", "secret"))
 
@@ -1027,7 +1050,7 @@ func TestSettingsPreservesDatabasePath(t *testing.T) {
 // TestRestartEndpoint tests the /api/restart endpoint
 func TestRestartEndpoint(t *testing.T) {
 	t.Run("POST returns restarting status", func(t *testing.T) {
-		router := web.NewRouter(web.WithRestartCmd(""))
+		router := web.NewRouter()
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/restart", nil)
 		router.ServeHTTP(response, req)

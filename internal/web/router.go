@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,9 @@ import (
 	"github.com/imzyb/MiGate/internal/vpngate"
 	"github.com/imzyb/MiGate/internal/xray"
 )
+
+var validDomain = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
+var validEmail = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
@@ -82,7 +86,6 @@ type routerConfig struct {
 	authPassword   string
 	sessionSecret  []byte
 	configDir      string
-	restartCmd     string
 	version        string
 	basePath       string
 	vpnGateFetcher VPNGateFetcher
@@ -137,12 +140,6 @@ func WithConfigDir(dir string) Option {
 	}
 }
 
-func WithRestartCmd(cmd string) Option {
-	return func(cfg *routerConfig) {
-		cfg.restartCmd = cmd
-	}
-}
-
 func WithBasePath(basePath string) Option {
 	return func(cfg *routerConfig) {
 		cfg.basePath = normalizeBasePath(basePath)
@@ -164,7 +161,6 @@ func WithStatsClient(client xray.StatsClient) Option {
 func NewRouter(options ...Option) http.Handler {
 	cfg := routerConfig{
 		xrayController: defaultXrayController{},
-		restartCmd:     "systemctl restart migate",
 	}
 	for _, option := range options {
 		option(&cfg)
@@ -191,7 +187,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/cert/status", certStatusHandler(&cfg))
 	mux.HandleFunc("/api/cert/issue", certIssueHandler(&cfg))
 	mux.HandleFunc("/api/settings", settingsHandler(&cfg))
-	mux.HandleFunc("/api/restart", restartHandler(cfg.restartCmd))
+	mux.HandleFunc("/api/restart", restartHandler())
 	mux.HandleFunc("/api/service/status", serviceStatusHandler())
 	mux.HandleFunc("/api/version", versionHandler(cfg.version))
 	mux.HandleFunc("/api/vpngate/servers", vpngateServersHandler(&cfg))
@@ -1048,6 +1044,9 @@ func xrayLogsHandler() http.HandlerFunc {
 		if lines == "" {
 			lines = "50"
 		}
+		if n, err := strconv.Atoi(lines); err != nil || n < 1 {
+			lines = "50"
+		}
 		out, err := exec.Command("journalctl", "-u", "xray", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
 		if err != nil {
 			// Fallback: try reading from syslog
@@ -1144,6 +1143,16 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "domain_and_email_required"})
 			return
 		}
+		if !validDomain.MatchString(req.Domain) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_domain"})
+			return
+		}
+		if !validEmail.MatchString(req.Email) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_email"})
+			return
+		}
 		if cfg.configDir == "" {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "cert_not_available"})
@@ -1160,6 +1169,7 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 
 		// Check if acme.sh is installed; if not, install it
 		if _, err := exec.LookPath("acme.sh"); err != nil {
+			// Email already validated by validEmail regex above
 			installOut, err := exec.Command("bash", "-c",
 				"curl -fsSL https://get.acme.sh | sh -s email="+req.Email).CombinedOutput()
 			if err != nil {
@@ -1173,13 +1183,14 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 
 		// Run acme.sh --issue --standalone
-		out, err := exec.Command("bash", "-c",
-			"acme.sh --issue --standalone -d "+req.Domain+
-				" --keylength ec-256"+
-				" --fullchain-file "+certDir+"/fullchain.pem"+
-				" --key-file "+certDir+"/privkey.pem"+
-				" --cert-file "+certDir+"/cert.pem"+
-				" --reloadcmd 'systemctl restart xray || true'").CombinedOutput()
+		out, err := exec.Command("acme.sh",
+			"--issue", "--standalone", "-d", req.Domain,
+			"--keylength", "ec-256",
+			"--fullchain-file", certDir+"/fullchain.pem",
+			"--key-file", certDir+"/privkey.pem",
+			"--cert-file", certDir+"/cert.pem",
+			"--reloadcmd", "systemctl restart xray || true",
+		).CombinedOutput()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]string{
@@ -1309,7 +1320,7 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 	}
 }
 
-func restartHandler(cmd string) http.HandlerFunc {
+func restartHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1321,16 +1332,14 @@ func restartHandler(cmd string) http.HandlerFunc {
 			f.Flush()
 		}
 		// Fork a child that restarts after a brief delay so the response is sent first
-		if cmd != "" {
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				_ = exec.Command("bash", "-c", cmd).Run()
-			}()
-			go func() {
-				time.Sleep(2 * time.Second)
-				os.Exit(0)
-			}()
-		}
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			_ = exec.Command("systemctl", "restart", "migate").Run()
+		}()
+		go func() {
+			time.Sleep(2 * time.Second)
+			os.Exit(0)
+		}()
 	}
 }
 
@@ -2831,6 +2840,7 @@ const panelHTML = `<!doctype html>
     function escapeHtml(value) {
       return String(value || '').replace(/[&<>"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
     }
+    function escHtml(value) { return escapeHtml(value); }
 
     function escapeJsString(value) {
       return escapeHtml(String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\&quot;').replace(/'/g, "\\&#39;").replace(/\n/g, '\\n').replace(/\r/g, ''));
@@ -2955,7 +2965,7 @@ const panelHTML = `<!doctype html>
           var el = document.getElementById('ping-' + id);
           if (!el) return;
           if (r.latency >= 0) {
-            var ms = (r.latency * 1000).toFixed(0);
+            var ms = Number(r.latency).toFixed(0);
             el.textContent = ' ' + ms + 'ms';
             el.style.color = ms < 200 ? 'var(--green)' : (ms < 500 ? 'orange' : 'var(--danger)');
             okCount++;
@@ -3011,7 +3021,10 @@ const panelHTML = `<!doctype html>
         fetch(apiPath('/api/outbounds/reorder'), {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ids: ids})
-        }).catch(function() {});
+        }).then(async function(resp) {
+          if (!resp.ok) { showToast('排序保存失败', 'error'); await loadOutbounds(); return; }
+          showToast('排序已保存', 'success');
+        }).catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); });
       });
     }
 
