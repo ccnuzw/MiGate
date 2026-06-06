@@ -903,3 +903,34 @@ func TestStoreUpdateRoutingRuleRejectsNonexistentOutboundTag(t *testing.T) {
 		t.Fatal("expected error for nonexistent outbound_tag on update, got nil")
 	}
 }
+
+func TestStoreReorderRoutingRulesUpdatesSortOrder(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	r1, _ := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundTag: "blocked", Domain: "geosite:malware", Enabled: true,
+	})
+	r2, _ := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundTag: "blocked", Domain: "geosite:netflix", Enabled: true,
+	})
+
+	err = store.ReorderRoutingRules(context.Background(), []int64{r2.ID, r1.ID})
+	if err != nil {
+		t.Fatalf("reorder routing rules: %v", err)
+	}
+
+	list, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list after reorder: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 routing rules, got %d", len(list))
+	}
+	if list[0].ID != r2.ID || list[1].ID != r1.ID {
+		t.Fatalf("expected rules in order [%d, %d], got [%d, %d]", r2.ID, r1.ID, list[0].ID, list[1].ID)
+	}
+}

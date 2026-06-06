@@ -36,6 +36,7 @@ type Store interface {
 	CreateRoutingRule(ctx context.Context, params db.CreateRoutingRuleParams) (db.RoutingRule, error)
 	UpdateRoutingRule(ctx context.Context, id int64, params db.UpdateRoutingRuleParams) (db.RoutingRule, error)
 	DeleteRoutingRule(ctx context.Context, id int64) error
+	ReorderRoutingRules(ctx context.Context, ids []int64) error
 	CreateClient(ctx context.Context, params db.CreateClientParams) (db.Client, error)
 	DeleteInbound(ctx context.Context, id int64) error
 	DeleteClient(ctx context.Context, id int64) error
@@ -451,6 +452,27 @@ func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
 func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/routing-rules/")
+		if path == "reorder" {
+			if r.Method != http.MethodPost {
+				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				IDs []int64 `json:"ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+				http.Error(w, `{"error":"invalid_payload"}`, http.StatusBadRequest)
+				return
+			}
+			if err := store.ReorderRoutingRules(r.Context(), req.IDs); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "reorder_failed")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"reordered"}`))
+			return
+		}
 		idStr := strings.TrimSuffix(path, "/")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
@@ -1830,6 +1852,7 @@ const panelHTML = `<!doctype html>
     .search-input:focus { box-shadow:var(--shadow-sm), 0 0 0 2px var(--focus); }
     .sort-select { height:36px; border:none; border-radius:var(--radius-md); padding:0 10px; font-size:var(--text-sm); background:var(--surface); color:var(--fg); box-shadow:var(--shadow-sm); cursor:pointer; outline:none; font-family:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; transition:box-shadow .15s; }
     .xray-preview-pre { background:var(--surface-subtle); border-radius:var(--radius-lg); padding:16px; font-size:12px; overflow-x:auto; white-space:pre-wrap; max-height:400px; overflow-y:auto; box-shadow:var(--shadow-sm); margin:0; }
+    .xray-preview-header { display:flex; align-items:center; justify-content:space-between; padding:8px 0 4px; }
     .notice { display:grid; gap:8px; padding:16px; border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-sm), inset 3px 0 0 var(--accent); }
     .notice-title { color:var(--fg); font-size:14px; font-weight:600; letter-spacing:-0.14px; }
     .notice-copy { color:var(--muted); font-size:13px; line-height:1.55; white-space:pre-wrap; }
@@ -1855,8 +1878,7 @@ const panelHTML = `<!doctype html>
     #create-client-overlay.hidden { display:none; }
     #edit-inbound-overlay.hidden { display:none; }
     #edit-client-overlay.hidden { display:none; }
-    #confirm-overlay, #create-inbound-overlay, #create-client-overlay, #edit-inbound-overlay, #edit-client-overlay { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,.12); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; animation:fadeIn .2s; }
-    #confirm-dialog, #create-inbound-dialog, #create-client-dialog, #edit-inbound-dialog, #edit-client-dialog { background:var(--surface); box-shadow:var(--shadow-md); border-radius:var(--radius-xl); padding:var(--space-6); min-width:360px; max-width:520px; max-height:80vh; overflow-y:auto; }
+    #confirm-dialog { background:var(--surface); box-shadow:var(--shadow-md); border-radius:var(--radius-xl); padding:var(--space-6); min-width:360px; max-width:520px; max-height:80vh; overflow-y:auto; }
     #confirm-dialog p { margin:0 0 20px; font-size:15px; line-height:1.6; color:var(--fg); }
     #confirm-dialog .actions { display:flex; gap:10px; justify-content:flex-end; }
     .modal-title { margin:0 0 var(--space-4); font-size:var(--text-lg); line-height:1.3; font-weight:600; letter-spacing:-0.2px; color:var(--fg); }
@@ -1904,9 +1926,12 @@ const panelHTML = `<!doctype html>
   </div>
 
   <!-- Create Inbound Modal -->
-  <div id="create-inbound-overlay" class="hidden" onclick="if(event.target===this)closeCreateInbound()">
-    <div id="create-inbound-dialog">
-      <h3 class="modal-title">新增入站</h3>
+<div id="create-inbound-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeCreateInbound()">
+      <div id="create-inbound-dialog" class="modal-content">
+        <div class="modal-header">
+          <h3 class="modal-title">新增入站</h3>
+          <button class="modal-close" onclick="closeCreateInbound()">✕</button>
+        </div>
       <form id="create-inbound-form" class="form-grid modal-form" onsubmit="return false">
         <div class="field-group">
           <label class="field-label" for="inbound-remark">名称</label>
@@ -2043,9 +2068,12 @@ const panelHTML = `<!doctype html>
   </div>
 
   <!-- Create Client Modal -->
-  <div id="create-client-overlay" class="hidden" onclick="if(event.target===this)closeCreateClient()">
-    <div id="create-client-dialog">
-      <h3 class="modal-title">创建客户端</h3>
+  <div id="create-client-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeCreateClient()">
+    <div id="create-client-dialog" class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">创建客户端</h3>
+        <button class="modal-close" onclick="closeCreateClient()">✕</button>
+      </div>
       <form id="create-client-form" class="form-grid modal-form" onsubmit="return false">
         <input id="client-inbound-id" type="hidden" value="">
         <div class="field-group span-2">
@@ -2078,9 +2106,12 @@ const panelHTML = `<!doctype html>
 
 
   <!-- Edit Inbound Modal -->
-  <div id="edit-inbound-overlay" class="hidden" onclick="if(event.target===this)closeEditInbound()">
-    <div id="edit-inbound-dialog">
-      <h3 class="modal-title">编辑入站</h3>
+  <div id="edit-inbound-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeEditInbound()">
+    <div id="edit-inbound-dialog" class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">编辑入站</h3>
+        <button class="modal-close" onclick="closeEditInbound()">✕</button>
+      </div>
       <form id="edit-inbound-form" class="form-grid modal-form" onsubmit="return false">
         <div class="field-group">
           <label class="field-label" for="ei-remark">入站备注</label>
@@ -2212,9 +2243,12 @@ const panelHTML = `<!doctype html>
   </div>
 
   <!-- Edit Client Modal -->
-  <div id="edit-client-overlay" class="hidden" onclick="if(event.target===this)closeEditClient()">
-    <div id="edit-client-dialog">
-      <h3 class="modal-title">编辑客户端</h3>
+  <div id="edit-client-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeEditClient()">
+    <div id="edit-client-dialog" class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">编辑客户端</h3>
+        <button class="modal-close" onclick="closeEditClient()">✕</button>
+      </div>
       <form id="edit-client-form" class="form-grid modal-form" onsubmit="return false">
         <div class="field-group span-2">
           <label class="field-label" for="ec-email">客户端标识</label>
@@ -2378,8 +2412,8 @@ const panelHTML = `<!doctype html>
           </div>
         </div>
         <div id="xray-result" class="notice-slot"></div>
-        <div id="xray-config-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-config-json" class="xray-preview-pre"></pre></div>
-        <div id="xray-logs-preview" class="list muted" style="margin-top:12px;display:none"><pre id="xray-logs-text" class="xray-preview-pre mono"></pre></div>
+        <div id="xray-config-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Xray 配置预览</span><button class="icon-btn" onclick="closeXrayConfig()" title="关闭" style="font-size:12px">✕</button></div><pre id="xray-config-json" class="xray-preview-pre"></pre></div>
+        <div id="xray-logs-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Xray 运行日志</span><button class="icon-btn" onclick="closeXrayLogs()" title="关闭" style="font-size:12px">✕</button></div><pre id="xray-logs-text" class="xray-preview-pre mono"></pre></div>
       </section>
       <section id="settings" class="card panel">
         <h2 class="section-title">面板设置</h2>
@@ -2776,6 +2810,10 @@ const panelHTML = `<!doctype html>
       // Now filter the DOM rows
       const allowedIds = new Set(list.map(ib => ib.id));
       const rows = inboundList.querySelectorAll('.resource-row');
+      if (rows.length > 0 && allowedIds.size === 0) {
+        inboundList.innerHTML = '<div class="empty-state"><div class="empty-state-title">无匹配结果</div><div class="empty-state-copy">没有入站匹配当前的搜索或筛选条件。</div></div>';
+        return;
+      }
       rows.forEach(row => {
         const idMatch = row.querySelector('[onclick*="editInbound"]');
         if (idMatch) {
@@ -3162,9 +3200,10 @@ const panelHTML = `<!doctype html>
           el.innerHTML = '<div class=\"empty-state\"><div class=\"empty-state-title\">暂无路由规则</div><div class=\"empty-state-copy\">添加规则可将特定域名、入站或协议的流量转发到指定出站。点击上方"新建规则"开始。</div></div>';
           return;
         }
-        el.innerHTML = '<div style=\"display:grid;grid-template-columns:1fr;gap:8px\">' +
+        el.innerHTML = '<div id=\"routing-rule-drag-container\" style=\"display:grid;grid-template-columns:1fr;gap:8px\">' +
           rules.map(function(r) { return renderRoutingRuleCard(r); }).join('') +
           '</div>';
+        setTimeout(attachRoutingRuleDragHandlers, 0);
       } catch(e) {
         el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>';
       }
@@ -3178,18 +3217,62 @@ const panelHTML = `<!doctype html>
       if (!parts.length) parts.push('所有流量');
       var detail = parts.join(' & ');
       var enabledColor = r.enabled ? 'var(--green)' : 'var(--muted)';
-      var json = JSON.stringify(r).replace(/'/g, '&#39;');
-      return '<div class=\"card\" style=\"padding:12px 16px;display:flex;align-items:center;gap:12px\">' +
+      return '<div class=\"card\" style=\"padding:12px 16px;display:flex;align-items:center;gap:12px\" draggable=\"true\" data-rule-id=\"' + r.id + '\">' +
         '<span style=\"color:' + enabledColor + ';font-size:18px\">' + (r.enabled ? '&#9679;' : '&#9678;') + '</span>' +
         '<div style=\"flex:1;min-width:0\">' +
         '<div style=\"font-weight:600;font-size:var(--text-sm)\">' + detail + '</div>' +
         '<div class=\"muted\" style=\"font-size:var(--text-xs)\">→ ' + escHtml(r.outbound_tag) + '</div>' +
         '</div>' +
-        '<button class=\"icon-btn\" onclick=\"openEditRoutingRule(' + r.id + ',&quot;' + escapeJsString(r.outbound_tag) + '&quot;,&quot;' + escapeJsString(r.domain || '') + '&quot;,&quot;' + escapeJsString(r.inbound_tag || '') + '&quot;,&quot;' + escapeJsString(r.protocol || '') + '&quot;,' + (r.enabled||false) + ')\" title=\"编辑\">&#9998;</button>' +
+        '<button class=\"icon-btn\" onclick=\"openEditRoutingRule(this,' + r.id + ')\" title=\"编辑\" data-rule-outbound=\"' + escapeHtml(r.outbound_tag) + '\" data-rule-domain=\"' + escapeHtml(r.domain || '') + '\" data-rule-inbound=\"' + escapeHtml(r.inbound_tag || '') + '\" data-rule-protocol=\"' + escapeHtml(r.protocol || '') + '\" data-rule-enabled=\"' + (r.enabled||false) + '\">&#9998;</button>' +
         '<button class=\"danger-icon-btn\" onclick=\"deleteRoutingRule(' + r.id + ')\" title=\"删除\">&#10005;</button>' +
         '</div>';
     }
 
+
+    function attachRoutingRuleDragHandlers() {
+      var container = document.getElementById('routing-rule-drag-container');
+      if (!container) return;
+      var draggedEl = null;
+      container.addEventListener('dragstart', function(e) {
+        var card = e.target.closest('[draggable]');
+        if (!card) return;
+        draggedEl = card;
+        e.dataTransfer.effectAllowed = 'move';
+        card.style.opacity = '0.4';
+      });
+      container.addEventListener('dragend', function(e) {
+        var card = e.target.closest('[draggable]');
+        if (card) card.style.opacity = '';
+      });
+      container.addEventListener('dragover', function(e) {
+        var card = e.target.closest('[draggable]');
+        if (!card || card === draggedEl || !draggedEl) return;
+        e.preventDefault();
+        var rect = card.getBoundingClientRect();
+        var mid = rect.top + rect.height / 2;
+        if (e.clientY < mid) {
+          container.insertBefore(draggedEl, card);
+        } else {
+          container.insertBefore(draggedEl, card.nextSibling);
+        }
+      });
+      container.addEventListener('drop', function(e) {
+        e.preventDefault();
+        if (!draggedEl) return;
+        var ids = [];
+        container.querySelectorAll('[data-rule-id]').forEach(function(el) {
+          ids.push(parseInt(el.getAttribute('data-rule-id')));
+        });
+        if (!ids.length) return;
+        fetch(apiPath('/api/routing-rules/reorder'), {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ids: ids})
+        }).then(async function(resp) {
+          if (!resp.ok) { showToast('排序保存失败', 'error'); await loadRoutingRules(); return; }
+          showToast('排序已保存', 'success');
+        }).catch(function() { showToast('排序保存失败', 'error'); loadRoutingRules(); });
+      });
+    }
     function openCreateRoutingRule() {
       document.getElementById('crr-domain').value = '';
       document.getElementById('crr-inbound').value = '';
@@ -3243,7 +3326,12 @@ const panelHTML = `<!doctype html>
       });
     }
 
-    function openEditRoutingRule(id, outboundTag, domain, inboundTag, protocol, enabled) {
+    function openEditRoutingRule(btn, id) {
+      var outboundTag = btn.getAttribute('data-rule-outbound');
+      var domain = btn.getAttribute('data-rule-domain');
+      var inboundTag = btn.getAttribute('data-rule-inbound');
+      var protocol = btn.getAttribute('data-rule-protocol');
+      var enabled = btn.getAttribute('data-rule-enabled') !== 'false';
       document.getElementById('err-id').value = id;
       document.getElementById('err-domain').value = domain || '';
       document.getElementById('err-inbound').value = inboundTag || '';
@@ -3502,6 +3590,7 @@ const panelHTML = `<!doctype html>
         a.classList.toggle('active', (sectionId === 'overview' && href === '#') || href === '#' + sectionId);
       });
       history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId));
+      if (sectionId === 'overview') loadStats();
     }
     document.querySelectorAll('nav a').forEach((a) => {
       a.addEventListener('click', (e) => {
@@ -4215,35 +4304,30 @@ const panelHTML = `<!doctype html>
     async function previewXrayConfig() {
       const el = document.getElementById('xray-config-preview');
       const pre = document.getElementById('xray-config-json');
-      if (_configVisible) {
-        el.style.display = 'none';
-        _configVisible = false;
-        return;
-      }
+      if (_configVisible) return;
+      _configVisible = true;
       try {
         const res = await fetch(apiPath('/api/xray/config'));
         const json = await res.json();
         pre.textContent = JSON.stringify(json, null, 2);
         el.style.display = '';
-        _configVisible = true;
       } catch (e) {
         pre.textContent = '加载配置失败';
         el.style.display = '';
-        _configVisible = true;
       }
+    }
+    function closeXrayConfig() {
+      document.getElementById('xray-config-preview').style.display = 'none';
+      _configVisible = false;
     }
     var _logsVisible = false;
     async function loadXrayLogs() {
       const el = document.getElementById('xray-logs-preview');
       const pre = document.getElementById('xray-logs-text');
-      if (_logsVisible) {
-        el.style.display = 'none';
-        _logsVisible = false;
-        return;
-      }
+      if (_logsVisible) return;
+      _logsVisible = true;
       pre.textContent = '加载中...';
       el.style.display = '';
-      _logsVisible = true;
       try {
         const res = await fetch(apiPath('/api/xray/logs?lines=80'));
         const data = await res.json();
@@ -4251,6 +4335,10 @@ const panelHTML = `<!doctype html>
       } catch (e) {
         pre.textContent = '加载日志失败';
       }
+    }
+    function closeXrayLogs() {
+      document.getElementById('xray-logs-preview').style.display = 'none';
+      _logsVisible = false;
     }
 
     // === Settings ===
@@ -4331,6 +4419,10 @@ const panelHTML = `<!doctype html>
       btn.textContent = '获取证书';
     }
     async function saveSettings() {
+      var btn = document.querySelector('[onclick*="saveSettings"]');
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = '保存中...';
       const data = {
         panel_port: parseInt(document.getElementById('set-panel-port').value) || 0,
         panel_username: document.getElementById('set-username').value.trim(),
@@ -4354,6 +4446,8 @@ const panelHTML = `<!doctype html>
       } catch (e) {
         showToast('保存设置失败', 'error');
       }
+      btn.disabled = false;
+      btn.textContent = '保存设置';
     }
     async function restartService() {
       const btn = document.querySelector('button.danger');

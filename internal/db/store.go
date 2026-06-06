@@ -587,6 +587,21 @@ func (s *Store) DeleteRoutingRule(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (s *Store) ReorderRoutingRules(ctx context.Context, ids []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, id := range ids {
+		_, err := tx.ExecContext(ctx, `UPDATE routing_rules SET sort = ? WHERE id = ?`, i, id)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (Inbound, error) {
 	protocol := strings.ToLower(strings.TrimSpace(params.Protocol))
 	if !supportedProtocols[protocol] {
