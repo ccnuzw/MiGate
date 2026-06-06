@@ -32,13 +32,13 @@ MIGATE_VERSION=v0.2.41 bash <(curl -Ls https://raw.githubusercontent.com/imzyb/M
 - 面板端口，默认 `9999`
 - 用户名，默认 `admin`
 - 密码，留空会自动生成随机密码
-- Web 路径，默认 `/`
+- Web 路径，默认 `/panel`
 - 是否安装 Xray
 
 安装完成后访问：
 
 ```text
-http://SERVER_IP:9999/
+http://SERVER_IP:9999/panel
 ```
 
 ## 常用命令

@@ -101,8 +101,8 @@ main() {
     panel_password="$(generate_password)"
     echo "No password entered; generated a random panel password."
   fi
-  read -r -p "Web base path [/]: " web_base_path
-  web_base_path="${web_base_path:-/}"
+  read -r -p "Web base path [/panel]: " web_base_path
+  web_base_path="${web_base_path:-/panel}"
 
   if [ "$VERSION" = "latest" ]; then
     BASE_URL="https://github.com/${REPO}/releases/latest/download"

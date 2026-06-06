@@ -89,6 +89,19 @@ func TestInstallerGeneratesRandomPasswordWhenBlank(t *testing.T) {
 	}
 }
 
+func TestInstallerDefaultsWebBasePathToPanel(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"Web base path [/panel]",
+		"web_base_path=\"${web_base_path:-/panel}\"",
+		"WebUI: http://${host_ip}:${panel_port}${web_base_path}",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer /panel web base path contract missing %q", want)
+		}
+	}
+}
+
 func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
