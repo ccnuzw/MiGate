@@ -83,6 +83,17 @@ type CreateOutboundParams struct {
 	Password string `json:"password"`
 }
 
+type UpdateOutboundParams struct {
+	Tag      string `json:"tag"`
+	Remark   string `json:"remark"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Enabled  bool   `json:"enabled"`
+}
+
 type Client struct {
 	ID           int64  `json:"id"`
 	InboundID    int64  `json:"inbound_id"`
@@ -323,6 +334,67 @@ func (s *Store) CreateOutbound(ctx context.Context, params CreateOutboundParams)
 		return Outbound{}, err
 	}
 	return Outbound{ID: id, Tag: tag, Remark: remark, Protocol: protocol, Address: address, Port: params.Port, Username: strings.TrimSpace(params.Username), Password: params.Password, Enabled: true, Sort: sort}, nil
+}
+
+func (s *Store) UpdateOutbound(ctx context.Context, id int64, params UpdateOutboundParams) (Outbound, error) {
+	protocol := strings.ToLower(strings.TrimSpace(params.Protocol))
+	if !supportedOutboundProtocols[protocol] {
+		return Outbound{}, fmt.Errorf("unsupported outbound protocol: %s", params.Protocol)
+	}
+	tag := strings.TrimSpace(params.Tag)
+	if tag == "" {
+		return Outbound{}, fmt.Errorf("tag cannot be empty")
+	}
+	remark := strings.TrimSpace(params.Remark)
+	if remark == "" {
+		remark = tag
+	}
+	address := strings.TrimSpace(params.Address)
+	if (protocol == "socks" || protocol == "http") && address == "" {
+		return Outbound{}, fmt.Errorf("address cannot be empty")
+	}
+	if (protocol == "socks" || protocol == "http") && (params.Port <= 0 || params.Port > 65535) {
+		return Outbound{}, fmt.Errorf("invalid port: %d", params.Port)
+	}
+	enabled := 0
+	if params.Enabled {
+		enabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE outbounds SET tag=?, remark=?, protocol=?, address=?, port=?, username=?, password=?, enabled=? WHERE id=?`,
+		tag, remark, protocol, address, params.Port, strings.TrimSpace(params.Username), params.Password, enabled, id)
+	if err != nil {
+		return Outbound{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Outbound{}, err
+	}
+	if n == 0 {
+		return Outbound{}, fmt.Errorf("outbound not found: %d", id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
+	var outbound Outbound
+	var dbEnabled int
+	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabled, &outbound.Sort); err != nil {
+		return Outbound{}, err
+	}
+	outbound.Enabled = dbEnabled != 0
+	return outbound, nil
+}
+
+func (s *Store) DeleteOutbound(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM outbounds WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("outbound not found: %d", id)
+	}
+	return nil
 }
 
 func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (Inbound, error) {

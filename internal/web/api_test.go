@@ -59,6 +59,114 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 		t.Fatalf("outbound was not persisted: %+v", outbounds)
 	}
 }
+
+func TestUpdateOutboundAPIUpdatesFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "proxy-http", Protocol: "http", Address: "10.0.0.1", Port: 8080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"tag":"proxy-http-v2","remark":"HTTP代理v2","protocol":"socks","address":"10.0.0.2","port":1080,"username":"newuser","password":"newpass","enabled":false}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"tag":"proxy-http-v2"`, `"protocol":"socks"`, `"address":"10.0.0.2"`, `"port":1080`, `"enabled":false`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("update response missing %q: %s", want, response.Body.String())
+		}
+	}
+
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, o := range outbounds {
+		if o.ID == ob.ID {
+			if o.Tag != "proxy-http-v2" || o.Enabled != false {
+				t.Fatalf("updated values not persisted: %+v", o)
+			}
+		}
+	}
+}
+
+func TestUpdateOutboundAPIRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"tag":"x","remark":"x","protocol":"socks","address":"1.1.1.1","port":80}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/99999", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDeleteOutboundAPIDeletesOutbound(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "temp-proxy", Protocol: "socks", Address: "10.0.0.1", Port: 1080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, o := range outbounds {
+		if o.ID == ob.ID {
+			t.Fatalf("outbound %d still present after delete", ob.ID)
+		}
+	}
+}
+
+func TestDeleteOutboundAPIRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/outbounds/99999", nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestInboundsAPIListsStoredInboundsWithClients(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

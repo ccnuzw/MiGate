@@ -51,6 +51,101 @@ func TestStoreCreatesAndListsOutboundsWithDefaults(t *testing.T) {
 		t.Fatalf("created outbound not appended after defaults: %+v", outbounds)
 	}
 }
+
+func TestStoreUpdatesOutboundFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "proxy-http", Protocol: "http", Address: "10.0.0.1", Port: 8080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	updated, err := store.UpdateOutbound(context.Background(), ob.ID, db.UpdateOutboundParams{
+		Tag: "proxy-http-v2", Remark: "HTTP代理v2", Protocol: "socks",
+		Address: "10.0.0.2", Port: 1080, Username: "newuser", Password: "newpass", Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("update outbound: %v", err)
+	}
+	if updated.Tag != "proxy-http-v2" || updated.Remark != "HTTP代理v2" || updated.Protocol != "socks" ||
+		updated.Address != "10.0.0.2" || updated.Port != 1080 || updated.Username != "newuser" ||
+		updated.Password != "newpass" || updated.Enabled != false || updated.ID != ob.ID {
+		t.Fatalf("unexpected updated outbound: %+v", updated)
+	}
+
+	loaded, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, o := range loaded {
+		if o.ID == ob.ID {
+			if o.Tag != "proxy-http-v2" || o.Enabled != false {
+				t.Fatalf("updated values not persisted: %+v", o)
+			}
+		}
+	}
+}
+
+func TestStoreUpdateOutboundRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.UpdateOutbound(context.Background(), 99999, db.UpdateOutboundParams{Tag: "x", Remark: "x", Protocol: "socks", Address: "1.1.1.1", Port: 80})
+	if err == nil {
+		t.Fatal("expected error for unknown outbound")
+	}
+}
+
+func TestStoreDeleteOutboundDeletesOutbound(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "temp-proxy", Protocol: "socks", Address: "10.0.0.1", Port: 1080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	if err := store.DeleteOutbound(context.Background(), ob.ID); err != nil {
+		t.Fatalf("delete outbound: %v", err)
+	}
+
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, o := range outbounds {
+		if o.ID == ob.ID {
+			t.Fatalf("outbound %d still present after deletion", ob.ID)
+		}
+	}
+}
+
+func TestStoreDeleteOutboundRejectsUnknownID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.DeleteOutbound(context.Background(), 99999); err == nil {
+		t.Fatal("expected error for unknown outbound")
+	}
+}
+
 func TestStoreMigratesAndCreatesInboundWithClients(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
