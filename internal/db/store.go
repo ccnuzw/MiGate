@@ -909,6 +909,28 @@ ORDER BY id ASC
 	return inbounds, nil
 }
 
+func (s *Store) ResetClientTraffic(ctx context.Context, id int64) (Client, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE clients SET up=0, down=0 WHERE id=?`, id)
+	if err != nil {
+		return Client{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Client{}, err
+	}
+	if n == 0 {
+		return Client{}, fmt.Errorf("client not found: %d", id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	var client Client
+	var dbEnabled int
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		return Client{}, err
+	}
+	client.Enabled = dbEnabled != 0
+	return client, nil
+}
+
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

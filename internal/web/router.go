@@ -37,6 +37,7 @@ type Store interface {
 	UpdateClient(ctx context.Context, id int64, params db.UpdateClientParams) (db.Client, error)
 	SetInboundEnabled(ctx context.Context, id int64, enabled bool) (db.Inbound, error)
 	SetClientEnabled(ctx context.Context, inboundID int64, id int64, enabled bool) (db.Client, error)
+	ResetClientTraffic(ctx context.Context, id int64) (db.Client, error)
 }
 
 type XrayController interface {
@@ -608,17 +609,31 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodPost:
-			if len(parts) != 2 || parts[1] != "clients" {
+			if len(parts) == 4 && parts[1] == "clients" && parts[3] == "reset-traffic" {
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				resetClientTraffic(w, r, store, inboundID, clientID)
+				go ctrl.Apply(context.Background())
+			} else if len(parts) != 2 || parts[1] != "clients" {
 				http.NotFound(w, r)
 				return
+			} else {
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				createClient(w, r, store, inboundID)
+				go ctrl.Apply(context.Background())
 			}
-			inboundID, err := strconv.ParseInt(parts[0], 10, 64)
-			if err != nil || inboundID <= 0 {
-				http.NotFound(w, r)
-				return
-			}
-			createClient(w, r, store, inboundID)
-			go ctrl.Apply(context.Background())
 		case http.MethodPatch:
 			if len(parts) == 2 && parts[1] == "enabled" {
 				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
@@ -824,6 +839,20 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)
 	if err != nil {
 		http.Error(w, `{"error":"update_inbound_failed"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+}
+
+func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, inboundID, clientID int64) {
+	if store == nil {
+		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	updated, err := store.ResetClientTraffic(r.Context(), clientID)
+	if err != nil {
+		http.Error(w, `{"error":"reset_traffic_failed"}`, http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1958,9 +1987,30 @@ const panelHTML = `<!doctype html>
           <p class="field-help">用于识别用户或设备，不影响 UUID。</p>
         </div>
         <div class="field-group">
+          <label class="field-label">启用状态</label>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input id="ec-enabled" type="checkbox" style="width:18px;height:18px;accent-color:var(--accent)">
+              <span id="ec-enabled-label">已启用</span>
+            </label>
+          </div>
+        </div>
+        <div class="field-group">
           <label class="field-label" for="ec-traffic-limit">流量限额</label>
           <input id="ec-traffic-limit" type="number" min="0" placeholder="流量限额（字节，0=不限）">
           <p class="field-help">单位为字节，填 0 表示不限。</p>
+        </div>
+        <div class="field-group span-2" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-alt, #f8f9fa)">
+          <label class="field-label" style="margin-top:0">当前流量</label>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <div>
+              <span style="font-size:13px">↑ 上行: <strong id="ec-up-display">0 B</strong></span>
+              <span style="font-size:13px;margin-left:16px">↓ 下行: <strong id="ec-down-display">0 B</strong></span>
+              <span style="font-size:13px;margin-left:16px">总计: <strong id="ec-total-display">0 B</strong></span>
+            </div>
+            <button type="button" class="btn-cancel" style="color:var(--danger);border-color:var(--danger)" onclick="resetClientTraffic()">重置流量</button>
+          </div>
+          <p class="field-help" style="margin-bottom:0">点击重置会将上下行数据清零，不可恢复。</p>
         </div>
         <div class="field-group">
           <label class="field-label" for="ec-expiry-at">过期时间</label>
@@ -3344,7 +3394,15 @@ const panelHTML = `<!doctype html>
       if (!client) { showToast('客户端未找到', 'error'); return; }
       _editingClientData = {id: id, inboundId: client.inbound_id};
       document.getElementById('ec-email').value = client.email || '';
+      document.getElementById('ec-enabled').checked = client.enabled;
+      document.getElementById('ec-enabled-label').textContent = client.enabled ? '已启用' : '已禁用';
+      document.getElementById('ec-enabled').onchange = function() {
+        document.getElementById('ec-enabled-label').textContent = this.checked ? '已启用' : '已禁用';
+      };
       document.getElementById('ec-traffic-limit').value = client.traffic_limit || '';
+      document.getElementById('ec-up-display').textContent = formatBytes(client.up || 0);
+      document.getElementById('ec-down-display').textContent = formatBytes(client.down || 0);
+      document.getElementById('ec-total-display').textContent = formatBytes((client.up || 0) + (client.down || 0));
       if (client.expiry_at && client.expiry_at > 0) {
         const d = new Date(client.expiry_at * 1000);
         document.getElementById('ec-expiry-at').value = d.toISOString().slice(0,16);
@@ -3369,7 +3427,12 @@ const panelHTML = `<!doctype html>
       const res = await fetch(apiPath('/api/inbounds/') + d.inboundId + '/clients/' + d.id, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({email: email, traffic_limit: tl, expiry_at: ea})
+        body: JSON.stringify({
+          email: email,
+          enabled: document.getElementById('ec-enabled').checked,
+          traffic_limit: tl,
+          expiry_at: ea
+        })
       });
       if (!res.ok) { showToast('编辑客户端失败', 'error'); return; }
       showToast('客户端已更新', 'success');
@@ -3398,6 +3461,25 @@ const panelHTML = `<!doctype html>
         return;
       }
       showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success');
+      await loadInbounds();
+    }
+
+    async function resetClientTraffic() {
+      const d = _editingClientData;
+      if (!d) return;
+      if (!confirm('确定要重置此客户端的流量数据吗？此操作不可恢复。')) return;
+      const res = await fetch(apiPath('/api/inbounds/') + d.inboundId + '/clients/' + d.id + '/reset-traffic', {
+        method: 'POST'
+      });
+      if (!res.ok) {
+        showToast('重置流量失败', 'error');
+        return;
+      }
+      const updated = await res.json();
+      document.getElementById('ec-up-display').textContent = formatBytes(updated.up || 0);
+      document.getElementById('ec-down-display').textContent = formatBytes(updated.down || 0);
+      document.getElementById('ec-total-display').textContent = formatBytes((updated.up || 0) + (updated.down || 0));
+      showToast('流量已重置', 'success');
       await loadInbounds();
     }
 
