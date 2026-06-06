@@ -121,10 +121,14 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		token := createSessionToken(req.Username, cfg.sessionSecret)
+		cookiePath := cfg.basePath
+		if cookiePath == "" {
+			cookiePath = "/"
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     "migate_session",
 			Value:    token,
-			Path:     "/",
+			Path:     cookiePath,
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
 			MaxAge:   86400,
