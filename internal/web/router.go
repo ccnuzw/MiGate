@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -567,14 +568,14 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 		for _, in := range inb {
 			for _, c := range in.Clients {
 				info := map[string]interface{}{
-					"id":           c.ID,
-					"inbound_id":   c.InboundID,
-					"email":        c.Email,
-					"enabled":      c.Enabled,
-					"up":           c.Up,
-					"down":         c.Down,
+					"id":            c.ID,
+					"inbound_id":    c.InboundID,
+					"email":         c.Email,
+					"enabled":       c.Enabled,
+					"up":            c.Up,
+					"down":          c.Down,
 					"traffic_limit": c.TrafficLimit,
-					"expiry_at":    c.ExpiryAt,
+					"expiry_at":     c.ExpiryAt,
 				}
 				// Override with live stats if available
 				if liveStats, ok := clientStats[c.Email]; ok {
@@ -605,11 +606,20 @@ func inboundsHandler(store Store, ctrl XrayController) http.HandlerFunc {
 			listInbounds(w, r, store)
 		case http.MethodPost:
 			createInbound(w, r, store)
-			go ctrl.Apply(context.Background())
+			applyXrayAsync(ctrl)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}
+}
+
+func applyXrayAsync(ctrl XrayController) {
+	go func() {
+		result := ctrl.Apply(context.Background())
+		if strings.HasPrefix(result.Status, "failed") {
+			log.Printf("xray apply failed: status=%s service=%s commands=%v error=%s", result.Status, result.Service, result.CommandsExecuted, result.ErrorOutput)
+		}
+	}()
 }
 
 func deriveRealityPublicKeys(inbounds []db.Inbound) {
@@ -693,7 +703,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				resetClientTraffic(w, r, store, inboundID, clientID)
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			} else if len(parts) != 2 || parts[1] != "clients" {
 				http.NotFound(w, r)
 				return
@@ -704,7 +714,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				createClient(w, r, store, inboundID)
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			}
 		case http.MethodPatch:
 			if len(parts) == 2 && parts[1] == "enabled" {
@@ -714,7 +724,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				patchInboundEnabled(w, r, store, inboundID)
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			} else if len(parts) == 4 && parts[1] == "clients" && parts[3] == "enabled" {
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
 				if err != nil || clientID <= 0 {
@@ -727,7 +737,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				patchClientEnabled(w, r, store, inboundID, clientID)
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			} else {
 				http.NotFound(w, r)
 			}
@@ -740,7 +750,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				updateInbound(w, r, store, inboundID)
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// PUT /api/inbounds/{id}/clients/{clientId}
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
@@ -749,7 +759,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				updateClient(w, r, store, clientID)
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			} else {
 				http.NotFound(w, r)
 			}
@@ -771,7 +781,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// DELETE /api/inbounds/{id}/clients/{clientId}
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
@@ -789,7 +799,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
-				go ctrl.Apply(context.Background())
+				applyXrayAsync(ctrl)
 			} else {
 				http.NotFound(w, r)
 			}

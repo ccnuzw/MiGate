@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -114,7 +115,7 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_request"})
 			return
 		}
-		if req.Username != cfg.authUsername || req.Password != cfg.authPassword {
+		if !constantTimeStringEqual(req.Username, cfg.authUsername) || !constantTimeStringEqual(req.Password, cfg.authPassword) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_credentials"})
@@ -136,6 +137,10 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
+}
+
+func constantTimeStringEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // logoutHandler handles POST /api/logout by clearing the session cookie.

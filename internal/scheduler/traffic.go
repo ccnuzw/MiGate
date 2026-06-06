@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/xray"
@@ -20,6 +21,7 @@ type TrafficSyncScheduler struct {
 	interval    time.Duration
 	ctx         context.Context
 	cancel      context.CancelFunc
+	mu          sync.Mutex
 }
 
 // NewTrafficSyncScheduler creates a new scheduler.
@@ -35,7 +37,9 @@ func NewTrafficSyncScheduler(store Store, statsClient xray.StatsClient, interval
 // Start begins the periodic sync loop.
 // This is a blocking call - run it in a separate goroutine.
 func (s *TrafficSyncScheduler) Start() {
+	s.mu.Lock()
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.mu.Unlock()
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -56,6 +60,8 @@ func (s *TrafficSyncScheduler) Start() {
 
 // Stop stops the scheduler.
 func (s *TrafficSyncScheduler) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.cancel != nil {
 		s.cancel()
 	}
