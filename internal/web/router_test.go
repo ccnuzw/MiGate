@@ -240,7 +240,20 @@ func TestLoginPageVercelStyle(t *testing.T) {
 			t.Fatalf("login page missing %q", want)
 		}
 	}
-	if !strings.Contains(body, `[data-theme="dark"]`) {
+	for _, want := range []string{
+		`base+'/api/login'`,
+		`window.location.pathname`,
+		`path.endsWith('/login')`,
+		`window.location.href=(base||'')+'/'`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("login page missing base-path aware login script %q", want)
+		}
+	}
+	if strings.Contains(body, `fetch('api/login'`) {
+		t.Fatalf("login page must not use relative api/login because /migate resolves it to /api/login")
+	}
+	if !strings.Contains(body, `data-theme`) || !strings.Contains(body, `dark`) {
 		t.Fatalf(`login page should support dark theme with [data-theme="dark"]`)
 	}
 }
