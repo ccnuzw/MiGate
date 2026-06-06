@@ -1745,6 +1745,17 @@ const panelHTML = `<!doctype html>
             <div class="advanced-fieldset-copy">填写证书和私钥路径，应用前会交给 Xray 校验。</div>
             <input name="tls_cert_file" placeholder="TLS 证书路径 (如 /etc/.../fullchain.pem)">
             <div class="inline-field-tools"><input name="tls_key_file" placeholder="TLS 密钥路径 (如 /etc/.../privkey.key)"></div>
+            <input name="tls_sni" placeholder="SNI / ServerName (可选，留空则自动匹配)">
+            <select name="tls_fingerprint">
+              <option value="">指纹 (默认不指定)</option>
+              <option value="chrome">Chrome</option>
+              <option value="firefox">Firefox</option>
+              <option value="safari">Safari</option>
+              <option value="random">Random</option>
+              <option value="randomized">Randomized</option>
+            </select>
+            <input name="tls_alpn" placeholder="ALPN (逗号分隔，如 h2,http/1.1)">
+            <p class="field-help">SNI 与指纹用于 TLS 握手指纹伪装；ALPN 用于协议协商，留空为默认。</p>
           </div>
         </div>
         <div class="advanced-fieldset field-group span-2" style="border-left:2px solid var(--accent);padding-left:12px;margin-bottom:0">
@@ -1915,7 +1926,17 @@ const panelHTML = `<!doctype html>
             <label class="field-label" for="ei-tls-cert-file">TLS 证书</label>
             <input id="ei-tls-cert-file" placeholder="TLS 证书路径 (如 /etc/.../fullchain.pem)">
             <input id="ei-tls-key-file" placeholder="TLS 密钥路径 (如 /etc/.../privkey.key)">
-            <p class="field-help">保存后应用 Xray 前会由 Xray 校验证书路径。</p>
+            <input id="ei-tls-sni" placeholder="SNI / ServerName (可选，留空则自动匹配)">
+            <select id="ei-tls-fingerprint">
+              <option value="">指纹 (默认不指定)</option>
+              <option value="chrome">Chrome</option>
+              <option value="firefox">Firefox</option>
+              <option value="safari">Safari</option>
+              <option value="random">Random</option>
+              <option value="randomized">Randomized</option>
+            </select>
+            <input id="ei-tls-alpn" placeholder="ALPN (逗号分隔，如 h2,http/1.1)">
+            <p class="field-help">SNI 与指纹用于 TLS 握手指纹伪装；ALPN 用于协议协商，留空为默认。</p>
           </div>
         </div>
         <div class="form-actions modal-actions">
@@ -3226,6 +3247,9 @@ const panelHTML = `<!doctype html>
       document.getElementById('ei-ss-method').value = inbound.ss_method || '2022-blake3-aes-128-gcm';
       document.getElementById('ei-tls-cert-file').value = inbound.tls_cert_file || '';
       document.getElementById('ei-tls-key-file').value = inbound.tls_key_file || '';
+      document.getElementById('ei-tls-sni').value = inbound.tls_sni || '';
+      document.getElementById('ei-tls-fingerprint').value = inbound.tls_fingerprint || '';
+      document.getElementById('ei-tls-alpn').value = inbound.tls_alpn || '';
       document.getElementById('ei-hy2-up').value = inbound.hy2_up_mbps || 0;
       document.getElementById('ei-hy2-down').value = inbound.hy2_down_mbps || 0;
       document.getElementById('ei-hy2-obfs').value = inbound.hy2_obfs || '';
@@ -3258,6 +3282,9 @@ const panelHTML = `<!doctype html>
         ss_method: document.getElementById('ei-ss-method').value,
         tls_cert_file: document.getElementById('ei-tls-cert-file').value,
         tls_key_file: document.getElementById('ei-tls-key-file').value,
+        tls_sni: document.getElementById('ei-tls-sni').value,
+        tls_fingerprint: document.getElementById('ei-tls-fingerprint').value,
+        tls_alpn: document.getElementById('ei-tls-alpn').value,
         hy2_up_mbps: Number(document.getElementById('ei-hy2-up').value) || 0,
         hy2_down_mbps: Number(document.getElementById('ei-hy2-down').value) || 0,
         hy2_obfs: document.getElementById('ei-hy2-obfs').value,

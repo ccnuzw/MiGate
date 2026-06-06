@@ -320,6 +320,9 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 		if inbound.RealityPrivateKey != "" {
 			realitySettings["privateKey"] = inbound.RealityPrivateKey
 		}
+		if inbound.TLSFingerprint != "" {
+			realitySettings["fingerprint"] = inbound.TLSFingerprint
+		}
 		settings["realitySettings"] = realitySettings
 	}
 	if security == "tls" {
@@ -330,6 +333,25 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 					"certificateFile": inbound.TLSCertFile,
 					"keyFile":         inbound.TLSKeyFile,
 				},
+			}
+		}
+		if inbound.TLSSNI != "" {
+			tlsSettings["serverName"] = inbound.TLSSNI
+		}
+		if inbound.TLSFingerprint != "" {
+			tlsSettings["fingerprint"] = inbound.TLSFingerprint
+		}
+		if inbound.TLSALPN != "" {
+			alpnParts := strings.Split(inbound.TLSALPN, ",")
+			alpn := make([]string, 0, len(alpnParts))
+			for _, p := range alpnParts {
+				trimmed := strings.TrimSpace(p)
+				if trimmed != "" {
+					alpn = append(alpn, trimmed)
+				}
+			}
+			if len(alpn) > 0 {
+				tlsSettings["alpn"] = alpn
 			}
 		}
 		if len(tlsSettings) > 0 {
@@ -355,6 +377,25 @@ func buildHy2StreamSettings(inbound db.Inbound) map[string]interface{} {
 					"certificateFile": inbound.TLSCertFile,
 					"keyFile":         inbound.TLSKeyFile,
 				},
+			}
+		}
+		if inbound.TLSSNI != "" {
+			tlsSettings["serverName"] = inbound.TLSSNI
+		}
+		if inbound.TLSFingerprint != "" {
+			tlsSettings["fingerprint"] = inbound.TLSFingerprint
+		}
+		if inbound.TLSALPN != "" {
+			alpnParts := strings.Split(inbound.TLSALPN, ",")
+			alpn := make([]string, 0, len(alpnParts))
+			for _, p := range alpnParts {
+				trimmed := strings.TrimSpace(p)
+				if trimmed != "" {
+					alpn = append(alpn, trimmed)
+				}
+			}
+			if len(alpn) > 0 {
+				tlsSettings["alpn"] = alpn
 			}
 		}
 		if len(tlsSettings) > 0 {
