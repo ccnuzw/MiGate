@@ -2171,7 +2171,7 @@ const panelHTML = `<!doctype html>
           <input id="ec-traffic-limit" type="number" min="0" placeholder="流量限额（字节，0=不限）">
           <p class="field-help">单位为字节，填 0 表示不限。</p>
         </div>
-        <div class="field-group span-2" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-alt, #f8f9fa)">
+        <div class="field-group span-2" style="border:1px solid var(--line-strong);border-radius:8px;padding:12px;background:var(--surface)">
           <label class="field-label" style="margin-top:0">当前流量</label>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
             <div>
@@ -2179,7 +2179,7 @@ const panelHTML = `<!doctype html>
               <span style="font-size:13px;margin-left:16px">↓ 下行: <strong id="ec-down-display">0 B</strong></span>
               <span style="font-size:13px;margin-left:16px">总计: <strong id="ec-total-display">0 B</strong></span>
             </div>
-            <button type="button" class="btn-cancel" style="color:var(--danger);border-color:var(--danger)" onclick="resetClientTraffic()">重置流量</button>
+            <button type="button" class="btn-confirm" onclick="resetClientTraffic()">重置流量</button>
           </div>
           <p class="field-help" style="margin-bottom:0">点击重置会将上下行数据清零，不可恢复。</p>
         </div>
@@ -2798,18 +2798,23 @@ const panelHTML = `<!doctype html>
     }
 
     async function loadInbounds() {
-      const response = await fetch(apiPath('/api/inbounds'));
-      const data = await response.json();
-      renderInbounds(data.inbounds || []);
-      // Fetch Xray status for overview
       try {
-        const xr = await fetch(apiPath('/api/xray/status'));
-        const xs = await xr.json();
-        if (xs && xs.service !== undefined) {
-          xrayStatusMetric.textContent = xs.service === 'running' ? '运行中' : (xs.service === 'stopped' ? '已停止' : xs.service);
+        const response = await fetch(apiPath('/api/inbounds'));
+        if (!response.ok) { console.error('loadInbounds: API error', response.status); return; }
+        const data = await response.json();
+        renderInbounds(data.inbounds || []);
+        // Fetch Xray status for overview
+        try {
+          const xr = await fetch(apiPath('/api/xray/status'));
+          const xs = await xr.json();
+          if (xs && xs.service !== undefined) {
+            xrayStatusMetric.textContent = xs.service === 'running' ? '运行中' : (xs.service === 'stopped' ? '已停止' : xs.service);
+          }
+        } catch (e) {
+          xrayStatusMetric.textContent = '无法连接';
         }
-      } catch (e) {
-        xrayStatusMetric.textContent = '无法连接';
+      } catch(e) {
+        console.error('loadInbounds error:', e);
       }
     }
 
