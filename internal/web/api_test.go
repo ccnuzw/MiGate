@@ -167,6 +167,82 @@ func TestDeleteOutboundAPIRejectsUnknownID(t *testing.T) {
 	}
 }
 
+func TestRoutingRulesAPICRUD(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store))
+
+	// GET: empty list
+	listResp := httptest.NewRecorder()
+	router.ServeHTTP(listResp, httptest.NewRequest(http.MethodGet, "/api/routing-rules", nil))
+	if listResp.Code != 200 {
+		t.Fatalf("expected 200 listing routing rules, got %d: %s", listResp.Code, listResp.Body.String())
+	}
+	if listResp.Body.String() != "[]\n" && listResp.Body.String() != "null\n" {
+		t.Fatalf("expected empty list, got %s", listResp.Body.String())
+	}
+
+	// POST: create rule
+	payload := `{"inbound_tag":"","outbound_tag":"blocked","domain":"geosite:malware"}`
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(payload)))
+	if createResp.Code != 201 {
+		t.Fatalf("expected 201 creating routing rule, got %d: %s", createResp.Code, createResp.Body.String())
+	}
+	var createResult map[string]interface{}
+	if err := json.Unmarshal(createResp.Body.Bytes(), &createResult); err != nil {
+		t.Fatalf("parse create response: %v", err)
+	}
+	rule := createResult["rule"].(map[string]interface{})
+	if rule["outbound_tag"] != "blocked" || rule["domain"] != "geosite:malware" {
+		t.Fatalf("unexpected created rule: %+v", rule)
+	}
+	id := int(rule["id"].(float64))
+
+	// GET: verify rule in list
+	listResp2 := httptest.NewRecorder()
+	router.ServeHTTP(listResp2, httptest.NewRequest(http.MethodGet, "/api/routing-rules", nil))
+	var rules []interface{}
+	if err := json.Unmarshal(listResp2.Body.Bytes(), &rules); err != nil {
+		t.Fatalf("parse list: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d: %s", len(rules), listResp2.Body.String())
+	}
+
+	// PUT: update rule
+	updatePayload := `{"inbound_tag":"socks-in","outbound_tag":"direct","domain":"geosite:netflix","enabled":false}`
+	updateResp := httptest.NewRecorder()
+	router.ServeHTTP(updateResp, httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/routing-rules/%d", id), strings.NewReader(updatePayload)))
+	if updateResp.Code != 200 {
+		t.Fatalf("expected 200 updating rule, got %d: %s", updateResp.Code, updateResp.Body.String())
+	}
+
+	// DELETE
+	deleteResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteResp, httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/routing-rules/%d", id), nil))
+	if deleteResp.Code != 200 {
+		t.Fatalf("expected 200 deleting rule, got %d: %s", deleteResp.Code, deleteResp.Body.String())
+	}
+
+	// Verify empty
+	listResp3 := httptest.NewRecorder()
+	router.ServeHTTP(listResp3, httptest.NewRequest(http.MethodGet, "/api/routing-rules", nil))
+	if listResp3.Body.String() != "[]\n" && listResp3.Body.String() != "null\n" {
+		t.Fatalf("expected empty after delete, got %s", listResp3.Body.String())
+	}
+
+	// DELETE unknown
+	deleteUnknown := httptest.NewRecorder()
+	router.ServeHTTP(deleteUnknown, httptest.NewRequest(http.MethodDelete, "/api/routing-rules/99999", nil))
+	if deleteUnknown.Code != 404 {
+		t.Fatalf("expected 404 deleting unknown rule, got %d", deleteUnknown.Code)
+	}
+}
+
 func TestInboundsAPIListsStoredInboundsWithClients(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

@@ -146,6 +146,116 @@ func TestStoreDeleteOutboundRejectsUnknownID(t *testing.T) {
 	}
 }
 
+func TestStoreCreatesAndListsRoutingRules(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	// No routing rules initially
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("expected 0 default routing rules, got %d", len(rules))
+	}
+
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "",
+		OutboundTag: "blocked",
+		Domain:      "geosite:malware",
+		Protocol:    "",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+	if rule.OutboundTag != "blocked" || rule.Domain != "geosite:malware" || !rule.Enabled {
+		t.Fatalf("unexpected rule: %+v", rule)
+	}
+
+	rules, err = store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != rule.ID {
+		t.Fatalf("expected 1 routing rule, got %+v", rules)
+	}
+}
+
+func TestStoreUpdateRoutingRule(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "",
+		OutboundTag: "blocked",
+		Domain:      "geosite:malware",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := store.UpdateRoutingRule(context.Background(), rule.ID, db.UpdateRoutingRuleParams{
+		InboundTag:  "socks-in",
+		OutboundTag: "direct",
+		Domain:      "geosite:netflix",
+		Protocol:    "",
+		Enabled:     false,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.InboundTag != "socks-in" || updated.OutboundTag != "direct" || updated.Domain != "geosite:netflix" || updated.Enabled {
+		t.Fatalf("unexpected updated rule: %+v", updated)
+	}
+
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rules) != 1 || rules[0].Domain != "geosite:netflix" {
+		t.Fatalf("update not persisted: %+v", rules)
+	}
+}
+
+func TestStoreDeleteRoutingRule(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundTag: "blocked", Domain: "geosite:malware",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if err := store.DeleteRoutingRule(context.Background(), rule.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("rule not deleted: %+v", rules)
+	}
+
+	if err := store.DeleteRoutingRule(context.Background(), 99999); err == nil {
+		t.Fatal("expected error for unknown routing rule")
+	}
+}
+
 func TestStoreMigratesAndCreatesInboundWithClients(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

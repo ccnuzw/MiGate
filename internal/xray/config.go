@@ -12,6 +12,19 @@ type Config struct {
 	Log       LogConfig        `json:"log"`
 	Inbounds  []InboundConfig  `json:"inbounds"`
 	Outbounds []OutboundConfig `json:"outbounds"`
+	Routing   *RoutingConfig   `json:"routing,omitempty"`
+}
+
+type RoutingConfig struct {
+	DomainStrategy string        `json:"domainStrategy"`
+	Rules          []RoutingRule `json:"rules"`
+}
+
+type RoutingRule struct {
+	InboundTag  []string `json:"inboundTag,omitempty"`
+	Domain      []string `json:"domain,omitempty"`
+	Protocol    []string `json:"protocol,omitempty"`
+	OutboundTag string   `json:"outboundTag"`
 }
 
 type LogConfig struct {
@@ -46,7 +59,7 @@ func BuildConfig(inbounds []db.Inbound) (Config, error) {
 	return appendInbounds(config, inbounds)
 }
 
-func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound) (Config, error) {
+func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, routingRules []db.RoutingRule) (Config, error) {
 	config := Config{
 		Log:       LogConfig{LogLevel: "warning"},
 		Inbounds:  []InboundConfig{},
@@ -70,6 +83,28 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound) (C
 		config.Outbounds = append(config.Outbounds, OutboundConfig{
 			Tag: "direct", Protocol: "freedom", Settings: map[string]interface{}{},
 		})
+	}
+	if len(routingRules) > 0 {
+		r := &RoutingConfig{DomainStrategy: "AsIs", Rules: []RoutingRule{}}
+		for _, rule := range routingRules {
+			if !rule.Enabled {
+				continue
+			}
+			xr := RoutingRule{OutboundTag: rule.OutboundTag}
+			if rule.InboundTag != "" {
+				xr.InboundTag = []string{rule.InboundTag}
+			}
+			if rule.Domain != "" {
+				xr.Domain = []string{rule.Domain}
+			}
+			if rule.Protocol != "" {
+				xr.Protocol = []string{rule.Protocol}
+			}
+			r.Rules = append(r.Rules, xr)
+		}
+		if len(r.Rules) > 0 {
+			config.Routing = r
+		}
 	}
 	return config, nil
 }

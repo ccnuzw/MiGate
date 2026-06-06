@@ -24,6 +24,10 @@ type Store interface {
 	CreateOutbound(ctx context.Context, params db.CreateOutboundParams) (db.Outbound, error)
 	UpdateOutbound(ctx context.Context, id int64, params db.UpdateOutboundParams) (db.Outbound, error)
 	DeleteOutbound(ctx context.Context, id int64) error
+	ListRoutingRules(ctx context.Context) ([]db.RoutingRule, error)
+	CreateRoutingRule(ctx context.Context, params db.CreateRoutingRuleParams) (db.RoutingRule, error)
+	UpdateRoutingRule(ctx context.Context, id int64, params db.UpdateRoutingRuleParams) (db.RoutingRule, error)
+	DeleteRoutingRule(ctx context.Context, id int64) error
 	CreateClient(ctx context.Context, params db.CreateClientParams) (db.Client, error)
 	DeleteInbound(ctx context.Context, id int64) error
 	DeleteClient(ctx context.Context, id int64) error
@@ -135,6 +139,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/outbounds", outboundsHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/outbounds/", outboundChildrenHandler(cfg.store, cfg.xrayController))
+	mux.HandleFunc("/api/routing-rules", routingRulesHandler(cfg.store, cfg.xrayController))
+	mux.HandleFunc("/api/routing-rules/", routingRuleChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
@@ -292,6 +298,85 @@ func outboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc 
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			rules, err := store.ListRoutingRules(r.Context())
+			if err != nil {
+				http.Error(w, `{"error":"list_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rules)
+		case http.MethodPost:
+			var params db.CreateRoutingRuleParams
+			if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				return
+			}
+			rule, err := store.CreateRoutingRule(r.Context(), params)
+			if err != nil {
+				http.Error(w, `{"error":"create_failed"}`, http.StatusBadRequest)
+				return
+			}
+			applyResult := ctrl.Apply(r.Context())
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"rule": rule, "xray": applyResult})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/routing-rules/")
+		idStr := strings.TrimSuffix(path, "/")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid_id"}`, http.StatusBadRequest)
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			var params db.UpdateRoutingRuleParams
+			if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				return
+			}
+			rule, err := store.UpdateRoutingRule(r.Context(), id, params)
+			if err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+				} else {
+					http.Error(w, `{"error":"update_failed"}`, http.StatusBadRequest)
+				}
+				return
+			}
+			applyResult := ctrl.Apply(r.Context())
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"rule": rule, "xray": applyResult})
+		case http.MethodDelete:
+			err := store.DeleteRoutingRule(r.Context(), id)
+			if err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+				} else {
+					http.Error(w, `{"error":"delete_failed"}`, http.StatusInternalServerError)
+				}
+				return
+			}
+			applyResult := ctrl.Apply(r.Context())
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "deleted", "xray": applyResult})
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -630,6 +715,7 @@ func xrayConfigHandler(store Store) http.HandlerFunc {
 		}
 		inbounds := []db.Inbound{}
 		outbounds := []db.Outbound{}
+		rules := []db.RoutingRule{}
 		if store != nil {
 			if loaded, err := store.ListInbounds(r.Context()); err == nil {
 				inbounds = loaded
@@ -637,8 +723,11 @@ func xrayConfigHandler(store Store) http.HandlerFunc {
 			if loaded, err := store.ListOutbounds(r.Context()); err == nil {
 				outbounds = loaded
 			}
+			if loaded, err := store.ListRoutingRules(r.Context()); err == nil {
+				rules = loaded
+			}
 		}
-		config, err := xray.BuildConfigWithOutbounds(inbounds, outbounds)
+		config, err := xray.BuildConfigWithOutbounds(inbounds, outbounds, rules)
 		if err != nil {
 			http.Error(w, `{"error":"build_xray_config_failed"}`, http.StatusBadRequest)
 			return

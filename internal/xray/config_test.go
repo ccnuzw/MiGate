@@ -78,7 +78,7 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 		{Tag: "blocked", Protocol: "blackhole", Enabled: true, Sort: 1},
 		{Tag: "proxy-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Username: "sam", Password: "secret", Enabled: true, Sort: 2},
 		{Tag: "disabled-proxy", Protocol: "http", Address: "127.0.0.1", Port: 8080, Enabled: false, Sort: 3},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("build config with outbounds: %v", err)
 	}
@@ -97,6 +97,44 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 	}
 	if strings.Contains(text, "disabled-proxy") {
 		t.Fatalf("disabled outbound leaked into config: %s", text)
+	}
+}
+
+func TestBuildConfigWithRoutingRules(t *testing.T) {
+	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
+		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
+		{Tag: "blocked", Protocol: "blackhole", Enabled: true, Sort: 1},
+		{Tag: "proxy-socks", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true, Sort: 2},
+	}, []db.RoutingRule{
+		{InboundTag: "socks-in", OutboundTag: "proxy-socks", Domain: "geosite:netflix", Enabled: true},
+		{OutboundTag: "blocked", Domain: "geosite:malware", Enabled: true},
+		{OutboundTag: "blocked", Protocol: "bittorrent", Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("build config with routing rules: %v", err)
+	}
+	if config.Routing == nil {
+		t.Fatal("expected routing section in config")
+	}
+	if config.Routing.DomainStrategy != "AsIs" {
+		t.Fatalf("expected AsIs domain strategy, got %s", config.Routing.DomainStrategy)
+	}
+	if len(config.Routing.Rules) != 2 {
+		t.Fatalf("expected 2 enabled routing rules, got %d", len(config.Routing.Rules))
+	}
+	if config.Routing.Rules[0].OutboundTag != "proxy-socks" || config.Routing.Rules[0].Domain[0] != "geosite:netflix" {
+		t.Fatalf("unexpected first rule: %+v", config.Routing.Rules[0])
+	}
+	if config.Routing.Rules[1].OutboundTag != "blocked" || config.Routing.Rules[1].Domain[0] != "geosite:malware" {
+		t.Fatalf("unexpected second rule: %+v", config.Routing.Rules[1])
+	}
+	// No routing rules
+	config2, err := xray.BuildConfigWithOutbounds(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build with nil rules: %v", err)
+	}
+	if config2.Routing != nil {
+		t.Fatal("expected no routing section when no rules")
 	}
 }
 func TestBuildConfigRejectsUnsupportedProtocol(t *testing.T) {

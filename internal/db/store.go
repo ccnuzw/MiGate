@@ -27,6 +27,32 @@ var supportedOutboundProtocols = map[string]bool{
 	"http":      true,
 }
 
+type RoutingRule struct {
+	ID          int64  `json:"id"`
+	InboundTag  string `json:"inbound_tag"`
+	OutboundTag string `json:"outbound_tag"`
+	Domain      string `json:"domain"`
+	Protocol    string `json:"protocol"`
+	Enabled     bool   `json:"enabled"`
+	Sort        int    `json:"sort"`
+}
+
+type CreateRoutingRuleParams struct {
+	InboundTag  string `json:"inbound_tag"`
+	OutboundTag string `json:"outbound_tag"`
+	Domain      string `json:"domain"`
+	Protocol    string `json:"protocol"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type UpdateRoutingRuleParams struct {
+	InboundTag  string `json:"inbound_tag"`
+	OutboundTag string `json:"outbound_tag"`
+	Domain      string `json:"domain"`
+	Protocol    string `json:"protocol"`
+	Enabled     bool   `json:"enabled"`
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -226,6 +252,15 @@ CREATE TABLE IF NOT EXISTS outbounds (
   sort INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS routing_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  inbound_tag TEXT NOT NULL DEFAULT '',
+  outbound_tag TEXT NOT NULL,
+  domain TEXT NOT NULL DEFAULT '',
+  protocol TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0
+);
 `)
 	if err != nil {
 		return err
@@ -393,6 +428,94 @@ func (s *Store) DeleteOutbound(ctx context.Context, id int64) error {
 	}
 	if n == 0 {
 		return fmt.Errorf("outbound not found: %d", id)
+	}
+	return nil
+}
+
+func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, protocol, enabled, sort FROM routing_rules ORDER BY sort ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rules []RoutingRule
+	for rows.Next() {
+		var r RoutingRule
+		var dbEnabled int
+		if err := rows.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
+			return nil, err
+		}
+		r.Enabled = dbEnabled != 0
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
+func (s *Store) CreateRoutingRule(ctx context.Context, params CreateRoutingRuleParams) (RoutingRule, error) {
+	ob := strings.TrimSpace(params.OutboundTag)
+	if ob == "" {
+		return RoutingRule{}, fmt.Errorf("outbound_tag cannot be empty")
+	}
+	var sort int
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort)+1, 0) FROM routing_rules`).Scan(&sort)
+	enabled := 0
+	if params.Enabled {
+		enabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO routing_rules (inbound_tag, outbound_tag, domain, protocol, enabled, sort) VALUES (?, ?, ?, ?, ?, ?)`,
+		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.Protocol), enabled, sort)
+	if err != nil {
+		return RoutingRule{}, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return RoutingRule{}, err
+	}
+	return RoutingRule{ID: id, InboundTag: strings.TrimSpace(params.InboundTag), OutboundTag: ob, Domain: strings.TrimSpace(params.Domain), Protocol: strings.TrimSpace(params.Protocol), Enabled: params.Enabled, Sort: sort}, nil
+}
+
+func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRoutingRuleParams) (RoutingRule, error) {
+	ob := strings.TrimSpace(params.OutboundTag)
+	if ob == "" {
+		return RoutingRule{}, fmt.Errorf("outbound_tag cannot be empty")
+	}
+	enabled := 0
+	if params.Enabled {
+		enabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=?, outbound_tag=?, domain=?, protocol=?, enabled=? WHERE id=?`,
+		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.Protocol), enabled, id)
+	if err != nil {
+		return RoutingRule{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return RoutingRule{}, err
+	}
+	if n == 0 {
+		return RoutingRule{}, fmt.Errorf("routing rule not found: %d", id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, protocol, enabled, sort FROM routing_rules WHERE id=?`, id)
+	var r RoutingRule
+	var dbEnabled int
+	if err := row.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
+		return RoutingRule{}, err
+	}
+	r.Enabled = dbEnabled != 0
+	return r, nil
+}
+
+func (s *Store) DeleteRoutingRule(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM routing_rules WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("routing rule not found: %d", id)
 	}
 	return nil
 }
