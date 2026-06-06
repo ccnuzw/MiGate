@@ -53,12 +53,15 @@ func TestRouterFromPanelConfigEnablesAuthWhenCredentialsPresent(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Without cookie -> 401
+	// Without cookie -> login page
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without auth, got %d", response.Code)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 login page without auth, got %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "面板登录") {
+		t.Fatalf("expected login page without auth, got: %s", response.Body.String())
 	}
 
 	// Login -> 200 with cookie
@@ -112,14 +115,19 @@ func TestRouterFromPanelConfigMountsConfiguredWebBasePath(t *testing.T) {
 	}{
 		{path: "/migate/login", want: http.StatusOK},
 		{path: "/migate/api/health", want: http.StatusOK},
-		{path: "/migate", want: http.StatusUnauthorized},
-		{path: "/migate/", want: http.StatusUnauthorized},
+		{path: "/migate", want: http.StatusOK},
+		{path: "/migate/", want: http.StatusOK},
 	} {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		router.ServeHTTP(resp, req)
 		if resp.Code != tc.want {
 			t.Fatalf("%s: expected %d, got %d: %s", tc.path, tc.want, resp.Code, resp.Body.String())
+		}
+		if tc.path == "/migate" || tc.path == "/migate/" {
+			if !strings.Contains(resp.Body.String(), "面板登录") {
+				t.Fatalf("%s: expected login page for unauthenticated panel root, got: %s", tc.path, resp.Body.String())
+			}
 		}
 	}
 }

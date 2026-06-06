@@ -43,6 +43,11 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 		// Check session cookie
 		cookie, err := r.Cookie("migate_session")
 		if err != nil || !validateSessionToken(cookie.Value, cfg.sessionSecret) {
+			if path == "/" && r.Method == http.MethodGet {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Write(loginPageHTML)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})

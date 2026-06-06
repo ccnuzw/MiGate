@@ -20,13 +20,16 @@ func TestAuthIsDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestAuthRejectsUnauthenticatedAccess(t *testing.T) {
+func TestAuthShowsLoginPageForUnauthenticatedPanelRoot(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without session cookie, got %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 login page without session cookie, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "面板登录") {
+		t.Fatalf("expected login page without session cookie, got: %s", response.Body.String())
 	}
 }
 
