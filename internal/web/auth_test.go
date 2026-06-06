@@ -35,13 +35,23 @@ func TestAuthShowsLoginPageForUnauthenticatedPanelRoot(t *testing.T) {
 
 func TestAuthAPIEndpointsRequireSession(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
-	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status"} {
+	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status", "/api/vpngate/import"} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		router.ServeHTTP(response, req)
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("expected 401 for %s without auth, got %d", path, response.Code)
 		}
+	}
+}
+
+func TestAuthVPNGateServerListIsPublic(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/vpngate/servers", nil)
+	router.ServeHTTP(response, req)
+	if response.Code == http.StatusUnauthorized {
+		t.Fatal("/api/vpngate/servers should be public read-only data")
 	}
 }
 
@@ -166,6 +176,38 @@ func TestAuthLogoutClearsSession(t *testing.T) {
 	if !cleared {
 		t.Fatal("logout should clear migate_session cookie")
 	}
+}
+
+func TestAuthLogoutClearsSessionAtBasePath(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithBasePath("/migate"))
+	loginBody := `{"username":"admin","password":"secret"}`
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/migate/api/login", bytes.NewReader([]byte(loginBody)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(loginResp, loginReq)
+
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Result().Cookies() {
+		if c.Name == "migate_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Path != "/migate" {
+		t.Fatalf("login should set /migate session cookie, got %+v", sessionCookie)
+	}
+
+	logoutResp := httptest.NewRecorder()
+	logoutReq := httptest.NewRequest(http.MethodPost, "/migate/api/logout", nil)
+	logoutReq.AddCookie(sessionCookie)
+	router.ServeHTTP(logoutResp, logoutReq)
+
+	for _, c := range logoutResp.Result().Cookies() {
+		if c.Name == "migate_session" && c.MaxAge < 0 && c.Path == "/migate" {
+			return
+		}
+	}
+	t.Fatal("logout should clear migate_session cookie using the configured base path")
 }
 
 func TestAuthHealthEndpointDoesNotRequireAuthEvenWhenAuthEnabled(t *testing.T) {

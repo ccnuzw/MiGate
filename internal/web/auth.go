@@ -37,7 +37,7 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 		}
 		path := r.URL.Path
 		// Public paths that do not need auth
-		if path == "/login" || path == "/api/health" || path == "/api/login" || path == "/api/session" || strings.HasPrefix(path, "/sub/") || strings.HasPrefix(path, "/api/vpngate/") {
+		if path == "/login" || path == "/api/health" || path == "/api/login" || path == "/api/session" || path == "/api/vpngate/servers" || strings.HasPrefix(path, "/sub/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -144,16 +144,20 @@ func constantTimeStringEqual(a, b string) bool {
 }
 
 // logoutHandler handles POST /api/logout by clearing the session cookie.
-func logoutHandler() http.HandlerFunc {
+func logoutHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		cookiePath := cfg.basePath
+		if cookiePath == "" {
+			cookiePath = "/"
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     "migate_session",
 			Value:    "",
-			Path:     "/",
+			Path:     cookiePath,
 			HttpOnly: true,
 			MaxAge:   -1,
 		})

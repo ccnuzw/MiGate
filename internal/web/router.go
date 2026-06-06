@@ -173,7 +173,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/", panelHandler)
 	mux.HandleFunc("/login", loginHandler(&cfg))
 	mux.HandleFunc("/api/login", loginHandler(&cfg))
-	mux.HandleFunc("/api/logout", logoutHandler())
+	mux.HandleFunc("/api/logout", logoutHandler(&cfg))
 	mux.HandleFunc("/api/session", sessionHandler(&cfg))
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store, cfg.xrayController))
@@ -337,7 +337,7 @@ func outboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc 
 				return
 			}
 			if err := store.ReorderOutbounds(r.Context(), req.IDs); err != nil {
-				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "reorder_failed")
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -620,6 +620,12 @@ func applyXrayAsync(ctrl XrayController) {
 			log.Printf("xray apply failed: status=%s service=%s commands=%v error=%s", result.Status, result.Service, result.CommandsExecuted, result.ErrorOutput)
 		}
 	}()
+}
+
+func writeJSONError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 }
 
 func deriveRealityPublicKeys(inbounds []db.Inbound) {
@@ -1593,7 +1599,7 @@ func vpngateServersHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		servers, err := fetcher.FetchServers()
 		if err != nil {
-			http.Error(w, `{"error":"fetch_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "fetch_failed")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1646,7 +1652,7 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 				Port:     1080,
 			})
 			if err != nil {
-				http.Error(w, `{"error":"create_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "create_failed")
 				return
 			}
 			created = append(created, ob)
@@ -2826,6 +2832,10 @@ const panelHTML = `<!doctype html>
       return String(value || '').replace(/[&<>"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
     }
 
+    function escapeJsString(value) {
+      return escapeHtml(String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\&quot;').replace(/'/g, "\\&#39;").replace(/\n/g, '\\n').replace(/\r/g, ''));
+    }
+
     function renderEmptyState(title, copy, actions) {
       const actionHtml = (actions || []).map((action) => {
         const cls = action.secondary ? ' class="secondary"' : '';
@@ -3162,7 +3172,7 @@ const panelHTML = `<!doctype html>
         '<div style=\"font-weight:600;font-size:var(--text-sm)\">' + detail + '</div>' +
         '<div class=\"muted\" style=\"font-size:var(--text-xs)\">→ ' + escHtml(r.outbound_tag) + '</div>' +
         '</div>' +
-        '<button class=\"icon-btn\" onclick=\"openEditRoutingRule(' + r.id + ',"' + r.outbound_tag + '","' +(r.domain||'') + '","' +(r.inbound_tag||'') + '","' +(r.protocol||'') + '",' + (r.enabled||false) + ')\" title=\"编辑\">&#9998;</button>' +
+        '<button class=\"icon-btn\" onclick=\"openEditRoutingRule(' + r.id + ',&quot;' + escapeJsString(r.outbound_tag) + '&quot;,&quot;' + escapeJsString(r.domain || '') + '&quot;,&quot;' + escapeJsString(r.inbound_tag || '') + '&quot;,&quot;' + escapeJsString(r.protocol || '') + '&quot;,' + (r.enabled||false) + ')\" title=\"编辑\">&#9998;</button>' +
         '<button class=\"danger-icon-btn\" onclick=\"deleteRoutingRule(' + r.id + ')\" title=\"删除\">&#10005;</button>' +
         '</div>';
     }
@@ -3322,12 +3332,12 @@ const panelHTML = `<!doctype html>
         var speedStr = s.speed > 1000000 ? (s.speed / 1000000).toFixed(1) + 'M' : s.speed > 1000 ? (s.speed / 1000).toFixed(0) + 'K' : s.speed;
         html += '<tr>' +
           '<td style="padding:4px 8px"><input type="checkbox" ' + checked + ' onchange="toggleVPNGateServer(' + realIndex + ')"></td>' +
-          '<td style="padding:4px 8px"><span style="font-weight:600">' + s.country_short + '</span> ' + (s.country_long || '') + '</td>' +
-          '<td style="padding:4px 8px;font-family:monospace">' + s.ip + '</td>' +
+          '<td style="padding:4px 8px"><span style="font-weight:600">' + escapeHtml(s.country_short || '') + '</span> ' + escapeHtml(s.country_long || '') + '</td>' +
+          '<td style="padding:4px 8px;font-family:monospace">' + escapeHtml(s.ip || '') + '</td>' +
           '<td style="padding:4px 8px;text-align:right">' + s.ping + 'ms</td>' +
           '<td style="padding:4px 8px;text-align:right">' + speedStr + '</td>' +
           '<td style="padding:4px 8px;text-align:right">' + (s.score || '-') + '</td>' +
-          '<td style="padding:4px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (s.operator || '') + '">' + (s.operator || '-') + '</td>' +
+          '<td style="padding:4px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(s.operator || '') + '">' + escapeHtml(s.operator || '-') + '</td>' +
           '</tr>';
       });
       tbody.innerHTML = html;
