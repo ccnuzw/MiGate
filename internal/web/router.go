@@ -1685,7 +1685,8 @@ func vpngateServersHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		servers, err := fetcher.FetchServers()
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "fetch_failed")
+			log.Printf("VPN Gate fetch failed: %v", err)
+			http.Error(w, `{"error":"fetch_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

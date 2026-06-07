@@ -44,7 +44,9 @@ func (f *Fetcher) FetchServers() ([]VPNServer, error) {
 	}
 	client := f.Client
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+		}}
 	}
 	resp, err := client.Get(f.APIURL)
 	if err != nil {
