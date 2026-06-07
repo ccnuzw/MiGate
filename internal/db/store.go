@@ -538,7 +538,7 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var rules []RoutingRule
+	var rules = make([]RoutingRule, 0)
 	for rows.Next() {
 		var r RoutingRule
 		var dbEnabled int
