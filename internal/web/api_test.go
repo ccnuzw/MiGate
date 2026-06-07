@@ -20,6 +20,70 @@ import (
 	"github.com/imzyb/MiGate/internal/web"
 )
 
+func TestVPNGateEgressCapabilitiesAPIIsReadOnlyPlan(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	before, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/vpngate/egress/capabilities", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse capabilities response: %v", err)
+	}
+	for key, want := range map[string]interface{}{
+		"status":                "planned",
+		"driver":                "softether",
+		"isolation":             "network_namespace",
+		"bridge":                "socks5",
+		"performs_side_effects": false,
+	} {
+		if got[key] != want {
+			t.Fatalf("expected %s=%v, got %v in %+v", key, want, got[key], got)
+		}
+	}
+	if got["max_active_default"] != float64(1) {
+		t.Fatalf("expected max_active_default=1, got %+v", got["max_active_default"])
+	}
+	protocols, ok := got["supported_protocols"].([]interface{})
+	if !ok || len(protocols) == 0 || protocols[0] != "softether" {
+		t.Fatalf("expected supported_protocols to include softether, got %+v", got["supported_protocols"])
+	}
+	fallbacks, ok := got["fallback_protocols"].([]interface{})
+	if !ok || len(fallbacks) == 0 {
+		t.Fatalf("expected planned fallback_protocols, got %+v", got["fallback_protocols"])
+	}
+	if fallback, ok := fallbacks[0].(map[string]interface{}); !ok || fallback["protocol"] != "openvpn" || fallback["status"] != "planned" {
+		t.Fatalf("expected planned openvpn fallback, got %+v", got["fallback_protocols"])
+	}
+	message := fmt.Sprint(got["message"], " ", got["notes"])
+	for _, want := range []string{"SoftEther", "network namespace", "SOCKS", "不会直接按 SOCKS5 导入"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("capability message missing %q: %s", want, message)
+		}
+	}
+
+	after, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("capabilities endpoint must not create outbounds: before=%d after=%d", len(before), len(after))
+	}
+}
+
 func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

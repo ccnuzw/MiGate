@@ -121,6 +121,28 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 	}
 }
 
+func TestPanelShowsVPNGateSoftEtherCapabilityPreview(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
+	}
+	body := page.Body.String()
+	for _, want := range []string{
+		"下一步路线",
+		"SoftEther",
+		"隔离网络命名空间",
+		"SOCKS 桥接",
+		`id="vpngate-import-btn" disabled`,
+		"暂不支持导入",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing VPN Gate capability preview %q", want)
+		}
+	}
+}
+
 func TestSessionAPIReportsAuthUser(t *testing.T) {
 	router := web.NewRouter(web.WithAuth("sam", "secret"))
 

@@ -261,6 +261,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/servers", vpngateServersHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/import", vpngateImportHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/probe", vpngateProbeHandler())
+	mux.HandleFunc("/api/vpngate/egress/capabilities", vpngateEgressCapabilitiesHandler())
 	mux.HandleFunc("/api/vpngate/outbounds/health", vpngateOutboundHealthHandler(cfg.store))
 	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
@@ -2215,6 +2216,53 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 	}
 }
 
+type vpngateFallbackProtocol struct {
+	Protocol string `json:"protocol"`
+	Status   string `json:"status"`
+	Notes    string `json:"notes,omitempty"`
+}
+
+type vpngateEgressCapabilities struct {
+	Status              string                    `json:"status"`
+	Driver              string                    `json:"driver"`
+	Isolation           string                    `json:"isolation"`
+	Bridge              string                    `json:"bridge"`
+	PerformsSideEffects bool                      `json:"performs_side_effects"`
+	MaxActiveDefault    int                       `json:"max_active_default"`
+	SupportedProtocols  []string                  `json:"supported_protocols"`
+	FallbackProtocols   []vpngateFallbackProtocol `json:"fallback_protocols"`
+	Message             string                    `json:"message"`
+	Notes               []string                  `json:"notes"`
+}
+
+func vpngateEgressCapabilitiesHandler() http.HandlerFunc {
+	capabilities := vpngateEgressCapabilities{
+		Status:              "planned",
+		Driver:              "softether",
+		Isolation:           "network_namespace",
+		Bridge:              "socks5",
+		PerformsSideEffects: false,
+		MaxActiveDefault:    1,
+		SupportedProtocols:  []string{"softether"},
+		FallbackProtocols: []vpngateFallbackProtocol{
+			{Protocol: "openvpn", Status: "planned", Notes: "future fallback only; not implemented in this read-only preview"},
+		},
+		Message: "VPN Gate 未来会通过 SoftEther + network namespace + SOCKS bridge 接入 Xray outbound，不会直接按 SOCKS5 导入官方列表。",
+		Notes: []string{
+			"只读能力/计划预览：不会写入数据库、不会启动进程、不会调用 systemctl、不会访问外网。",
+			"真实接入计划为每个 VPN Gate 出口启动隔离网络命名空间中的 SoftEther 会话，再通过本地 SOCKS5 桥接给 Xray outbound 使用。",
+		},
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(capabilities)
+	}
+}
+
 // singboxStatusHandler returns the sing-box runtime status.
 func singboxStatusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -3543,6 +3591,10 @@ const panelHTML = `<!doctype html>
             <div class="notice" style="margin-bottom:12px;background:var(--surface-warning);color:var(--fg)">
               <div class="notice-title">VPN Gate 官方列表不是 SOCKS5 代理源</div>
               <div class="notice-copy">官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 仅将它们作为参考列表/候选信息展示，暂不支持导入为 SOCKS5 出站。当前连通性检测仍会验证 SOCKS5 握手，因此全部失败属于项目接入方式不正确，不是这些节点全部宕机。</div>
+            </div>
+            <div class="notice" style="margin-bottom:12px;background:var(--surface-subtle);color:var(--fg)">
+              <div class="notice-title">下一步路线：SoftEther + 隔离网络命名空间 + SOCKS 桥接</div>
+              <div class="notice-copy">能力预览 API 已规划为只读：后续会将 VPN Gate SoftEther 会话放入隔离网络命名空间，并通过本地 SOCKS 桥接接入 Xray outbound；在真实 netns/SoftEther 启动实现前，导入按钮继续保持“暂不支持导入”禁用。</div>
             </div>
             <table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead>
