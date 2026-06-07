@@ -258,6 +258,13 @@ func TestBuildReleaseScriptProducesLinuxArchivesAndChecksums(t *testing.T) {
 	}
 }
 
+func TestBuildReleaseScriptStripsReleaseBinaries(t *testing.T) {
+	script := read(t, "packaging", "build-release.sh")
+	if !strings.Contains(script, "-ldflags \"-s -w -X main.Version=${VERSION}\"") {
+		t.Fatalf("release build must strip symbols/debug info with -s -w: %s", script)
+	}
+}
+
 func TestReleaseWorkflowBuildsAndUploadsReleaseAssets(t *testing.T) {
 	workflow := read(t, ".github", "workflows", "release.yml")
 	for _, want := range []string{

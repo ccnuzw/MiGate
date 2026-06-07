@@ -267,11 +267,15 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		opts = append(opts, web.WithXrayController(xrayCtrl))
 	}
 	// Inject stub stats client (lightweight, no gRPC dependency)
-	opts = append(opts, web.WithStatsClient(xray.NewStubStatsClient()))
+	statsClient := xray.NewStubStatsClient()
+	opts = append(opts, web.WithStatsClient(statsClient))
 
 	// Create schedulers before building router (needed for options and cleanup wiring)
-	// Traffic sync scheduler — syncs client traffic stats from Xray API
-	trafficSched := scheduler.NewTrafficSyncScheduler(store, xray.NewStubStatsClient(), 1*time.Minute)
+	// Traffic sync scheduler — syncs client traffic stats from Xray API when a real stats client is configured.
+	var trafficSched *scheduler.TrafficSyncScheduler
+	if !xray.StatsClientIsStub(statsClient) {
+		trafficSched = scheduler.NewTrafficSyncScheduler(store, statsClient, 1*time.Minute)
+	}
 	// VPN Gate health scheduler — periodically checks vpngate-* outbounds, auto-disables failed nodes
 	var vpnApplyer scheduler.XrayApplyer
 	if xrayCtrl != nil {
@@ -286,16 +290,21 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 
 	// Start schedulers in background and wait for them during cleanup.
 	var schedWG sync.WaitGroup
-	schedWG.Add(2)
 	trafficStarted := make(chan struct{})
 	vpnStarted := make(chan struct{})
-	go func() {
-		defer schedWG.Done()
-		log.Println("traffic sync scheduler started (stub mode - no real stats)")
+	if trafficSched != nil {
+		schedWG.Add(1)
+		go func() {
+			defer schedWG.Done()
+			log.Println("traffic sync scheduler started")
+			close(trafficStarted)
+			trafficSched.Start()
+		}()
+	} else {
 		close(trafficStarted)
-		trafficSched.Start()
-	}()
+	}
 
+	schedWG.Add(1)
 	go func() {
 		defer schedWG.Done()
 		log.Println("VPN Gate health scheduler started")
@@ -308,7 +317,9 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
-			trafficSched.Stop()
+			if trafficSched != nil {
+				trafficSched.Stop()
+			}
 			vpnHealthSched.Stop()
 			schedWG.Wait()
 			closeStore()

@@ -91,5 +91,8 @@ func (s *TrafficSyncScheduler) sync() {
 		}
 	}
 
+	if len(stats) == 0 {
+		return
+	}
 	log.Printf("traffic sync: updated %d clients", len(stats))
 }

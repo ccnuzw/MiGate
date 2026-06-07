@@ -23,6 +23,14 @@ type StatsClient interface {
 	Close() error
 }
 
+// StatsClientIsStub reports whether the configured stats client is the no-op
+// lightweight stub. Production wiring uses this to avoid starting a scheduler
+// that can only emit empty updates.
+func StatsClientIsStub(client StatsClient) bool {
+	_, ok := client.(*StubStatsClient)
+	return ok
+}
+
 // ClientStats holds uplink and downlink traffic for a single client.
 type ClientStats struct {
 	Email    string
