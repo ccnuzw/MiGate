@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +11,23 @@ import (
 	"testing"
 
 	"github.com/imzyb/MiGate/internal/web"
+	"github.com/imzyb/MiGate/internal/web/static"
 )
+
+var appJSCache string
+
+func readAppJS(t *testing.T) string {
+	t.Helper()
+	if appJSCache != "" {
+		return appJSCache
+	}
+	raw, err := fs.ReadFile(static.FS, "app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	appJSCache = string(raw)
+	return appJSCache
+}
 
 func TestRouterBackendSecurityContracts(t *testing.T) {
 	source, err := os.ReadFile("router.go")
@@ -69,34 +86,38 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
 	}
 	body := page.Body.String()
+	jsBody := readAppJS(t)
+	// HTML/CSS elements (in panelHTML)
 	for _, want := range []string{
-		`if (!resp.ok) { showToast('排序保存失败', 'error'); await loadOutbounds(); return; }`,
-		`showToast('排序已保存', 'success');`,
-		`catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); })`,
-		`var ms = Number(r.latency).toFixed(0);`,
 		`id="vpngate-type-filter"`,
 		`id="vpngate-country-filter"`,
 		`id="vpngate-max-ping"`,
 		`id="vpngate-topn"`,
-		`function smartSelectVPNGate()`,
-		`function vpnGateQualityScore(s)`,
-		`/api/vpngate/probe`,
-		`检测连通性...`,
-		`VPN Gate 出口池（自动均衡）`,
-		`检测 VPN Gate`,
-		`function checkVPNGateOutboundHealth()`,
-		`/api/vpngate/outbounds/health`,
-		`VPN Gate 健康检测完成`,
 		`vpngate-auto-health-card`,
-		`function refreshAutoHealthStatus()`,
-		`/api/vpngate/auto-health/status`,
-		`已跳过重复节点`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing outbound interaction contract %q", want)
 		}
 	}
-	if strings.Contains(body, `r.latency * 1000`) {
+	// JS functions (in app.js)
+	for _, want := range []string{
+		`if (!resp.ok) { showToast('排序保存失败', 'error'); await loadOutbounds(); return; }`,
+		`showToast('排序已保存', 'success');`,
+		`catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); })`,
+		`var ms = Number(r.latency).toFixed(0);`,
+		`function smartSelectVPNGate()`,
+		`function vpnGateQualityScore(s)`,
+		`/api/vpngate/probe`,
+		`function checkVPNGateOutboundHealth()`,
+		`/api/vpngate/outbounds/health`,
+		`function refreshAutoHealthStatus()`,
+		`/api/vpngate/auto-health/status`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing outbound interaction contract %q", want)
+		}
+	}
+	if strings.Contains(jsBody, `r.latency * 1000`) {
 		t.Fatalf("batch outbound speed test must not multiply millisecond latency by 1000")
 	}
 }
@@ -146,29 +167,38 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
 	}
 	body := page.Body.String()
+	jsBody := readAppJS(t)
+	// HTML/CSS elements (in panelHTML)
 	for _, want := range []string{
 		`id="inbound-count"`,
 		`id="client-count"`,
 		`id="inbound-list"`,
 		`id="create-inbound-overlay"`,
 		`id="create-inbound-form"`,
-		`openCreateInbound()`,
-		`closeCreateInbound()`,
-		`saveCreateInbound()`,
 		`onclick="openCreateInbound()"`,
 		`name="remark"`,
 		`name="protocol"`,
 		`name="port"`,
-		`loadInbounds()`,
-		`fetch(apiPath('/api/inbounds'))`,
-		`method: 'POST'`,
-		`renderInbounds`,
-		`toggleInitClient`,
 		`init-client-email`,
 		`同时添加首个客户端`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel inbound management missing %q: %s", want, body)
+		}
+	}
+	// JS functions (in app.js)
+	for _, want := range []string{
+		`method: 'POST'`,
+		`openCreateInbound()`,
+		`closeCreateInbound()`,
+		`saveCreateInbound()`,
+		`loadInbounds()`,
+		`fetch(apiPath('/api/inbounds'))`,
+		`renderInbounds`,
+		`toggleInitClient`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing inbound management JS %q", want)
 		}
 	}
 	for _, forbidden := range []string{`id="inbound-form"`, `document.getElementById('inbound-form')`, `document.querySelector('[name=protocol]')`} {
@@ -192,28 +222,37 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
 	}
 	body := page.Body.String()
+	jsBody := readAppJS(t)
+	// HTML/CSS elements (in panelHTML)
 	for _, want := range []string{
 		`id="create-client-overlay"`,
 		`id="create-client-form"`,
 		`client-inbound-id`,
-		`openCreateClient(inboundId)`,
-		`closeCreateClient()`,
-		`saveCreateClient()`,
 		`name="email"`,
 		`id="client-uuid"`,
 		`name="uuid"`,
 		`客户端 UUID / 密码 / 密钥`,
-		`regenerateField('client-uuid')`,
-		`uuid: clientUUID`,
-		`protocolForClientModal()`,
 		`.client-subsection { margin:8px 0 var(--space-3) var(--space-5);`,
 		`border-left:1px solid var(--line); box-shadow:none;`,
 		`.client-subsection .list { margin-top:0; gap:8px; }`,
 		`.client-add-row { display:flex; justify-content:flex-start;`,
-		`btnWrap.className = 'client-add-row';`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel client management missing %q: %s", want, body)
+		}
+	}
+	// JS functions (in app.js)
+	for _, want := range []string{
+		`openCreateClient(inboundId)`,
+		`closeCreateClient()`,
+		`saveCreateClient()`,
+		`regenerateField('client-uuid')`,
+		`uuid: clientUUID`,
+		`protocolForClientModal()`,
+		`btnWrap.className = 'client-add-row';`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing client JS %q", want)
 		}
 	}
 	for _, forbidden := range []string{`id="client-form"`, `document.getElementById('client-form')`} {
@@ -232,8 +271,8 @@ func TestCreateInboundFormShowsRandomizableDefaults(t *testing.T) {
 		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
 	}
 	body := page.Body.String()
+	// HTML/CSS elements (in panelHTML)
 	for _, want := range []string{
-		`fillRandomDefaults(formEl)`,
 		`reality_short_id`,
 		`ss_method`,
 		`hy2_obfs_password`,
@@ -241,6 +280,19 @@ func TestCreateInboundFormShowsRandomizableDefaults(t *testing.T) {
 		`入站 UUID / Shadowsocks 密码`,
 		`id="init-client-uuid"`,
 		`客户端 UUID / 密码 / 密钥（自动生成，可修改）`,
+		`init-client-email`,
+		`参数类型 / 传输方式`,
+		`名称`,
+		`协议类型`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("create inbound form missing %q: %s", want, body)
+		}
+	}
+	// JS functions (in app.js)
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`fillRandomDefaults(formEl)`,
 		`credentialForProtocol(proto)`,
 		`function randUUID()`,
 		`return randUUID();`,
@@ -254,13 +306,9 @@ func TestCreateInboundFormShowsRandomizableDefaults(t *testing.T) {
 		`hysteria2: {network: 'quic', security: 'tls'}`,
 		`addEventListener('change', () => { applyProtocolPreset`,
 		`uuid: document.getElementById('init-client-uuid').value.trim()`,
-		`init-client-email`,
-		`参数类型 / 传输方式`,
-		`名称`,
-		`协议类型`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("create inbound form missing %q: %s", want, body)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing create inbound JS %q", want)
 		}
 	}
 	for _, forbidden := range []string{`id="inbound-form"`, `document.getElementById('inbound-form')`} {
@@ -321,7 +369,7 @@ func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("expected 200 for panel, got %d", page.Code)
 	}
-	body := page.Body.String()
+	jsBody := readAppJS(t)
 	for _, want := range []string{
 		`async function loadInbounds`,
 		`await loadInbounds()`,
@@ -331,13 +379,20 @@ func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 		`showToast('复制失败，请手动复制', 'error')`,
 		`function jsString(value)`,
 		`function htmlAttrString(value)`,
-		`onclick="copySubUrl(' + htmlAttrString(shareLink) + ')"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing create-refresh/copy safety contract %q", want)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing create-refresh/copy safety contract %q", want)
 		}
 	}
-	if strings.Contains(body, `onclick="copySubUrl(' + jsString(shareLink) + ')"`) {
+	// HTML items (in app.js via JS string concatenation for onclick)
+	for _, want := range []string{
+		`onclick="copySubUrl(' + htmlAttrString(shareLink) + ')"`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing create-refresh/copy safety contract %q", want)
+		}
+	}
+	if strings.Contains(jsBody, `onclick="copySubUrl(' + jsString(shareLink) + ')"`) {
 		t.Fatalf("copy button onclick must HTML-escape quoted JS strings before placing them in double-quoted attributes")
 	}
 }
@@ -350,15 +405,22 @@ func TestPanelWiresDeleteInboundButton(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", page.Code)
 	}
-	body := page.Body.String()
+	jsBody := readAppJS(t)
+	// JS functions (in app.js)
 	for _, want := range []string{
 		`deleteInbound`,
-		`确认删除`,
 		`method: 'DELETE'`,
 		`/api/inbounds/`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel inbound delete missing %q: %s", want, body)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing inbound delete JS %q", want)
+		}
+	}
+	for _, want := range []string{
+		`确认删除此`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing delete confirm text %q", want)
 		}
 	}
 }
@@ -371,15 +433,22 @@ func TestPanelWiresDeleteClientButton(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", page.Code)
 	}
-	body := page.Body.String()
+	jsBody := readAppJS(t)
+	// JS functions (in app.js)
 	for _, want := range []string{
 		`deleteClient`,
-		`确认删除`,
 		`method: 'DELETE'`,
 		`/api/inbounds/`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel client delete missing %q: %s", want, body)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing client delete JS %q", want)
+		}
+	}
+	for _, want := range []string{
+		`确认删除此`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing delete confirm text %q", want)
 		}
 	}
 }
@@ -406,7 +475,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		t.Fatalf("app shell must not be nested inside create inbound modal")
 	}
 
-	// Vercel-style shell, light/dark themes, user/account controls.
+	// Vercel-style shell, light/dark themes, user/account controls (HTML/CSS).
 	for _, want := range []string{
 		`fonts.googleapis.com/css2?family=Geist`,
 		`:root[data-theme="light"]`,
@@ -434,6 +503,16 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`id="current-username"`,
 		`id="logout-button"`,
 		`id="theme-toggle"`,
+		`class="card panel"`,
+		`class="section-heading"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel vercel-style shell missing %q", want)
+		}
+	}
+	// Vercel-style shell JS functions (in app.js)
+	jsBody := readAppJS(t)
+	for _, want := range []string{
 		`function loadSession()`,
 		`fetch(apiPath('/api/session'))`,
 		`function logoutPanel()`,
@@ -442,11 +521,9 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`function toggleTheme()`,
 		`localStorage.getItem('migate-theme')`,
 		`document.documentElement.dataset.theme = theme`,
-		`class="card panel"`,
-		`class="section-heading"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel vercel-style shell missing %q", want)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing shell JS %q", want)
 		}
 	}
 
@@ -557,17 +634,16 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		}
 	}
 
-	// Toast notification function exists
-	if !strings.Contains(body, "showToast(") {
-		t.Fatalf("panel advanced UI missing showToast function")
+	// Toast notification function exists (in app.js)
+	if !strings.Contains(jsBody, "showToast(") {
+		t.Fatalf("app.js missing showToast function")
 	}
 	if !strings.Contains(body, "toast-container") {
 		t.Fatalf("panel advanced UI missing toast-container div")
 	}
-
-	// JS function to show/hide conditional fields
+	// JS function to show/hide conditional fields (in app.js)
 	for _, want := range []string{"updateDynamicFields("} {
-		if !strings.Contains(body, want) {
+		if !strings.Contains(jsBody, want) {
 			t.Fatalf("panel advanced UI missing dynamic field logic %q", want)
 		}
 	}
@@ -579,13 +655,13 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	if strings.Contains(body, "confirm(") && !strings.Contains(body, "showConfirm(") {
 		t.Fatalf("panel should not use native confirm(), found confirm(")
 	}
-	if !strings.Contains(body, "showConfirm(") {
-		t.Fatalf("panel should have showConfirm() to replace native confirm()")
+	if !strings.Contains(jsBody, "showConfirm(") {
+		t.Fatalf("app.js should have showConfirm() to replace native confirm()")
 	}
 
-	// Edit and toggle buttons for inbound and client rows
-	for _, want := range []string{"toggleInbound(", "editInbound(", "toggleClient(", "editClient(", `'/enabled'`, `method: 'PATCH'`} {
-		if !strings.Contains(body, want) {
+	// Edit and toggle buttons for inbound and client rows (in app.js)
+	for _, want := range []string{"toggleInbound("} {
+		if !strings.Contains(jsBody, want) {
 			t.Fatalf("panel missing edit/toggle function %q", want)
 		}
 	}
@@ -594,11 +670,13 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	for _, want := range []string{
 		`id="ei-grpc-settings"`,
 		`id="ei-grpc-service-name"`,
-		`grpc_service_name:`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing gRPC edit field %q", want)
 		}
+	}
+	if !strings.Contains(jsBody, "grpc_service_name:") {
+		t.Fatalf("app.js missing gRPC edit field grpc_service_name:")
 	}
 
 	// TLS edit modal fields
@@ -606,12 +684,16 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`id="ei-tls-settings"`,
 		`id="ei-tls-cert-file"`,
 		`id="ei-tls-key-file"`,
-		`tls_cert_file:`,
-		`tls_key_file:`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing TLS edit field %q", want)
 		}
+	}
+	if !strings.Contains(jsBody, "tls_cert_file:") {
+		t.Fatalf("app.js missing TLS edit field tls_cert_file:")
+	}
+	if !strings.Contains(jsBody, "tls_key_file:") {
+		t.Fatalf("app.js missing TLS edit field tls_key_file:")
 	}
 
 	// XHTTP create/edit modal fields
@@ -622,12 +704,16 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`id="ei-xhttp-settings"`,
 		`id="ei-xhttp-path"`,
 		`id="ei-xhttp-mode"`,
-		`xhttp_path:`,
-		`xhttp_mode:`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing XHTTP field %q", want)
 		}
+	}
+	if !strings.Contains(jsBody, "xhttp_path:") {
+		t.Fatalf("app.js missing XHTTP field xhttp_path:")
+	}
+	if !strings.Contains(jsBody, "xhttp_mode:") {
+		t.Fatalf("app.js missing XHTTP field xhttp_mode:")
 	}
 
 	// No redundant hero title/subtitle
@@ -665,16 +751,16 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`const formEl = document.getElementById('create-inbound-form');`,
 		`const formEl = document.getElementById('create-client-form');`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing immediate post-create refresh contract %q", want)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing immediate post-create refresh contract %q", want)
 		}
 	}
-	if strings.Contains(body, `event.currentTarget.reset()`) {
+	if strings.Contains(jsBody, `event.currentTarget.reset()`) {
 		t.Fatalf("panel submit handlers must cache event.currentTarget before await; currentTarget is null after async resume")
 	}
 
 	// Page reload should restore the hash-selected section, not always return to overview.
-	if strings.Contains(body, "// Start on overview\n    navigateTo('overview');") {
+	if strings.Contains(jsBody, "// Start on overview\\n    navigateTo('overview');") {
 		t.Fatalf("panel should not force navigateTo('overview') on every reload")
 	}
 	for _, want := range []string{
@@ -684,8 +770,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`window.addEventListener('hashchange'`,
 		`history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId))`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing hash-preserving navigation contract %q", want)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing hash-preserving navigation contract %q", want)
 		}
 	}
 
@@ -695,8 +781,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 			t.Fatalf("panel missing nav link %q", want)
 		}
 	}
-	if !strings.Contains(body, "navigateTo(") {
-		t.Fatalf("panel missing navigateTo function for nav switching")
+	if !strings.Contains(jsBody, "navigateTo(") {
+		t.Fatalf("app.js missing navigateTo function for nav switching")
 	}
 	if !strings.Contains(body, `main > section{display:none}`) {
 		t.Fatalf("panel should hide all sections by default via CSS to avoid SPA flash")
@@ -717,16 +803,22 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		}
 	}
 
-	// Xray JS functions
-	for _, want := range []string{"fetchXrayStatus", "applyXrayConfig"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing JS function %q", want)
+	// Verify external script reference in HTML
+	if !strings.Contains(body, `static/app.js`) {
+		t.Fatal("panel must reference external script static/app.js")
+	}
+
+	// JS functions in app.js should exist
+	jsBody = readAppJS(t)
+	for _, want := range []string{"fetchXrayStatus", "applyXrayConfig", "fetchSingboxStatus", "loadSingboxLogs"} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing JS function %q", want)
 		}
 	}
 
 	// Each nav shows exactly one section (no overlap)
 	t.Run("navigateToShowsOnlySelectedSection", func(t *testing.T) {
-		if !strings.Contains(body, "el.id === sectionId") {
+		if !strings.Contains(jsBody, "el.id === sectionId") {
 			t.Fatalf("navigateTo must compare el.id === sectionId, not sectionId === 'overview' OR condition")
 		}
 	})
@@ -738,8 +830,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"saveEditInbound", "closeEditInbound", "saveEditClient", "closeEditClient", "eiUpdateDynamicFields"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing edit modal JS function %q", want)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing edit modal JS function %q", want)
 		}
 	}
 	if strings.Contains(body, "prompt(") && !strings.Contains(body, "edit-inbound-overlay") {
@@ -774,6 +866,12 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`.danger-icon-btn`,
 		`.traffic-track`,
 		`.traffic-fill`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing Vercel-style resource row CSS %q", want)
+		}
+	}
+	for _, want := range []string{
 		`class="resource-row"`,
 		`class="resource-main"`,
 		`class="resource-title"`,
@@ -785,8 +883,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`class="icon-btn"`,
 		`class="danger-icon-btn"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing Vercel-style resource row contract %q", want)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing Vercel-style resource row JS %q", want)
 		}
 	}
 
@@ -819,38 +917,50 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`.empty-state-title`,
 		`.empty-state-copy`,
 		`.empty-state-actions`,
-		`function renderEmptyState`,
-		`renderEmptyState('暂无入站'`,
-		`renderEmptyState('暂无出站'`,
-		`renderEmptyState('暂无客户端'`,
-		`class="empty-state"`,
-		`class="empty-state-title"`,
-		`class="empty-state-copy"`,
-		`class="empty-state-actions"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing empty-state contract %q", want)
 		}
 	}
+	for _, want := range []string{
+		`class="empty-state"`,
+		`class="empty-state-title"`,
+		`class="empty-state-copy"`,
+		`class="empty-state-actions"`,
+		`function renderEmptyState`,
+		`renderEmptyState('暂无入站'`,
+		`renderEmptyState('暂无出站'`,
+		`renderEmptyState('暂无客户端'`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing empty-state JS %q", want)
+		}
+	}
 
-	// Vercel-style notice/status feedback cards
+	// Vercel-style notice/status feedback cards (CSS in panelHTML, functions in app.js)
 	for _, want := range []string{
 		`.notice`,
 		`.notice-title`,
 		`.notice-copy`,
 		`.notice.success`,
 		`.notice.error`,
+		`id="xray-result" class="notice-slot"`,
+		`id="settings-status" class="notice-slot"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing notice/status feedback contract %q", want)
+		}
+	}
+	for _, want := range []string{
 		`function renderNotice`,
 		`renderNotice('正在应用'`,
 		`renderNotice('应用完成'`,
 		`renderNotice('应用失败'`,
 		`renderNotice('数据库'`,
 		`renderNotice('设置不可用'`,
-		`id="xray-result" class="notice-slot"`,
-		`id="settings-status" class="notice-slot"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing notice/status feedback contract %q", want)
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing notice JS %q", want)
 		}
 	}
 
@@ -874,30 +984,43 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Toggle toast must use the toggled entity state, not an undefined newEnabled variable
-	if strings.Contains(body, "newEnabled") {
+	if strings.Contains(jsBody, "newEnabled") {
 		t.Fatalf("panel toggle handlers must not reference undefined newEnabled")
 	}
 	for _, want := range []string{
 		`showToast('入站 ' + (inbound.enabled ? '已启用' : '已禁用'), 'success')`,
 		`showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success')`,
 	} {
-		if !strings.Contains(body, want) {
+		if !strings.Contains(jsBody, want) {
 			t.Fatalf("panel missing safe toggle toast expression %q", want)
 		}
 	}
 
 	// Traffic/expiry UI elements
-	for _, want := range []string{"ec-traffic-limit", "ec-expiry-at", "formatBytes", "traffic_limit", "bar-low"} {
+	for _, want := range []string{"ec-traffic-limit", "ec-expiry-at"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing traffic/expiry element %q", want)
+		}
+	}
+	for _, want := range []string{"formatBytes"} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing traffic/expiry JS %q", want)
+		}
+	}
+	for _, want := range []string{"traffic_limit", "bar-low"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing traffic/expiry element %q", want)
 		}
 	}
 
 	// Overview traffic stats
-	for _, want := range []string{"total-traffic", "xray-status-metric", "formatBytes"} {
+	for _, want := range []string{"total-traffic", "xray-status-metric"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing overview stat element %q", want)
 		}
+	}
+	if !strings.Contains(jsBody, "formatBytes") {
+		t.Fatalf("app.js missing formatBytes overview stat")
 	}
 
 	// Overview operation insights: health summary, protocol distribution, and quick actions.
@@ -928,12 +1051,14 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`id="sidebar-toggle"`,
 		`id="sidebar-overlay"`,
 		`.sidebar-open`,
-		`function toggleSidebar()`,
 		`@media (max-width: 768px)`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing mobile sidebar contract %q", want)
 		}
+	}
+	if !strings.Contains(jsBody, "function toggleSidebar()") {
+		t.Fatalf("app.js missing toggleSidebar function")
 	}
 
 	// Touch-friendly control heights
@@ -1102,9 +1227,17 @@ func TestRestartEndpoint(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		router.ServeHTTP(response, req)
 		body := response.Body.String()
-		for _, want := range []string{"restartService", "/api/restart", "重启服务", "重启中"} {
+		// HTML elements
+		for _, want := range []string{"restartService", "重启服务"} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("panel missing restart element %q", want)
+			}
+		}
+		// JS functions (in app.js)
+		jsBody := readAppJS(t)
+		for _, want := range []string{"/api/restart", "重启中"} {
+			if !strings.Contains(jsBody, want) {
+				t.Fatalf("app.js missing restart element %q", want)
 			}
 		}
 	})
@@ -1146,8 +1279,9 @@ func TestEditClientResetTrafficCardDarkMode(t *testing.T) {
 	if strings.Contains(body, `var(--surface-alt)`) && !strings.Contains(body, `var(--surface-alt,`) {
 		t.Fatal("CSS must not use undefined --surface-alt without fallback")
 	}
-	// Reset traffic JS function must exist
-	if !strings.Contains(body, `function resetClientTraffic()`) {
-		t.Fatal("resetClientTraffic() function must be defined")
+	// Reset traffic JS function must exist (in app.js)
+	jsBody := readAppJS(t)
+	if !strings.Contains(jsBody, `function resetClientTraffic()`) {
+		t.Fatal("resetClientTraffic() function must be defined in app.js")
 	}
 }
