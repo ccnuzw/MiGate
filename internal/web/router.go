@@ -196,6 +196,14 @@ func WithVPNGateFetcher(fetcher VPNGateFetcher) Option {
 	}
 }
 
+// WithHealthScheduler sets the VPN Gate auto-health scheduler for status reporting.
+func WithHealthScheduler(scheduler *scheduler.VPNGateHealthScheduler) Option {
+	return func(cfg *routerConfig) {
+		cfg.healthScheduler = scheduler
+	}
+}
+
+// WithStatsClient sets the stats client for traffic statistics.
 func WithStatsClient(client xray.StatsClient) Option {
 	return func(cfg *routerConfig) {
 		cfg.statsClient = client

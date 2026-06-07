@@ -97,35 +97,38 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		xrayCtrl = web.NewRealController(store, cfg.XrayConfigPath, execCmd)
 		opts = append(opts, web.WithXrayController(xrayCtrl))
 	}
-
 	// Inject stub stats client (lightweight, no gRPC dependency)
 	opts = append(opts, web.WithStatsClient(xray.NewStubStatsClient()))
 
-	router := web.NewRouter(opts...)
-
-	// Start traffic sync scheduler in background
-	// Uses stub client by default (returns empty stats)
-	// When gRPC stats client is available, it will sync real traffic data
-	sched := scheduler.NewTrafficSyncScheduler(store, xray.NewStubStatsClient(), 1*time.Minute)
-	go func() {
-		log.Println("traffic sync scheduler started (stub mode - no real stats)")
-		sched.Start()
-	}()
-
-	// Start VPN Gate health scheduler in background
-	// Periodically checks vpngate-* SOCKS outbounds and auto-disables failed nodes
+	// Create schedulers before building router (needed for options and cleanup wiring)
+	// Traffic sync scheduler — syncs client traffic stats from Xray API
+	trafficSched := scheduler.NewTrafficSyncScheduler(store, xray.NewStubStatsClient(), 1*time.Minute)
+	// VPN Gate health scheduler — periodically checks vpngate-* outbounds, auto-disables failed nodes
 	var vpnApplyer scheduler.XrayApplyer
 	if xrayCtrl != nil {
 		vpnApplyer = web.NewXrayApplyer(xrayCtrl)
 	}
 	vpnHealthSched := scheduler.NewVPNGateHealthScheduler(store, vpnApplyer, 5*time.Minute, 3)
+
+	// Wire schedulers into web layer for status reporting
+	opts = append(opts, web.WithHealthScheduler(vpnHealthSched))
+
+	router := web.NewRouter(opts...)
+
+	// Start traffic sync scheduler in background
+	go func() {
+		log.Println("traffic sync scheduler started (stub mode - no real stats)")
+		trafficSched.Start()
+	}()
+
+	// Start VPN Gate health scheduler in background
 	go func() {
 		log.Println("VPN Gate health scheduler started")
 		vpnHealthSched.Start()
 	}()
 
 	cleanup := func() {
-		sched.Stop()
+		trafficSched.Stop()
 		vpnHealthSched.Stop()
 		closeStore()
 	}
