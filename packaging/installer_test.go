@@ -46,6 +46,8 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 		"migate-linux-${ARCH}.tar.gz",
 		"systemctl enable migate",
 		"systemctl start migate",
+		"cp \"$TMP/packaging/uninstall.sh\" /usr/local/bin/migate-uninstall",
+		"chmod +x /usr/local/bin/migate-uninstall",
 		"WebUI",
 		"xray.json",
 		"install_xray",
@@ -121,6 +123,52 @@ func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 	}
 	if strings.Index(script, "sha256sum -c") > strings.Index(script, "tar -xzf") {
 		t.Fatalf("installer must verify checksum before extracting release archive")
+	}
+}
+
+func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) {
+	script := read(t, "packaging", "uninstall.sh")
+	for _, want := range []string{
+		"systemctl stop migate",
+		"systemctl disable migate",
+		"rm -f /etc/systemd/system/migate.service",
+		"rm -f /usr/local/bin/migate",
+		"systemctl stop migate-singbox",
+		"systemctl disable migate-singbox",
+		"rm -f /etc/systemd/system/migate-singbox.service",
+		"systemctl daemon-reload",
+		"systemctl reset-failed",
+		"--purge",
+		"rm -rf /etc/migate",
+		"rm -rf /usr/local/migate",
+		"rm -rf /etc/sing-box",
+		"rm -f /usr/local/etc/xray/config.json",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("uninstall script missing %q", want)
+		}
+	}
+
+	if strings.Contains(strings.ToLower(script), "xray-install") {
+		t.Fatalf("uninstall must not remove third-party Xray installation by default")
+	}
+}
+
+func TestReleaseArchivesIncludeUninstallScript(t *testing.T) {
+	root := repoRoot(t)
+	distDir := t.TempDir()
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "build-release.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "DIST_DIR="+distDir, "VERSION=v0.0.0-test")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build release failed: %v\n%s", err, output)
+	}
+	for _, artifact := range []string{"migate-linux-amd64.tar.gz", "migate-linux-arm64.tar.gz"} {
+		entries := tarEntries(t, filepath.Join(distDir, artifact))
+		if !entries["packaging/uninstall.sh"] {
+			t.Fatalf("%s missing packaging/uninstall.sh, entries=%v", artifact, entries)
+		}
 	}
 }
 

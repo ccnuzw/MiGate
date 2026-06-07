@@ -19,9 +19,10 @@ build_one() {
   mkdir -p "$work_dir/packaging"
   cp "$ROOT_DIR/packaging/migate.service" "$work_dir/packaging/migate.service"
   cp "$ROOT_DIR/packaging/install.sh" "$work_dir/packaging/install.sh"
-  chmod +x "$work_dir/migate" "$work_dir/packaging/install.sh"
+  cp "$ROOT_DIR/packaging/uninstall.sh" "$work_dir/packaging/uninstall.sh"
+  chmod +x "$work_dir/migate" "$work_dir/packaging/install.sh" "$work_dir/packaging/uninstall.sh"
 
-  tar -C "$work_dir" -czf "$DIST_DIR/migate-linux-${arch}.tar.gz" migate packaging/migate.service packaging/install.sh
+  tar -C "$work_dir" -czf "$DIST_DIR/migate-linux-${arch}.tar.gz" migate packaging/migate.service packaging/install.sh packaging/uninstall.sh
   rm -rf "$work_dir"
 }
 
