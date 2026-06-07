@@ -250,6 +250,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
 	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(cfg.store))
+	mux.HandleFunc("/api/singbox/config", singboxConfigHandler())
+	mux.HandleFunc("/api/singbox/version", singboxVersionHandler())
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	handler := authMiddleware(mux, &cfg)
 	if cfg.basePath != "" {
@@ -2016,9 +2018,11 @@ func singboxStatusHandler() http.HandlerFunc {
 			return
 		}
 		status := singbox.Status()
+		ver, _ := singbox.Version()
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"installed": true,
 			"status":    status,
+			"version":   strings.TrimSpace(ver),
 		})
 	}
 }
@@ -2081,6 +2085,52 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(result)
+	}
+}
+
+// singboxConfigHandler returns the current sing-box config JSON.
+func singboxConfigHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		data, err := os.ReadFile(singbox.DefaultConfigPath)
+		if err != nil {
+			http.Error(w, `{"error":"read_failed","detail":"`+err.Error()+`"}`, http.StatusNotFound)
+			return
+		}
+		// Parse and re-marshal so the client gets pretty-printed JSON
+		var parsed interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			_, _ = w.Write(data)
+			return
+		}
+		pretty, _ := json.MarshalIndent(parsed, "", "  ")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(pretty)
+	}
+}
+
+// singboxVersionHandler returns the sing-box version.
+func singboxVersionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if !singbox.IsInstalled() {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": "not_installed"})
+			return
+		}
+		ver, err := singbox.Version()
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": "unknown", "error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": strings.TrimSpace(ver)})
 	}
 }
 
@@ -2798,7 +2848,7 @@ const panelHTML = `<!doctype html>
         <div class="card panel"><div>出站</div><div id="outbound-stats" class="metric">0</div><p>已启用 / 总计</p></div>
         <div class="card panel"><div>路由规则</div><div id="routing-stats" class="metric">0</div><p>已启用 / 总计</p></div>
         <div class="card panel"><div>Xray</div><div id="xray-status-metric" class="metric">检查中...</div><p>运行状态</p></div>
-        <div class="card panel"><div>Sing-box</div><div id="singbox-status-metric" class="metric">检查中...</div><p>Hysteria2 运行状态</p></div>
+        <div class="card panel"><div>Sing-box</div><div id="singbox-status-metric" class="metric">检查中...</div><p>Hysteria2 / TUIC / ShadowTLS</p></div>
         <div class="overview-insights">
           <div class="overview-card">
             <div class="overview-card-title">运行概况</div>
@@ -2885,6 +2935,29 @@ const panelHTML = `<!doctype html>
         <div id="xray-result" class="notice-slot"></div>
         <div id="xray-config-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Xray 配置预览</span><button class="icon-btn" onclick="closeXrayConfig()" title="关闭" style="font-size:12px">✕</button></div><pre id="xray-config-json" class="xray-preview-pre"></pre></div>
         <div id="xray-logs-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Xray 运行日志</span><button class="icon-btn" onclick="closeXrayLogs()" title="关闭" style="font-size:12px">✕</button></div><pre id="xray-logs-text" class="xray-preview-pre mono"></pre></div>
+      </section>
+      <section id="singbox" class="card panel">
+        <h2 class="section-title">Sing-box 管理</h2>
+        <p class="muted" style="margin-bottom:16px">查看 Sing-box 服务状态，管理 Hysteria2 / TUIC / ShadowTLS 等协议配置。</p>
+        <div class="xray-status-panel">
+          <div><strong>状态</strong>：<span id="singbox-status">未知</span></div>
+          <div><strong>版本</strong>：<span id="singbox-version">-</span></div>
+          <div><strong>托管服务</strong>：<span id="singbox-managed">sing-box</span></div>
+          <div><strong>配置路径</strong>：<span id="singbox-config-path">/etc/sing-box/config.json</span></div>
+        </div>
+        <div class="action-toolbar xray-toolbar">
+          <div class="toolbar-copy">
+            <strong>配置操作</strong>
+            <span>应用、预览与刷新统一集中在右侧操作区。</span>
+          </div>
+          <div class="toolbar-actions">
+            <button onclick="fetchSingboxStatus()">刷新状态</button>
+            <button class="secondary" onclick="previewSingboxConfig()">预览配置</button>
+            <button class="secondary" onclick="applySingboxConfig()">应用配置</button>
+          </div>
+        </div>
+        <div id="singbox-result" class="notice-slot"></div>
+        <div id="singbox-config-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Sing-box 配置预览</span><button class="icon-btn" onclick="closeSingboxConfig()" title="关闭" style="font-size:12px">✕</button></div><pre id="singbox-config-json" class="xray-preview-pre"></pre></div>
       </section>
       <section id="settings" class="card panel">
         <h2 class="section-title">面板设置</h2>
@@ -3249,7 +3322,8 @@ const panelHTML = `<!doctype html>
         inboundList.className = 'list';
         inboundList.innerHTML = renderEmptyState('暂无入站', '先创建一个 VLESS / VMess / Trojan / Shadowsocks 节点；MiGate 会自动生成客户端与 Xray 配置。', [
           {label:'创建入站', onclick:"openCreateInbound()"},
-          {label:'查看 Xray', onclick:"navigateTo('xray')", secondary:true}
+          {label:'查看 Xray', onclick:"navigateTo('xray')", secondary:true},
+          {label:'查看 Sing-box', onclick:"navigateTo('singbox')", secondary:true}
         ]);
         return;
       }
@@ -4987,7 +5061,7 @@ function openCreateRoutingRule() {
         const xray = data.xray || data;
         const singboxResult = data.singbox;
         const commands = xray.commands_executed && xray.commands_executed.length ? '\n' + xray.commands_executed.join('\n') : '';
-        const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ 已应用' + (singboxResult.inbounds ? '(' + singboxResult.inbounds + ' 个入站)' : '') : singboxResult.reason === 'not_needed' ? '\nSing-box: ⏭ 无 Hysteria2 入站' : '\nSing-box: ❌ ' + (singboxResult.error || singboxResult.reason || '失败')) : '';
+const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ 已应用' + (singboxResult.inbounds ? '(' + singboxResult.inbounds + ' 个入站)' : '') : singboxResult.reason === 'not_needed' ? '\nSing-box: ⏭ 无 sing-box 入站' : '\nSing-box: ❌ ' + (singboxResult.error || singboxResult.reason || '失败')) : '';
         if (xray.status && xray.status.startsWith('failed')) {
           const errDetail = xray.error_output ? '\n\n' + xray.error_output : '';
           document.getElementById('xray-result').innerHTML = renderNotice('应用失败', 'Xray 状态：' + xray.status + errDetail + commands + singboxLine, 'error');
@@ -5045,6 +5119,63 @@ function openCreateRoutingRule() {
     function closeXrayLogs() {
       document.getElementById('xray-logs-preview').style.display = 'none';
       _logsVisible = false;
+    }
+
+    // === Sing-box status & apply ===
+    async function fetchSingboxStatus() {
+      try {
+        const res = await fetch(apiPath('/api/singbox/status'));
+        const data = await res.json();
+        if (!data.installed) {
+          document.getElementById('singbox-status').textContent = '未安装';
+          document.getElementById('singbox-version').textContent = '-';
+          return;
+        }
+        document.getElementById('singbox-status').textContent =
+          data.status === 'running' ? '运行中' : (data.status === 'stopped' ? '已停止' : data.status);
+        document.getElementById('singbox-version').textContent = data.version || '-';
+      } catch (e) {
+        document.getElementById('singbox-status').textContent = '连接失败';
+      }
+    }
+    async function applySingboxConfig() {
+      document.getElementById('singbox-result').innerHTML = renderNotice('正在应用', '正在写入 sing-box 配置并尝试重启服务。');
+      try {
+        const res = await fetch(apiPath('/api/singbox/apply'), {method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({confirm:true, allow_system_changes:true})});
+        const data = await res.json();
+        if (data.applied) {
+          document.getElementById('singbox-result').innerHTML = renderNotice('应用完成', 'Sing-box 配置已应用' + (data.inbounds ? '（' + data.inbounds + ' 个入站）' : ''), 'success');
+          showToast('Sing-box 配置已应用', 'success');
+        } else {
+          document.getElementById('singbox-result').innerHTML = renderNotice('应用失败', data.error || data.reason || '未知错误', 'error');
+          showToast('Sing-box 应用失败', 'error');
+        }
+        await fetchSingboxStatus();
+      } catch (e) {
+        document.getElementById('singbox-result').innerHTML = renderNotice('应用失败', '请求失败，请检查网络连接和服务状态。', 'error');
+        showToast('Sing-box 应用失败', 'error');
+      }
+    }
+    // === Sing-box config preview ===
+    let _singboxConfigVisible = false;
+    async function previewSingboxConfig() {
+      const el = document.getElementById('singbox-config-preview');
+      const pre = document.getElementById('singbox-config-json');
+      if (_singboxConfigVisible) return;
+      _singboxConfigVisible = true;
+      try {
+        const res = await fetch(apiPath('/api/singbox/config'));
+        const text = await res.text();
+        pre.textContent = text;
+        el.style.display = '';
+      } catch (e) {
+        pre.textContent = '加载配置失败';
+        el.style.display = '';
+      }
+    }
+    function closeSingboxConfig() {
+      document.getElementById('singbox-config-preview').style.display = 'none';
+      _singboxConfigVisible = false;
     }
 
     // === Settings ===
