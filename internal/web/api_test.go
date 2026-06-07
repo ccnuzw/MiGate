@@ -84,6 +84,120 @@ func TestVPNGateEgressCapabilitiesAPIIsReadOnlyPlan(t *testing.T) {
 	}
 }
 
+func TestVPNGateSoftEtherRuntimePlanAPIIsReadOnly(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag:      "vpngate-jp-softether",
+		Remark:   "VPN Gate SoftEther - Japan",
+		Protocol: "vpngate_softether",
+		Address:  "127.0.0.1",
+		Port:     21080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	before, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/vpngate/egress/plan?outbound_id="+strconv.FormatInt(outbound.ID, 10), nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse plan: %v", err)
+	}
+	for key, want := range map[string]interface{}{
+		"status":                 "planned",
+		"runtime":                "softether_netns_socks_bridge",
+		"outbound_id":            float64(outbound.ID),
+		"outbound_tag":           outbound.Tag,
+		"bridge_address":         "127.0.0.1",
+		"bridge_port":            float64(21080),
+		"performs_side_effects":  false,
+		"will_start_processes":   false,
+		"will_create_netns":      false,
+		"will_open_socks_bridge": false,
+	} {
+		if got[key] != want {
+			t.Fatalf("expected %s=%v, got %v in %+v", key, want, got[key], got)
+		}
+	}
+	steps, ok := got["steps"].([]interface{})
+	if !ok || len(steps) < 5 {
+		t.Fatalf("expected planned runtime steps, got %+v", got["steps"])
+	}
+	joined := resp.Body.String()
+	for _, want := range []string{"create_network_namespace", "start_softether_client", "wait_vpn_interface", "start_socks_bridge", "smoke_test_non_native_egress"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("plan missing step %q: %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "systemctl") || strings.Contains(joined, "commands_executed") {
+		t.Fatalf("read-only plan must not expose systemctl execution fields: %s", joined)
+	}
+	after, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("plan endpoint must not mutate outbounds: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestVPNGateSoftEtherRuntimeStatusAPIReportsPendingBridge(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag:      "vpngate-jp-softether",
+		Remark:   "VPN Gate SoftEther - Japan",
+		Protocol: "vpngate_softether",
+		Address:  "127.0.0.1",
+		Port:     21080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/vpngate/egress/status?outbound_id="+strconv.FormatInt(outbound.ID, 10), nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse status: %v", err)
+	}
+	for key, want := range map[string]interface{}{
+		"status":                "pending_runtime",
+		"runtime":               "bridge_not_started",
+		"outbound_id":           float64(outbound.ID),
+		"outbound_tag":          outbound.Tag,
+		"bridge_address":        "127.0.0.1",
+		"bridge_port":           float64(21080),
+		"vpn_connected":         false,
+		"socks_bridge_running":  false,
+		"non_native_egress_ok":  false,
+		"performs_side_effects": false,
+	} {
+		if got[key] != want {
+			t.Fatalf("expected %s=%v, got %v in %+v", key, want, got[key], got)
+		}
+	}
+}
+
 func TestCreateVPNGateSoftEtherEgressCreatesPendingBridgeOutbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

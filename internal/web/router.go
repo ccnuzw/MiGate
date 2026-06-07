@@ -263,6 +263,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/probe", vpngateProbeHandler())
 	mux.HandleFunc("/api/vpngate/egress", vpngateCreateEgressHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/egress/capabilities", vpngateEgressCapabilitiesHandler())
+	mux.HandleFunc("/api/vpngate/egress/plan", vpngateEgressPlanHandler(&cfg))
+	mux.HandleFunc("/api/vpngate/egress/status", vpngateEgressRuntimeStatusHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/outbounds/health", vpngateOutboundHealthHandler(cfg.store))
 	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
@@ -2414,6 +2416,139 @@ func vpngateEgressCapabilitiesHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(capabilities)
 	}
+}
+
+type vpngateRuntimeStep struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Notes  string `json:"notes,omitempty"`
+}
+
+type vpngateRuntimePlan struct {
+	Status              string               `json:"status"`
+	Runtime             string               `json:"runtime"`
+	OutboundID          int64                `json:"outbound_id"`
+	OutboundTag         string               `json:"outbound_tag"`
+	BridgeAddress       string               `json:"bridge_address"`
+	BridgePort          int                  `json:"bridge_port"`
+	PerformsSideEffects bool                 `json:"performs_side_effects"`
+	WillStartProcesses  bool                 `json:"will_start_processes"`
+	WillCreateNetns     bool                 `json:"will_create_netns"`
+	WillOpenSocksBridge bool                 `json:"will_open_socks_bridge"`
+	Steps               []vpngateRuntimeStep `json:"steps"`
+	Notes               []string             `json:"notes"`
+}
+
+type vpngateRuntimeStatus struct {
+	Status              string   `json:"status"`
+	Runtime             string   `json:"runtime"`
+	OutboundID          int64    `json:"outbound_id"`
+	OutboundTag         string   `json:"outbound_tag"`
+	BridgeAddress       string   `json:"bridge_address"`
+	BridgePort          int      `json:"bridge_port"`
+	VPNConnected        bool     `json:"vpn_connected"`
+	SocksBridgeRunning  bool     `json:"socks_bridge_running"`
+	NonNativeEgressOK   bool     `json:"non_native_egress_ok"`
+	PerformsSideEffects bool     `json:"performs_side_effects"`
+	Notes               []string `json:"notes"`
+}
+
+func vpngateEgressPlanHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		outbound, ok := loadVPNGateSoftEtherOutbound(w, r, cfg)
+		if !ok {
+			return
+		}
+		plan := vpngateRuntimePlan{
+			Status:              "planned",
+			Runtime:             "softether_netns_socks_bridge",
+			OutboundID:          outbound.ID,
+			OutboundTag:         outbound.Tag,
+			BridgeAddress:       outbound.Address,
+			BridgePort:          outbound.Port,
+			PerformsSideEffects: false,
+			WillStartProcesses:  false,
+			WillCreateNetns:     false,
+			WillOpenSocksBridge: false,
+			Steps: []vpngateRuntimeStep{
+				{Name: "create_network_namespace", Status: "planned", Notes: "future gated runtime step"},
+				{Name: "start_softether_client", Status: "planned", Notes: "future gated runtime step"},
+				{Name: "wait_vpn_interface", Status: "planned", Notes: "future gated runtime step"},
+				{Name: "start_socks_bridge", Status: "planned", Notes: "future gated runtime step"},
+				{Name: "smoke_test_non_native_egress", Status: "planned", Notes: "future fail-closed verification"},
+			},
+			Notes: []string{
+				"只读运行计划：不会写入文件、不会启动进程、不会创建网络命名空间、不会打开 SOCKS 监听。",
+				"真实执行会在后续双确认门控接口中实现，并在 VPN 出口不可用时 fail-closed。",
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(plan)
+	}
+}
+
+func vpngateEgressRuntimeStatusHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		outbound, ok := loadVPNGateSoftEtherOutbound(w, r, cfg)
+		if !ok {
+			return
+		}
+		status := vpngateRuntimeStatus{
+			Status:              "pending_runtime",
+			Runtime:             "bridge_not_started",
+			OutboundID:          outbound.ID,
+			OutboundTag:         outbound.Tag,
+			BridgeAddress:       outbound.Address,
+			BridgePort:          outbound.Port,
+			VPNConnected:        false,
+			SocksBridgeRunning:  false,
+			NonNativeEgressOK:   false,
+			PerformsSideEffects: false,
+			Notes: []string{
+				"受管 vpngate_softether 出口已存在，但 SoftEther/netns/SOCKS bridge runtime 尚未启动。",
+				"当前状态检查只读取数据库占位配置，不探测端口、不访问外网、不执行系统命令。",
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+	}
+}
+
+func loadVPNGateSoftEtherOutbound(w http.ResponseWriter, r *http.Request, cfg *routerConfig) (db.Outbound, bool) {
+	if cfg.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return db.Outbound{}, false
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("outbound_id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid_outbound_id", map[string]interface{}{"detail": "outbound_id query parameter is required"})
+		return db.Outbound{}, false
+	}
+	outbounds, err := cfg.store.ListOutbounds(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed", map[string]interface{}{"detail": err.Error()})
+		return db.Outbound{}, false
+	}
+	for _, outbound := range outbounds {
+		if outbound.ID != id {
+			continue
+		}
+		if outbound.Protocol != "vpngate_softether" {
+			writeJSONError(w, http.StatusBadRequest, "not_vpngate_softether", map[string]interface{}{"detail": "outbound is not a vpngate_softether managed exit"})
+			return db.Outbound{}, false
+		}
+		return outbound, true
+	}
+	writeJSONError(w, http.StatusNotFound, "outbound_not_found")
+	return db.Outbound{}, false
 }
 
 // singboxStatusHandler returns the sing-box runtime status.
