@@ -234,7 +234,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/stats", statsHandler(cfg.store, cfg.statsClient))
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
-	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController))
+	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController, cfg.store))
 	mux.HandleFunc("/api/xray/logs", xrayLogsHandler())
 	mux.HandleFunc("/api/xray/version", xrayVersionHandler(cfg.xrayController))
 	mux.HandleFunc("/api/cert/status", certStatusHandler(&cfg))
@@ -1085,7 +1085,7 @@ func xrayStatusHandler(controller XrayController) http.HandlerFunc {
 	}
 }
 
-func xrayApplyHandler(controller XrayController) http.HandlerFunc {
+func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1108,8 +1108,59 @@ func xrayApplyHandler(controller XrayController) http.HandlerFunc {
 		if controller == nil {
 			controller = defaultXrayController{}
 		}
+
+		// 1. Apply Xray config
+		xrayResult := controller.Apply(r.Context())
+
+		// 2. Apply sing-box config if hysteria2 inbounds exist
+		singboxResult := map[string]interface{}{
+			"applied": false,
+			"reason":  "not_needed",
+		}
+		if store != nil && singbox.IsInstalled() {
+			inbounds, err := store.ListInbounds(r.Context())
+			if err == nil {
+				hasHy2 := false
+				for _, ib := range inbounds {
+					if ib.Enabled && ib.Protocol == "hysteria2" {
+						hasHy2 = true
+						break
+					}
+				}
+				if hasHy2 {
+					cfg := singbox.BuildConfig(inbounds)
+					if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
+						_ = singbox.GenerateSelfSignedCert()
+					}
+					raw, mErr := json.MarshalIndent(cfg, "", "  ")
+					if mErr == nil {
+						_ = os.WriteFile(singbox.DefaultConfigPath, raw, 0644)
+					}
+					applyErr := singbox.Apply()
+					if applyErr != nil {
+						singboxResult = map[string]interface{}{
+							"applied": false,
+							"error":   applyErr.Error(),
+						}
+					} else {
+						singboxResult = map[string]interface{}{
+							"applied":  true,
+							"inbounds": len(cfg.Inbounds),
+						}
+					}
+				}
+			}
+		} else if store == nil {
+			singboxResult["reason"] = "no_store"
+		} else {
+			singboxResult["reason"] = "singbox_not_installed"
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(controller.Apply(r.Context()))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"xray":    xrayResult,
+			"singbox": singboxResult,
+		})
 	}
 }
 
@@ -4769,17 +4820,21 @@ function openCreateRoutingRule() {
       }
     }
     async function applyXrayConfig() {
-      document.getElementById('xray-result').innerHTML = renderNotice('正在应用', '正在写入 xray.json、执行配置校验并尝试重启 Xray。');
+      document.getElementById('xray-result').innerHTML = renderNotice('正在应用', '正在写入 xray.json、执行配置校验并尝试重启 Xray 及 sing-box。');
       try {
-        const res = await fetch(apiPath('/api/xray/apply'), {method: 'POST'});
+        const res = await fetch(apiPath('/api/xray/apply'), {method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({confirm:true, allow_system_changes:true})});
         const data = await res.json();
-        const commands = data.commands_executed && data.commands_executed.length ? '\n' + data.commands_executed.join('\n') : '';
-        if (data.status && data.status.startsWith('failed')) {
-          const errDetail = data.error_output ? '\n\n' + data.error_output : '';
-          document.getElementById('xray-result').innerHTML = renderNotice('应用失败', '状态：' + data.status + errDetail + commands, 'error');
+        // New dual-kernel response: {xray: {...}, singbox: {...}}
+        const xray = data.xray || data;
+        const singboxResult = data.singbox;
+        const commands = xray.commands_executed && xray.commands_executed.length ? '\n' + xray.commands_executed.join('\n') : '';
+        const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ 已应用' + (singboxResult.inbounds ? '(' + singboxResult.inbounds + ' 个入站)' : '') : singboxResult.reason === 'not_needed' ? '\nSing-box: ⏭ 无 Hysteria2 入站' : '\nSing-box: ❌ ' + (singboxResult.error || singboxResult.reason || '失败')) : '';
+        if (xray.status && xray.status.startsWith('failed')) {
+          const errDetail = xray.error_output ? '\n\n' + xray.error_output : '';
+          document.getElementById('xray-result').innerHTML = renderNotice('应用失败', 'Xray 状态：' + xray.status + errDetail + commands + singboxLine, 'error');
           showToast('应用配置失败', 'error');
         } else {
-          document.getElementById('xray-result').innerHTML = renderNotice('应用完成', '状态：' + (data.status || '完成') + commands, 'success');
+          document.getElementById('xray-result').innerHTML = renderNotice('应用完成', 'Xray 状态：' + (xray.status || '完成') + commands + singboxLine, 'success');
           showToast('配置已应用', 'success');
         }
         await fetchXrayStatus();
