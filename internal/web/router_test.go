@@ -72,6 +72,9 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 		`function checkVPNGateOutboundHealth()`,
 		`/api/vpngate/outbounds/health`,
 		`VPN Gate 健康检测完成`,
+		`vpngate-auto-health-card`,
+		`function refreshAutoHealthStatus()`,
+		`/api/vpngate/auto-health/status`,
 		`已跳过重复节点`,
 	} {
 		if !strings.Contains(body, want) {

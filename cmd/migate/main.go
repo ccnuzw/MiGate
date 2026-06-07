@@ -90,13 +90,15 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
 	}
 	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
+
+	// Build Xray controller for shared use
+	var xrayCtrl web.XrayController
 	if cfg.XrayConfigPath != "" {
-		opts = append(opts, web.WithXrayController(
-			web.NewRealController(store, cfg.XrayConfigPath, execCmd),
-		))
+		xrayCtrl = web.NewRealController(store, cfg.XrayConfigPath, execCmd)
+		opts = append(opts, web.WithXrayController(xrayCtrl))
 	}
+
 	// Inject stub stats client (lightweight, no gRPC dependency)
-	// Real stats can be enabled by swapping with GRPCStatsClient at runtime
 	opts = append(opts, web.WithStatsClient(xray.NewStubStatsClient()))
 
 	router := web.NewRouter(opts...)
@@ -110,8 +112,21 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		sched.Start()
 	}()
 
+	// Start VPN Gate health scheduler in background
+	// Periodically checks vpngate-* SOCKS outbounds and auto-disables failed nodes
+	var vpnApplyer scheduler.XrayApplyer
+	if xrayCtrl != nil {
+		vpnApplyer = web.NewXrayApplyer(xrayCtrl)
+	}
+	vpnHealthSched := scheduler.NewVPNGateHealthScheduler(store, vpnApplyer, 5*time.Minute, 3)
+	go func() {
+		log.Println("VPN Gate health scheduler started")
+		vpnHealthSched.Start()
+	}()
+
 	cleanup := func() {
 		sched.Stop()
+		vpnHealthSched.Stop()
 		closeStore()
 	}
 

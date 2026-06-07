@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/vpngate"
+	"github.com/imzyb/MiGate/internal/scheduler"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -43,6 +45,7 @@ type Store interface {
 	UpdateInbound(ctx context.Context, id int64, params db.UpdateInboundParams) (db.Inbound, error)
 	UpdateClient(ctx context.Context, id int64, params db.UpdateClientParams) (db.Client, error)
 	SetInboundEnabled(ctx context.Context, id int64, enabled bool) (db.Inbound, error)
+	SetOutboundEnabled(ctx context.Context, id int64, enabled bool) (db.Outbound, error)
 	SetClientEnabled(ctx context.Context, inboundID int64, id int64, enabled bool) (db.Client, error)
 	ResetClientTraffic(ctx context.Context, id int64) (db.Client, error)
 }
@@ -74,7 +77,28 @@ func (defaultXrayController) Status(ctx context.Context) XrayStatus {
 }
 
 func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
-	return XrayApplyResult{Status: "unavailable", Service: "xray", CommandsExecuted: []string{}}
+	return XrayApplyResult{Status: "not_managed"}
+}
+
+// xrayApplyerAdapter adapts XrayController to scheduler.XrayApplyer.
+type xrayApplyerAdapter struct {
+	ctrl XrayController
+}
+
+func (a *xrayApplyerAdapter) Apply(ctx context.Context) error {
+	res := a.ctrl.Apply(ctx)
+	if res.Status == "applied" {
+		return nil
+	}
+	if res.ErrorOutput != "" {
+		return fmt.Errorf("apply failed: %s", res.ErrorOutput)
+	}
+	return fmt.Errorf("apply failed: status=%s", res.Status)
+}
+
+// NewXrayApplyer wraps an XrayController as a scheduler.XrayApplyer.
+func NewXrayApplyer(ctrl XrayController) scheduler.XrayApplyer {
+	return &xrayApplyerAdapter{ctrl: ctrl}
 }
 
 func (defaultXrayController) Version(ctx context.Context) string { return "" }
@@ -91,6 +115,7 @@ type routerConfig struct {
 	basePath       string
 	vpnGateFetcher VPNGateFetcher
 	statsClient    xray.StatsClient
+	healthScheduler *scheduler.VPNGateHealthScheduler
 }
 
 type VPNGateFetcher interface {
@@ -213,6 +238,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/import", vpngateImportHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/probe", vpngateProbeHandler())
 	mux.HandleFunc("/api/vpngate/outbounds/health", vpngateOutboundHealthHandler(cfg.store))
+	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	handler := authMiddleware(mux, &cfg)
 	if cfg.basePath != "" {
@@ -1786,6 +1812,55 @@ func vpngateOutboundHealthHandler(store Store) http.HandlerFunc {
 	}
 }
 
+func vpngateAutoHealthStatusHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if cfg == nil || cfg.healthScheduler == nil {
+			_, _ = w.Write([]byte(`{"status":"not_started","results":[],"disabled_total":0}`))
+			return
+		}
+		results, disabled := cfg.healthScheduler.LastResult()
+		type resultJSON struct {
+			OutboundID int64  `json:"outbound_id"`
+			Tag        string `json:"tag"`
+			Address    string `json:"address"`
+			Port       int    `json:"port"`
+			OK         bool   `json:"ok"`
+			LatencyMS  int64  `json:"latency_ms"`
+			Error      string `json:"error,omitempty"`
+			Disabled   bool   `json:"disabled"`
+		}
+		jres := make([]resultJSON, len(results))
+		for i, r := range results {
+			jres[i] = resultJSON{
+				OutboundID: r.OutboundID,
+				Tag:        r.Tag,
+				Address:    r.Address,
+				Port:       r.Port,
+				OK:         r.OK,
+				LatencyMS:  r.LatencyMS,
+				Error:      r.Error,
+				Disabled:   r.Disabled,
+			}
+		}
+		out := struct {
+			Status        string       `json:"status"`
+			Results       []resultJSON `json:"results"`
+			DisabledTotal int          `json:"disabled_total"`
+		}{
+			Status:        "running",
+			Results:       jres,
+			DisabledTotal: disabled,
+		}
+		b, _ := json.Marshal(out)
+		_, _ = w.Write(b)
+	}
+}
+
 func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2560,6 +2635,11 @@ const panelHTML = `<!doctype html>
           <div><strong>服务</strong>：<span id="xray-service">xray</span></div>
         </div>
         <div id="xray-unsupported-warning" class="xray-warning muted" style="display:none;margin-top:12px;padding:12px 16px;border-radius:var(--radius-md);background:var(--surface-warning);color:var(--fg)">当前 Xray 版本不支持 Hysteria2 协议，需要使用 sing-box 等后端配合。</div>
+        <div id="vpngate-auto-health-card" class="muted" style="display:none;margin-top:12px;padding:12px 16px;border-radius:var(--radius-md);background:var(--surface-subtle)">
+          <span><strong>VPN Gate 自动检测</strong></span>
+          <span id="vpngate-auto-health-status" style="margin-left:8px">检查中...</span>
+          <button class="icon-btn" onclick="refreshAutoHealthStatus()" title="刷新" style="margin-left:8px;font-size:11px;float:right">⟳</button>
+        </div>
         <div class="action-toolbar xray-toolbar">
           <div class="toolbar-copy">
             <strong>配置操作</strong>
@@ -3865,6 +3945,7 @@ function openCreateRoutingRule() {
     loadOutbounds();
     loadRoutingRules();
     loadStats();
+    setInterval(refreshAutoHealthStatus, 30000);
 
     // === Navigation section switching ===
     function currentSectionFromLocation() {
@@ -3885,6 +3966,7 @@ function openCreateRoutingRule() {
       });
       history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId));
       if (sectionId === 'overview') loadStats();
+      if (sectionId === 'xray') { fetchXrayStatus(); refreshAutoHealthStatus(); }
     }
     document.querySelectorAll('nav a').forEach((a) => {
       a.addEventListener('click', (e) => {
@@ -4744,6 +4826,7 @@ function openCreateRoutingRule() {
       btn.textContent = '保存设置';
     }
     async function restartService() {
+      if (!await showConfirm('确认重启 MiGate 服务？页面将暂时无法访问，重启后自动重试恢复。')) return;
       const btn = document.querySelector('button.danger');
       btn.disabled = true;
       btn.textContent = '重启中…';
@@ -4757,7 +4840,13 @@ function openCreateRoutingRule() {
         const retryDelay = 1500;
         function tryReload() {
           retries++;
-          location.reload();
+          if (retries >= maxRetries) {
+            showToast('重启超时，请手动刷新', 'error');
+            btn.disabled = false;
+            btn.textContent = '重启服务';
+            return;
+          }
+          setTimeout(function() { location.reload(true); }, retryDelay);
         }
         setTimeout(tryReload, 1000);
       } catch (e) {
@@ -4790,6 +4879,27 @@ function openCreateRoutingRule() {
       } catch (e) {
         document.getElementById('svc-status-badge').textContent = '不可用';
         document.getElementById('svc-status-detail').textContent = '无法查询服务状态';
+      }
+    }
+
+    async function refreshAutoHealthStatus() {
+      try {
+        const res = await fetch(apiPath('/api/vpngate/auto-health/status'));
+        if (!res.ok) { document.getElementById('vpngate-auto-health-card').style.display = 'none'; return; }
+        const data = await res.json();
+        const card = document.getElementById('vpngate-auto-health-card');
+        const status = document.getElementById('vpngate-auto-health-status');
+        const ok = data.results.filter(r => r.ok).length;
+        const total = data.results.length;
+        const disabled = data.disabled_total || 0;
+        if (total === 0) {
+          card.style.display = 'none';
+          return;
+        }
+        card.style.display = '';
+        status.textContent = '可用 ' + ok + '/' + total + ' | 已自动禁用 ' + disabled + ' 个节点';
+      } catch (e) {
+        document.getElementById('vpngate-auto-health-card').style.display = 'none';
       }
     }
 

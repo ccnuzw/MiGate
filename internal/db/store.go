@@ -861,6 +861,32 @@ func (s *Store) SetInboundEnabled(ctx context.Context, id int64, enabled bool) (
 	return inbound, nil
 }
 
+func (s *Store) SetOutboundEnabled(ctx context.Context, id int64, enabled bool) (Outbound, error) {
+	dbEnabled := 0
+	if enabled {
+		dbEnabled = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE outbounds SET enabled=? WHERE id=?`, dbEnabled, id)
+	if err != nil {
+		return Outbound{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Outbound{}, err
+	}
+	if n == 0 {
+		return Outbound{}, fmt.Errorf("outbound not found: %d", id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
+	var outbound Outbound
+	var dbEnabledInt int
+	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabledInt, &outbound.Sort); err != nil {
+		return Outbound{}, err
+	}
+	outbound.Enabled = dbEnabledInt != 0
+	return outbound, nil
+}
+
 func (s *Store) SetClientEnabled(ctx context.Context, inboundID int64, id int64, enabled bool) (Client, error) {
 	dbEnabled := 0
 	if enabled {
