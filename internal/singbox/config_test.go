@@ -199,6 +199,8 @@ func TestBuildConfig_TUICInbound(t *testing.T) {
 }
 
 func TestBuildConfig_WireGuardInbound(t *testing.T) {
+	// WireGuard inbound requires sing-box >= 1.14
+	// Currently skipped — test verifies it's NOT added to the config
 	inbounds := []db.Inbound{
 		{
 			ID: 1, Protocol: "wireguard", Port: 21020, Enabled: true,
@@ -215,43 +217,9 @@ func TestBuildConfig_WireGuardInbound(t *testing.T) {
 
 	cfg := BuildConfig(inbounds)
 
-	if len(cfg.Inbounds) != 1 {
-		t.Fatalf("expected 1 inbound, got %d", len(cfg.Inbounds))
-	}
-	ib := cfg.Inbounds[0]
-	if ib.Type != "wireguard" {
-		t.Errorf("expected type wireguard, got %s", ib.Type)
-	}
-	if ib.PrivateKey != "server-private-key-abc" {
-		t.Errorf("expected private_key, got %s", ib.PrivateKey)
-	}
-	if len(ib.Address) != 1 || ib.Address[0] != "10.0.0.1/24" {
-		t.Errorf("expected address [10.0.0.1/24], got %v", ib.Address)
-	}
-	if ib.MTU != 1420 {
-		t.Errorf("expected MTU 1420, got %d", ib.MTU)
-	}
-	if len(ib.Peers) != 1 {
-		t.Fatalf("expected 1 peer, got %d", len(ib.Peers))
-	}
-	if ib.Peers[0].PublicKey != "peer-public-key-xyz" {
-		t.Errorf("expected peer public key, got %s", ib.Peers[0].PublicKey)
-	}
-	if ib.Peers[0].PreSharedKey != "preshared-key-123" {
-		t.Errorf("expected preshared key, got %s", ib.Peers[0].PreSharedKey)
-	}
-	if ib.Peers[0].Endpoint != "peer.example.com:51820" {
-		t.Errorf("expected endpoint, got %s", ib.Peers[0].Endpoint)
-	}
-	if len(ib.Peers[0].AllowedIPs) != 2 {
-		t.Fatalf("expected 2 allowed IPs, got %v", ib.Peers[0].AllowedIPs)
-	}
-	if ib.Peers[0].AllowedIPs[0] != "0.0.0.0/0" {
-		t.Errorf("expected allowedIPs[0] 0.0.0.0/0, got %s", ib.Peers[0].AllowedIPs[0])
-	}
-	// WireGuard should NOT have users
-	if len(ib.Users) != 0 {
-		t.Errorf("expected 0 users for wireguard, got %d", len(ib.Users))
+	// WireGuard skipped — expect 0 inbounds
+	if len(cfg.Inbounds) != 0 {
+		t.Fatalf("expected 0 inbounds (wireguard skipped), got %d", len(cfg.Inbounds))
 	}
 }
 
@@ -316,15 +284,15 @@ func TestBuildConfig_MixedSingBoxProtocols(t *testing.T) {
 
 	cfg := BuildConfig(inbounds)
 
-	// Expect 4 sing-box inbounds (hysteria2, tuic, wireguard, shadowtls)
-	if len(cfg.Inbounds) != 4 {
-		t.Fatalf("expected 4 sing-box inbounds, got %d", len(cfg.Inbounds))
+	// Expect 3 sing-box inbounds (hysteria2, tuic, shadowtls; wireguard skipped)
+	if len(cfg.Inbounds) != 3 {
+		t.Fatalf("expected 3 sing-box inbounds (wireguard skipped), got %d", len(cfg.Inbounds))
 	}
 	types := make(map[string]bool)
 	for _, ib := range cfg.Inbounds {
 		types[ib.Type] = true
 	}
-	for _, proto := range []string{"hysteria2", "tuic", "wireguard", "shadowtls"} {
+	for _, proto := range []string{"hysteria2", "tuic", "shadowtls"} {
 		if !types[proto] {
 			t.Errorf("missing sing-box protocol: %s", proto)
 		}

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
@@ -188,38 +187,9 @@ func BuildConfig(inbounds []db.Inbound) Config {
 			cfg.Inbounds = append(cfg.Inbounds, ib)
 
 		case "wireguard":
-			ib := InboundConfig{
-				Type:       "wireguard",
-				Tag:        fmt.Sprintf("wg-inbound-%d", inbound.ID),
-				Listen:     "0.0.0.0",
-				ListenPort: port,
-				PrivateKey: inbound.WgPrivateKey,
-			}
-
-			// Address
-			if inbound.WgAddress != "" {
-				ib.Address = strings.Split(inbound.WgAddress, ",")
-			}
-
-			// MTU (omit when 0)
-			if inbound.WgMTU != 0 {
-				ib.MTU = inbound.WgMTU
-			}
-
-			// Peers
-			peer := PeerConfig{
-				PublicKey:  inbound.WgPeerPublicKey,
-				PreSharedKey: inbound.WgPresharedKey,
-			}
-			if inbound.WgEndpoint != "" {
-				peer.Endpoint = inbound.WgEndpoint
-			}
-			if inbound.WgAllowedIPs != "" {
-				peer.AllowedIPs = strings.Split(inbound.WgAllowedIPs, ",")
-			}
-			ib.Peers = []PeerConfig{peer}
-
-			cfg.Inbounds = append(cfg.Inbounds, ib)
+			// NOTE: WireGuard inbound requires sing-box >= 1.14
+			// Skipping for now — current deployed version is 1.13.x
+			continue
 
 		case "shadowtls":
 			ib := InboundConfig{

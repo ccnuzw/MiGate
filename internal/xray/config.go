@@ -163,8 +163,9 @@ func appendInbounds(config Config, inbounds []db.Inbound) (Config, error) {
 			continue
 		}
 		protocol := strings.ToLower(strings.TrimSpace(inbound.Protocol))
-		// Skip hysteria2 — handled by sing-box dual kernel
-		if protocol == "hysteria2" {
+		// Skip sing-box protocols — handled by dual kernel
+		switch protocol {
+		case "hysteria2", "tuic", "shadowtls", "wireguard":
 			continue
 		}
 		built, err := buildInbound(inbound)
