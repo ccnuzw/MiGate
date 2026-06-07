@@ -1946,7 +1946,15 @@ func vpngateServersHandler(cfg *routerConfig) http.HandlerFunc {
 }
 
 type importServerRequest struct {
-	Servers []importServerItem `json:"servers"`
+	Servers           []importServerItem `json:"servers"`
+	ProbeBeforeImport bool               `json:"probe_before_import"`
+}
+
+type vpngateImportResponse struct {
+	Outbounds          []db.Outbound `json:"outbounds"`
+	Created            int           `json:"created"`
+	SkippedDuplicate   int           `json:"skipped_duplicate"`
+	SkippedUnreachable int           `json:"skipped_unreachable"`
 }
 
 type importServerItem struct {
@@ -2003,6 +2011,59 @@ func probeSOCKS5Address(address string, port int, timeout time.Duration) (bool, 
 
 func probeTCPAddress(address string, port int, timeout time.Duration) (bool, int64, string) {
 	return probeSOCKS5Address(address, port, timeout)
+}
+
+type importProbeOutcome struct {
+	key string
+	ok  bool
+}
+
+func probeImportServers(ctx context.Context, servers []importServerItem, timeout time.Duration) map[string]bool {
+	const maxConcurrent = 8
+	seen := make(map[string]importServerItem, len(servers))
+	for _, s := range servers {
+		if s.IP == "" {
+			continue
+		}
+		port := s.Port
+		if port == 0 {
+			port = 1080
+		}
+		key := s.IP + ":" + strconv.Itoa(port)
+		if _, exists := seen[key]; !exists {
+			s.Port = port
+			seen[key] = s
+		}
+	}
+
+	out := make(chan importProbeOutcome, len(seen))
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	for key, server := range seen {
+		wg.Add(1)
+		go func(key string, server importServerItem) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				out <- importProbeOutcome{key: key, ok: false}
+				return
+			}
+			ok, _, _ := probeSOCKS5Address(server.IP, server.Port, timeout)
+			out <- importProbeOutcome{key: key, ok: ok}
+		}(key, server)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+
+	result := make(map[string]bool, len(seen))
+	for item := range out {
+		result[item.key] = item.ok
+	}
+	return result
 }
 
 func vpngateProbeHandler() http.HandlerFunc {
@@ -2172,9 +2233,19 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 
 		created := make([]db.Outbound, 0, len(req.Servers))
+		result := vpngateImportResponse{}
+		probeResults := map[string]bool{}
+		if req.ProbeBeforeImport {
+			probeResults = probeImportServers(r.Context(), req.Servers, 1500*time.Millisecond)
+		}
 		for _, s := range req.Servers {
 			if s.IP == "" {
+				result.SkippedDuplicate++
 				continue
+			}
+			port := s.Port
+			if port == 0 {
+				port = 1080
 			}
 			remark := s.CountryLong
 			if remark == "" {
@@ -2188,9 +2259,16 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 			if len(tag) > 40 {
 				tag = tag[:40]
 			}
-			addrKey := s.IP + ":1080"
+			addrKey := s.IP + ":" + strconv.Itoa(port)
 			if seenTags[tag] || seenAddr[addrKey] {
+				result.SkippedDuplicate++
 				continue
+			}
+			if req.ProbeBeforeImport {
+				if !probeResults[addrKey] {
+					result.SkippedUnreachable++
+					continue
+				}
 			}
 			seenTags[tag] = true
 			seenAddr[addrKey] = true
@@ -2199,7 +2277,7 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 				Remark:   remark,
 				Protocol: "socks",
 				Address:  s.IP,
-				Port:     1080,
+				Port:     port,
 			})
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "create_failed")
@@ -2207,9 +2285,11 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 			}
 			created = append(created, ob)
 		}
+		result.Outbounds = created
+		result.Created = len(created)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(created)
+		_ = json.NewEncoder(w).Encode(result)
 	}
 }
 

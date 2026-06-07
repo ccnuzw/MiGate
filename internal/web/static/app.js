@@ -914,7 +914,7 @@ function openCreateRoutingRule() {
         var resp = await fetch(apiPath('/api/vpngate/import'), {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({servers: selected})
+          body: JSON.stringify({servers: selected, probe_before_import: true})
         });
         if (!resp.ok) {
           var errText = '导入失败';
@@ -924,8 +924,14 @@ function openCreateRoutingRule() {
           btn.disabled = false;
           return;
         }
-        var created = await resp.json();
-        showToast('已导入 ' + created.length + ' 台 VPN Gate 服务器' + (selected.length > created.length ? '，已跳过重复节点 ' + (selected.length - created.length) + ' 台' : ''), 'success');
+        var result = await resp.json();
+        var outbounds = Array.isArray(result) ? result : (result.outbounds || []);
+        var skippedDuplicate = result.skipped_duplicate || Math.max(0, selected.length - outbounds.length);
+        var skippedUnreachable = result.skipped_unreachable || 0;
+        var extra = '';
+        if (skippedDuplicate > 0) extra += '，已跳过重复节点 ' + skippedDuplicate + ' 台';
+        if (skippedUnreachable > 0) extra += '，已跳过不可用节点 ' + skippedUnreachable + ' 台';
+        showToast('已导入 ' + outbounds.length + ' 台 VPN Gate 服务器' + extra, 'success');
         closeModal();
         await Promise.all([loadOutbounds(), loadXrayStatus()]);
       } catch(e) { showToast('导入失败: ' + e.message, 'error'); btn.textContent = '导入选中'; }
