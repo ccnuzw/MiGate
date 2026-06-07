@@ -206,10 +206,13 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 			t.Fatalf("panel should move inbound creation into modal and remove old inline form contract, found %q", forbidden)
 		}
 	}
-	for _, forbidden := range []string{"npm", "node_modules", "openvpn", "leak-check", "remote/readiness"} {
+	for _, forbidden := range []string{"npm", "node_modules", "leak-check", "remote/readiness"} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
 			t.Fatalf("panel should keep lightweight single-binary scope and avoid %q: %s", forbidden, body)
 		}
+	}
+	if regexp.MustCompile(`(?i)\bopenvpn\s+(install|server|service|client|config)\b`).MatchString(body) {
+		t.Fatalf("panel should keep lightweight single-binary scope and avoid OpenVPN implementation UI: %s", body)
 	}
 }
 
@@ -735,6 +738,19 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing overview horizontal grid contract %q", want)
 		}
+	}
+
+	// Overview Xray metric must display service runtime status, not the literal service name.
+	for _, want := range []string{
+		`xrayStatusMetric.textContent = xs.status === 'running' ? '运行中'`,
+		`xs.status === 'stopped' ? '已停止'`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing overview Xray runtime status contract %q", want)
+		}
+	}
+	if strings.Contains(jsBody, `xrayStatusMetric.textContent = xs.service === 'running'`) {
+		t.Fatalf("overview Xray metric must not compare xs.service to running; service is the unit name")
 	}
 
 	// Right-top title/subtitle are redundant with the sidebar brand and waste vertical space.
@@ -1442,6 +1458,8 @@ func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
 		`VPN Gate 公共服务器`,
 		`onclick="refreshVPNGateServers()"`,
 		`重新拉取`,
+		`VPN Gate 官方列表不是 SOCKS5 代理源`,
+		`官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 暂不应把它们导入为 SOCKS5 出站。`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing VPN Gate dialog contract %q", want)

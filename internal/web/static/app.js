@@ -194,8 +194,8 @@
         try {
           const xr = await fetch(apiPath('/api/xray/status'));
           const xs = await xr.json();
-          if (xs && xs.service !== undefined) {
-            xrayStatusMetric.textContent = xs.service === 'running' ? '运行中' : (xs.service === 'stopped' ? '已停止' : xs.service);
+          if (xs && xs.status !== undefined) {
+            xrayStatusMetric.textContent = xs.status === 'running' ? '运行中' : (xs.status === 'stopped' ? '已停止' : xs.status);
           }
         } catch (e) {
           xrayStatusMetric.textContent = '无法连接';

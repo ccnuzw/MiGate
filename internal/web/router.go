@@ -3618,6 +3618,10 @@ const panelHTML = `<!doctype html>
               <button class="secondary" onclick="smartSelectVPNGate()">智能选择</button>
               <button onclick="importSelectedVPNGate()" id="vpngate-import-btn" disabled>导入选中</button>
             </div>
+            <div class="notice" style="margin-bottom:12px;background:var(--surface-warning);color:var(--fg)">
+              <div class="notice-title">VPN Gate 官方列表不是 SOCKS5 代理源</div>
+              <div class="notice-copy">官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 暂不应把它们导入为 SOCKS5 出站。当前连通性检测仍会验证 SOCKS5 握手，因此全部失败属于项目接入方式不正确，不是这些节点全部宕机。</div>
+            </div>
             <table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead>
                 <tr style="background:var(--surface-subtle)">
