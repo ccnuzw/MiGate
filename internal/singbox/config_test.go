@@ -193,8 +193,11 @@ func TestBuildConfig_TUICInbound(t *testing.T) {
 	if len(ib.Users) != 1 {
 		t.Fatalf("expected 1 user, got %d", len(ib.Users))
 	}
-	if ib.Users[0].Password != "tuic-pass-1" {
-		t.Errorf("expected password tuic-pass-1, got %s", ib.Users[0].Password)
+	if ib.Users[0].UUID != "tuic-pass-1" {
+		t.Errorf("expected uuid tuic-pass-1, got %s", ib.Users[0].UUID)
+	}
+	if ib.Users[0].Password != "" {
+		t.Errorf("expected no password (TUIC uses uuid), got %s", ib.Users[0].Password)
 	}
 }
 
@@ -245,8 +248,8 @@ func TestBuildConfig_ShadowTLSInbound(t *testing.T) {
 	if ib.Type != "shadowtls" {
 		t.Errorf("expected type shadowtls, got %s", ib.Type)
 	}
-	if ib.Password != "shadow-pass-1" {
-		t.Errorf("expected password, got %s", ib.Password)
+	if ib.Password != "" {
+		t.Errorf("expected no inbound password (v1.13 compat), got %s", ib.Password)
 	}
 	if ib.Version != 2 {
 		t.Errorf("expected version 2, got %d", ib.Version)
@@ -262,9 +265,6 @@ func TestBuildConfig_ShadowTLSInbound(t *testing.T) {
 	}
 	if ib.Users[0].Password != "user-pass-1" {
 		t.Errorf("expected user password, got %s", ib.Users[0].Password)
-	}
-	if ib.Users[0].UUID != "user-pass-1" {
-		t.Errorf("expected user uuid, got %s", ib.Users[0].UUID)
 	}
 }
 

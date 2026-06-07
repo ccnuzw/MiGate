@@ -60,7 +60,7 @@ type HandshakeConfig struct {
 // UserConfig represents a sing-box user.
 type UserConfig struct {
 	Name     string `json:"name,omitempty"`
-	Password string `json:"password"`
+	Password string `json:"password,omitempty"`
 	UUID     string `json:"uuid,omitempty"`
 }
 
@@ -169,11 +169,11 @@ func BuildConfig(inbounds []db.Inbound) Config {
 				ib.CongestionControl = inbound.TuicCongestionControl
 			}
 
-			// Build users from clients
+			// Build users from clients (TUIC in sing-box v1.13 uses uuid, not password)
 			for _, client := range enabledClients(inbound.Clients) {
 				ib.Users = append(ib.Users, UserConfig{
-					Name:     client.Email,
-					Password: client.UUID,
+					Name: client.Email,
+					UUID: client.UUID,
 				})
 			}
 
@@ -205,7 +205,9 @@ func BuildConfig(inbounds []db.Inbound) Config {
 				Listen:     "0.0.0.0",
 				ListenPort: port,
 				Version:    inbound.ShadowTLSVersion,
-				Password:   inbound.ShadowTLSPassword,
+				// NOTE: sing-box v1.13: inbound-level password + users conflicts.
+				// Put password on users only; omit inbound password entirely.
+				// Password: inbound.ShadowTLSPassword,
 			}
 
 			if inbound.TLSSNI != "" {
@@ -215,12 +217,11 @@ func BuildConfig(inbounds []db.Inbound) Config {
 				}
 			}
 
-			// Build users from clients (ShadowTLS v1.13 requires uuid field)
+			// Build users from clients
 			for _, client := range enabledClients(inbound.Clients) {
 				ib.Users = append(ib.Users, UserConfig{
 					Name:     client.Email,
 					Password: client.UUID,
-					UUID:     client.UUID,
 				})
 			}
 
