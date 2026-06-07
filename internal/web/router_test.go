@@ -152,6 +152,40 @@ func TestPanelShowsVPNGateSoftEtherCapabilityPreview(t *testing.T) {
 	}
 }
 
+func TestPanelShowsVPNGateRuntimeControlsForSoftEtherOutbounds(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
+	}
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`ob.protocol === 'vpngate_softether'`,
+		`renderVPNGateRuntimeControls(ob)`,
+		`function renderVPNGateRuntimeControls(ob)`,
+		`function showVPNGateRuntimePlan(id)`,
+		`function refreshVPNGateRuntimeStatus(id)`,
+		`/api/vpngate/egress/plan?outbound_id=`,
+		`/api/vpngate/egress/status?outbound_id=`,
+		`启动计划`,
+		`运行状态`,
+		`暂未启动`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing VPN Gate runtime control contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`startVPNGateRuntime(`,
+		`/api/vpngate/egress/start`,
+	} {
+		if strings.Contains(jsBody, forbidden) {
+			t.Fatalf("VPN Gate runtime controls must stay passive in this slice, found %q", forbidden)
+		}
+	}
+}
+
 func TestSessionAPIReportsAuthUser(t *testing.T) {
 	router := web.NewRouter(web.WithAuth("sam", "secret"))
 

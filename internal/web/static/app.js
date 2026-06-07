@@ -246,7 +246,8 @@
 
     function renderOutboundCard(ob) {
       const protoLabel = ob.protocol === 'freedom' ? '直接连接' :
-        ob.protocol === 'blackhole' ? '阻断' : ob.protocol.toUpperCase();
+        ob.protocol === 'blackhole' ? '阻断' :
+        ob.protocol === 'vpngate_softether' ? 'VPN Gate SoftEther' : ob.protocol.toUpperCase();
       const detail = ob.address ? ob.address + ':' + ob.port : '';
       const editable = ob.protocol !== 'freedom' && ob.protocol !== 'blackhole';
       const enabledColor = ob.enabled ? 'var(--green)' : 'var(--muted)';
@@ -258,12 +259,49 @@
         '<div style=\"flex:1;min-width:0\">' +
         '<div style=\"font-weight:600;font-size:var(--text-sm)\">' + escHtml(ob.remark||ob.tag) + '</div>' +
         '<div class=\"muted\" style=\"font-size:var(--text-xs)\">' + escHtml(ob.tag) + ' &middot; ' + protoLabel + (detail ? ' &middot; ' + escHtml(detail) : '') + ' <span id=\"ping-' + ob.id + '\"></span></div>' +
+        (ob.protocol === 'vpngate_softether' ? renderVPNGateRuntimeControls(ob) : '') +
         '</div><div style=\"display:flex;gap:6px\">' +
         (editable ? '<button class=\"icon-btn\" onclick=\"speedTestOutbound(' + ob.id + ')\" title=\"测速\">&#9889;</button>' +
           '<button class=\"icon-btn\" onclick=\"openEditOutbound(' + ob.id + ')\" title=\"编辑\">&#9998;</button>' +
           '<button class=\"danger-icon-btn\" onclick=\"deleteOutbound(' + ob.id + ')\" title=\"删除\">&#10005;</button>' :
         '<span class=\"muted\" style=\"font-size:var(--text-xs);padding:4px 8px\">内置</span>') +
         '</div></div>';
+    }
+
+    function renderVPNGateRuntimeControls(ob) {
+      return '<div class=\"muted\" style=\"font-size:var(--text-xs);margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap\">' +
+        '<span id=\"vpngate-runtime-' + ob.id + '\">运行状态：暂未启动</span>' +
+        '<button class=\"btn-mini\" onclick=\"showVPNGateRuntimePlan(' + ob.id + ')\">启动计划</button>' +
+        '<button class=\"btn-mini\" onclick=\"refreshVPNGateRuntimeStatus(' + ob.id + ')\">运行状态</button>' +
+        '</div>';
+    }
+
+    async function showVPNGateRuntimePlan(id) {
+      try {
+        const resp = await fetch(apiPath('/api/vpngate/egress/plan?outbound_id=' + encodeURIComponent(id)));
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'plan_failed');
+        const steps = (data.steps || []).map(function(s) { return s.name + ':' + s.status; }).join(' → ');
+        showToast('VPN Gate 启动计划：' + steps, 'success');
+      } catch(e) {
+        showToast('读取 VPN Gate 启动计划失败：' + e.message, 'error');
+      }
+    }
+
+    async function refreshVPNGateRuntimeStatus(id) {
+      const el = document.getElementById('vpngate-runtime-' + id);
+      if (el) el.textContent = '运行状态：检查中...';
+      try {
+        const resp = await fetch(apiPath('/api/vpngate/egress/status?outbound_id=' + encodeURIComponent(id)));
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'status_failed');
+        const label = data.socks_bridge_running ? 'SOCKS bridge 运行中' : (data.runtime === 'bridge_not_started' ? '暂未启动' : data.status);
+        if (el) el.textContent = '运行状态：' + label;
+        showToast('VPN Gate 运行状态：' + label, data.socks_bridge_running ? 'success' : 'error');
+      } catch(e) {
+        if (el) el.textContent = '运行状态：读取失败';
+        showToast('读取 VPN Gate 运行状态失败：' + e.message, 'error');
+      }
     }
 
     function speedTestOutbound(id) {
