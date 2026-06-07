@@ -59,7 +59,7 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 }
 
 func createSessionToken(username string, secret []byte) string {
-	expiry := time.Now().Add(24 * time.Hour).Unix()
+	expiry := time.Now().Add(7 * 24 * time.Hour).Unix()
 	payload := fmt.Sprintf("%s:%d", username, expiry)
 	sig := signMessage(payload, secret)
 	return hex.EncodeToString([]byte(payload)) + "." + sig
@@ -132,7 +132,7 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			Path:     cookiePath,
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
-			MaxAge:   86400,
+			MaxAge:   86400 * 7,
 		})
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
