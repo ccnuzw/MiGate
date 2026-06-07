@@ -772,8 +772,10 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 
 	// Overview Xray metric must display service runtime status, not the literal service name.
 	for _, want := range []string{
-		`xrayStatusMetric.textContent = xs.status === 'running' ? '运行中'`,
-		`xs.status === 'stopped' ? '已停止'`,
+		`function formatServiceStatus(service)`,
+		`if (service.status === 'running' || service.status === 'active') return '运行中';`,
+		`if (service.status === 'stopped' || service.status === 'inactive') return '已停止';`,
+		`xrayStatusMetric.textContent = formatServiceStatus(xs)`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing overview Xray runtime status contract %q", want)
@@ -1066,8 +1068,19 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 			t.Fatalf("panel missing overview stat element %q", want)
 		}
 	}
-	if !strings.Contains(jsBody, "formatBytes") {
-		t.Fatalf("app.js missing formatBytes overview stat")
+	for _, want := range []string{
+		"formatBytes",
+		"async function loadOverviewServiceStatuses()",
+		"xrayStatusMetric.textContent = formatServiceStatus(xs)",
+		"document.getElementById('singbox-status-metric').textContent = formatServiceStatus(ss)",
+		"if (sectionId === 'overview') { loadStats(); loadOverviewServiceStatuses(); }",
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing overview stat/status contract %q", want)
+		}
+	}
+	if !strings.Contains(jsBody, "'singbox'") || !strings.Contains(jsBody, "fetchSingboxStatus();") {
+		t.Fatalf("app.js must treat singbox as a valid navigable section")
 	}
 
 	// Overview operation insights: health summary, protocol distribution, and quick actions.

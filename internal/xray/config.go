@@ -204,7 +204,7 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 	switch protocol {
 	case "vless":
 		flow := ""
-		if strings.ToLower(strings.TrimSpace(inbound.Security)) == "reality" {
+		if strings.ToLower(strings.TrimSpace(inbound.Security)) == "reality" && strings.ToLower(strings.TrimSpace(inbound.Network)) != "xhttp" {
 			flow = "xtls-rprx-vision"
 		}
 		base.Settings = map[string]interface{}{

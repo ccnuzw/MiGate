@@ -701,6 +701,52 @@ func TestSubscriptionEndpointStripsPanelPortBeforeAppendingInboundPort(t *testin
 	}
 }
 
+func TestSubscriptionVLESSXHTTPRealityOmitsVisionFlow(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark:             "xhttp",
+		Protocol:           "vless",
+		Port:               40003,
+		Network:            "xhttp",
+		Security:           "reality",
+		XHTTPPath:          "/samge",
+		XHTTPMode:          "stream-one",
+		RealityServerNames: "www.cloudflare.com",
+		RealityPublicKey:   "IXhEpcgnBhIQ6m4DewngNWqDeLl7-ej53nonOtwM_kM",
+		RealityShortID:     "00942aa4",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "xhttp"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "103.193.149.217:9999"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{"type=xhttp", "security=reality", "sni=www.cloudflare.com", "pbk=IXhEpcgnBhIQ6m4DewngNWqDeLl7-ej53nonOtwM_kM", "sid=00942aa4", "path=%2Fsamge", "mode=stream-one"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("xhttp subscription missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "flow=xtls-rprx-vision") {
+		t.Fatalf("VLESS+XHTTP+REALITY subscription must not include TCP Vision flow: %s", body)
+	}
+}
+
 func TestSubscriptionEndpointRejectsUnknownClient(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

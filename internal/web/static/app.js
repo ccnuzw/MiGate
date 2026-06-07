@@ -190,33 +190,36 @@
         if (!response.ok) { console.error('loadInbounds: API error', response.status); return; }
         const data = await response.json();
         renderInbounds(data.inbounds || []);
-        // Fetch Xray status for overview
-        try {
-          const xr = await fetch(apiPath('/api/xray/status'));
-          const xs = await xr.json();
-          if (xs && xs.status !== undefined) {
-            xrayStatusMetric.textContent = xs.status === 'running' ? '运行中' : (xs.status === 'stopped' ? '已停止' : xs.status);
-          }
-        } catch (e) {
-          xrayStatusMetric.textContent = '无法连接';
-        }
-        // Fetch sing-box status for overview
-        try {
-          const sr = await fetch(apiPath('/api/singbox/status'));
-          const ss = await sr.json();
-          if (ss && ss.installed !== undefined) {
-            const el = document.getElementById('singbox-status-metric');
-            if (!ss.installed) {
-              el.textContent = '未安装';
-            } else {
-              el.textContent = ss.status === 'running' ? '运行中' : (ss.status === 'stopped' ? '已停止' : ss.status);
-            }
-          }
-        } catch (e) {
-          document.getElementById('singbox-status-metric').textContent = '无法连接';
-        }
+        loadOverviewServiceStatuses();
       } catch(e) {
         console.error('loadInbounds error:', e);
+      }
+    }
+
+    function formatServiceStatus(service) {
+      if (!service) return '无法连接';
+      if (service.installed === false) return '未安装';
+      if (service.status === 'running' || service.status === 'active') return '运行中';
+      if (service.status === 'stopped' || service.status === 'inactive') return '已停止';
+      return service.status || '未知';
+    }
+
+    async function loadOverviewServiceStatuses() {
+      try {
+        const xr = await fetch(apiPath('/api/xray/status'));
+        if (!xr.ok) throw new Error('xray status ' + xr.status);
+        const xs = await xr.json();
+        xrayStatusMetric.textContent = formatServiceStatus(xs);
+      } catch (e) {
+        xrayStatusMetric.textContent = '无法连接';
+      }
+      try {
+        const sr = await fetch(apiPath('/api/singbox/status'));
+        if (!sr.ok) throw new Error('singbox status ' + sr.status);
+        const ss = await sr.json();
+        document.getElementById('singbox-status-metric').textContent = formatServiceStatus(ss);
+      } catch (e) {
+        document.getElementById('singbox-status-metric').textContent = '无法连接';
       }
     }
 
@@ -1005,7 +1008,7 @@ function openCreateRoutingRule() {
     }
 
     function navigateTo(sectionId) {
-      const validSections = ['overview', 'inbounds', 'clients', 'outbound', 'routing', 'xray', 'settings'];
+      const validSections = ['overview', 'inbounds', 'clients', 'outbound', 'routing', 'xray', 'singbox', 'settings'];
       if (!validSections.includes(sectionId)) sectionId = 'overview';
       document.querySelectorAll('main > section').forEach((el) => {
         const display = el.classList.contains('overview-grid') ? 'grid' : 'block';
@@ -1016,7 +1019,7 @@ function openCreateRoutingRule() {
         a.classList.toggle('active', (sectionId === 'overview' && href === '#') || href === '#' + sectionId);
       });
       history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId));
-      if (sectionId === 'overview') loadStats();
+      if (sectionId === 'overview') { loadStats(); loadOverviewServiceStatuses(); }
       if (sectionId === 'xray') { fetchXrayStatus(); refreshAutoHealthStatus(); }
       if (sectionId === 'singbox') fetchSingboxStatus();
     }
@@ -1070,7 +1073,7 @@ function openCreateRoutingRule() {
           p.push('type=' + (inbound.network||'tcp'));
           p.push('security=' + (inbound.security||'none'));
           if (inbound.security === 'reality') {
-            p.push('flow=xtls-rprx-vision');
+            if (inbound.network !== 'xhttp') p.push('flow=xtls-rprx-vision');
             if (inbound.reality_server_names) p.push('sni=' + encodeURIComponent(inbound.reality_server_names));
             p.push('fp=chrome');
             if (inbound.reality_public_key) p.push('pbk=' + encodeURIComponent(inbound.reality_public_key));

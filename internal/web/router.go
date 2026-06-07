@@ -1798,7 +1798,9 @@ func shareLink(host string, inbound db.Inbound, client db.Client) string {
 		addParam("type", inbound.Network)
 		addParam("security", inbound.Security)
 		if inbound.Security == "reality" {
-			params = append(params, "flow=xtls-rprx-vision")
+			if inbound.Network != "xhttp" {
+				params = append(params, "flow=xtls-rprx-vision")
+			}
 			addParam("sni", inbound.RealityServerNames)
 			params = append(params, "fp=chrome")
 			addParam("pbk", inbound.RealityPublicKey)
