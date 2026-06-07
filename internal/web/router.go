@@ -248,6 +248,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController, cfg.store))
+	mux.HandleFunc("/api/xray/install", coreInstallHandler("xray"))
+	mux.HandleFunc("/api/xray/uninstall", coreUninstallHandler("xray"))
 	mux.HandleFunc("/api/xray/logs", xrayLogsHandler())
 	mux.HandleFunc("/api/xray/version", xrayVersionHandler(cfg.xrayController))
 	mux.HandleFunc("/api/cert/status", certStatusHandler(&cfg))
@@ -263,6 +265,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
 	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(cfg.store))
+	mux.HandleFunc("/api/singbox/install", coreInstallHandler("singbox"))
+	mux.HandleFunc("/api/singbox/uninstall", coreUninstallHandler("singbox"))
 	mux.HandleFunc("/api/singbox/config", singboxConfigHandler())
 	mux.HandleFunc("/api/singbox/version", singboxVersionHandler())
 	mux.HandleFunc("/api/singbox/logs", singboxLogsHandler())
@@ -1193,6 +1197,150 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 	}
 }
 
+type coreActionPayload struct {
+	Confirm            bool `json:"confirm"`
+	AllowSystemChanges bool `json:"allow_system_changes"`
+}
+
+func decodeCoreActionPayload(w http.ResponseWriter, r *http.Request) (coreActionPayload, bool) {
+	var payload coreActionPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+		return payload, false
+	}
+	if !payload.Confirm || !payload.AllowSystemChanges {
+		writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{"commands_executed": []string{}})
+		return payload, false
+	}
+	return payload, true
+}
+
+func coreInstallHandler(core string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if _, ok := decodeCoreActionPayload(w, r); !ok {
+			return
+		}
+		var script string
+		var commands []string
+		switch core {
+		case "xray":
+			commands = []string{"bash -c curl Xray-install", "mkdir -p /usr/local/etc/xray", "ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json", "systemctl enable --now xray"}
+			script = `set -euo pipefail
+if ! command -v curl >/dev/null 2>&1; then echo 'curl is required' >&2; exit 1; fi
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)"
+mkdir -p /usr/local/etc/xray
+ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json
+ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
+systemctl enable xray
+systemctl restart xray || true
+xray --version | head -1`
+		case "singbox":
+			commands = []string{"download sing-box release", "install /usr/local/bin/sing-box", "write /etc/systemd/system/migate-singbox.service", "systemctl enable --now migate-singbox"}
+			script = `set -euo pipefail
+arch="$(uname -m)"
+case "$arch" in
+  x86_64|amd64) asset_arch=amd64 ;;
+  aarch64|arm64) asset_arch=arm64 ;;
+  *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+esac
+version="${SINGBOX_VERSION:-1.13.13}"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-${asset_arch}.tar.gz"
+curl -fL "$url" -o "$tmp/sing-box.tar.gz"
+tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp"
+cp "$tmp"/sing-box-*/sing-box /usr/local/bin/sing-box
+chmod +x /usr/local/bin/sing-box
+mkdir -p /etc/sing-box
+if [ ! -f /etc/sing-box/config.json ]; then
+  printf '%s\n' '{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}' > /etc/sing-box/config.json
+fi
+cat > /etc/systemd/system/migate-singbox.service <<'UNIT'
+[Unit]
+Description=MiGate managed sing-box service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable migate-singbox
+systemctl restart migate-singbox || true
+sing-box version | head -1`
+		default:
+			writeJSONError(w, http.StatusBadRequest, "unknown_core")
+			return
+		}
+		out, err := runCoreScript(script)
+		status := "installed"
+		if err != nil {
+			status = "failed"
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+	}
+}
+
+func runCoreScript(script string) ([]byte, error) {
+	cmd := exec.Command("bash", "-s")
+	cmd.Stdin = strings.NewReader(script)
+	return cmd.CombinedOutput()
+}
+
+func coreUninstallHandler(core string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if _, ok := decodeCoreActionPayload(w, r); !ok {
+			return
+		}
+		var script string
+		var commands []string
+		switch core {
+		case "xray":
+			commands = []string{"systemctl disable --now xray", "bash Xray-install remove", "remove MiGate xray symlinks"}
+			script = `set -euo pipefail
+systemctl disable --now xray 2>/dev/null || true
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -- remove --purge 2>&1 || true
+rm -f /usr/local/etc/xray/xray.json /usr/local/etc/xray/config.json
+printf 'Xray removed or disabled\n'`
+		case "singbox":
+			commands = []string{"systemctl disable --now migate-singbox", "remove sing-box binary and service"}
+			script = `set -euo pipefail
+systemctl disable --now migate-singbox 2>/dev/null || true
+rm -f /etc/systemd/system/migate-singbox.service /usr/local/bin/sing-box
+systemctl daemon-reload 2>/dev/null || true
+printf 'sing-box removed\n'`
+		default:
+			writeJSONError(w, http.StatusBadRequest, "unknown_core")
+			return
+		}
+		out, err := runCoreScript(script)
+		status := "uninstalled"
+		if err != nil {
+			status = "failed"
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+	}
+}
+
 func xrayLogsHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1817,12 +1965,13 @@ type vpngateProbeResult struct {
 	HostName  string `json:"hostname"`
 	IP        string `json:"ip"`
 	Port      int    `json:"port"`
+	Protocol  string `json:"protocol"`
 	OK        bool   `json:"ok"`
 	LatencyMS int64  `json:"latency_ms"`
 	Error     string `json:"error,omitempty"`
 }
 
-func probeTCPAddress(address string, port int, timeout time.Duration) (bool, int64, string) {
+func probeSOCKS5Address(address string, port int, timeout time.Duration) (bool, int64, string) {
 	if port == 0 {
 		port = 1080
 	}
@@ -1832,8 +1981,28 @@ func probeTCPAddress(address string, port int, timeout time.Duration) (bool, int
 	if err != nil {
 		return false, latency, err.Error()
 	}
-	_ = conn.Close()
+	defer conn.Close()
+	deadline := time.Now().Add(timeout)
+	_ = conn.SetDeadline(deadline)
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return false, time.Since(start).Milliseconds(), err.Error()
+	}
+	buf := []byte{0x00, 0x00}
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return false, time.Since(start).Milliseconds(), err.Error()
+	}
+	latency = time.Since(start).Milliseconds()
+	if buf[0] != 0x05 {
+		return false, latency, fmt.Sprintf("not socks5 response: 0x%02x", buf[0])
+	}
+	if buf[1] == 0xff {
+		return false, latency, "socks5 no acceptable auth method"
+	}
 	return true, latency, ""
+}
+
+func probeTCPAddress(address string, port int, timeout time.Duration) (bool, int64, string) {
+	return probeSOCKS5Address(address, port, timeout)
 }
 
 func vpngateProbeHandler() http.HandlerFunc {
@@ -1860,7 +2029,7 @@ func vpngateProbeHandler() http.HandlerFunc {
 			if port == 0 {
 				port = 1080
 			}
-			res := vpngateProbeResult{HostName: s.HostName, IP: s.IP, Port: port}
+			res := vpngateProbeResult{HostName: s.HostName, IP: s.IP, Port: port, Protocol: "socks5"}
 			res.OK, res.LatencyMS, res.Error = probeTCPAddress(s.IP, port, 1200*time.Millisecond)
 			results = append(results, res)
 		}
@@ -3032,6 +3201,8 @@ const panelHTML = `<!doctype html>
           </div>
           <div class="toolbar-actions">
             <button onclick="fetchXrayStatus()">刷新状态</button>
+            <button class="secondary" onclick="installXrayCore()">安装核心</button>
+            <button class="danger" onclick="uninstallXrayCore()">卸载核心</button>
             <button class="secondary" onclick="previewXrayConfig()">预览配置</button>
             <button class="secondary" onclick="applyXrayConfig()">应用配置</button>
             <button class="secondary" onclick="loadXrayLogs()">查看日志</button>
@@ -3060,6 +3231,8 @@ const panelHTML = `<!doctype html>
           </div>
           <div class="toolbar-actions">
             <button onclick="fetchSingboxStatus()">刷新状态</button>
+            <button class="secondary" onclick="installSingboxCore()">安装核心</button>
+            <button class="danger" onclick="uninstallSingboxCore()">卸载核心</button>
             <button class="secondary" onclick="previewSingboxConfig()">预览配置</button>
             <button class="secondary" onclick="applySingboxConfig()">应用配置</button>
             <button class="secondary" onclick="loadSingboxLogs()">查看日志</button>

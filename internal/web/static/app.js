@@ -1810,6 +1810,40 @@ function openCreateRoutingRule() {
         document.getElementById('xray-version').textContent = '获取失败';
       }
     }
+    async function runCoreAction(core, action) {
+      const label = core === 'xray' ? 'Xray' : 'Sing-box';
+      const verb = action === 'install' ? '安装' : '卸载';
+      const confirmed = await showConfirm('确认' + verb + ' ' + label + ' 核心？这会修改系统服务和二进制文件。');
+      if (!confirmed) return;
+      const resultId = core === 'xray' ? 'xray-result' : 'singbox-result';
+      document.getElementById(resultId).innerHTML = renderNotice('正在' + verb, label + ' 核心操作执行中，请稍候。');
+      const endpoint = {
+        xray: {install: '/api/xray/install', uninstall: '/api/xray/uninstall'},
+        singbox: {install: '/api/singbox/install', uninstall: '/api/singbox/uninstall'}
+      }[core][action];
+      try {
+        const res = await fetch(apiPath(endpoint), {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({confirm:true, allow_system_changes:true})
+        });
+        const data = await res.json();
+        if (!res.ok || data.status === 'failed') {
+          throw new Error(data.output || data.error || '操作失败');
+        }
+        document.getElementById(resultId).innerHTML = renderNotice(verb + '完成', (data.output || label + ' 核心已' + verb).trim(), 'success');
+        showToast(label + ' 核心' + verb + '完成', 'success');
+        if (core === 'xray') await fetchXrayStatus(); else await fetchSingboxStatus();
+      } catch (e) {
+        document.getElementById(resultId).innerHTML = renderNotice(verb + '失败', e.message || '请检查系统权限、网络和服务状态。', 'error');
+        showToast(label + ' 核心' + verb + '失败', 'error');
+      }
+    }
+    function installXrayCore() { return runCoreAction('xray', 'install'); }
+    function uninstallXrayCore() { return runCoreAction('xray', 'uninstall'); }
+    function installSingboxCore() { return runCoreAction('singbox', 'install'); }
+    function uninstallSingboxCore() { return runCoreAction('singbox', 'uninstall'); }
+
     async function applyXrayConfig() {
       document.getElementById('xray-result').innerHTML = renderNotice('正在应用', '正在写入 xray.json、执行配置校验并尝试重启 Xray 及 sing-box。');
       try {

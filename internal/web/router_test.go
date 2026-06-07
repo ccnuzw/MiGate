@@ -1372,6 +1372,64 @@ func TestPanelDOMStructure(t *testing.T) {
 	}
 }
 
+func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *testing.T) {
+	router := web.NewRouter()
+	for _, tc := range []struct {
+		path string
+	}{
+		{"/api/xray/install"},
+		{"/api/xray/uninstall"},
+		{"/api/singbox/install"},
+		{"/api/singbox/uninstall"},
+	} {
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"confirm":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, req)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("%s without allow_system_changes = %d, want 403", tc.path, response.Code)
+		}
+		if !strings.Contains(response.Body.String(), "confirmation_required") {
+			t.Fatalf("%s response missing confirmation_required: %s", tc.path, response.Body.String())
+		}
+	}
+}
+
+func TestPanelWiresCoreInstallUninstallActions(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(page, req)
+	body := page.Body.String()
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`onclick="installXrayCore()"`,
+		`onclick="uninstallXrayCore()"`,
+		`onclick="installSingboxCore()"`,
+		`onclick="uninstallSingboxCore()"`,
+		`安装核心`,
+		`卸载核心`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing core install/uninstall button contract %q", want)
+		}
+	}
+	for _, want := range []string{
+		`function installXrayCore()`,
+		`function uninstallXrayCore()`,
+		`function installSingboxCore()`,
+		`function uninstallSingboxCore()`,
+		`/api/xray/install`,
+		`/api/xray/uninstall`,
+		`/api/singbox/install`,
+		`/api/singbox/uninstall`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing core install/uninstall JS contract %q", want)
+		}
+	}
+}
+
 func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()

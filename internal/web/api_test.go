@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1736,6 +1737,9 @@ func TestVPNGateProbeAPI(t *testing.T) {
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
+			buf := make([]byte, 3)
+			_, _ = io.ReadFull(conn, buf)
+			_, _ = conn.Write([]byte{0x05, 0x00})
 			_ = conn.Close()
 		}
 	}()
@@ -1761,6 +1765,44 @@ func TestVPNGateProbeAPI(t *testing.T) {
 	if len(results) != 2 || results[0]["ok"] != true || results[1]["ok"] != false {
 		t.Fatalf("unexpected probe results: %+v", results)
 	}
+	if results[0]["protocol"] != "socks5" {
+		t.Fatalf("expected socks5 protocol probe, got %+v", results[0])
+	}
+}
+
+func TestVPNGateProbeRejectsPlainTCPWithoutSocks5Handshake(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+	host, portText, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portText)
+	router := web.NewRouter()
+	payload := fmt.Sprintf(`{"servers":[{"hostname":"tcp-only","ip":%q,"port":%d}]}`, host, port)
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/vpngate/probe", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var results []map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(results) != 1 || results[0]["ok"] != false {
+		t.Fatalf("plain TCP listener must not pass as SOCKS5: %+v", results)
+	}
 }
 
 func TestVPNGateOutboundHealthAPI(t *testing.T) {
@@ -1775,7 +1817,12 @@ func TestVPNGateOutboundHealthAPI(t *testing.T) {
 			if err != nil {
 				return
 			}
-			_ = conn.Close()
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				_, _ = io.ReadFull(c, buf)
+				_, _ = c.Write([]byte{0x05, 0x00})
+			}(conn)
 		}
 	}()
 	host, portText, err := net.SplitHostPort(ln.Addr().String())
