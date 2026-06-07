@@ -303,7 +303,7 @@ func TestCreateInboundFormShowsRandomizableDefaults(t *testing.T) {
 		`vmess: {network: 'ws', security: 'tls'}`,
 		`trojan: {network: 'tcp', security: 'tls'}`,
 		`shadowsocks: {network: 'tcp', security: 'none'}`,
-		`hysteria2: {network: 'quic', security: 'tls'}`,
+		`hysteria2: {network: 'quic', security: 'none'}`,
 		`addEventListener('change', () => { applyProtocolPreset`,
 		`uuid: document.getElementById('init-client-uuid').value.trim()`,
 	} {
@@ -496,7 +496,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`class="app-shell"`,
 		`class="sidebar"`,
 		`class="account-panel"`,
-		`<a href="#xray">核心</a>`,
+		`<a href="#xray">Xray</a>`,
+		`<a href="#singbox">Sing-box</a>`,
 		`.account-panel { display:grid; gap:var(--space-2); padding:var(--space-3); margin-top:auto;`,
 		`background:transparent; box-shadow:inset 0 1px 0 var(--line);`,
 		`.account-actions button { min-height:32px;`,
@@ -776,7 +777,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 
 	// Nav links work with section switching
-	for _, want := range []string{`href="#"`, `href="#inbounds"`, `href="#outbound"`, `href="#xray"`, `href="#settings"`} {
+	for _, want := range []string{`href="#"`, `href="#inbounds"`, `href="#outbound"`, `href="#xray"`, `href="#singbox"`, `href="#settings"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing nav link %q", want)
 		}
@@ -1297,12 +1298,13 @@ func TestPanelDOMStructure(t *testing.T) {
 
 	// Every sidebar nav link must have a matching section container
 	navLinks := map[string]string{
-		"#":           `id="overview"`,
-		"#inbounds":   `id="inbounds"`,
-		"#outbound":   `id="outbound"`,
-		"#routing":    `id="routing"`,
-		"#xray":       `id="xray"`,
-		"#settings":   `id="settings"`,
+		"#":         `id="overview"`,
+		"#inbounds": `id="inbounds"`,
+		"#outbound": `id="outbound"`,
+		"#routing":  `id="routing"`,
+		"#xray":     `id="xray"`,
+		"#singbox":  `id="singbox"`,
+		"#settings": `id="settings"`,
 	}
 	for href, id := range navLinks {
 		if !strings.Contains(body, `href="`+href+`"`) {
@@ -1367,5 +1369,52 @@ func TestPanelDOMStructure(t *testing.T) {
 	toastPos := strings.Index(body, `id="toast-container"`)
 	if toastPos > editInboundOpen {
 		t.Fatal("toast-container must appear before all modals (for proper z-index layering)")
+	}
+}
+
+func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(page, req)
+	body := page.Body.String()
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`id="vpngate-dialog"`,
+		`VPN Gate 公共服务器`,
+		`onclick="refreshVPNGateServers()"`,
+		`重新拉取`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing VPN Gate dialog contract %q", want)
+		}
+	}
+	for _, want := range []string{
+		`function showVPNGateDialog()`,
+		`function loadVPNGateServers(forceRefresh)`,
+		`function refreshVPNGateServers()`,
+		`migate-vpngate-cache-v1`,
+		`?refresh=1`,
+		`localStorage.setItem(cacheKey`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing VPN Gate cache/refresh contract %q", want)
+		}
+	}
+}
+
+func TestRoutingRuleRefreshDoesNotTriggerFailureToast(t *testing.T) {
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`async function refreshRoutingRuleViews()`,
+		`Promise.allSettled(tasks)`,
+		`await refreshRoutingRuleViews();`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing routing refresh isolation contract %q", want)
+		}
+	}
+	if strings.Contains(jsBody, `Promise.all([loadRoutingRules(), loadXrayStatus()])`) {
+		t.Fatalf("routing rule success path must not turn status refresh failure into operation failure")
 	}
 }

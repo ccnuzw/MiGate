@@ -95,15 +95,33 @@ func TestInstallerGeneratesRandomPasswordWhenBlank(t *testing.T) {
 	}
 }
 
-func TestInstallerDefaultsWebBasePathToPanel(t *testing.T) {
+func TestInstallerUsesPanelBasePath(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"Web base path [/panel]",
 		"web_base_path=\"${web_base_path:-/panel}\"",
+		"normalize_web_base_path",
+		"web_base_path=\"$(normalize_web_base_path \"$web_base_path\")\"",
 		"WebUI: http://${host_ip}:${panel_port}${web_base_path}",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer /panel web base path contract missing %q", want)
+		}
+	}
+}
+
+func TestInstallerOffersSingBoxRuntime(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"install_singbox",
+		"是否安装 sing-box？[Y/n]",
+		"migate-singbox.service",
+		"ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json",
+		"systemctl enable migate-singbox",
+		"Sing-box:",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer sing-box runtime contract missing %q", want)
 		}
 	}
 }
@@ -125,8 +143,8 @@ func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 			t.Fatalf("installer release checksum contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "sha256sum -c") > strings.Index(script, "tar -xzf") {
-		t.Fatalf("installer must verify checksum before extracting release archive")
+	if strings.Index(script, "sha256sum -c") > strings.Index(script, "tar -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"") {
+		t.Fatalf("installer must verify checksum before extracting MiGate release archive")
 	}
 }
 

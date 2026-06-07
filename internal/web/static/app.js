@@ -656,8 +656,14 @@ function openCreateRoutingRule() {
         if (!resp.ok) { showToast('创建失败', 'error'); return; }
         showToast('路由规则已创建', 'success');
         closeModal();
-        await Promise.all([loadRoutingRules(), loadXrayStatus()]);
+        await refreshRoutingRuleViews();
       } catch(e) { showToast('创建失败: ' + e.message, 'error'); }
+    }
+
+    async function refreshRoutingRuleViews() {
+      const tasks = [loadRoutingRules()];
+      if (typeof loadXrayStatus === 'function') tasks.push(loadXrayStatus());
+      await Promise.allSettled(tasks);
     }
 
     function deleteRoutingRule(id) {
@@ -667,7 +673,7 @@ function openCreateRoutingRule() {
           var resp = await fetch(apiPath('/api/routing-rules/' + id), {method:'DELETE'});
           if (!resp.ok) { showToast('删除失败', 'error'); return; }
           showToast('路由规则已删除', 'success');
-          await Promise.all([loadRoutingRules(), loadXrayStatus()]);
+          await refreshRoutingRuleViews();
         } catch(e) { showToast('删除失败: ' + e.message, 'error'); }
       });
     }
@@ -729,7 +735,7 @@ function openCreateRoutingRule() {
         if (!resp.ok) { showToast('保存失败', 'error'); return; }
         showToast('路由规则已更新', 'success');
         closeModal();
-        await Promise.all([loadRoutingRules(), loadXrayStatus()]);
+        await refreshRoutingRuleViews();
       } catch(e) { showToast('保存失败: ' + e.message, 'error'); }
     }
 
@@ -738,16 +744,40 @@ function openCreateRoutingRule() {
     var vpngateSelected = {};
 
     async function showVPNGateDialog() {
+      showModal('vpngate-dialog');
+      vpngateSelected = {};
+      await loadVPNGateServers(false);
+    }
+
+    async function refreshVPNGateServers() {
+      await loadVPNGateServers(true);
+    }
+
+    async function loadVPNGateServers(forceRefresh) {
+      const cacheKey = 'migate-vpngate-cache-v1';
+      const cacheTTL = 10 * 60 * 1000;
       document.getElementById('vpngate-loading').style.display = '';
       document.getElementById('vpngate-error').style.display = 'none';
       document.getElementById('vpngate-list').style.display = 'none';
+      if (!forceRefresh) {
+        try {
+          const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+          if (cached && Array.isArray(cached.servers) && Date.now() - cached.ts < cacheTTL) {
+            vpngateServers = cached.servers;
+            document.getElementById('vpngate-loading').style.display = 'none';
+            document.getElementById('vpngate-list').style.display = '';
+            renderVPNGateList();
+            showToast('已使用 VPN Gate 缓存，可点重新拉取刷新', 'success');
+            return;
+          }
+        } catch(e) {}
+      }
       vpngateServers = [];
-      vpngateSelected = {};
-      showModal('vpngate-dialog');
       try {
-        const resp = await fetch(apiPath('/api/vpngate/servers'));
+        const resp = await fetch(apiPath('/api/vpngate/servers') + (forceRefresh ? '?refresh=1' : ''));
         if (!resp.ok) throw new Error(await resp.text());
         vpngateServers = await resp.json();
+        localStorage.setItem(cacheKey, JSON.stringify({ts: Date.now(), servers: vpngateServers}));
         document.getElementById('vpngate-loading').style.display = 'none';
         document.getElementById('vpngate-list').style.display = '';
         renderVPNGateList();
@@ -1519,7 +1549,7 @@ function openCreateRoutingRule() {
       vmess: {network: 'ws', security: 'tls'},
       trojan: {network: 'tcp', security: 'tls'},
       shadowsocks: {network: 'tcp', security: 'none'},
-      hysteria2: {network: 'quic', security: 'tls'},
+      hysteria2: {network: 'quic', security: 'none'},
       tuic: {network: 'quic', security: 'tls'},
       wireguard: {network: 'udp', security: 'none'},
       shadowtls: {network: 'tcp', security: 'tls'},

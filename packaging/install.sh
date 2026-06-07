@@ -32,6 +32,17 @@ generate_password() {
   fi
 }
 
+normalize_web_base_path() {
+  local path="$1"
+  if [ -z "$path" ] || [ "$path" = "/" ]; then
+    printf ''
+    return
+  fi
+  path="/${path#/}"
+  path="${path%/}"
+  printf '%s' "$path"
+}
+
 write_config() {
   local panel_port="$1"
   local panel_username="$2"
@@ -85,6 +96,66 @@ install_xray() {
   echo "Xray 服务已启动"
 }
 
+install_singbox() {
+  echo ""
+  echo "sing-box 是 MiGate Hysteria2 / TUIC / ShadowTLS 等协议的运行时引擎。"
+  echo "未安装 sing-box 时，这些协议可创建但不会实际监听。"
+  read -r -p "是否安装 sing-box？[Y/n]: " install_singbox_choice
+  install_singbox_choice="${install_singbox_choice:-Y}"
+  if [ "$install_singbox_choice" != "Y" ] && [ "$install_singbox_choice" != "y" ] && [ "$install_singbox_choice" != "" ]; then
+    echo "跳过 sing-box 安装。"
+    return
+  fi
+
+  if command -v sing-box >/dev/null 2>&1; then
+    echo "sing-box 已安装 ($(sing-box version 2>/dev/null | head -1))"
+  else
+    echo "正在安装 sing-box..."
+    tmp_sb="$(mktemp -d)"
+    sb_arch="$(arch)"
+    case "$sb_arch" in
+      amd64) sb_asset_arch="amd64" ;;
+      arm64) sb_asset_arch="arm64" ;;
+      *) echo "unsupported sing-box architecture: $sb_arch" >&2; return 1 ;;
+    esac
+    sb_version="${SINGBOX_VERSION:-1.13.13}"
+    sb_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz"
+    curl -fL "$sb_url" -o "$tmp_sb/sing-box.tar.gz"
+    tar -xzf "$tmp_sb/sing-box.tar.gz" -C "$tmp_sb"
+    cp "$tmp_sb"/sing-box-*/sing-box /usr/local/bin/sing-box
+    chmod +x /usr/local/bin/sing-box
+    rm -rf "$tmp_sb"
+    echo "sing-box 安装完成"
+  fi
+
+  mkdir -p /etc/sing-box
+  if [ ! -f /etc/sing-box/config.json ]; then
+    cat > /etc/sing-box/config.json <<'JSON'
+{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}
+JSON
+  fi
+  cat > /etc/systemd/system/migate-singbox.service <<'UNIT'
+[Unit]
+Description=MiGate managed sing-box service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable migate-singbox
+  systemctl restart migate-singbox 2>/dev/null || true
+  echo "sing-box 服务已配置：migate-singbox.service"
+}
+
 main() {
   require_root
   ARCH="$(arch)"
@@ -105,6 +176,7 @@ main() {
   fi
   read -r -p "Web base path [/panel]: " web_base_path
   web_base_path="${web_base_path:-/panel}"
+  web_base_path="$(normalize_web_base_path "$web_base_path")"
 
   if [ "$VERSION" = "latest" ]; then
     BASE_URL="https://github.com/${REPO}/releases/latest/download"
@@ -136,6 +208,7 @@ main() {
   systemctl start migate
 
   install_xray
+  install_singbox
 
   host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
   if [ -z "$host_ip" ]; then
@@ -150,6 +223,9 @@ main() {
   echo "Password: ${panel_password}"
   if command -v xray &>/dev/null; then
     echo "Xray: $(xray --version 2>/dev/null | head -1)"
+  fi
+  if command -v sing-box &>/dev/null; then
+    echo "Sing-box: $(sing-box version 2>/dev/null | head -1)"
   fi
 }
 

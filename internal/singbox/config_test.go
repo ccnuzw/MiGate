@@ -37,8 +37,8 @@ func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 	if ib.DownMbps != 50 {
 		t.Errorf("expected down_mbps 50, got %d", ib.DownMbps)
 	}
-	if ib.TLS == nil || !ib.TLS.Enabled {
-		t.Error("expected TLS enabled")
+	if ib.TLS != nil && ib.TLS.Enabled {
+		t.Error("expected Hysteria2 TLS disabled by default")
 	}
 	if ib.Obfs == nil || ib.Obfs.Type != "salamander" {
 		t.Errorf("expected obfs salamander, got %v", ib.Obfs)
@@ -51,6 +51,28 @@ func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 	}
 	if ib.Users[0].Password != "client-pass-1" {
 		t.Errorf("expected password client-pass-1, got %s", ib.Users[0].Password)
+	}
+}
+
+func TestBuildConfig_Hysteria2TLSEnabledOnlyWhenRequested(t *testing.T) {
+	inbounds := []db.Inbound{
+		{
+			ID: 1, Protocol: "hysteria2", Port: 21001, Enabled: true,
+			Security: "tls", TLSSNI: "example.com",
+			Clients: []db.Client{{ID: 1, UUID: "client-pass-1", Enabled: true}},
+		},
+	}
+
+	cfg := BuildConfig(inbounds)
+	if len(cfg.Inbounds) != 1 {
+		t.Fatalf("expected 1 inbound, got %d", len(cfg.Inbounds))
+	}
+	ib := cfg.Inbounds[0]
+	if ib.TLS == nil || !ib.TLS.Enabled {
+		t.Fatal("expected TLS enabled when Hysteria2 security is tls")
+	}
+	if ib.TLS.ServerName != "example.com" {
+		t.Fatalf("expected TLS server_name from inbound SNI, got %q", ib.TLS.ServerName)
 	}
 }
 

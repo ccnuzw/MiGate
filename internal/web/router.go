@@ -2924,13 +2924,14 @@ const panelHTML = `<!doctype html>
     <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="展开菜单">☰</button>
     <aside class="sidebar">
       <div class="brand">MiGate</div>
-      <div class="subtitle">轻量单二进制面板，专注协议、客户端与 Xray 管理。</div>
+      <div class="subtitle">轻量单二进制面板，专注协议、客户端与双核心管理。</div>
       <nav>
         <a class="active" href="#">概览</a>
         <a href="#inbounds">入站</a>
         <a href="#outbound">出站</a>
         <a href="#routing">路由</a>
-        <a href="#xray">核心</a>
+        <a href="#xray">Xray</a>
+        <a href="#singbox">Sing-box</a>
         <a href="#settings">设置</a>
       </nav>
       <div class="account-panel" aria-label="当前账号">
@@ -3360,6 +3361,7 @@ const panelHTML = `<!doctype html>
                 <option value="10" selected>Top 10</option>
                 <option value="20">Top 20</option>
               </select>
+              <button class="secondary" onclick="refreshVPNGateServers()">重新拉取</button>
               <button class="secondary" onclick="smartSelectVPNGate()">智能选择</button>
               <button onclick="importSelectedVPNGate()" id="vpngate-import-btn" disabled>导入选中</button>
             </div>

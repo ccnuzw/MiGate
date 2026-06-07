@@ -17,8 +17,8 @@ import (
 
 // Config is the top-level sing-box configuration.
 type Config struct {
-	Log      LogConfig       `json:"log"`
-	Inbounds []InboundConfig `json:"inbounds"`
+	Log       LogConfig        `json:"log"`
+	Inbounds  []InboundConfig  `json:"inbounds"`
 	Outbounds []OutboundConfig `json:"outbounds"`
 }
 
@@ -29,25 +29,25 @@ type LogConfig struct {
 
 // InboundConfig is a sing-box inbound configuration.
 type InboundConfig struct {
-	Type              string          `json:"type"`
-	Tag               string          `json:"tag"`
-	Listen            string          `json:"listen,omitempty"`
-	ListenPort        int             `json:"listen_port"`
-	Sniff             bool            `json:"sniff,omitempty"`
-	SniffOverrideDest bool            `json:"sniff_override_destination,omitempty"`
-	UpMbps            int             `json:"up_mbps,omitempty"`
-	DownMbps          int             `json:"down_mbps,omitempty"`
-	TLS               *TLSConfig      `json:"tls,omitempty"`
-	Users             []UserConfig    `json:"users,omitempty"`
-	Obfs              *ObfsConfig     `json:"obfs,omitempty"`
-	CongestionControl string          `json:"congestion_control,omitempty"`
-	ZeroRTTHandshake  bool            `json:"zero_rtt_handshake,omitempty"`
-	PrivateKey        string          `json:"private_key,omitempty"`
-	Address           []string        `json:"address,omitempty"`
-	Peers             []PeerConfig    `json:"peers,omitempty"`
-	MTU               int             `json:"mtu,omitempty"`
-	Version           int             `json:"version,omitempty"`
-	Password          string          `json:"password,omitempty"`
+	Type              string           `json:"type"`
+	Tag               string           `json:"tag"`
+	Listen            string           `json:"listen,omitempty"`
+	ListenPort        int              `json:"listen_port"`
+	Sniff             bool             `json:"sniff,omitempty"`
+	SniffOverrideDest bool             `json:"sniff_override_destination,omitempty"`
+	UpMbps            int              `json:"up_mbps,omitempty"`
+	DownMbps          int              `json:"down_mbps,omitempty"`
+	TLS               *TLSConfig       `json:"tls,omitempty"`
+	Users             []UserConfig     `json:"users,omitempty"`
+	Obfs              *ObfsConfig      `json:"obfs,omitempty"`
+	CongestionControl string           `json:"congestion_control,omitempty"`
+	ZeroRTTHandshake  bool             `json:"zero_rtt_handshake,omitempty"`
+	PrivateKey        string           `json:"private_key,omitempty"`
+	Address           []string         `json:"address,omitempty"`
+	Peers             []PeerConfig     `json:"peers,omitempty"`
+	MTU               int              `json:"mtu,omitempty"`
+	Version           int              `json:"version,omitempty"`
+	Password          string           `json:"password,omitempty"`
 	Handshake         *HandshakeConfig `json:"handshake,omitempty"`
 }
 
@@ -139,30 +139,32 @@ func BuildConfig(inbounds []db.Inbound) Config {
 				ib.Obfs = obfs
 			}
 
-			// TLS (required for hysteria2)
-			ib.TLS = &TLSConfig{
-				Enabled:         true,
-				CertificatePath: CertFile,
-				KeyPath:         KeyFile,
-			}
-			if inbound.TLSCertFile != "" && inbound.TLSKeyFile != "" {
-				ib.TLS.CertificatePath = inbound.TLSCertFile
-				ib.TLS.KeyPath = inbound.TLSKeyFile
-			}
-			if inbound.TLSSNI != "" {
-				ib.TLS.ServerName = inbound.TLSSNI
+			// TLS is optional for Hysteria2 in MiGate; enable only when requested.
+			if inbound.Security == "tls" {
+				ib.TLS = &TLSConfig{
+					Enabled:         true,
+					CertificatePath: CertFile,
+					KeyPath:         KeyFile,
+				}
+				if inbound.TLSCertFile != "" && inbound.TLSKeyFile != "" {
+					ib.TLS.CertificatePath = inbound.TLSCertFile
+					ib.TLS.KeyPath = inbound.TLSKeyFile
+				}
+				if inbound.TLSSNI != "" {
+					ib.TLS.ServerName = inbound.TLSSNI
+				}
 			}
 
 			cfg.Inbounds = append(cfg.Inbounds, ib)
 
 		case "tuic":
 			ib := InboundConfig{
-				Type:               "tuic",
-				Tag:                fmt.Sprintf("tuic-inbound-%d", inbound.ID),
-				Listen:             "0.0.0.0",
-				ListenPort:         port,
-				CongestionControl:  "bbr",
-				ZeroRTTHandshake:   inbound.TuicZeroRTT,
+				Type:              "tuic",
+				Tag:               fmt.Sprintf("tuic-inbound-%d", inbound.ID),
+				Listen:            "0.0.0.0",
+				ListenPort:        port,
+				CongestionControl: "bbr",
+				ZeroRTTHandshake:  inbound.TuicZeroRTT,
 			}
 
 			if inbound.TuicCongestionControl != "" {
