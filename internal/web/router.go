@@ -115,22 +115,33 @@ func NewXrayApplyer(ctrl XrayController) scheduler.XrayApplyer {
 func (defaultXrayController) Version(ctx context.Context) string { return "" }
 
 type routerConfig struct {
-	store           Store
-	xrayController  XrayController
-	authEnabled     bool
-	authUsername    string
-	authPassword    string
-	sessionSecret   []byte
-	configDir       string
-	version         string
-	basePath        string
-	vpnGateFetcher  VPNGateFetcher
-	statsClient     xray.StatsClient
-	healthScheduler *scheduler.VPNGateHealthScheduler
+	store               Store
+	xrayController      XrayController
+	authEnabled         bool
+	authUsername        string
+	authPassword        string
+	sessionSecret       []byte
+	configDir           string
+	version             string
+	basePath            string
+	vpnGateFetcher      VPNGateFetcher
+	vpnGateRuntimeProbe VPNGateRuntimeProbe
+	statsClient         xray.StatsClient
+	healthScheduler     *scheduler.VPNGateHealthScheduler
 }
 
 type VPNGateFetcher interface {
 	FetchServers() ([]VPNGateServer, error)
+}
+
+type VPNGateRuntimeProbe interface {
+	LookPath(name string) (string, error)
+}
+
+type execVPNGateRuntimeProbe struct{}
+
+func (execVPNGateRuntimeProbe) LookPath(name string) (string, error) {
+	return exec.LookPath(name)
 }
 
 // VPNGateServer is the public type exposed to the web package.
@@ -207,6 +218,12 @@ func WithVPNGateFetcher(fetcher VPNGateFetcher) Option {
 	}
 }
 
+func WithVPNGateRuntimeProbe(probe VPNGateRuntimeProbe) Option {
+	return func(cfg *routerConfig) {
+		cfg.vpnGateRuntimeProbe = probe
+	}
+}
+
 // WithHealthScheduler sets the VPN Gate auto-health scheduler for status reporting.
 func WithHealthScheduler(scheduler *scheduler.VPNGateHealthScheduler) Option {
 	return func(cfg *routerConfig) {
@@ -265,6 +282,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/egress/capabilities", vpngateEgressCapabilitiesHandler())
 	mux.HandleFunc("/api/vpngate/egress/plan", vpngateEgressPlanHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/egress/status", vpngateEgressRuntimeStatusHandler(&cfg))
+	mux.HandleFunc("/api/vpngate/egress/doctor", vpngateEgressRuntimeDoctorHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/outbounds/health", vpngateOutboundHealthHandler(cfg.store))
 	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
@@ -2453,6 +2471,29 @@ type vpngateRuntimeStatus struct {
 	Notes               []string `json:"notes"`
 }
 
+type vpngateRuntimeDependencyCheck struct {
+	Name    string `json:"name"`
+	Command string `json:"command"`
+	Status  string `json:"status"`
+	Path    string `json:"path,omitempty"`
+	Notes   string `json:"notes,omitempty"`
+}
+
+type vpngateRuntimeDoctor struct {
+	Status              string                          `json:"status"`
+	Runtime             string                          `json:"runtime"`
+	OutboundID          int64                           `json:"outbound_id"`
+	OutboundTag         string                          `json:"outbound_tag"`
+	BridgeAddress       string                          `json:"bridge_address"`
+	BridgePort          int                             `json:"bridge_port"`
+	PerformsSideEffects bool                            `json:"performs_side_effects"`
+	WillStartProcesses  bool                            `json:"will_start_processes"`
+	WillCreateNetns     bool                            `json:"will_create_netns"`
+	WillOpenSocksBridge bool                            `json:"will_open_socks_bridge"`
+	Checks              []vpngateRuntimeDependencyCheck `json:"checks"`
+	Notes               []string                        `json:"notes"`
+}
+
 func vpngateEgressPlanHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -2520,6 +2561,68 @@ func vpngateEgressRuntimeStatusHandler(cfg *routerConfig) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(status)
 	}
+}
+
+func vpngateEgressRuntimeDoctorHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		outbound, ok := loadVPNGateSoftEtherOutbound(w, r, cfg)
+		if !ok {
+			return
+		}
+		probe := cfg.vpnGateRuntimeProbe
+		if probe == nil {
+			probe = execVPNGateRuntimeProbe{}
+		}
+		checks := []vpngateRuntimeDependencyCheck{
+			vpngateRuntimeDependency(probe, "softether_vpncmd", "vpncmd", "SoftEther command automation binary"),
+			vpngateRuntimeDependency(probe, "softether_vpnclient", "vpnclient", "SoftEther VPN client service binary"),
+			vpngateRuntimeDependency(probe, "iproute2", "ip", "network namespace tooling"),
+			vpngateRuntimeDependency(probe, "iptables", "iptables", "future fail-closed firewall tooling"),
+			vpngateRuntimeDependency(probe, "socks_bridge", "microsocks", "lightweight local SOCKS bridge inside the namespace"),
+		}
+		status := "ready"
+		for _, check := range checks {
+			if check.Status != "available" {
+				status = "missing_dependencies"
+				break
+			}
+		}
+		doctor := vpngateRuntimeDoctor{
+			Status:              status,
+			Runtime:             "softether_netns_socks_bridge",
+			OutboundID:          outbound.ID,
+			OutboundTag:         outbound.Tag,
+			BridgeAddress:       outbound.Address,
+			BridgePort:          outbound.Port,
+			PerformsSideEffects: false,
+			WillStartProcesses:  false,
+			WillCreateNetns:     false,
+			WillOpenSocksBridge: false,
+			Checks:              checks,
+			Notes: []string{
+				"只读 runtime 预检：只检查本机依赖是否存在，不启动 SoftEther、不创建 network namespace、不打开 SOCKS bridge。",
+				"真实启动会在后续双确认门控接口中实现，并先通过该预检。",
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doctor)
+	}
+}
+
+func vpngateRuntimeDependency(probe VPNGateRuntimeProbe, name, command, notes string) vpngateRuntimeDependencyCheck {
+	check := vpngateRuntimeDependencyCheck{Name: name, Command: command, Notes: notes}
+	path, err := probe.LookPath(command)
+	if err != nil || strings.TrimSpace(path) == "" {
+		check.Status = "missing"
+		return check
+	}
+	check.Status = "available"
+	check.Path = path
+	return check
 }
 
 func loadVPNGateSoftEtherOutbound(w http.ResponseWriter, r *http.Request, cfg *routerConfig) (db.Outbound, bool) {

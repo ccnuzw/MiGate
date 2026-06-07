@@ -84,6 +84,112 @@ func TestVPNGateEgressCapabilitiesAPIIsReadOnlyPlan(t *testing.T) {
 	}
 }
 
+type fakeVPNGateRuntimeProbe struct {
+	paths map[string]string
+	calls []string
+}
+
+func (p *fakeVPNGateRuntimeProbe) LookPath(name string) (string, error) {
+	p.calls = append(p.calls, name)
+	if path, ok := p.paths[name]; ok {
+		return path, nil
+	}
+	return "", fmt.Errorf("%s not found", name)
+}
+
+func TestVPNGateSoftEtherRuntimeDoctorAPIReportsDependenciesReadOnly(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag:      "vpngate-jp-softether",
+		Remark:   "VPN Gate SoftEther - Japan",
+		Protocol: "vpngate_softether",
+		Address:  "127.0.0.1",
+		Port:     21080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	before, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{
+		"vpncmd":    "/usr/local/bin/vpncmd",
+		"vpnclient": "/usr/local/bin/vpnclient",
+		"ip":        "/sbin/ip",
+		"iptables":  "/sbin/iptables",
+	}}
+	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe))
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/vpngate/egress/doctor?outbound_id="+strconv.FormatInt(outbound.ID, 10), nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse doctor response: %v", err)
+	}
+	for key, want := range map[string]interface{}{
+		"status":                 "missing_dependencies",
+		"runtime":                "softether_netns_socks_bridge",
+		"outbound_tag":           "vpngate-jp-softether",
+		"bridge_address":         "127.0.0.1",
+		"performs_side_effects":  false,
+		"will_start_processes":   false,
+		"will_create_netns":      false,
+		"will_open_socks_bridge": false,
+	} {
+		if got[key] != want {
+			t.Fatalf("expected %s=%v, got %v in %+v", key, want, got[key], got)
+		}
+	}
+	if got["outbound_id"] != float64(outbound.ID) || got["bridge_port"] != float64(21080) {
+		t.Fatalf("unexpected outbound/bridge identifiers: %+v", got)
+	}
+	checks, ok := got["checks"].([]interface{})
+	if !ok || len(checks) != 5 {
+		t.Fatalf("expected five dependency checks, got %+v", got["checks"])
+	}
+	byName := map[string]map[string]interface{}{}
+	for _, raw := range checks {
+		check, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("unexpected check shape: %+v", raw)
+		}
+		byName[fmt.Sprint(check["name"])] = check
+	}
+	for _, name := range []string{"softether_vpncmd", "softether_vpnclient", "iproute2", "iptables", "socks_bridge"} {
+		if byName[name] == nil {
+			t.Fatalf("missing dependency check %s in %+v", name, checks)
+		}
+	}
+	if byName["socks_bridge"]["status"] != "missing" || byName["socks_bridge"]["command"] != "microsocks" {
+		t.Fatalf("expected missing microsocks bridge check, got %+v", byName["socks_bridge"])
+	}
+	if byName["softether_vpncmd"]["status"] != "available" || byName["softether_vpncmd"]["path"] != "/usr/local/bin/vpncmd" {
+		t.Fatalf("expected available vpncmd check, got %+v", byName["softether_vpncmd"])
+	}
+	if _, exists := got["commands_executed"]; exists {
+		t.Fatalf("doctor endpoint must not report or execute commands: %+v", got)
+	}
+	if strings.Join(probe.calls, ",") != "vpncmd,vpnclient,ip,iptables,microsocks" {
+		t.Fatalf("unexpected probe calls: %+v", probe.calls)
+	}
+	after, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("doctor endpoint must not create outbounds: before=%d after=%d", len(before), len(after))
+	}
+}
+
 func TestVPNGateSoftEtherRuntimePlanAPIIsReadOnly(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
