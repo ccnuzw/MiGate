@@ -2209,87 +2209,9 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		var req importServerRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"error":"invalid_payload"}`, http.StatusBadRequest)
-			return
-		}
-		if len(req.Servers) == 0 {
-			http.Error(w, `{"error":"no_servers"}`, http.StatusBadRequest)
-			return
-		}
-		existing, err := cfg.store.ListOutbounds(r.Context())
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed")
-			return
-		}
-		seenTags := make(map[string]bool, len(existing)+len(req.Servers))
-		seenAddr := make(map[string]bool, len(existing)+len(req.Servers))
-		for _, ob := range existing {
-			seenTags[ob.Tag] = true
-			if ob.Protocol == "socks" && ob.Address != "" {
-				seenAddr[ob.Address+":"+strconv.Itoa(ob.Port)] = true
-			}
-		}
-
-		created := make([]db.Outbound, 0, len(req.Servers))
-		result := vpngateImportResponse{}
-		probeResults := map[string]bool{}
-		if req.ProbeBeforeImport {
-			probeResults = probeImportServers(r.Context(), req.Servers, 1500*time.Millisecond)
-		}
-		for _, s := range req.Servers {
-			if s.IP == "" {
-				result.SkippedDuplicate++
-				continue
-			}
-			port := s.Port
-			if port == 0 {
-				port = 1080
-			}
-			remark := s.CountryLong
-			if remark == "" {
-				remark = s.IP
-			}
-			remark = "VPN Gate - " + remark
-			tag := "vpngate-" + s.HostName
-			if tag == "vpngate-" {
-				tag = "vpngate-" + strings.ReplaceAll(s.IP, ".", "-")
-			}
-			if len(tag) > 40 {
-				tag = tag[:40]
-			}
-			addrKey := s.IP + ":" + strconv.Itoa(port)
-			if seenTags[tag] || seenAddr[addrKey] {
-				result.SkippedDuplicate++
-				continue
-			}
-			if req.ProbeBeforeImport {
-				if !probeResults[addrKey] {
-					result.SkippedUnreachable++
-					continue
-				}
-			}
-			seenTags[tag] = true
-			seenAddr[addrKey] = true
-			ob, err := cfg.store.CreateOutbound(r.Context(), db.CreateOutboundParams{
-				Tag:      tag,
-				Remark:   remark,
-				Protocol: "socks",
-				Address:  s.IP,
-				Port:     port,
-			})
-			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "create_failed")
-				return
-			}
-			created = append(created, ob)
-		}
-		result.Outbounds = created
-		result.Created = len(created)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(result)
+		writeJSONError(w, http.StatusGone, "unsupported_vpngate_import", map[string]interface{}{
+			"detail": "VPN Gate 官方列表不是 SOCKS5 代理源；当前仅作为参考列表/候选信息展示，暂不支持导入为 SOCKS5 出站。",
+		})
 	}
 }
 
@@ -3615,12 +3537,12 @@ const panelHTML = `<!doctype html>
                 <option value="20">Top 20</option>
               </select>
               <button class="secondary" onclick="refreshVPNGateServers()">重新拉取</button>
-              <button class="secondary" onclick="smartSelectVPNGate()">智能选择</button>
-              <button onclick="importSelectedVPNGate()" id="vpngate-import-btn" disabled>导入选中</button>
+              <button class="secondary" onclick="smartSelectVPNGate()">智能选择参考</button>
+              <button class="secondary" id="vpngate-import-btn" disabled title="VPN Gate 官方列表不是 SOCKS5 代理源，暂不支持导入">暂不支持导入</button>
             </div>
             <div class="notice" style="margin-bottom:12px;background:var(--surface-warning);color:var(--fg)">
               <div class="notice-title">VPN Gate 官方列表不是 SOCKS5 代理源</div>
-              <div class="notice-copy">官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 暂不应把它们导入为 SOCKS5 出站。当前连通性检测仍会验证 SOCKS5 握手，因此全部失败属于项目接入方式不正确，不是这些节点全部宕机。</div>
+              <div class="notice-copy">官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 仅将它们作为参考列表/候选信息展示，暂不支持导入为 SOCKS5 出站。当前连通性检测仍会验证 SOCKS5 握手，因此全部失败属于项目接入方式不正确，不是这些节点全部宕机。</div>
             </div>
             <table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead>
@@ -3639,7 +3561,7 @@ const panelHTML = `<!doctype html>
           </div>
         </div>
         <div class="modal-footer">
-          <span class="muted" style="font-size:12px">导入为 SOCKS5 出站（端口 1080），来自 vpngate.net</span>
+          <span class="muted" style="font-size:12px">参考列表/候选信息，来自 vpngate.net；暂不支持导入为 SOCKS5 出站</span>
           <button class="secondary" onclick="closeModal()">关闭</button>
         </div>
       </div>

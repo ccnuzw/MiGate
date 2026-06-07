@@ -869,72 +869,16 @@ function openCreateRoutingRule() {
     }
 
     function updateVPNGateImportBtn() {
-      var count = Object.keys(vpngateSelected).length;
       var btn = document.getElementById('vpngate-import-btn');
-      btn.disabled = count === 0;
-      btn.textContent = count > 0 ? '导入选中（' + count + '）' : '导入选中';
+      if (!btn) return;
+      btn.disabled = true;
+      btn.textContent = '暂不支持导入';
+      btn.title = 'VPN Gate 官方列表不是 SOCKS5 代理源，当前仅作为参考列表/候选信息展示';
     }
 
     async function importSelectedVPNGate() {
-      var selected = [];
-      Object.keys(vpngateSelected).forEach(function(idx) {
-        var s = vpngateServers[parseInt(idx)];
-        if (s) selected.push({hostname: s.hostname, ip: s.ip, country_long: s.country_long, ping: s.ping});
-      });
-      if (selected.length === 0) return;
-      var btn = document.getElementById('vpngate-import-btn');
-      btn.disabled = true;
-      btn.textContent = '导入中...';
-      btn.textContent = '检测连通性...';
-      try {
-        var probeResp = await fetch(apiPath('/api/vpngate/probe'), {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({servers: selected})
-        });
-        if (probeResp.ok) {
-          var probeResults = await probeResp.json();
-          var reachable = {};
-          probeResults.forEach(function(r) { if (r.ok) reachable[r.ip + ':' + (r.port || 1080)] = true; });
-          var beforeProbe = selected.length;
-          selected = selected.filter(function(s) { return reachable[s.ip + ':1080']; });
-          if (selected.length === 0) {
-            showToast('选中节点连通性检测全部失败，未导入', 'error');
-            btn.textContent = '导入选中';
-            btn.disabled = false;
-            return;
-          }
-          if (selected.length < beforeProbe) showToast('已过滤不通节点 ' + (beforeProbe - selected.length) + ' 台', 'error');
-        }
-      } catch(e) {
-        showToast('连通性检测失败，继续按原选择导入', 'error');
-      }
-      btn.textContent = '导入中...';
-      try {
-        var resp = await fetch(apiPath('/api/vpngate/import'), {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({servers: selected, probe_before_import: true})
-        });
-        if (!resp.ok) {
-          var errText = '导入失败';
-          try { var errData = await resp.json(); errText = errData.error || errText; if (errData.detail) errText += ': ' + errData.detail; } catch(e) {}
-          showToast(errText, 'error');
-          btn.textContent = '导入选中';
-          btn.disabled = false;
-          return;
-        }
-        var result = await resp.json();
-        var outbounds = Array.isArray(result) ? result : (result.outbounds || []);
-        var skippedDuplicate = result.skipped_duplicate || Math.max(0, selected.length - outbounds.length);
-        var skippedUnreachable = result.skipped_unreachable || 0;
-        var extra = '';
-        if (skippedDuplicate > 0) extra += '，已跳过重复节点 ' + skippedDuplicate + ' 台';
-        if (skippedUnreachable > 0) extra += '，已跳过不可用节点 ' + skippedUnreachable + ' 台';
-        showToast('已导入 ' + outbounds.length + ' 台 VPN Gate 服务器' + extra, 'success');
-        closeModal();
-        await Promise.all([loadOutbounds(), loadXrayStatus()]);
-      } catch(e) { showToast('导入失败: ' + e.message, 'error'); btn.textContent = '导入选中'; }
+      updateVPNGateImportBtn();
+      showToast('VPN Gate 官方列表不是 SOCKS5 代理源，暂不支持导入为 SOCKS5 出站', 'error');
     }
 
     function preferredTheme() {

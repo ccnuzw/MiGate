@@ -107,7 +107,6 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 		`var ms = Number(r.latency).toFixed(0);`,
 		`function smartSelectVPNGate()`,
 		`function vpnGateQualityScore(s)`,
-		`/api/vpngate/probe`,
 		`function checkVPNGateOutboundHealth()`,
 		`/api/vpngate/outbounds/health`,
 		`function refreshAutoHealthStatus()`,
@@ -1459,7 +1458,10 @@ func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
 		`onclick="refreshVPNGateServers()"`,
 		`重新拉取`,
 		`VPN Gate 官方列表不是 SOCKS5 代理源`,
-		`官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 暂不应把它们导入为 SOCKS5 出站。`,
+		`官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 仅将它们作为参考列表/候选信息展示，暂不支持导入为 SOCKS5 出站。`,
+		`id="vpngate-import-btn" disabled title="VPN Gate 官方列表不是 SOCKS5 代理源，暂不支持导入"`,
+		`暂不支持导入`,
+		`参考列表/候选信息，来自 vpngate.net；暂不支持导入为 SOCKS5 出站`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing VPN Gate dialog contract %q", want)
@@ -1472,6 +1474,8 @@ func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
 		`migate-vpngate-cache-v1`,
 		`?refresh=1`,
 		`localStorage.setItem(cacheKey`,
+		`function updateVPNGateImportBtn()`,
+		`btn.textContent = '暂不支持导入';`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing VPN Gate cache/refresh contract %q", want)

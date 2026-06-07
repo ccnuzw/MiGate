@@ -1621,7 +1621,7 @@ func TestVPNGateServersAPI(t *testing.T) {
 	}
 }
 
-func TestVPNGateImportAPI(t *testing.T) {
+func TestVPNGateImportAPIUnsupported(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1629,52 +1629,28 @@ func TestVPNGateImportAPI(t *testing.T) {
 	defer store.Close()
 	router := web.NewRouter(web.WithStore(store))
 
-	payload := `{"servers":[
-		{"hostname":"s1","ip":"1.2.3.4","country_long":"Japan","ping":10},
-		{"hostname":"s2","ip":"5.6.7.8","country_long":"USA","ping":20}
-	]}`
-
+	payload := `{"servers":[{"hostname":"s1","ip":"1.2.3.4","country_long":"Japan","ping":10}]}`
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/vpngate/import", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d: %s", resp.Code, resp.Body.String())
 	}
-	var result struct {
-		Outbounds []db.Outbound `json:"outbounds"`
-		Created   int           `json:"created"`
+	if !strings.Contains(resp.Body.String(), `"error":"unsupported_vpngate_import"`) {
+		t.Fatalf("unsupported import response missing stable error code: %s", resp.Body.String())
 	}
-	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(result.Outbounds) != 2 || result.Created != 2 {
-		t.Fatalf("expected 2 outbounds, got %+v", result)
-	}
-	ob0 := result.Outbounds[0]
-	if ob0.Remark != "VPN Gate - Japan" {
-		t.Errorf("expected remark 'VPN Gate - Japan', got %q", ob0.Remark)
-	}
-	if ob0.Protocol != "socks" {
-		t.Errorf("expected protocol 'socks', got %q", ob0.Protocol)
-	}
-	if ob0.Address != "1.2.3.4" {
-		t.Errorf("expected address '1.2.3.4', got %q", ob0.Address)
-	}
-	if ob0.Port != 1080 {
-		t.Errorf("expected port 1080, got %d", ob0.Port)
-	}
-	if !ob0.Enabled {
-		t.Error("expected enabled=true")
+	if !strings.Contains(resp.Body.String(), `VPN Gate 官方列表不是 SOCKS5 代理源`) {
+		t.Fatalf("unsupported import response missing explanatory detail: %s", resp.Body.String())
 	}
 	listResp := httptest.NewRecorder()
 	router.ServeHTTP(listResp, httptest.NewRequest(http.MethodGet, "/api/outbounds", nil))
-	if !strings.Contains(listResp.Body.String(), `"VPN Gate - Japan"`) {
-		t.Errorf("outbounds list missing imported server: %s", listResp.Body.String())
+	if strings.Contains(listResp.Body.String(), `"VPN Gate - Japan"`) || strings.Contains(listResp.Body.String(), `"address":"1.2.3.4"`) {
+		t.Fatalf("unsupported VPN Gate import must not create SOCKS outbound: %s", listResp.Body.String())
 	}
 }
 
-func TestVPNGateImportEmpty(t *testing.T) {
+func TestVPNGateImportEmptyIsUnsupported(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1685,8 +1661,11 @@ func TestVPNGateImportEmpty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/vpngate/import", strings.NewReader(`{"servers":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"error":"unsupported_vpngate_import"`) {
+		t.Fatalf("unsupported import response missing stable error code: %s", resp.Body.String())
 	}
 }
 
@@ -1698,93 +1677,6 @@ func TestVPNGateServersRejectsNonGet(t *testing.T) {
 		if resp.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("expected 405 for %s, got %d", method, resp.Code)
 		}
-	}
-}
-
-func TestVPNGateImportSkipsDuplicateTags(t *testing.T) {
-	store, err := db.Open(context.Background(), ":memory:")
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-	router := web.NewRouter(web.WithStore(store))
-
-	payload := `{"servers":[
-		{"hostname":"dup","ip":"1.2.3.4","country_long":"Japan","ping":10},
-		{"hostname":"dup","ip":"1.2.3.4","country_long":"Japan","ping":10}
-	]}`
-	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/vpngate/import", strings.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
-	}
-	var result struct {
-		Outbounds        []db.Outbound `json:"outbounds"`
-		Created          int           `json:"created"`
-		SkippedDuplicate int           `json:"skipped_duplicate"`
-	}
-	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(result.Outbounds) != 1 || result.Created != 1 || result.SkippedDuplicate != 1 {
-		t.Fatalf("expected one created and one duplicate skipped, got %+v", result)
-	}
-}
-
-func TestVPNGateImportProbeBeforeImportSkipsUnreachable(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer ln.Close()
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				buf := make([]byte, 3)
-				_, _ = io.ReadFull(c, buf)
-				_, _ = c.Write([]byte{0x05, 0x00})
-			}(conn)
-		}
-	}()
-	host, portText, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatalf("split addr: %v", err)
-	}
-	port, _ := strconv.Atoi(portText)
-	store, err := db.Open(context.Background(), ":memory:")
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-	router := web.NewRouter(web.WithStore(store))
-	payload := fmt.Sprintf(`{"probe_before_import":true,"servers":[{"hostname":"ok","ip":%q,"port":%d},{"hostname":"bad","ip":"127.0.0.1","port":1}]}`, host, port)
-	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/vpngate/import", strings.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
-	}
-	var result struct {
-		Outbounds          []db.Outbound `json:"outbounds"`
-		Created            int           `json:"created"`
-		SkippedUnreachable int           `json:"skipped_unreachable"`
-	}
-	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if result.Created != 1 || len(result.Outbounds) != 1 || result.SkippedUnreachable != 1 {
-		t.Fatalf("expected one import and one unreachable skip, got %+v", result)
-	}
-	if result.Outbounds[0].Address != host || result.Outbounds[0].Port != port {
-		t.Fatalf("expected imported mock SOCKS endpoint, got %+v", result.Outbounds[0])
 	}
 }
 
