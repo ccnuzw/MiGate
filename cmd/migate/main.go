@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +25,25 @@ import (
 // Version is set via ldflags at build time.
 var Version = "dev"
 
+type commandMode int
+
+const (
+	modeCLI commandMode = iota
+	modeServe
+)
+
+type commandRunner interface {
+	Run(name string, args ...string) (string, error)
+}
+
+type osRunner struct{}
+
+func (osRunner) Run(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 type panelConfig struct {
 	PanelPort      int    `json:"panel_port"`
 	PanelUsername  string `json:"panel_username"`
@@ -33,13 +54,42 @@ type panelConfig struct {
 }
 
 func main() {
+	args := os.Args[1:]
+	if detectCommandMode(args) == modeCLI {
+		os.Exit(runCLI(args, os.Stdout, os.Stderr, osRunner{}))
+	}
+	if len(args) > 0 && args[0] == "serve" {
+		args = args[1:]
+	}
+	os.Exit(runServer(args))
+}
+
+func detectCommandMode(args []string) commandMode {
+	if len(args) == 0 {
+		return modeCLI
+	}
+	if args[0] == "serve" {
+		return modeServe
+	}
+	// Backward compatibility for systemd units installed before the explicit serve subcommand.
+	if strings.HasPrefix(args[0], "-") {
+		return modeServe
+	}
+	return modeCLI
+}
+
+func runServer(args []string) int {
 	var host string
 	var port int
 	var configPath string
-	flag.StringVar(&host, "host", "0.0.0.0", "bind host")
-	flag.IntVar(&port, "port", 9999, "bind port")
-	flag.StringVar(&configPath, "config", "", "panel config path")
-	flag.Parse()
+	fs := flag.NewFlagSet("migate serve", flag.ExitOnError)
+	fs.StringVar(&host, "host", "0.0.0.0", "bind host")
+	fs.IntVar(&port, "port", 9999, "bind port")
+	fs.StringVar(&configPath, "config", "", "panel config path")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 
 	router := web.NewRouter()
 	cleanup := func() {}
@@ -47,7 +97,7 @@ func main() {
 		cfg, err := readPanelConfig(configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "read config %s: %v\n", configPath, err)
-			os.Exit(1)
+			return 1
 		}
 		if cfg.PanelPort > 0 {
 			port = cfg.PanelPort
@@ -55,7 +105,7 @@ func main() {
 		configuredRouter, configuredCleanup, err := routerFromConfig(configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "build router from config %s: %v\n", configPath, err)
-			os.Exit(1)
+			return 1
 		}
 		router = configuredRouter
 		cleanup = configuredCleanup
@@ -81,8 +131,109 @@ func main() {
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+func runCLI(args []string, stdout, stderr io.Writer, runner commandRunner) int {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		printCLIMenu(stdout)
+		return 0
+	}
+	switch args[0] {
+	case "status":
+		return cliStatus(stdout, stderr, runner)
+	case "start", "stop", "restart":
+		return cliSystemctl(stderr, runner, args[0], "migate")
+	case "logs":
+		out, err := runner.Run("journalctl", "-u", "migate", "-n", "80", "--no-pager")
+		fmt.Fprint(stdout, out)
+		if err != nil {
+			fmt.Fprintf(stderr, "logs failed: %v\n", err)
+			return 1
+		}
+		return 0
+	case "url":
+		return cliURL(stdout, stderr)
+	case "uninstall":
+		out, err := runner.Run("/usr/local/bin/migate-uninstall", args[1:]...)
+		fmt.Fprint(stdout, out)
+		if err != nil {
+			fmt.Fprintf(stderr, "uninstall failed: %v\n", err)
+			return 1
+		}
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
+		printCLIMenu(stderr)
+		return 2
+	}
+}
+
+func printCLIMenu(w io.Writer) {
+	fmt.Fprint(w, `MiGate CLI
+
+Usage:
+  mg <command>
+  migate <command>
+
+Commands:
+  mg status      Show MiGate service status
+  mg start       Start MiGate service
+  mg stop        Stop MiGate service
+  mg restart     Restart MiGate service
+  mg logs        Show recent MiGate logs
+  mg url         Show WebUI URL from /etc/migate/panel.json
+  mg uninstall   Run MiGate uninstaller
+
+Service mode:
+  migate serve --config /etc/migate/panel.json
+
+`)
+}
+
+func cliStatus(stdout, stderr io.Writer, runner commandRunner) int {
+	code := 0
+	for _, svc := range []string{"migate", "migate-singbox"} {
+		out, err := runner.Run("systemctl", "is-active", svc)
+		status := strings.TrimSpace(out)
+		if status == "" {
+			status = "unknown"
+		}
+		fmt.Fprintf(stdout, "%s: %s\n", svc, status)
+		if err != nil && status == "unknown" {
+			fmt.Fprintf(stderr, "%s status check failed: %v\n", svc, err)
+			code = 1
+		}
+	}
+	return code
+}
+
+func cliSystemctl(stderr io.Writer, runner commandRunner, action, service string) int {
+	if _, err := runner.Run("systemctl", action, service); err != nil {
+		fmt.Fprintf(stderr, "%s %s failed: %v\n", action, service, err)
+		return 1
+	}
+	return 0
+}
+
+func cliURL(stdout, stderr io.Writer) int {
+	cfg, err := readPanelConfig("/etc/migate/panel.json")
+	if err != nil {
+		fmt.Fprintf(stderr, "read /etc/migate/panel.json: %v\n", err)
+		return 1
+	}
+	port := cfg.PanelPort
+	if port == 0 {
+		port = 9999
+	}
+	path := cfg.WebPath
+	if path == "" {
+		path = "/"
+	}
+	fmt.Fprintf(stdout, "http://SERVER_IP:%d%s\n", port, path)
+	return 0
 }
 
 func routerFromConfig(path string) (http.Handler, func(), error) {

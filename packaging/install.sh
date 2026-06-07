@@ -123,6 +123,7 @@ main() {
   tar -xzf "$TMP/migate-linux-${ARCH}.tar.gz" -C "$TMP"
   cp "$TMP/migate" /usr/local/bin/migate
   chmod +x /usr/local/bin/migate
+  ln -sf /usr/local/bin/migate /usr/local/bin/mg
   cp "$TMP/packaging/uninstall.sh" /usr/local/bin/migate-uninstall
   chmod +x /usr/local/bin/migate-uninstall
   write_config "$panel_port" "$panel_username" "$panel_password" "$web_base_path"
@@ -140,6 +141,8 @@ main() {
   fi
   echo ""
   echo "MiGate installed: /usr/local/bin/migate"
+  echo "CLI: mg"
+  echo "Useful commands: mg status | mg logs | mg restart | mg uninstall"
   echo "WebUI: http://${host_ip}:${panel_port}${web_base_path}"
   echo "Username: ${panel_username}"
   echo "Password: ${panel_password}"

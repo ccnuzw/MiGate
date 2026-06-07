@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -153,4 +154,78 @@ func TestRouterFromPanelConfigSkipsAuthWhenNoCredentials(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200 (no auth) when credentials absent, got %d", response.Code)
 	}
+}
+
+func TestCLIPrintsInteractiveMenuForBareCommand(t *testing.T) {
+	var out bytes.Buffer
+	exitCode := runCLI([]string{}, &out, &bytes.Buffer{}, &fakeRunner{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d", exitCode)
+	}
+	menu := out.String()
+	for _, want := range []string{
+		"MiGate CLI",
+		"mg status",
+		"mg logs",
+		"mg restart",
+		"mg url",
+		"mg uninstall",
+		"migate serve --config /etc/migate/panel.json",
+	} {
+		if !strings.Contains(menu, want) {
+			t.Fatalf("CLI menu missing %q:\n%s", want, menu)
+		}
+	}
+}
+
+func TestCLIStatusUsesSystemctlWithoutStartingServer(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string]string{
+		"systemctl is-active migate":         "active\n",
+		"systemctl is-active migate-singbox": "inactive\n",
+	}}
+	var out bytes.Buffer
+	exitCode := runCLI([]string{"status"}, &out, &bytes.Buffer{}, runner)
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d", exitCode)
+	}
+	if !strings.Contains(out.String(), "migate: active") || !strings.Contains(out.String(), "migate-singbox: inactive") {
+		t.Fatalf("unexpected status output: %s", out.String())
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 systemctl calls, got %+v", runner.calls)
+	}
+}
+
+func TestCommandModeKeepsLegacyConfigArgsServingButBareCommandIsCLI(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want commandMode
+	}{
+		{args: []string{}, want: modeCLI},
+		{args: []string{"status"}, want: modeCLI},
+		{args: []string{"serve", "--config", "/etc/migate/panel.json"}, want: modeServe},
+		{args: []string{"--config", "/etc/migate/panel.json"}, want: modeServe},
+	} {
+		if got := detectCommandMode(tc.args); got != tc.want {
+			t.Fatalf("%v: got %v want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+type fakeRunner struct {
+	outputs map[string]string
+	errors  map[string]error
+	calls   []string
+}
+
+func (r *fakeRunner) Run(name string, args ...string) (string, error) {
+	key := strings.TrimSpace(name + " " + strings.Join(args, " "))
+	r.calls = append(r.calls, key)
+	if err, ok := r.errors[key]; ok {
+		return r.outputs[key], err
+	}
+	if out, ok := r.outputs[key]; ok {
+		return out, nil
+	}
+	return "", errors.New("unexpected command: " + key)
 }

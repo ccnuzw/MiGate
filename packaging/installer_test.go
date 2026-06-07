@@ -48,6 +48,8 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 		"systemctl start migate",
 		"cp \"$TMP/packaging/uninstall.sh\" /usr/local/bin/migate-uninstall",
 		"chmod +x /usr/local/bin/migate-uninstall",
+		"ln -sf /usr/local/bin/migate /usr/local/bin/mg",
+		"CLI: mg",
 		"WebUI",
 		"xray.json",
 		"install_xray",
@@ -133,6 +135,7 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 		"systemctl disable migate",
 		"rm -f /etc/systemd/system/migate.service",
 		"rm -f /usr/local/bin/migate",
+		"rm -f /usr/local/bin/mg",
 		"systemctl stop migate-singbox",
 		"systemctl disable migate-singbox",
 		"rm -f /etc/systemd/system/migate-singbox.service",
@@ -175,7 +178,7 @@ func TestReleaseArchivesIncludeUninstallScript(t *testing.T) {
 func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 	service := read(t, "packaging", "migate.service")
 	for _, want := range []string{
-		"ExecStart=/usr/local/bin/migate",
+		"ExecStart=/usr/local/bin/migate serve",
 		"--config /etc/migate/panel.json",
 		"User=root",
 		"Restart=on-failure",

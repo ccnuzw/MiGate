@@ -94,6 +94,7 @@ main() {
 
   echo "Removing MiGate binary..."
   rm -f /usr/local/bin/migate
+  rm -f /usr/local/bin/mg
 
   if [ "$PURGE" -eq 1 ]; then
     echo "Purging MiGate config/data and managed runtime files..."
