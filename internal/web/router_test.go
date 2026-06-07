@@ -1285,3 +1285,87 @@ func TestEditClientResetTrafficCardDarkMode(t *testing.T) {
 		t.Fatal("resetClientTraffic() function must be defined in app.js")
 	}
 }
+
+func TestPanelDOMStructure(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", page.Code)
+	}
+	body := page.Body.String()
+
+	// Every sidebar nav link must have a matching section container
+	navLinks := map[string]string{
+		"#":           `id="overview"`,
+		"#inbounds":   `id="inbounds"`,
+		"#outbound":   `id="outbound"`,
+		"#routing":    `id="routing"`,
+		"#xray":       `id="xray"`,
+		"#settings":   `id="settings"`,
+	}
+	for href, id := range navLinks {
+		if !strings.Contains(body, `href="`+href+`"`) {
+			t.Fatalf("sidebar missing nav link href=%q", href)
+		}
+		if !strings.Contains(body, id) {
+			t.Fatalf("panel missing section container %q", id)
+		}
+	}
+
+	// Modals must not be nested inside another modal's overlay.
+	// Check that create-inbound-overlay closes before create-client-overlay opens.
+	createInboundClose := strings.Index(body, `</form>
+    </div>
+  </div>
+
+  <!-- Create Client Modal -->`)
+	createClientOpen := strings.Index(body, `id="create-client-overlay"`)
+	if createInboundClose == -1 || createClientOpen == -1 || createInboundClose > createClientOpen {
+		t.Fatal("create-inbound modal must close before create-client modal opens (not nested)")
+	}
+
+	// Edit modals must be siblings, not nested inside create modals
+	editInboundOpen := strings.Index(body, `id="edit-inbound-overlay"`)
+	if editInboundOpen < createClientOpen {
+		t.Fatal("edit modals must appear after create modals (modals should be siblings)")
+	}
+
+	// Inbound section should appear before outbound section
+	inboundSec := strings.Index(body, `id="inbounds"`)
+	outboundSec := strings.Index(body, `id="outbound"`)
+	if inboundSec == -1 || outboundSec == -1 || inboundSec > outboundSec {
+		t.Fatal("inbounds section must appear before outbound section")
+	}
+
+	// Verify all section IDs are unique (each appears exactly once)
+	sectionIDs := []string{"overview", "inbounds", "outbound", "routing", "xray", "settings", "singbox"}
+	for _, id := range sectionIDs {
+		if strings.Count(body, `id="`+id+`"`) != 1 {
+			t.Fatalf("section ID %q must appear exactly once, got %d", id, strings.Count(body, `id="`+id+`"`))
+		}
+	}
+
+	// Verify form elements have proper labels (no orphaned inputs)
+	requiredFormFields := []string{
+		`for="inbound-remark"`,
+		`for="client-email"`,
+		`name="remark"`,
+		`name="protocol"`,
+		`name="port"`,
+	}
+	for _, field := range requiredFormFields {
+		if !strings.Contains(body, field) {
+			t.Fatalf("form missing required field %q", field)
+		}
+	}
+
+	// Toast container must appear only once and before all modals (for proper z-index layering)
+	if strings.Count(body, `id="toast-container"`) != 1 {
+		t.Fatalf("toast-container must appear exactly once, got %d", strings.Count(body, `id="toast-container"`))
+	}
+	toastPos := strings.Index(body, `id="toast-container"`)
+	if toastPos > editInboundOpen {
+		t.Fatal("toast-container must appear before all modals (for proper z-index layering)")
+	}
+}
