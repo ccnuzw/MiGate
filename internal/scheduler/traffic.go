@@ -21,6 +21,7 @@ type TrafficSyncScheduler struct {
 	interval    time.Duration
 	ctx         context.Context
 	cancel      context.CancelFunc
+	stopped     bool
 	mu          sync.Mutex
 }
 
@@ -39,6 +40,9 @@ func NewTrafficSyncScheduler(store Store, statsClient xray.StatsClient, interval
 func (s *TrafficSyncScheduler) Start() {
 	s.mu.Lock()
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	if s.stopped {
+		s.cancel()
+	}
 	s.mu.Unlock()
 
 	ticker := time.NewTicker(s.interval)
@@ -62,6 +66,7 @@ func (s *TrafficSyncScheduler) Start() {
 func (s *TrafficSyncScheduler) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.stopped = true
 	if s.cancel != nil {
 		s.cancel()
 	}

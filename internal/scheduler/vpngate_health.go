@@ -47,6 +47,7 @@ type VPNGateHealthScheduler struct {
 	disabled   int // total disabled in last cycle
 	ctx        context.Context
 	cancel     context.CancelFunc
+	stopped    bool
 	mu         sync.Mutex
 }
 
@@ -72,6 +73,9 @@ func NewVPNGateHealthScheduler(store VPNGateStore, applyer XrayApplyer, interval
 func (s *VPNGateHealthScheduler) Start() {
 	s.mu.Lock()
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	if s.stopped {
+		s.cancel()
+	}
 	s.mu.Unlock()
 
 	ticker := time.NewTicker(s.interval)
@@ -94,6 +98,7 @@ func (s *VPNGateHealthScheduler) Start() {
 func (s *VPNGateHealthScheduler) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.stopped = true
 	if s.cancel != nil {
 		s.cancel()
 	}

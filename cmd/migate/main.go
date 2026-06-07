@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -283,22 +284,35 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 
 	router := web.NewRouter(opts...)
 
-	// Start traffic sync scheduler in background
+	// Start schedulers in background and wait for them during cleanup.
+	var schedWG sync.WaitGroup
+	schedWG.Add(2)
+	trafficStarted := make(chan struct{})
+	vpnStarted := make(chan struct{})
 	go func() {
+		defer schedWG.Done()
 		log.Println("traffic sync scheduler started (stub mode - no real stats)")
+		close(trafficStarted)
 		trafficSched.Start()
 	}()
 
-	// Start VPN Gate health scheduler in background
 	go func() {
+		defer schedWG.Done()
 		log.Println("VPN Gate health scheduler started")
+		close(vpnStarted)
 		vpnHealthSched.Start()
 	}()
+	<-trafficStarted
+	<-vpnStarted
 
+	var cleanupOnce sync.Once
 	cleanup := func() {
-		trafficSched.Stop()
-		vpnHealthSched.Stop()
-		closeStore()
+		cleanupOnce.Do(func() {
+			trafficSched.Stop()
+			vpnHealthSched.Stop()
+			schedWG.Wait()
+			closeStore()
+		})
 	}
 
 	return router, cleanup, nil
