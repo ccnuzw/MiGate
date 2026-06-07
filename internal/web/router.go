@@ -18,8 +18,9 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
-	"github.com/imzyb/MiGate/internal/vpngate"
 	"github.com/imzyb/MiGate/internal/scheduler"
+	"github.com/imzyb/MiGate/internal/singbox"
+	"github.com/imzyb/MiGate/internal/vpngate"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -247,6 +248,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/probe", vpngateProbeHandler())
 	mux.HandleFunc("/api/vpngate/outbounds/health", vpngateOutboundHealthHandler(cfg.store))
 	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
+	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
+	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(cfg.store))
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	handler := authMiddleware(mux, &cfg)
 	if cfg.basePath != "" {
@@ -1941,6 +1944,92 @@ func vpngateImportHandler(cfg *routerConfig) http.HandlerFunc {
 	}
 }
 
+// singboxStatusHandler returns the sing-box runtime status.
+func singboxStatusHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		installed := singbox.IsInstalled()
+		if !installed {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"installed": false,
+				"status":    "not_installed",
+			})
+			return
+		}
+		status := singbox.Status()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"installed": true,
+			"status":    status,
+		})
+	}
+}
+
+// singboxApplyHandler reads hysteria2 inbounds from the store, builds
+// a sing-box config, generates a self-signed cert if missing, writes
+// the config to disk and restarts the sing-box service.
+func singboxApplyHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
+		if !singbox.IsInstalled() {
+			http.Error(w, `{"error":"singbox_not_installed"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Read hysteria2 inbounds
+		inbounds, err := store.ListInbounds(r.Context())
+		if err != nil {
+			http.Error(w, `{"error":"list_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+
+		// Build config
+		cfg := singbox.BuildConfig(inbounds)
+
+		// Ensure self-signed cert exists
+		if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
+			if err := singbox.GenerateSelfSignedCert(); err != nil {
+				http.Error(w, `{"error":"cert_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// Encode and write config
+		raw, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			http.Error(w, `{"error":"marshal_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := os.WriteFile(singbox.DefaultConfigPath, raw, 0644); err != nil {
+			http.Error(w, `{"error":"write_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+
+		// Restart sing-box
+		applyErr := singbox.Apply()
+
+		result := map[string]interface{}{
+			"applied":     applyErr == nil,
+			"config_path": singbox.DefaultConfigPath,
+			"inbounds":    len(cfg.Inbounds),
+		}
+		if applyErr != nil {
+			result["error"] = applyErr.Error()
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(result)
+	}
+}
+
 const panelHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -2578,6 +2667,7 @@ const panelHTML = `<!doctype html>
         <div class="card panel"><div>出站</div><div id="outbound-stats" class="metric">0</div><p>已启用 / 总计</p></div>
         <div class="card panel"><div>路由规则</div><div id="routing-stats" class="metric">0</div><p>已启用 / 总计</p></div>
         <div class="card panel"><div>Xray</div><div id="xray-status-metric" class="metric">检查中...</div><p>运行状态</p></div>
+        <div class="card panel"><div>Sing-box</div><div id="singbox-status-metric" class="metric">检查中...</div><p>Hysteria2 运行状态</p></div>
         <div class="overview-insights">
           <div class="overview-card">
             <div class="overview-card-title">运行概况</div>
@@ -3185,6 +3275,21 @@ const panelHTML = `<!doctype html>
           }
         } catch (e) {
           xrayStatusMetric.textContent = '无法连接';
+        }
+        // Fetch sing-box status for overview
+        try {
+          const sr = await fetch(apiPath('/api/singbox/status'));
+          const ss = await sr.json();
+          if (ss && ss.installed !== undefined) {
+            const el = document.getElementById('singbox-status-metric');
+            if (!ss.installed) {
+              el.textContent = '未安装';
+            } else {
+              el.textContent = ss.status === 'running' ? '运行中' : (ss.status === 'stopped' ? '已停止' : ss.status);
+            }
+          }
+        } catch (e) {
+          document.getElementById('singbox-status-metric').textContent = '无法连接';
         }
       } catch(e) {
         console.error('loadInbounds error:', e);
