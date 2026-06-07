@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
@@ -62,7 +64,22 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", host, port)
 	log.Printf("MiGate listening on %s", addr)
-	if err := http.ListenAndServe(addr, router); err != nil {
+
+	srv := &http.Server{Addr: addr, Handler: router}
+
+	// Graceful shutdown on SIGINT/SIGTERM
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		log.Println("shutting down gracefully...")
+		cleanup()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

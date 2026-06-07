@@ -255,6 +255,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		database.Close()
 		return nil, err
 	}
+	// Enable WAL mode for better concurrent read/write performance
+	_, _ = database.ExecContext(ctx, `PRAGMA journal_mode=WAL`)
 	return store, nil
 }
 
