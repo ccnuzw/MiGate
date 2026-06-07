@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -118,4 +120,95 @@ func NextPort(count int) int {
 		port = SBMaxPort
 	}
 	return port
+}
+
+// ServiceProperties holds parsed systemctl show data for the sing-box service.
+type ServiceProperties struct {
+	MemoryRSS              int64
+	MainPID                int64
+	ActiveEnterTimestamp   string
+	ActiveEnterTimestampMonotonic int64
+}
+
+// Show returns parsed systemd service properties via systemctl show.
+func Show() (*ServiceProperties, error) {
+	cmd := exec.Command("systemctl", "show", ServiceName(),
+		"--property=MemoryCurrent",
+		"--property=MainPID",
+		"--property=ActiveEnterTimestamp",
+		"--property=ActiveEnterTimestampMonotonic")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("systemctl show: %w", err)
+	}
+	props := &ServiceProperties{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "MemoryCurrent=") {
+			val := strings.TrimPrefix(line, "MemoryCurrent=")
+			props.MemoryRSS, _ = strconv.ParseInt(val, 10, 64)
+		} else if strings.HasPrefix(line, "MainPID=") {
+			val := strings.TrimPrefix(line, "MainPID=")
+			props.MainPID, _ = strconv.ParseInt(val, 10, 64)
+		} else if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
+			props.ActiveEnterTimestamp = strings.TrimPrefix(line, "ActiveEnterTimestamp=")
+		}
+	}
+	return props, nil
+}
+
+// MemoryRSS returns the current RSS memory usage in bytes.
+func MemoryRSS() int64 {
+	props, err := Show()
+	if err != nil {
+		return 0
+	}
+	return props.MemoryRSS
+}
+
+// Uptime returns a human-readable uptime string (e.g. "2h15m").
+func Uptime() string {
+	props, err := Show()
+	if err != nil {
+		return "未知"
+	}
+	ts := props.ActiveEnterTimestamp
+	if ts == "" {
+		return "未知"
+	}
+	layout := "Mon 2006-01-02 15:04:05 MST"
+	t, err := time.Parse(layout, ts)
+	if err != nil {
+		return "未知"
+	}
+	dur := time.Since(t)
+	if dur < 0 {
+		return "刚启动"
+	}
+	h := int(dur.Hours())
+	m := int(dur.Minutes()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%dm", h, m)
+	}
+	return fmt.Sprintf("%dm", m)
+}
+
+// ActiveConnections returns the number of established TCP connections
+// to sing-box ports (21000-21999 range) via ss.
+func ActiveConnections() int {
+	out, err := exec.Command("ss", "-tn", "state", "established").CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		for port := SBBasePort; port <= SBMaxPort; port++ {
+			if strings.Contains(line, fmt.Sprintf(":%d ", port)) ||
+				strings.HasSuffix(strings.TrimSpace(line), fmt.Sprintf(":%d", port)) {
+				count++
+				break
+			}
+		}
+	}
+	return count
 }

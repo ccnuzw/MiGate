@@ -263,6 +263,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(cfg.store))
 	mux.HandleFunc("/api/singbox/config", singboxConfigHandler())
 	mux.HandleFunc("/api/singbox/version", singboxVersionHandler())
+	mux.HandleFunc("/api/singbox/logs", singboxLogsHandler())
 	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
 	handler := authMiddleware(mux, &cfg)
 	if cfg.basePath != "" {
@@ -2061,9 +2062,12 @@ func singboxStatusHandler() http.HandlerFunc {
 		status := singbox.Status()
 		ver, _ := singbox.Version()
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"installed": true,
-			"status":    status,
-			"version":   strings.TrimSpace(ver),
+			"installed":          true,
+			"status":             status,
+			"version":            strings.TrimSpace(ver),
+			"memory_rss_bytes":   singbox.MemoryRSS(),
+			"uptime":             singbox.Uptime(),
+			"active_connections": singbox.ActiveConnections(),
 		})
 	}
 }
@@ -2199,6 +2203,36 @@ func singboxVersionHandler() http.HandlerFunc {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": strings.TrimSpace(ver)})
+	}
+}
+
+// singboxLogsHandler returns recent sing-box service logs from journalctl.
+func singboxLogsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		lines := r.URL.Query().Get("lines")
+		if lines == "" {
+			lines = "50"
+		}
+		if n, err := strconv.Atoi(lines); err != nil || n < 1 {
+			lines = "50"
+		} else if n > maxXrayLogLines {
+			lines = strconv.Itoa(maxXrayLogLines)
+		}
+		out, err := exec.Command("journalctl", "-u", singbox.ServiceName(), "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		if err != nil {
+			out, err = exec.Command("tail", "-n", lines, "/var/log/syslog").CombinedOutput()
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"logs": "无法读取 Sing-box 日志：journalctl 和 syslog 均不可用。"})
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"logs": string(out)})
 	}
 }
 
@@ -3010,6 +3044,9 @@ const panelHTML = `<!doctype html>
         <div class="xray-status-panel">
           <div><strong>状态</strong>：<span id="singbox-status">未知</span></div>
           <div><strong>版本</strong>：<span id="singbox-version">-</span></div>
+          <div><strong>内存</strong>：<span id="singbox-memory">-</span></div>
+          <div><strong>运行时长</strong>：<span id="singbox-uptime">-</span></div>
+          <div><strong>活跃连接</strong>：<span id="singbox-connections">-</span></div>
           <div><strong>托管服务</strong>：<span id="singbox-managed">sing-box</span></div>
           <div><strong>配置路径</strong>：<span id="singbox-config-path">/etc/sing-box/config.json</span></div>
         </div>
@@ -3022,10 +3059,12 @@ const panelHTML = `<!doctype html>
             <button onclick="fetchSingboxStatus()">刷新状态</button>
             <button class="secondary" onclick="previewSingboxConfig()">预览配置</button>
             <button class="secondary" onclick="applySingboxConfig()">应用配置</button>
+            <button class="secondary" onclick="loadSingboxLogs()">查看日志</button>
           </div>
         </div>
         <div id="singbox-result" class="notice-slot"></div>
         <div id="singbox-config-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Sing-box 配置预览</span><button class="icon-btn" onclick="closeSingboxConfig()" title="关闭" style="font-size:12px">✕</button></div><pre id="singbox-config-json" class="xray-preview-pre"></pre></div>
+        <div id="singbox-logs-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Sing-box 运行日志</span><button class="icon-btn" onclick="closeSingboxLogs()" title="关闭" style="font-size:12px">✕</button></div><pre id="singbox-logs-text" class="xray-preview-pre mono"></pre></div>
       </section>
       <section id="settings" class="card panel">
         <h2 class="section-title">面板设置</h2>
@@ -4362,6 +4401,7 @@ function openCreateRoutingRule() {
       history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId));
       if (sectionId === 'overview') loadStats();
       if (sectionId === 'xray') { fetchXrayStatus(); refreshAutoHealthStatus(); }
+      if (sectionId === 'singbox') fetchSingboxStatus();
     }
     document.querySelectorAll('nav a').forEach((a) => {
       a.addEventListener('click', (e) => {
@@ -5205,13 +5245,22 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         if (!data.installed) {
           document.getElementById('singbox-status').textContent = '未安装';
           document.getElementById('singbox-version').textContent = '-';
+          document.getElementById('singbox-memory').textContent = '-';
+          document.getElementById('singbox-uptime').textContent = '-';
+          document.getElementById('singbox-connections').textContent = '-';
           return;
         }
         document.getElementById('singbox-status').textContent =
           data.status === 'running' ? '运行中' : (data.status === 'stopped' ? '已停止' : data.status);
         document.getElementById('singbox-version').textContent = data.version || '-';
+        document.getElementById('singbox-memory').textContent = data.memory_rss_bytes ? formatBytes(data.memory_rss_bytes) : '-';
+        document.getElementById('singbox-uptime').textContent = data.uptime || '-';
+        document.getElementById('singbox-connections').textContent = data.active_connections != null ? data.active_connections.toString() : '-';
       } catch (e) {
         document.getElementById('singbox-status').textContent = '连接失败';
+        document.getElementById('singbox-memory').textContent = '-';
+        document.getElementById('singbox-uptime').textContent = '-';
+        document.getElementById('singbox-connections').textContent = '-';
       }
     }
     async function applySingboxConfig() {
@@ -5252,6 +5301,28 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
     function closeSingboxConfig() {
       document.getElementById('singbox-config-preview').style.display = 'none';
       _singboxConfigVisible = false;
+    }
+
+    // === Sing-box logs ===
+    var _singboxLogsVisible = false;
+    async function loadSingboxLogs() {
+      const el = document.getElementById('singbox-logs-preview');
+      const pre = document.getElementById('singbox-logs-text');
+      if (_singboxLogsVisible) return;
+      _singboxLogsVisible = true;
+      pre.textContent = '加载中...';
+      el.style.display = '';
+      try {
+        const res = await fetch(apiPath('/api/singbox/logs?lines=80'));
+        const data = await res.json();
+        pre.textContent = data.logs || '暂无日志';
+      } catch (e) {
+        pre.textContent = '加载日志失败';
+      }
+    }
+    function closeSingboxLogs() {
+      document.getElementById('singbox-logs-preview').style.display = 'none';
+      _singboxLogsVisible = false;
     }
 
     // === Settings ===
