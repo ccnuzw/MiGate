@@ -1112,7 +1112,7 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 		// 1. Apply Xray config
 		xrayResult := controller.Apply(r.Context())
 
-		// 2. Apply sing-box config if hysteria2 inbounds exist
+		// 2. Apply sing-box config if sing-box supported inbounds exist
 		singboxResult := map[string]interface{}{
 			"applied": false,
 			"reason":  "not_needed",
@@ -1120,14 +1120,17 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 		if store != nil && singbox.IsInstalled() {
 			inbounds, err := store.ListInbounds(r.Context())
 			if err == nil {
-				hasHy2 := false
+				hasSingboxInbound := false
 				for _, ib := range inbounds {
-					if ib.Enabled && ib.Protocol == "hysteria2" {
-						hasHy2 = true
-						break
+					if ib.Enabled {
+						switch ib.Protocol {
+						case "hysteria2", "tuic", "wireguard", "shadowtls":
+							hasSingboxInbound = true
+							break
+						}
 					}
 				}
-				if hasHy2 {
+				if hasSingboxInbound {
 					cfg := singbox.BuildConfig(inbounds)
 					if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
 						_ = singbox.GenerateSelfSignedCert()
@@ -2020,7 +2023,7 @@ func singboxStatusHandler() http.HandlerFunc {
 	}
 }
 
-// singboxApplyHandler reads hysteria2 inbounds from the store, builds
+// singboxApplyHandler reads sing-box supported inbounds from the store, builds
 // a sing-box config, generates a self-signed cert if missing, writes
 // the config to disk and restarts the sing-box service.
 func singboxApplyHandler(store Store) http.HandlerFunc {
@@ -2035,7 +2038,7 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 			return
 		}
 
-		// Read hysteria2 inbounds
+		// Read sing-box inbounds
 		inbounds, err := store.ListInbounds(r.Context())
 		if err != nil {
 			http.Error(w, `{"error":"list_failed","detail":"`+err.Error()+`"}`, http.StatusInternalServerError)
@@ -2338,6 +2341,9 @@ const panelHTML = `<!doctype html>
             <option value="trojan">Trojan</option>
             <option value="shadowsocks">Shadowsocks</option>
             <option value="hysteria2">Hysteria2</option>
+            <option value="tuic">TUIC</option>
+            <option value="wireguard">WireGuard</option>
+            <option value="shadowtls">ShadowTLS</option>
           </select>
           <p class="field-help">选择核心入站协议。</p>
         </div>
@@ -2420,6 +2426,40 @@ const panelHTML = `<!doctype html>
             <input name="hy2_obfs" placeholder="混淆类型 (如 salamander, 可选)">
             <div class="inline-field-tools"><input id="inbound-hy2-obfs-password" name="hy2_obfs_password" type="password" placeholder="混淆密码 (可选)"><button type="button" class="btn-mini" onclick="regenerateField('inbound-hy2-obfs-password')">重新生成</button><button type="button" class="btn-mini" onclick="toggleSecretField('inbound-hy2-obfs-password')">显示/隐藏</button></div>
             <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander。</p>
+          </div>
+          <div id="tuic-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">TUIC 设置</div>
+            <div class="advanced-fieldset-copy">TUIC 基于 QUIC 的低延迟 UDP 代理。</div>
+            <select name="tuic_congestion_control">
+              <option value="bbr">BBR (推荐)</option>
+              <option value="cubic">Cubic</option>
+              <option value="new_reno">NewReno</option>
+            </select>
+            <label><input name="tuic_zero_rtt" type="checkbox" value="1"> 启用 0-RTT 握手</label>
+            <p class="field-help">拥塞控制和 0-RTT 握手可优化延迟。</p>
+          </div>
+          <div id="wireguard-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">WireGuard 设置</div>
+            <div class="advanced-fieldset-copy">WireGuard 简单高效的 VPN 协议。</div>
+            <div class="inline-field-tools"><input name="wg_private_key" placeholder="私钥 (PrivateKey) 必填"><button type="button" class="btn-mini" onclick="regenerateFieldByName('wg_private_key')">生成密钥</button></div>
+            <input name="wg_address" placeholder="本地地址 (如 10.0.0.1/24) 必填">
+            <input name="wg_peer_public_key" placeholder="客户端公钥 (PublicKey) 必填">
+            <input name="wg_allowed_ips" placeholder="允许的 IP (默认 0.0.0.0/0, ::/0)">
+            <input name="wg_endpoint" placeholder="客户端 Endpoint (可选)">
+            <div class="inline-field-tools"><input name="wg_preshared_key" placeholder="预共享密钥 (PreSharedKey, 可选)"><button type="button" class="btn-mini" onclick="regenerateFieldByName('wg_preshared_key')">生成密钥</button></div>
+            <input name="wg_mtu" type="number" min="1280" placeholder="MTU (默认 1420)">
+            <p class="field-help">WireGuard 需要服务器端生成私钥/公钥对。</p>
+          </div>
+          <div id="shadowtls-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">ShadowTLS 设置</div>
+            <div class="advanced-fieldset-copy">ShadowTLS 将流量伪装成标准 TLS 连接。</div>
+            <div class="inline-field-tools"><input name="shadowtls_password" placeholder="密码 (Password)"><button type="button" class="btn-mini" onclick="regenerateFieldByName('shadowtls_password')">重新生成</button></div>
+            <select name="shadowtls_version">
+              <option value="3">v3 (推荐)</option>
+              <option value="2">v2</option>
+              <option value="1">v1</option>
+            </select>
+            <p class="field-help">注意：ShadowTLS 复用 TLS 设置中的 SNI 作为 handshake_server_name。</p>
           </div>
           <div id="tls-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">TLS 设置</div>
@@ -2606,6 +2646,43 @@ const panelHTML = `<!doctype html>
             <input id="ei-hy2-obfs" placeholder="混淆类型 (如 salamander, 可选)">
             <input id="ei-hy2-obfs-password" placeholder="混淆密码 (可选)">
             <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander。</p>
+          </div>
+          <div id="ei-tuic-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">TUIC 设置</div>
+            <div class="advanced-fieldset-copy">TUIC 基于 QUIC 的低延迟 UDP 代理。</div>
+            <label class="field-label" for="ei-tuic-cc">TUIC 拥塞控制</label>
+            <select id="ei-tuic-cc">
+              <option value="bbr">BBR (推荐)</option>
+              <option value="cubic">Cubic</option>
+              <option value="new_reno">NewReno</option>
+            </select>
+            <label><input id="ei-tuic-zero-rtt" type="checkbox" value="1"> 启用 0-RTT 握手</label>
+            <p class="field-help">拥塞控制和 0-RTT 握手可优化延迟。</p>
+          </div>
+          <div id="ei-wireguard-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">WireGuard 设置</div>
+            <div class="advanced-fieldset-copy">WireGuard 简单高效的 VPN 协议。</div>
+            <label class="field-label" for="ei-wg-private-key">WireGuard 私钥</label>
+            <input id="ei-wg-private-key" placeholder="私钥 (PrivateKey) 必填">
+            <input id="ei-wg-address" placeholder="本地地址 (如 10.0.0.1/24) 必填">
+            <input id="ei-wg-peer-public-key" placeholder="客户端公钥 (PublicKey) 必填">
+            <input id="ei-wg-allowed-ips" placeholder="允许的 IP (默认 0.0.0.0/0, ::/0)">
+            <input id="ei-wg-endpoint" placeholder="客户端 Endpoint (可选)">
+            <input id="ei-wg-preshared-key" placeholder="预共享密钥 (PreSharedKey, 可选)">
+            <input id="ei-wg-mtu" type="number" min="1280" placeholder="MTU (默认 1420)">
+            <p class="field-help">WireGuard 需要服务器端生成私钥/公钥对。</p>
+          </div>
+          <div id="ei-shadowtls-settings" class="advanced-fieldset field-group span-2 hidden">
+            <div class="advanced-fieldset-title">ShadowTLS 设置</div>
+            <div class="advanced-fieldset-copy">ShadowTLS 将流量伪装成标准 TLS 连接。</div>
+            <label class="field-label" for="ei-shadowtls-password">ShadowTLS 密码</label>
+            <input id="ei-shadowtls-password" placeholder="密码 (Password)">
+            <select id="ei-shadowtls-version">
+              <option value="3">v3 (推荐)</option>
+              <option value="2">v2</option>
+              <option value="1">v1</option>
+            </select>
+            <p class="field-help">注意：ShadowTLS 复用 TLS 设置中的 SNI 作为 handshake_server_name。</p>
           </div>
           <div id="ei-tls-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">TLS 设置</div>
@@ -4324,6 +4401,9 @@ function openCreateRoutingRule() {
       document.getElementById('ei-ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
       document.getElementById('ei-tls-settings').classList.toggle('hidden', sec !== 'tls');
       document.getElementById('ei-hy2-settings').classList.toggle('hidden', proto !== 'hysteria2');
+      document.getElementById('ei-tuic-settings').classList.toggle('hidden', proto !== 'tuic');
+      document.getElementById('ei-wireguard-settings').classList.toggle('hidden', proto !== 'wireguard');
+      document.getElementById('ei-shadowtls-settings').classList.toggle('hidden', proto !== 'shadowtls');
     }
 
     async function editInbound(id) {
@@ -4356,6 +4436,17 @@ function openCreateRoutingRule() {
       document.getElementById('ei-hy2-down').value = inbound.hy2_down_mbps || 0;
       document.getElementById('ei-hy2-obfs').value = inbound.hy2_obfs || '';
       document.getElementById('ei-hy2-obfs-password').value = inbound.hy2_obfs_password || '';
+      document.getElementById('ei-tuic-cc').value = inbound.tuic_congestion_control || 'bbr';
+      document.getElementById('ei-tuic-zero-rtt').checked = inbound.tuic_zero_rtt || false;
+      document.getElementById('ei-wg-private-key').value = inbound.wg_private_key || '';
+      document.getElementById('ei-wg-address').value = inbound.wg_address || '';
+      document.getElementById('ei-wg-peer-public-key').value = inbound.wg_peer_public_key || '';
+      document.getElementById('ei-wg-allowed-ips').value = inbound.wg_allowed_ips || '';
+      document.getElementById('ei-wg-endpoint').value = inbound.wg_endpoint || '';
+      document.getElementById('ei-wg-preshared-key').value = inbound.wg_preshared_key || '';
+      document.getElementById('ei-wg-mtu').value = inbound.wg_mtu || 1420;
+      document.getElementById('ei-shadowtls-password').value = inbound.shadowtls_password || '';
+      document.getElementById('ei-shadowtls-version').value = inbound.shadowtls_version || 3;
       eiUpdateDynamicFields();
       document.getElementById('edit-inbound-overlay').classList.remove('hidden');
     }
@@ -4391,6 +4482,17 @@ function openCreateRoutingRule() {
         hy2_down_mbps: Number(document.getElementById('ei-hy2-down').value) || 0,
         hy2_obfs: document.getElementById('ei-hy2-obfs').value,
         hy2_obfs_password: document.getElementById('ei-hy2-obfs-password').value,
+        tuic_congestion_control: document.getElementById('ei-tuic-cc').value,
+        tuic_zero_rtt: document.getElementById('ei-tuic-zero-rtt').checked,
+        wg_private_key: document.getElementById('ei-wg-private-key').value,
+        wg_address: document.getElementById('ei-wg-address').value,
+        wg_peer_public_key: document.getElementById('ei-wg-peer-public-key').value,
+        wg_allowed_ips: document.getElementById('ei-wg-allowed-ips').value,
+        wg_endpoint: document.getElementById('ei-wg-endpoint').value,
+        wg_preshared_key: document.getElementById('ei-wg-preshared-key').value,
+        wg_mtu: Number(document.getElementById('ei-wg-mtu').value) || 1420,
+        shadowtls_password: document.getElementById('ei-shadowtls-password').value,
+        shadowtls_version: Number(document.getElementById('ei-shadowtls-version').value) || 3,
       };
       if (!data.remark || !data.port) { showToast('请填写备注和端口', 'error'); return; }
       // Port conflict check (client-side, exclude current inbound)
@@ -4613,6 +4715,9 @@ function openCreateRoutingRule() {
       trojan: {network: 'tcp', security: 'tls'},
       shadowsocks: {network: 'tcp', security: 'none'},
       hysteria2: {network: 'quic', security: 'tls'},
+      tuic: {network: 'quic', security: 'tls'},
+      wireguard: {network: 'udp', security: 'none'},
+      shadowtls: {network: 'tcp', security: 'tls'},
     };
     function applyProtocolPreset(proto) {
       const preset = protocolPresets[proto];
@@ -4635,6 +4740,9 @@ function openCreateRoutingRule() {
       document.getElementById('ss-settings').classList.toggle('hidden', proto !== 'shadowsocks');
       document.getElementById('tls-settings').classList.toggle('hidden', sec !== 'tls');
       document.getElementById('hy2-settings').classList.toggle('hidden', proto !== 'hysteria2');
+      document.getElementById('tuic-settings').classList.toggle('hidden', proto !== 'tuic');
+      document.getElementById('wireguard-settings').classList.toggle('hidden', proto !== 'wireguard');
+      document.getElementById('shadowtls-settings').classList.toggle('hidden', proto !== 'shadowtls');
       const formEl = document.getElementById('create-inbound-form');
       if (formEl) fillRandomDefaults(formEl);
     }
@@ -4705,6 +4813,10 @@ function openCreateRoutingRule() {
       else el.value = randHex(8);
       el.dispatchEvent(new Event('input', { bubbles: true }));
     }
+    function regenerateFieldByName(name) {
+      const el = document.querySelector('[name="'+name+'"]');
+      if (el) { el.value = randCredential(); }
+    }
     function toggleSecretField(id) {
       const el = document.getElementById(id);
       if (!el) return;
@@ -4748,7 +4860,7 @@ function openCreateRoutingRule() {
       }
       const credentialHelp = document.getElementById('init-client-credential-help');
       if (credentialHelp) {
-        const label = proto === 'vless' || proto === 'vmess' ? 'UUID' : proto === 'shadowsocks' ? '密码/密钥' : '密码';
+        const label = proto === 'vless' || proto === 'vmess' ? 'UUID' : proto === 'shadowsocks' || proto === 'wireguard' ? '密码/密钥' : '密码';
         credentialHelp.textContent = '客户端凭据已自动生成为 ' + label + '，可以手动修改；不懂时保持默认即可。';
       }
     }
@@ -4760,6 +4872,11 @@ function openCreateRoutingRule() {
       payload.port = Number(payload.port);
       payload.hy2_up_mbps = Number(payload.hy2_up_mbps) || 0;
       payload.hy2_down_mbps = Number(payload.hy2_down_mbps) || 0;
+      payload.tuic_zero_rtt = payload.tuic_zero_rtt === '1' || payload.tuic_zero_rtt === true;
+      payload.hy2_up_mbps = Number(payload.hy2_up_mbps) || 0;
+      payload.hy2_down_mbps = Number(payload.hy2_down_mbps) || 0;
+      payload.wg_mtu = Number(payload.wg_mtu) || 0;
+      payload.shadowtls_version = Number(payload.shadowtls_version) || 3;
       if (!payload.remark || !payload.port) { showToast('请填写备注和端口', 'error'); return; }
       // Port conflict check (client-side)
       const existingInbounds = window._cachedInbounds || [];

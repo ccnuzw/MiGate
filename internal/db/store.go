@@ -18,6 +18,9 @@ var supportedProtocols = map[string]bool{
 	"trojan":      true,
 	"shadowsocks": true,
 	"hysteria2":   true,
+	"tuic":        true,
+	"wireguard":   true,
+	"shadowtls":   true,
 }
 
 var supportedOutboundProtocols = map[string]bool{
@@ -58,35 +61,46 @@ type Store struct {
 }
 
 type Inbound struct {
-	ID                 int64    `json:"id"`
-	UUID               string   `json:"uuid"`
-	Remark             string   `json:"remark"`
-	Protocol           string   `json:"protocol"`
-	Port               int      `json:"port"`
-	Network            string   `json:"network"`
-	Security           string   `json:"security"`
-	Enabled            bool     `json:"enabled"`
-	WsPath             string   `json:"ws_path"`
-	WsHost             string   `json:"ws_host"`
-	GrpcServiceName    string   `json:"grpc_service_name"`
-	RealityDest        string   `json:"reality_dest"`
-	RealityServerNames string   `json:"reality_server_names"`
-	RealityShortID     string   `json:"reality_short_id"`
-	RealityPrivateKey  string   `json:"reality_private_key"`
-	RealityPublicKey   string   `json:"reality_public_key"`
-	SSMethod           string   `json:"ss_method"`
-	TLSCertFile        string   `json:"tls_cert_file"`
-	TLSKeyFile         string   `json:"tls_key_file"`
-	TLSSNI             string   `json:"tls_sni"`
-	TLSFingerprint     string   `json:"tls_fingerprint"`
-	TLSALPN            string   `json:"tls_alpn"`
-	XHTTPPath          string   `json:"xhttp_path"`
-	XHTTPMode          string   `json:"xhttp_mode"`
-	Hy2UpMbps          int      `json:"hy2_up_mbps"`
-	Hy2DownMbps        int      `json:"hy2_down_mbps"`
-	Hy2Obfs            string   `json:"hy2_obfs"`
-	Hy2ObfsPassword    string   `json:"hy2_obfs_password"`
-	Clients            []Client `json:"clients"`
+	ID                   int64    `json:"id"`
+	UUID                 string   `json:"uuid"`
+	Remark               string   `json:"remark"`
+	Protocol             string   `json:"protocol"`
+	Port                 int      `json:"port"`
+	Network              string   `json:"network"`
+	Security             string   `json:"security"`
+	Enabled              bool     `json:"enabled"`
+	WsPath               string   `json:"ws_path"`
+	WsHost               string   `json:"ws_host"`
+	GrpcServiceName      string   `json:"grpc_service_name"`
+	RealityDest          string   `json:"reality_dest"`
+	RealityServerNames   string   `json:"reality_server_names"`
+	RealityShortID       string   `json:"reality_short_id"`
+	RealityPrivateKey    string   `json:"reality_private_key"`
+	RealityPublicKey     string   `json:"reality_public_key"`
+	SSMethod             string   `json:"ss_method"`
+	TLSCertFile          string   `json:"tls_cert_file"`
+	TLSKeyFile           string   `json:"tls_key_file"`
+	TLSSNI               string   `json:"tls_sni"`
+	TLSFingerprint       string   `json:"tls_fingerprint"`
+	TLSALPN              string   `json:"tls_alpn"`
+	XHTTPPath            string   `json:"xhttp_path"`
+	XHTTPMode            string   `json:"xhttp_mode"`
+	Hy2UpMbps            int      `json:"hy2_up_mbps"`
+	Hy2DownMbps          int      `json:"hy2_down_mbps"`
+	Hy2Obfs              string   `json:"hy2_obfs"`
+	Hy2ObfsPassword      string   `json:"hy2_obfs_password"`
+	TuicCongestionControl string   `json:"tuic_congestion_control"`
+	TuicZeroRTT           bool     `json:"tuic_zero_rtt"`
+	WgPrivateKey          string   `json:"wg_private_key"`
+	WgAddress             string   `json:"wg_address"`
+	WgPeerPublicKey       string   `json:"wg_peer_public_key"`
+	WgAllowedIPs          string   `json:"wg_allowed_ips"`
+	WgEndpoint            string   `json:"wg_endpoint"`
+	WgPresharedKey        string   `json:"wg_preshared_key"`
+	WgMTU                 int      `json:"wg_mtu"`
+	ShadowTLSVersion      int      `json:"shadowtls_version"`
+	ShadowTLSPassword     string   `json:"shadowtls_password"`
+	Clients              []Client `json:"clients"`
 }
 
 type Outbound struct {
@@ -136,33 +150,44 @@ type Client struct {
 }
 
 type CreateInboundParams struct {
-	UUID               string              `json:"uuid,omitempty"`
-	Remark             string              `json:"remark"`
-	Protocol           string              `json:"protocol"`
-	Port               int                 `json:"port"`
-	Network            string              `json:"network"`
-	Security           string              `json:"security"`
-	WsPath             string              `json:"ws_path"`
-	WsHost             string              `json:"ws_host"`
-	GrpcServiceName    string              `json:"grpc_service_name"`
-	RealityDest        string              `json:"reality_dest"`
-	RealityServerNames string              `json:"reality_server_names"`
-	RealityShortID     string              `json:"reality_short_id"`
-	RealityPrivateKey  string              `json:"reality_private_key"`
-	RealityPublicKey   string              `json:"reality_public_key"`
-	SSMethod           string              `json:"ss_method"`
-	TLSCertFile        string              `json:"tls_cert_file"`
-	TLSKeyFile         string              `json:"tls_key_file"`
-	TLSSNI             string              `json:"tls_sni"`
-	TLSFingerprint     string              `json:"tls_fingerprint"`
-	TLSALPN            string              `json:"tls_alpn"`
-	XHTTPPath          string              `json:"xhttp_path"`
-	XHTTPMode          string              `json:"xhttp_mode"`
-	Hy2UpMbps          int                 `json:"hy2_up_mbps"`
-	Hy2DownMbps        int                 `json:"hy2_down_mbps"`
-	Hy2Obfs            string              `json:"hy2_obfs"`
-	Hy2ObfsPassword    string              `json:"hy2_obfs_password"`
-	InitialClient      *CreateClientParams `json:"initial_client,omitempty"`
+	UUID                string              `json:"uuid,omitempty"`
+	Remark              string              `json:"remark"`
+	Protocol            string              `json:"protocol"`
+	Port                int                 `json:"port"`
+	Network             string              `json:"network"`
+	Security            string              `json:"security"`
+	WsPath              string              `json:"ws_path"`
+	WsHost              string              `json:"ws_host"`
+	GrpcServiceName     string              `json:"grpc_service_name"`
+	RealityDest         string              `json:"reality_dest"`
+	RealityServerNames  string              `json:"reality_server_names"`
+	RealityShortID      string              `json:"reality_short_id"`
+	RealityPrivateKey   string              `json:"reality_private_key"`
+	RealityPublicKey    string              `json:"reality_public_key"`
+	SSMethod            string              `json:"ss_method"`
+	TLSCertFile         string              `json:"tls_cert_file"`
+	TLSKeyFile          string              `json:"tls_key_file"`
+	TLSSNI              string              `json:"tls_sni"`
+	TLSFingerprint      string              `json:"tls_fingerprint"`
+	TLSALPN             string              `json:"tls_alpn"`
+	XHTTPPath           string              `json:"xhttp_path"`
+	XHTTPMode           string              `json:"xhttp_mode"`
+	Hy2UpMbps           int                 `json:"hy2_up_mbps"`
+	Hy2DownMbps         int                 `json:"hy2_down_mbps"`
+	Hy2Obfs             string              `json:"hy2_obfs"`
+	Hy2ObfsPassword     string              `json:"hy2_obfs_password"`
+	TuicCongestionControl string              `json:"tuic_congestion_control"`
+	TuicZeroRTT           bool                `json:"tuic_zero_rtt"`
+	WgPrivateKey          string              `json:"wg_private_key"`
+	WgAddress             string              `json:"wg_address"`
+	WgPeerPublicKey       string              `json:"wg_peer_public_key"`
+	WgAllowedIPs          string              `json:"wg_allowed_ips"`
+	WgEndpoint            string              `json:"wg_endpoint"`
+	WgPresharedKey        string              `json:"wg_preshared_key"`
+	WgMTU                 int                 `json:"wg_mtu"`
+	ShadowTLSVersion      int                 `json:"shadowtls_version"`
+	ShadowTLSPassword     string              `json:"shadowtls_password"`
+	InitialClient       *CreateClientParams `json:"initial_client,omitempty"`
 }
 
 type CreateClientParams struct {
@@ -174,32 +199,43 @@ type CreateClientParams struct {
 }
 
 type UpdateInboundParams struct {
-	Remark             string `json:"remark"`
-	Protocol           string `json:"protocol"`
-	Port               int    `json:"port"`
-	Network            string `json:"network"`
-	Security           string `json:"security"`
-	Enabled            bool   `json:"enabled"`
-	WsPath             string `json:"ws_path"`
-	WsHost             string `json:"ws_host"`
-	GrpcServiceName    string `json:"grpc_service_name"`
-	RealityDest        string `json:"reality_dest"`
-	RealityServerNames string `json:"reality_server_names"`
-	RealityShortID     string `json:"reality_short_id"`
-	RealityPrivateKey  string `json:"reality_private_key"`
-	RealityPublicKey   string `json:"reality_public_key"`
-	SSMethod           string `json:"ss_method"`
-	TLSCertFile        string `json:"tls_cert_file"`
-	TLSKeyFile         string `json:"tls_key_file"`
-	TLSSNI             string `json:"tls_sni"`
-	TLSFingerprint     string `json:"tls_fingerprint"`
-	TLSALPN            string `json:"tls_alpn"`
-	XHTTPPath          string `json:"xhttp_path"`
-	XHTTPMode          string `json:"xhttp_mode"`
-	Hy2UpMbps          int    `json:"hy2_up_mbps"`
-	Hy2DownMbps        int    `json:"hy2_down_mbps"`
-	Hy2Obfs            string `json:"hy2_obfs"`
-	Hy2ObfsPassword    string `json:"hy2_obfs_password"`
+	Remark                string `json:"remark"`
+	Protocol              string `json:"protocol"`
+	Port                  int    `json:"port"`
+	Network               string `json:"network"`
+	Security              string `json:"security"`
+	Enabled               bool   `json:"enabled"`
+	WsPath                string `json:"ws_path"`
+	WsHost                string `json:"ws_host"`
+	GrpcServiceName       string `json:"grpc_service_name"`
+	RealityDest           string `json:"reality_dest"`
+	RealityServerNames    string `json:"reality_server_names"`
+	RealityShortID        string `json:"reality_short_id"`
+	RealityPrivateKey     string `json:"reality_private_key"`
+	RealityPublicKey      string `json:"reality_public_key"`
+	SSMethod              string `json:"ss_method"`
+	TLSCertFile           string `json:"tls_cert_file"`
+	TLSKeyFile            string `json:"tls_key_file"`
+	TLSSNI                string `json:"tls_sni"`
+	TLSFingerprint        string `json:"tls_fingerprint"`
+	TLSALPN               string `json:"tls_alpn"`
+	XHTTPPath             string `json:"xhttp_path"`
+	XHTTPMode             string `json:"xhttp_mode"`
+	Hy2UpMbps             int    `json:"hy2_up_mbps"`
+	Hy2DownMbps           int    `json:"hy2_down_mbps"`
+	Hy2Obfs               string `json:"hy2_obfs"`
+	Hy2ObfsPassword       string `json:"hy2_obfs_password"`
+	TuicCongestionControl string `json:"tuic_congestion_control"`
+	TuicZeroRTT           bool   `json:"tuic_zero_rtt"`
+	WgPrivateKey          string `json:"wg_private_key"`
+	WgAddress             string `json:"wg_address"`
+	WgPeerPublicKey       string `json:"wg_peer_public_key"`
+	WgAllowedIPs          string `json:"wg_allowed_ips"`
+	WgEndpoint            string `json:"wg_endpoint"`
+	WgPresharedKey        string `json:"wg_preshared_key"`
+	WgMTU                 int    `json:"wg_mtu"`
+	ShadowTLSVersion      int    `json:"shadowtls_version"`
+	ShadowTLSPassword     string `json:"shadowtls_password"`
 }
 
 type UpdateClientParams struct {
@@ -308,6 +344,17 @@ CREATE TABLE IF NOT EXISTS routing_rules (
 		{"tls_sni", "TEXT", "DEFAULT ''"},
 		{"tls_fingerprint", "TEXT", "DEFAULT ''"},
 		{"tls_alpn", "TEXT", "DEFAULT ''"},
+		{"tuic_congestion_control", "TEXT", "DEFAULT 'bbr'"},
+		{"tuic_zero_rtt", "INTEGER", "DEFAULT 0"},
+		{"wg_private_key", "TEXT", "DEFAULT ''"},
+		{"wg_address", "TEXT", "DEFAULT ''"},
+		{"wg_peer_public_key", "TEXT", "DEFAULT ''"},
+		{"wg_allowed_ips", "TEXT", "DEFAULT '0.0.0.0/0, ::/0'"},
+		{"wg_endpoint", "TEXT", "DEFAULT ''"},
+		{"wg_preshared_key", "TEXT", "DEFAULT ''"},
+		{"wg_mtu", "INTEGER", "DEFAULT 0"},
+		{"shadowtls_version", "INTEGER", "DEFAULT 3"},
+		{"shadowtls_password", "TEXT", "DEFAULT ''"},
 	} {
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE inbounds ADD COLUMN %s %s %s", col.name, col.typ, col.def))
 	}
@@ -631,7 +678,10 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		params.WsPath, params.WsHost, params.GrpcServiceName,
 		params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey,
 		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.TLSSNI, params.TLSFingerprint, params.TLSALPN, params.XHTTPPath, params.XHTTPMode,
-		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword)
+		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword,
+		params.TuicCongestionControl, params.TuicZeroRTT,
+		params.WgPrivateKey, params.WgAddress, params.WgPeerPublicKey, params.WgAllowedIPs, params.WgEndpoint, params.WgPresharedKey, params.WgMTU,
+		params.ShadowTLSVersion, params.ShadowTLSPassword)
 	if err != nil {
 		return Inbound{}, err
 	}
@@ -655,26 +705,53 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		XHTTPPath: params.XHTTPPath, XHTTPMode: params.XHTTPMode,
 		Hy2UpMbps: params.Hy2UpMbps, Hy2DownMbps: params.Hy2DownMbps,
 		Hy2Obfs: params.Hy2Obfs, Hy2ObfsPassword: params.Hy2ObfsPassword,
+		TuicCongestionControl: params.TuicCongestionControl,
+		TuicZeroRTT:           params.TuicZeroRTT,
+		WgPrivateKey:          params.WgPrivateKey,
+		WgAddress:             params.WgAddress,
+		WgPeerPublicKey:       params.WgPeerPublicKey,
+		WgAllowedIPs:          params.WgAllowedIPs,
+		WgEndpoint:            params.WgEndpoint,
+		WgPresharedKey:        params.WgPresharedKey,
+		WgMTU:                 params.WgMTU,
+		ShadowTLSVersion:      params.ShadowTLSVersion,
+		ShadowTLSPassword:     params.ShadowTLSPassword,
 		Clients: clients}, nil
 }
 
 func (s *Store) insertInbound(ctx context.Context, inboundUUID, remark, protocol string, port int, network, security string,
 	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, tlsSNI, tlsFingerprint, tlsALPN, xhttpPath, xhttpMode string,
-	hy2UpMbps, hy2DownMbps int, hy2Obfs, hy2ObfsPassword string) (int64, string, error) {
+	hy2UpMbps, hy2DownMbps int, hy2Obfs, hy2ObfsPassword string,
+	tuicCongestionControl string, tuicZeroRTT bool,
+	wgPrivateKey, wgAddress, wgPeerPublicKey, wgAllowedIPs, wgEndpoint, wgPresharedKey string, wgMTU int,
+	shadowTLSVersion int, shadowTLSPassword string) (int64, string, error) {
 	uuid := strings.TrimSpace(inboundUUID)
 	if uuid == "" {
 		uuid = newUUID()
 	}
+	tuicZeroRTTInt := 0
+	if tuicZeroRTT {
+		tuicZeroRTTInt = 1
+	}
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO inbounds (uuid, remark, protocol, port, network, security, enabled, created_at,
-	  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method, tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-	  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password)
-	VALUES (?, ?, ?, ?, ?, ?, 1, ?,
-	  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	  ?, ?, ?, ?)`,
+  ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method, tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
+  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+  tuic_congestion_control, tuic_zero_rtt,
+  wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
+  shadowtls_version, shadowtls_password)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?,
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+  ?, ?, ?, ?,
+  ?, ?,
+  ?, ?, ?, ?, ?, ?, ?,
+  ?, ?)`,
 		uuid, remark, protocol, port, network, security, time.Now().UTC().Format(time.RFC3339),
 		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, tlsSNI, tlsFingerprint, tlsALPN, xhttpPath, xhttpMode,
-		hy2UpMbps, hy2DownMbps, hy2Obfs, hy2ObfsPassword)
+		hy2UpMbps, hy2DownMbps, hy2Obfs, hy2ObfsPassword,
+		tuicCongestionControl, tuicZeroRTTInt,
+		wgPrivateKey, wgAddress, wgPeerPublicKey, wgAllowedIPs, wgEndpoint, wgPresharedKey, wgMTU,
+		shadowTLSVersion, shadowTLSPassword)
 	if err != nil {
 		return 0, "", err
 	}
@@ -762,14 +839,24 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if params.Enabled {
 		enabled = 1
 	}
+	tuicZeroRTTInt := 0
+	if params.TuicZeroRTT {
+		tuicZeroRTTInt = 1
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
 		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, reality_private_key=?, reality_public_key=?, ss_method=?,
 		tls_cert_file=?, tls_key_file=?, tls_sni=?, tls_fingerprint=?, tls_alpn=?, xhttp_path=?, xhttp_mode=?,
-		hy2_up_mbps=?, hy2_down_mbps=?, hy2_obfs=?, hy2_obfs_password=? WHERE id=?`,
+		hy2_up_mbps=?, hy2_down_mbps=?, hy2_obfs=?, hy2_obfs_password=?,
+		tuic_congestion_control=?, tuic_zero_rtt=?,
+		wg_private_key=?, wg_address=?, wg_peer_public_key=?, wg_allowed_ips=?, wg_endpoint=?, wg_preshared_key=?, wg_mtu=?,
+		shadowtls_version=?, shadowtls_password=? WHERE id=?`,
 		remark, protocol, params.Port, network, security, enabled,
 		params.WsPath, params.WsHost, params.GrpcServiceName, params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey, params.SSMethod,
 		params.TLSCertFile, params.TLSKeyFile, params.TLSSNI, params.TLSFingerprint, params.TLSALPN, params.XHTTPPath, params.XHTTPMode,
-		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword, id)
+		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword,
+		params.TuicCongestionControl, tuicZeroRTTInt,
+		params.WgPrivateKey, params.WgAddress, params.WgPeerPublicKey, params.WgAllowedIPs, params.WgEndpoint, params.WgPresharedKey, params.WgMTU,
+		params.ShadowTLSVersion, params.ShadowTLSPassword, id)
 	if err != nil {
 		return Inbound{}, err
 	}
@@ -784,13 +871,19 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
 		tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password FROM inbounds WHERE id=?`, id)
+		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+		tuic_congestion_control, tuic_zero_rtt,
+		wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
+		shadowtls_version, shadowtls_password FROM inbounds WHERE id=?`, id)
 	var inbound Inbound
 	var dbEnabled int
 	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
 		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
 		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
-		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword); err != nil {
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword,
+		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
+		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
+		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -848,12 +941,18 @@ func (s *Store) SetInboundEnabled(ctx context.Context, id int64, enabled bool) (
 	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
 		tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password FROM inbounds WHERE id=?`, id)
+		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+		tuic_congestion_control, tuic_zero_rtt,
+		wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
+		shadowtls_version, shadowtls_password FROM inbounds WHERE id=?`, id)
 	var inbound Inbound
 	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
 		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
 		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
-		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword); err != nil {
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword,
+		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
+		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
+		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -917,7 +1016,10 @@ func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {
 SELECT id, uuid, remark, protocol, port, network, security, enabled,
   ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
   tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password
+  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+  tuic_congestion_control, tuic_zero_rtt,
+  wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
+  shadowtls_version, shadowtls_password
 FROM inbounds
 ORDER BY id ASC
 `)
@@ -934,7 +1036,10 @@ ORDER BY id ASC
 		if err := rows.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled,
 			&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
 			&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
-			&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword); err != nil {
+			&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword,
+			&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
+			&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
+			&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {
 			return nil, err
 		}
 		inbound.Enabled = enabled != 0

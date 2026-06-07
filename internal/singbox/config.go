@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
@@ -29,23 +30,40 @@ type LogConfig struct {
 
 // InboundConfig is a sing-box inbound configuration.
 type InboundConfig struct {
-	Type             string          `json:"type"`
-	Tag              string          `json:"tag"`
-	Listen           string          `json:"listen,omitempty"`
-	ListenPort       int             `json:"listen_port"`
-	Sniff            bool            `json:"sniff,omitempty"`
-	SniffOverrideDest bool           `json:"sniff_override_destination,omitempty"`
-	UpMbps           int             `json:"up_mbps,omitempty"`
-	DownMbps         int             `json:"down_mbps,omitempty"`
-	TLS              *TLSConfig      `json:"tls,omitempty"`
-	Users            []UserConfig    `json:"users,omitempty"`
-	Obfs             *ObfsConfig     `json:"obfs,omitempty"`
+	Type              string          `json:"type"`
+	Tag               string          `json:"tag"`
+	Listen            string          `json:"listen,omitempty"`
+	ListenPort        int             `json:"listen_port"`
+	Sniff             bool            `json:"sniff,omitempty"`
+	SniffOverrideDest bool            `json:"sniff_override_destination,omitempty"`
+	UpMbps            int             `json:"up_mbps,omitempty"`
+	DownMbps          int             `json:"down_mbps,omitempty"`
+	TLS               *TLSConfig      `json:"tls,omitempty"`
+	Users             []UserConfig    `json:"users,omitempty"`
+	Obfs              *ObfsConfig     `json:"obfs,omitempty"`
+	CongestionControl string          `json:"congestion_control,omitempty"`
+	ZeroRTTHandshake  bool            `json:"zero_rtt_handshake,omitempty"`
+	PrivateKey        string          `json:"private_key,omitempty"`
+	Address           []string        `json:"address,omitempty"`
+	Peers             []PeerConfig    `json:"peers,omitempty"`
+	MTU               int             `json:"mtu,omitempty"`
+	Version           int             `json:"version,omitempty"`
+	Password          string          `json:"password,omitempty"`
+	HandshakeServerName string        `json:"handshake_server_name,omitempty"`
 }
 
 // UserConfig represents a sing-box user.
 type UserConfig struct {
 	Name     string `json:"name,omitempty"`
 	Password string `json:"password"`
+}
+
+// PeerConfig represents a WireGuard peer.
+type PeerConfig struct {
+	PublicKey    string   `json:"public_key,omitempty"`
+	AllowedIPs   []string `json:"allowed_ips,omitempty"`
+	Endpoint     string   `json:"endpoint,omitempty"`
+	PreSharedKey string   `json:"pre_shared_key,omitempty"`
 }
 
 // ObfsConfig holds obfuscation settings.
@@ -68,7 +86,7 @@ type OutboundConfig struct {
 	Tag  string `json:"tag"`
 }
 
-// BuildConfig generates a sing-box configuration for Hysteria2 inbounds.
+// BuildConfig generates a sing-box configuration for supported inbounds.
 // Returns the config and a list of port assignments (inbound index -> port).
 func BuildConfig(inbounds []db.Inbound) Config {
 	cfg := Config{
@@ -84,52 +102,149 @@ func BuildConfig(inbounds []db.Inbound) Config {
 			continue
 		}
 		protocol := inbound.Protocol
-		if protocol != "hysteria2" {
-			continue
-		}
 
 		port := NextPort(i)
-		ib := InboundConfig{
-			Type:       "hysteria2",
-			Tag:        fmt.Sprintf("hy2-inbound-%d", inbound.ID),
-			Listen:     "0.0.0.0",
-			ListenPort: port,
-			UpMbps:     inbound.Hy2UpMbps,
-			DownMbps:   inbound.Hy2DownMbps,
-		}
 
-		// Build users from clients
-		for _, client := range enabledClients(inbound.Clients) {
-			ib.Users = append(ib.Users, UserConfig{
-				Name:     client.Email,
-				Password: client.UUID,
-			})
-		}
-
-		// Obfuscation
-		if inbound.Hy2Obfs != "" {
-			obfs := &ObfsConfig{Type: inbound.Hy2Obfs}
-			if inbound.Hy2ObfsPassword != "" {
-				obfs.Password = inbound.Hy2ObfsPassword
+		switch protocol {
+		case "hysteria2":
+			ib := InboundConfig{
+				Type:       "hysteria2",
+				Tag:        fmt.Sprintf("hy2-inbound-%d", inbound.ID),
+				Listen:     "0.0.0.0",
+				ListenPort: port,
+				UpMbps:     inbound.Hy2UpMbps,
+				DownMbps:   inbound.Hy2DownMbps,
 			}
-			ib.Obfs = obfs
-		}
 
-		// TLS (required for hysteria2)
-		ib.TLS = &TLSConfig{
-			Enabled:         true,
-			CertificatePath: CertFile,
-			KeyPath:         KeyFile,
-		}
-		if inbound.TLSCertFile != "" && inbound.TLSKeyFile != "" {
-			ib.TLS.CertificatePath = inbound.TLSCertFile
-			ib.TLS.KeyPath = inbound.TLSKeyFile
-		}
-		if inbound.TLSSNI != "" {
-			ib.TLS.ServerName = inbound.TLSSNI
-		}
+			// Build users from clients
+			for _, client := range enabledClients(inbound.Clients) {
+				ib.Users = append(ib.Users, UserConfig{
+					Name:     client.Email,
+					Password: client.UUID,
+				})
+			}
 
-		cfg.Inbounds = append(cfg.Inbounds, ib)
+			// Obfuscation
+			if inbound.Hy2Obfs != "" {
+				obfs := &ObfsConfig{Type: inbound.Hy2Obfs}
+				if inbound.Hy2ObfsPassword != "" {
+					obfs.Password = inbound.Hy2ObfsPassword
+				}
+				ib.Obfs = obfs
+			}
+
+			// TLS (required for hysteria2)
+			ib.TLS = &TLSConfig{
+				Enabled:         true,
+				CertificatePath: CertFile,
+				KeyPath:         KeyFile,
+			}
+			if inbound.TLSCertFile != "" && inbound.TLSKeyFile != "" {
+				ib.TLS.CertificatePath = inbound.TLSCertFile
+				ib.TLS.KeyPath = inbound.TLSKeyFile
+			}
+			if inbound.TLSSNI != "" {
+				ib.TLS.ServerName = inbound.TLSSNI
+			}
+
+			cfg.Inbounds = append(cfg.Inbounds, ib)
+
+		case "tuic":
+			ib := InboundConfig{
+				Type:               "tuic",
+				Tag:                fmt.Sprintf("tuic-inbound-%d", inbound.ID),
+				Listen:             "0.0.0.0",
+				ListenPort:         port,
+				CongestionControl:  "bbr",
+				ZeroRTTHandshake:   inbound.TuicZeroRTT,
+			}
+
+			if inbound.TuicCongestionControl != "" {
+				ib.CongestionControl = inbound.TuicCongestionControl
+			}
+
+			// Build users from clients
+			for _, client := range enabledClients(inbound.Clients) {
+				ib.Users = append(ib.Users, UserConfig{
+					Name:     client.Email,
+					Password: client.UUID,
+				})
+			}
+
+			// TLS (required for tuic)
+			ib.TLS = &TLSConfig{
+				Enabled:         true,
+				CertificatePath: CertFile,
+				KeyPath:         KeyFile,
+			}
+			if inbound.TLSCertFile != "" && inbound.TLSKeyFile != "" {
+				ib.TLS.CertificatePath = inbound.TLSCertFile
+				ib.TLS.KeyPath = inbound.TLSKeyFile
+			}
+			if inbound.TLSSNI != "" {
+				ib.TLS.ServerName = inbound.TLSSNI
+			}
+
+			cfg.Inbounds = append(cfg.Inbounds, ib)
+
+		case "wireguard":
+			ib := InboundConfig{
+				Type:       "wireguard",
+				Tag:        fmt.Sprintf("wg-inbound-%d", inbound.ID),
+				Listen:     "0.0.0.0",
+				ListenPort: port,
+				PrivateKey: inbound.WgPrivateKey,
+			}
+
+			// Address
+			if inbound.WgAddress != "" {
+				ib.Address = strings.Split(inbound.WgAddress, ",")
+			}
+
+			// MTU (omit when 0)
+			if inbound.WgMTU != 0 {
+				ib.MTU = inbound.WgMTU
+			}
+
+			// Peers
+			peer := PeerConfig{
+				PublicKey:  inbound.WgPeerPublicKey,
+				PreSharedKey: inbound.WgPresharedKey,
+			}
+			if inbound.WgEndpoint != "" {
+				peer.Endpoint = inbound.WgEndpoint
+			}
+			if inbound.WgAllowedIPs != "" {
+				peer.AllowedIPs = strings.Split(inbound.WgAllowedIPs, ",")
+			}
+			ib.Peers = []PeerConfig{peer}
+
+			cfg.Inbounds = append(cfg.Inbounds, ib)
+
+		case "shadowtls":
+			ib := InboundConfig{
+				Type:               "shadowtls",
+				Tag:                fmt.Sprintf("shadowtls-inbound-%d", inbound.ID),
+				Listen:             "0.0.0.0",
+				ListenPort:         port,
+				Version:            inbound.ShadowTLSVersion,
+				Password:           inbound.ShadowTLSPassword,
+				HandshakeServerName: inbound.TLSSNI,
+			}
+
+			// Build users from clients
+			for _, client := range enabledClients(inbound.Clients) {
+				ib.Users = append(ib.Users, UserConfig{
+					Name:     client.Email,
+					Password: client.UUID,
+				})
+			}
+
+			cfg.Inbounds = append(cfg.Inbounds, ib)
+
+		default:
+			continue
+		}
 	}
 
 	return cfg
