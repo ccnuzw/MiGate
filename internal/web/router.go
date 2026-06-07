@@ -53,6 +53,11 @@ type Store interface {
 	SetOutboundEnabled(ctx context.Context, id int64, enabled bool) (db.Outbound, error)
 	SetClientEnabled(ctx context.Context, inboundID int64, id int64, enabled bool) (db.Client, error)
 	ResetClientTraffic(ctx context.Context, id int64) (db.Client, error)
+	AddToBlacklist(ctx context.Context, tokenHash string, expiresAt time.Time, revoked bool) error
+	IsBlacklisted(ctx context.Context, tokenHash string) (bool, error)
+	RecordSessionTouch(ctx context.Context, tokenHash string) error
+	ListActiveSessions(ctx context.Context) ([]db.BlacklistedSession, error)
+	RevokeSession(ctx context.Context, id int64) error
 }
 
 type XrayController interface {
@@ -228,6 +233,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/login", loginHandler(&cfg))
 	mux.HandleFunc("/api/logout", logoutHandler(&cfg))
 	mux.HandleFunc("/api/session", sessionHandler(&cfg))
+	mux.HandleFunc("/api/sessions", sessionsListHandler(&cfg))
+	mux.HandleFunc("/api/sessions/", sessionRevokeHandler(&cfg))
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store, cfg.xrayController))
@@ -298,28 +305,6 @@ func panelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(panelHTML))
-}
-
-func sessionHandler(cfg *routerConfig) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		resp := map[string]interface{}{
-			"auth_enabled":  cfg.authEnabled,
-			"authenticated": false,
-			"username":      "",
-		}
-		if !cfg.authEnabled {
-			resp["username"] = "未启用认证"
-		} else if cookie, err := r.Cookie("migate_session"); err == nil && validateSessionToken(cookie.Value, cfg.sessionSecret) {
-			resp["authenticated"] = true
-			resp["username"] = cfg.authUsername
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

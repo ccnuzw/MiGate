@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
 )
@@ -955,5 +956,147 @@ func TestStoreReorderRoutingRulesUpdatesSortOrder(t *testing.T) {
 	}
 	if list[0].ID != r2.ID || list[1].ID != r1.ID {
 		t.Fatalf("expected rules in order [%d, %d], got [%d, %d]", r2.ID, r1.ID, list[0].ID, list[1].ID)
+	}
+}
+
+func TestStoreBlacklistAddAndCheck(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	expires := time.Now().Add(24 * time.Hour)
+
+	// Add as active session (revoked=false)
+	if err := store.AddToBlacklist(ctx, hash, expires, false); err != nil {
+		t.Fatalf("AddToBlacklist: %v", err)
+	}
+
+	// Should not be blacklisted
+	revoked, err := store.IsBlacklisted(ctx, hash)
+	if err != nil {
+		t.Fatalf("IsBlacklisted: %v", err)
+	}
+	if revoked {
+		t.Fatal("expected session to NOT be blacklisted yet")
+	}
+
+	// Revoke it
+	if err := store.AddToBlacklist(ctx, hash, expires, true); err != nil {
+		t.Fatalf("AddToBlacklist (revoke): %v", err)
+	}
+
+	// Should now be blacklisted
+	revoked, err = store.IsBlacklisted(ctx, hash)
+	if err != nil {
+		t.Fatalf("IsBlacklisted: %v", err)
+	}
+	if !revoked {
+		t.Fatal("expected session to be blacklisted after revoke")
+	}
+}
+
+func TestStoreBlacklistExpiredEntry(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	hash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+	// Add with already-expired timestamp
+	expires := time.Now().Add(-1 * time.Hour)
+	if err := store.AddToBlacklist(ctx, hash, expires, true); err != nil {
+		t.Fatalf("AddToBlacklist: %v", err)
+	}
+
+	// Should be auto-cleaned and not blacklisted
+	revoked, err := store.IsBlacklisted(ctx, hash)
+	if err != nil {
+		t.Fatalf("IsBlacklisted: %v", err)
+	}
+	if revoked {
+		t.Fatal("expected expired entry to be auto-cleaned")
+	}
+}
+
+func TestStoreListActiveSessions(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	expires := time.Now().Add(24 * time.Hour)
+
+	hash1 := "1111111111111111111111111111111111111111111111111111111111111111"
+	hash2 := "2222222222222222222222222222222222222222222222222222222222222222"
+	hash3 := "3333333333333333333333333333333333333333333333333333333333333333"
+
+	// Add two active sessions
+	if err := store.AddToBlacklist(ctx, hash1, expires, false); err != nil {
+		t.Fatalf("AddToBlacklist hash1: %v", err)
+	}
+	if err := store.AddToBlacklist(ctx, hash2, expires, false); err != nil {
+		t.Fatalf("AddToBlacklist hash2: %v", err)
+	}
+	// Add one revoked session
+	if err := store.AddToBlacklist(ctx, hash3, expires, true); err != nil {
+		t.Fatalf("AddToBlacklist hash3: %v", err)
+	}
+
+	sessions, err := store.ListActiveSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 active sessions, got %d", len(sessions))
+	}
+}
+
+func TestStoreRevokeSessionByID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	expires := time.Now().Add(24 * time.Hour)
+
+	if err := store.AddToBlacklist(ctx, hash, expires, false); err != nil {
+		t.Fatalf("AddToBlacklist: %v", err)
+	}
+
+	// List to get the ID
+	sessions, err := store.ListActiveSessions(ctx)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("expected 1 active session, got %d: %v", len(sessions), err)
+	}
+
+	// Revoke by ID
+	if err := store.RevokeSession(ctx, sessions[0].ID); err != nil {
+		t.Fatalf("RevokeSession: %v", err)
+	}
+
+	// Should be blacklisted now
+	revoked, err := store.IsBlacklisted(ctx, hash)
+	if err != nil {
+		t.Fatalf("IsBlacklisted: %v", err)
+	}
+	if !revoked {
+		t.Fatal("expected session to be revoked")
+	}
+
+	// Revoking again should fail (already revoked)
+	if err := store.RevokeSession(ctx, sessions[0].ID); err == nil {
+		t.Fatal("expected error when revoking already-revoked session")
 	}
 }

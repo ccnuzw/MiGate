@@ -264,6 +264,17 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+type BlacklistedSession struct {
+	ID        int64  `json:"id"`
+	TokenHash string `json:"token_hash"`
+	CreatedAt string `json:"created_at"`
+	LastUsed  string `json:"last_used"`
+	ExpiresAt string `json:"expires_at"`
+	Revoked   bool   `json:"revoked"`
+}
+
+var sessionMaxAge = 7 * 24 * time.Hour // 168 hours
+
 func (s *Store) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS inbounds (
@@ -307,6 +318,14 @@ CREATE TABLE IF NOT EXISTS routing_rules (
   protocol TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   sort INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS token_blacklist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  last_used TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0
 );
 `)
 	if err != nil {
@@ -1127,4 +1146,85 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hex.EncodeToString(b[0:4]), hex.EncodeToString(b[4:6]), hex.EncodeToString(b[6:8]), hex.EncodeToString(b[8:10]), hex.EncodeToString(b[10:16]))
+}
+
+// AddToBlacklist inserts a token hash into the token_blacklist table or
+// updates it if it already exists (e.g. marks as revoked on logout).
+// Used both for initial session tracking (revoked=0) and for revocations (revoked=1).
+func (s *Store) AddToBlacklist(ctx context.Context, tokenHash string, expiresAt time.Time, revoked bool) error {
+	revokedInt := 0
+	if revoked {
+		revokedInt = 1
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO token_blacklist (token_hash, created_at, last_used, expires_at, revoked) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(token_hash) DO UPDATE SET revoked=excluded.revoked, last_used=excluded.last_used`,
+		tokenHash, now, now, expiresAt.UTC().Format(time.RFC3339), revokedInt)
+	return err
+}
+
+// IsBlacklisted checks if a token hash exists in the blacklist and is marked as revoked.
+// Also auto-cleans expired entries during the scan.
+func (s *Store) IsBlacklisted(ctx context.Context, tokenHash string) (bool, error) {
+	// Clean expired blacklist entries first
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
+
+	var revoked int
+	err := s.db.QueryRowContext(ctx, `SELECT revoked FROM token_blacklist WHERE token_hash=? AND expires_at > ?`,
+		tokenHash, time.Now().UTC().Format(time.RFC3339)).Scan(&revoked)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return revoked != 0, nil
+}
+
+// RecordSessionTouch updates the last_used timestamp for a session token.
+func (s *Store) RecordSessionTouch(ctx context.Context, tokenHash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET last_used=? WHERE token_hash=?`,
+		time.Now().UTC().Format(time.RFC3339), tokenHash)
+	return err
+}
+
+// ListActiveSessions returns non-revoked, non-expired sessions.
+func (s *Store) ListActiveSessions(ctx context.Context) ([]BlacklistedSession, error) {
+	// Clean expired entries first
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
+
+	rows, err := s.db.QueryContext(ctx, `SELECT id, token_hash, created_at, last_used, expires_at, revoked FROM token_blacklist WHERE revoked=0 AND expires_at > ? ORDER BY id DESC`,
+		time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []BlacklistedSession
+	for rows.Next() {
+		var s BlacklistedSession
+		var revoked int
+		if err := rows.Scan(&s.ID, &s.TokenHash, &s.CreatedAt, &s.LastUsed, &s.ExpiresAt, &revoked); err != nil {
+			return nil, err
+		}
+		s.Revoked = revoked != 0
+		sessions = append(sessions, s)
+	}
+	return sessions, rows.Err()
+}
+
+// RevokeSession marks a session as revoked by its database ID.
+func (s *Store) RevokeSession(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET revoked=1 WHERE id=? AND revoked=0`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("active session not found: %d", id)
+	}
+	return nil
 }
