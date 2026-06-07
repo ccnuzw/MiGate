@@ -3476,7 +3476,8 @@ const panelHTML = `<!doctype html>
     }
 
     function deleteOutbound(id) {
-      showConfirm('确认删除此出站？', async function() {
+      showConfirm('确认删除此出站？').then(async function(confirmed) {
+        if (!confirmed) return;
         try {
           const resp = await fetch(apiPath('/api/outbounds/' + id), {method:'DELETE'});
           if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || '删除失败'); }
@@ -3625,7 +3626,8 @@ function openCreateRoutingRule() {
     }
 
     function deleteRoutingRule(id) {
-      showConfirm('确认删除此路由规则？', async function() {
+      showConfirm('确认删除此路由规则？').then(async function(confirmed) {
+        if (!confirmed) return;
         try {
           await fetch(apiPath('/api/routing-rules/' + id), {method:'DELETE'});
           showToast('路由规则已删除', 'success');
