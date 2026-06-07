@@ -61,6 +61,7 @@ type HandshakeConfig struct {
 type UserConfig struct {
 	Name     string `json:"name,omitempty"`
 	Password string `json:"password"`
+	UUID     string `json:"uuid,omitempty"`
 }
 
 // PeerConfig represents a WireGuard peer.
@@ -214,11 +215,12 @@ func BuildConfig(inbounds []db.Inbound) Config {
 				}
 			}
 
-			// Build users from clients
+			// Build users from clients (ShadowTLS v1.13 requires uuid field)
 			for _, client := range enabledClients(inbound.Clients) {
 				ib.Users = append(ib.Users, UserConfig{
 					Name:     client.Email,
 					Password: client.UUID,
+					UUID:     client.UUID,
 				})
 			}
 

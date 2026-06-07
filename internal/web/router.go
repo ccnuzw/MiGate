@@ -2335,17 +2335,17 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="field-group">
           <label class="field-label" for="inbound-protocol">协议类型</label>
-          <select id="inbound-protocol" name="protocol">
+          <select id="inbound-protocol" name="protocol" onchange="onProtocolChange()">
             <option value="vless">VLESS</option>
             <option value="vmess">VMess</option>
             <option value="trojan">Trojan</option>
             <option value="shadowsocks">Shadowsocks</option>
             <option value="hysteria2">Hysteria2</option>
             <option value="tuic">TUIC</option>
-            <option value="wireguard">WireGuard</option>
+            <option value="wireguard">WireGuard ⚠️ (需升级 sing-box v1.14+)</option>
             <option value="shadowtls">ShadowTLS</option>
           </select>
-          <p class="field-help">选择核心入站协议。</p>
+          <p id="protocol-description" class="field-help" style="color:var(--accent);font-weight:500">选择核心入站协议，自动配置传输方式与安全层。</p>
         </div>
         <div class="field-group">
           <label class="field-label" for="inbound-port">监听端口</label>
@@ -4728,6 +4728,44 @@ function openCreateRoutingRule() {
       const initCredential = document.getElementById('init-client-uuid');
       if (inboundCredential) inboundCredential.value = '';
       if (initCredential) initCredential.value = '';
+      onProtocolChange();
+    }
+    function onProtocolChange() {
+      const proto = document.getElementById('inbound-protocol').value;
+      const isSingbox = ['hysteria2','tuic','wireguard','shadowtls'].includes(proto);
+      const desc = document.getElementById('protocol-description');
+
+      // Protocol descriptions
+      const labels = {
+        vless: 'VLESS + Reality：高性能，推荐优先使用。',
+        vmess: 'VMess + WebSocket + TLS：适合 CDN 反代场景。',
+        trojan: 'Trojan + TLS：兼容性广泛的协议。',
+        shadowsocks: 'Shadowsocks：轻量加密代理。',
+        hysteria2: 'Hysteria2：基于 QUIC 的 UDP 加速协议，抗丢包。',
+        tuic: 'TUIC：基于 QUIC 的低延迟 UDP 代理，适合弱网环境。',
+        wireguard: 'WireGuard ⚠️ 当前需要升级 sing-box 至 v1.14+ 才能生效。',
+        shadowtls: 'ShadowTLS：将流量伪装成标准 TLS 连接，可绕过深度包检测。',
+      };
+      desc.textContent = labels[proto] || '';
+
+      // For sing-box protocols: hide Xray-specific fields
+      const netGroup = document.getElementById('inbound-network').closest('.field-group');
+      const secGroup = document.getElementById('inbound-security').closest('.field-group');
+      const uuidGroup = document.getElementById('inbound-uuid').closest('.field-group');
+
+      if (isSingbox) {
+        netGroup.style.display = 'none';
+        secGroup.style.display = 'none';
+        if (proto === 'wireguard') {
+          uuidGroup.style.display = 'none';
+        } else {
+          uuidGroup.style.display = '';
+        }
+      } else {
+        netGroup.style.display = '';
+        secGroup.style.display = '';
+        uuidGroup.style.display = '';
+      }
     }
     function updateDynamicFields() {
       const proto = document.getElementById('inbound-protocol').value;
@@ -4754,6 +4792,7 @@ function openCreateRoutingRule() {
       document.getElementById('init-client-fields').classList.remove('hidden');
       document.querySelector('#create-inbound-dialog .chevron').textContent = '\u25BC';
       updateDynamicFields();
+      onProtocolChange();
       fillRandomDefaults(formEl);
       document.getElementById('create-inbound-overlay').classList.remove('hidden');
       document.getElementById('inbound-remark').focus();

@@ -263,6 +263,9 @@ func TestBuildConfig_ShadowTLSInbound(t *testing.T) {
 	if ib.Users[0].Password != "user-pass-1" {
 		t.Errorf("expected user password, got %s", ib.Users[0].Password)
 	}
+	if ib.Users[0].UUID != "user-pass-1" {
+		t.Errorf("expected user uuid, got %s", ib.Users[0].UUID)
+	}
 }
 
 func TestBuildConfig_MixedSingBoxProtocols(t *testing.T) {
