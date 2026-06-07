@@ -1178,9 +1178,7 @@ func TestDeleteInboundAPIRemovesInboundAndReturns200(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(web.NewRealController(store, t.TempDir(), func(name string, args ...string) (string, error) {
-		return "ok", nil
-	})))
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), nil)
 	router.ServeHTTP(response, req)

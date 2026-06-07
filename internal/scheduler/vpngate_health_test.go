@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -52,6 +53,29 @@ func (m *mockApplyer) Apply(ctx context.Context) error {
 	return nil
 }
 
+func TestVPNGateHealthSchedulerRejectsPlainTCPWithoutSocks5Handshake(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+	store := &mockVPNGateStore{
+		outbounds: []db.Outbound{{ID: 7, Tag: "vpngate-plain-tcp", Protocol: "socks", Address: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, Enabled: true}},
+	}
+	s := NewVPNGateHealthScheduler(store, &mockApplyer{}, 1*time.Hour, 1)
+	s.check()
+	res, disabled := s.LastResult()
+	if len(res) != 1 || res[0].OK || disabled != 1 {
+		t.Fatalf("plain TCP listener must fail SOCKS5 health check and be disabled, res=%+v disabled=%d", res, disabled)
+	}
+}
+
 func TestVPNGateHealthSchedulerSkipsNonVPNGateOutbounds(t *testing.T) {
 	store := &mockVPNGateStore{
 		outbounds: []db.Outbound{
@@ -87,7 +111,12 @@ func TestVPNGateHealthSchedulerDisablesAfterThreshold(t *testing.T) {
 			if err != nil {
 				return
 			}
-			conn.Close()
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				_, _ = io.ReadFull(c, buf)
+				_, _ = c.Write([]byte{0x05, 0x00})
+			}(conn)
 		}
 	}()
 
@@ -144,7 +173,12 @@ func TestVPNGateHealthSchedulerResetsFailuresOnSuccess(t *testing.T) {
 			if err != nil {
 				return
 			}
-			conn.Close()
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				_, _ = io.ReadFull(c, buf)
+				_, _ = c.Write([]byte{0x05, 0x00})
+			}(conn)
 		}
 	}()
 

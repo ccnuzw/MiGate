@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"net"
 	"strconv"
@@ -113,6 +115,35 @@ func (s *VPNGateHealthScheduler) LastResult() ([]VPNGateHealthCheckResult, int) 
 	return result, s.disabled
 }
 
+func probeVPNGateSOCKS5(address string, port int, timeout time.Duration) (bool, int64, string) {
+	if port == 0 {
+		port = 1080
+	}
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(address, strconv.Itoa(port)), timeout)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return false, latency, err.Error()
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return false, time.Since(start).Milliseconds(), err.Error()
+	}
+	buf := []byte{0x00, 0x00}
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return false, time.Since(start).Milliseconds(), err.Error()
+	}
+	latency = time.Since(start).Milliseconds()
+	if buf[0] != 0x05 {
+		return false, latency, fmt.Sprintf("not socks5 response: 0x%02x", buf[0])
+	}
+	if buf[1] == 0xff {
+		return false, latency, "socks5 no acceptable auth method"
+	}
+	return true, latency, ""
+}
+
 // check performs one health check cycle.
 func (s *VPNGateHealthScheduler) check() {
 	outbounds, err := s.store.ListOutbounds(context.Background())
@@ -141,12 +172,11 @@ func (s *VPNGateHealthScheduler) check() {
 		if port == 0 {
 			port = 1080
 		}
-		start := time.Now()
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(ob.Address, strconv.Itoa(port)), 1200*time.Millisecond)
-		res.LatencyMS = time.Since(start).Milliseconds()
+		ok, latency, probeError := probeVPNGateSOCKS5(ob.Address, port, 1200*time.Millisecond)
+		res.LatencyMS = latency
 
-		if err != nil {
-			res.Error = err.Error()
+		if !ok {
+			res.Error = probeError
 			s.mu.Lock()
 			s.failures[ob.ID]++
 			failCount := s.failures[ob.ID]
@@ -167,7 +197,6 @@ func (s *VPNGateHealthScheduler) check() {
 				}
 			}
 		} else {
-			_ = conn.Close()
 			res.OK = true
 			s.mu.Lock()
 			delete(s.failures, ob.ID)
