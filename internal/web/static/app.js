@@ -333,6 +333,16 @@
       if (!el) return;
       el.textContent = '测速中...';
       fetch(apiPath('/api/outbounds/' + id + '/ping')).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.kind === 'vpngate_runtime') {
+          if (data.latency >= 0 && data.non_native_egress_ok) {
+            el.textContent = ' VPN ' + data.latency + 'ms' + (data.exit_ip ? ' · ' + data.exit_ip : '');
+            el.style.color = 'var(--green)';
+          } else {
+            el.textContent = data.status === 'missing_dependencies' ? ' 未就绪' : ' VPN失败';
+            el.style.color = 'var(--danger)';
+          }
+          return;
+        }
         if (data.latency >= 0) {
           el.textContent = ' ' + data.latency + 'ms';
           el.style.color = data.latency < 200 ? 'var(--green)' : data.latency < 500 ? 'var(--accent2)' : 'var(--danger)';
@@ -362,7 +372,18 @@
           var r = results[id];
           var el = document.getElementById('ping-' + id);
           if (!el) return;
-          if (r.latency >= 0) {
+          if (r.kind === 'vpngate_runtime') {
+            if (r.latency >= 0 && r.non_native_egress_ok) {
+              var vpnMs = Number(r.latency).toFixed(0);
+              el.textContent = ' VPN ' + vpnMs + 'ms' + (r.exit_ip ? ' · ' + r.exit_ip : '');
+              el.style.color = 'var(--green)';
+              okCount++;
+            } else {
+              el.textContent = r.status === 'missing_dependencies' ? ' 未就绪' : ' VPN失败';
+              el.style.color = 'var(--danger)';
+              failCount++;
+            }
+          } else if (r.latency >= 0) {
             var ms = Number(r.latency).toFixed(0);
             el.textContent = ' ' + ms + 'ms';
             el.style.color = ms < 200 ? 'var(--green)' : (ms < 500 ? 'orange' : 'var(--danger)');

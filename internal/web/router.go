@@ -725,7 +725,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/outbounds", outboundsHandler(cfg.store, cfg.xrayController))
-	mux.HandleFunc("/api/outbounds/", outboundChildrenHandler(cfg.store, cfg.xrayController))
+	mux.HandleFunc("/api/outbounds/", outboundChildrenHandler(&cfg))
 	mux.HandleFunc("/api/routing-rules", routingRulesHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/routing-rules/", routingRuleChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/stats", statsHandler(cfg.store, cfg.statsClient))
@@ -863,7 +863,89 @@ func pingOutbound(address string, port int) map[string]interface{} {
 	return map[string]interface{}{"latency": latency}
 }
 
-func outboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
+func verifyVPNGateRuntimeForSpeedTest(ctx context.Context, cfg *routerConfig, outbound db.Outbound) map[string]interface{} {
+	base := map[string]interface{}{
+		"kind":         "vpngate_runtime",
+		"runtime":      "softether_netns_socks_bridge",
+		"outbound_id":  outbound.ID,
+		"outbound_tag": outbound.Tag,
+		"latency":      -1,
+	}
+	probe := cfg.vpnGateRuntimeProbe
+	if probe == nil {
+		probe = execVPNGateRuntimeProbe{}
+	}
+	doctor := buildVPNGateRuntimeDoctor(outbound, probe)
+	if doctor.Status != "ready" {
+		base["status"] = doctor.Status
+		base["error"] = "runtime_preflight_failed"
+		base["checks"] = doctor.Checks
+		return base
+	}
+	if cfg.vpnGateRuntimeStarter == nil {
+		base["status"] = "not_implemented"
+		base["error"] = "runtime_start_not_implemented"
+		return base
+	}
+	target := VPNGateRuntimeStartTarget{
+		Runtime:         doctor.Runtime,
+		OutboundID:      outbound.ID,
+		OutboundTag:     outbound.Tag,
+		BridgeAddress:   outbound.Address,
+		BridgePort:      outbound.Port,
+		ServerHostName:  outbound.VPNGateServerHostName,
+		ServerIP:        outbound.VPNGateServerIP,
+		DependencyPaths: vpngateRuntimeDependencyPaths(doctor.Checks),
+	}
+	result, err := cfg.vpnGateRuntimeStarter.Start(ctx, target)
+	base["commands_executed"] = result.CommandsExecuted
+	if strings.TrimSpace(result.BridgeAddress) != "" {
+		target.BridgeAddress = result.BridgeAddress
+	}
+	if err != nil {
+		base["status"] = "failed"
+		base["error"] = "runtime_start_failed"
+		base["detail"] = err.Error()
+		return base
+	}
+	base["status"] = result.Status
+	base["bridge_address"] = target.BridgeAddress
+	base["bridge_port"] = target.BridgePort
+	if cfg.vpnGateRuntimeHealthChecker != nil {
+		health, healthErr := cfg.vpnGateRuntimeHealthChecker.Check(ctx, target)
+		base["vpn_connected"] = health.VPNConnected
+		base["socks_bridge_running"] = health.SocksBridgeRunning
+		base["non_native_egress_ok"] = health.NonNativeEgressOK
+		base["exit_ip"] = health.ExitIP
+		base["native_ip"] = health.NativeIP
+		base["latency"] = health.LatencyMS
+		base["latency_ms"] = health.LatencyMS
+		base["kill_switch_ok"] = health.KillSwitchOK
+		base["last_error"] = health.LastError
+		if healthErr != nil {
+			_, _ = cfg.store.SetOutboundEnabled(ctx, outbound.ID, false)
+			base["status"] = "failed"
+			base["error"] = "runtime_health_failed"
+			base["detail"] = healthErr.Error()
+			return base
+		}
+		if !health.VPNConnected || !health.SocksBridgeRunning || !health.NonNativeEgressOK || !health.KillSwitchOK {
+			_, _ = cfg.store.SetOutboundEnabled(ctx, outbound.ID, false)
+			base["status"] = "failed_closed"
+			base["error"] = "runtime_health_failed_closed"
+			return base
+		}
+		if cfg.xrayController != nil {
+			apply := cfg.xrayController.Apply(ctx)
+			base["xray_applied"] = apply.Status == "applied"
+		}
+	}
+	return base
+}
+
+func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
+	store := cfg.store
+	ctrl := cfg.xrayController
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/outbounds/")
 		// Handle /api/outbounds/reorder
@@ -910,15 +992,58 @@ func outboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc 
 				wg.Add(1)
 				go func(o db.Outbound) {
 					defer wg.Done()
-					r := pingOutbound(o.Address, o.Port)
+					var result map[string]interface{}
+					if o.Protocol == "vpngate_softether" {
+						result = verifyVPNGateRuntimeForSpeedTest(r.Context(), cfg, o)
+					} else {
+						result = pingOutbound(o.Address, o.Port)
+					}
 					mu.Lock()
-					results[o.ID] = r
+					results[o.ID] = result
 					mu.Unlock()
 				}(ob)
 			}
 			wg.Wait()
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(results)
+			return
+		}
+		if strings.HasSuffix(path, "/ping") {
+			if r.Method != http.MethodGet {
+				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+				return
+			}
+			idStr := strings.TrimSuffix(path, "/ping")
+			obID, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
+			if err != nil {
+				http.Error(w, `{"error":"invalid_id"}`, http.StatusBadRequest)
+				return
+			}
+			outbounds, err := store.ListOutbounds(r.Context())
+			if err != nil {
+				http.Error(w, `{"error":"list_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			var target *db.Outbound
+			for i := range outbounds {
+				if outbounds[i].ID == obID {
+					target = &outbounds[i]
+					break
+				}
+			}
+			if target == nil || !target.Enabled || target.Protocol == "freedom" || target.Protocol == "blackhole" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"latency": -1, "error": "not_pingable"})
+				return
+			}
+			var result map[string]interface{}
+			if target.Protocol == "vpngate_softether" {
+				result = verifyVPNGateRuntimeForSpeedTest(r.Context(), cfg, *target)
+			} else {
+				result = pingOutbound(target.Address, target.Port)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(result)
 			return
 		}
 		idStr := strings.TrimSuffix(path, "/")
@@ -1063,36 +1188,6 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "deleted", "xray": applyResult})
 		case http.MethodGet:
-			if strings.HasSuffix(r.URL.Path, "/ping") {
-				idStr := strings.TrimSuffix(path, "/ping")
-				obID, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
-				if err != nil {
-					http.Error(w, `{"error":"invalid_id"}`, http.StatusBadRequest)
-					return
-				}
-				// Re-fetch the outbound to get address:port
-				outbounds, err := store.ListOutbounds(r.Context())
-				if err != nil {
-					http.Error(w, `{"error":"list_failed"}`, http.StatusInternalServerError)
-					return
-				}
-				var target *db.Outbound
-				for i := range outbounds {
-					if outbounds[i].ID == obID {
-						target = &outbounds[i]
-						break
-					}
-				}
-				if target == nil || !target.Enabled || target.Protocol == "freedom" || target.Protocol == "blackhole" {
-					w.Header().Set("Content-Type", "application/json")
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{"latency": -1, "error": "not_pingable"})
-					return
-				}
-				result := pingOutbound(target.Address, target.Port)
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(result)
-				return
-			}
 			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
