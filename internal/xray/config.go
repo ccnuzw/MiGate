@@ -110,6 +110,22 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 		})
 	}
 	if len(routingRules) > 0 {
+		inboundTagAliases := map[string]string{}
+		for _, inbound := range inbounds {
+			if !inbound.Enabled {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(inbound.Protocol)) {
+			case "hysteria2", "tuic", "shadowtls", "wireguard":
+				continue
+			}
+			protocol := strings.ToLower(strings.TrimSpace(inbound.Protocol))
+			actualTag := fmt.Sprintf("inbound-%d-%s", inbound.ID, protocol)
+			if strings.TrimSpace(inbound.Remark) != "" {
+				inboundTagAliases[strings.TrimSpace(inbound.Remark)] = actualTag
+			}
+			inboundTagAliases[actualTag] = actualTag
+		}
 		r := &RoutingConfig{DomainStrategy: "AsIs", Rules: []RoutingRule{}}
 		needsVPNGatePool := false
 		for _, rule := range routingRules {
@@ -124,7 +140,11 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 				xr.OutboundTag = rule.OutboundTag
 			}
 			if rule.InboundTag != "" {
-				xr.InboundTag = []string{rule.InboundTag}
+				if actual, ok := inboundTagAliases[rule.InboundTag]; ok {
+					xr.InboundTag = []string{actual}
+				} else {
+					xr.InboundTag = []string{rule.InboundTag}
+				}
 			}
 			if rule.Domain != "" {
 				xr.Domain = []string{rule.Domain}

@@ -83,7 +83,10 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	executed := []string{}
 
-	// 1. Build config from store
+	// 1. Build config from store, including managed outbounds and routing rules.
+	// The WebUI preview uses BuildConfigWithOutbounds; Apply must use the same
+	// builder or Xray will restart with only inbounds and traffic will keep using
+	// the implicit direct outbound.
 	inbounds, err := c.store.ListInbounds(ctx)
 	if err != nil {
 		return XrayApplyResult{
@@ -92,8 +95,24 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 			CommandsExecuted: executed,
 		}
 	}
+	outbounds, err := c.store.ListOutbounds(ctx)
+	if err != nil {
+		return XrayApplyResult{
+			Status:           fmt.Sprintf("failed: read outbounds: %v", err),
+			Service:          "xray",
+			CommandsExecuted: executed,
+		}
+	}
+	rules, err := c.store.ListRoutingRules(ctx)
+	if err != nil {
+		return XrayApplyResult{
+			Status:           fmt.Sprintf("failed: read routing rules: %v", err),
+			Service:          "xray",
+			CommandsExecuted: executed,
+		}
+	}
 
-	cfg, err := xray.BuildConfig(inbounds)
+	cfg, err := xray.BuildConfigWithOutbounds(inbounds, outbounds, rules)
 	if err != nil {
 		return XrayApplyResult{
 			Status:           fmt.Sprintf("failed: build config: %v", err),

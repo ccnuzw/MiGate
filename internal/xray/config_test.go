@@ -100,6 +100,22 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 	}
 }
 
+func TestBuildConfigWithRoutingRulesMapsInboundRemarkToActualXrayTag(t *testing.T) {
+	config, err := xray.BuildConfigWithOutbounds([]db.Inbound{{ID: 71, Remark: "Reality", Protocol: "vless", Port: 40001, Network: "tcp", Security: "none", Enabled: true}}, []db.Outbound{
+		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
+		{Tag: "vpngate-public-vpn-255", Protocol: "vpngate_softether", Address: "10.255.239.2", Port: 21080, Enabled: true, Sort: 1},
+	}, []db.RoutingRule{{InboundTag: "Reality", OutboundTag: "vpngate-public-vpn-255", Enabled: true}})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	if config.Routing == nil || len(config.Routing.Rules) != 1 {
+		t.Fatalf("expected one routing rule, got %+v", config.Routing)
+	}
+	if got := config.Routing.Rules[0].InboundTag; len(got) != 1 || got[0] != "inbound-71-vless" {
+		t.Fatalf("expected UI inbound remark to map to actual Xray inbound tag, got %+v", got)
+	}
+}
+
 func TestBuildConfigWithRoutingRules(t *testing.T) {
 	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
 		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},

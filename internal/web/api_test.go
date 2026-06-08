@@ -2233,10 +2233,22 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	}
 	defer store.Close()
 	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
-		Remark: "test", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none",
+		Remark: "Reality", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none",
 	})
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "vpngate-public-vpn-255", Remark: "VPN Gate", Protocol: "vpngate_softether", Address: "10.255.239.2", Port: 21080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag: "Reality", OutboundTag: "vpngate-public-vpn-255", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
 	}
 
 	configDir := t.TempDir()
@@ -2259,6 +2271,13 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	}
 	if !strings.Contains(string(configBytes), `"protocol": "vless"`) {
 		t.Fatalf("config missing inbound: %s", string(configBytes))
+	}
+	for _, want := range []string{`"tag": "vpngate-public-vpn-255"`, `"protocol": "socks"`, `"address": "10.255.239.2"`, `"outboundTag": "vpngate-public-vpn-255"`, `"inboundTag": [
+          "inbound-1-vless"
+        ]`} {
+		if !strings.Contains(string(configBytes), want) {
+			t.Fatalf("config missing %q: %s", want, string(configBytes))
+		}
 	}
 	if len(calls) < 2 {
 		t.Fatalf("expected at least 2 runner calls, got %d: %v", len(calls), calls)
