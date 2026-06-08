@@ -202,7 +202,7 @@ func TestVPNGateSoftEtherRuntimeStartDelegatesToInjectedStarterAfterReadyPreflig
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
 	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{
-		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks",
+		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient",
 	}}
 	starter := &fakeVPNGateRuntimeStarter{result: web.VPNGateRuntimeStartResult{
 		Status:              "started",
@@ -255,7 +255,7 @@ func TestVPNGateSoftEtherRuntimeStartReportsStarterFailure(t *testing.T) {
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
 	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{
-		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks",
+		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient",
 	}}
 	starter := &fakeVPNGateRuntimeStarter{err: errors.New("vpnclient connect failed")}
 	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe), web.WithVPNGateRuntimeStarter(starter))
@@ -341,8 +341,8 @@ func TestVPNGateSoftEtherRuntimeDoctorAPIReportsDependenciesReadOnly(t *testing.
 		t.Fatalf("unexpected outbound/bridge identifiers: %+v", got)
 	}
 	checks, ok := got["checks"].([]interface{})
-	if !ok || len(checks) != 5 {
-		t.Fatalf("expected five dependency checks, got %+v", got["checks"])
+	if !ok || len(checks) != 6 {
+		t.Fatalf("expected six dependency checks, got %+v", got["checks"])
 	}
 	byName := map[string]map[string]interface{}{}
 	for _, raw := range checks {
@@ -352,7 +352,7 @@ func TestVPNGateSoftEtherRuntimeDoctorAPIReportsDependenciesReadOnly(t *testing.
 		}
 		byName[fmt.Sprint(check["name"])] = check
 	}
-	for _, name := range []string{"softether_vpncmd", "softether_vpnclient", "iproute2", "iptables", "socks_bridge"} {
+	for _, name := range []string{"softether_vpncmd", "softether_vpnclient", "iproute2", "iptables", "socks_bridge", "dhcp_client"} {
 		if byName[name] == nil {
 			t.Fatalf("missing dependency check %s in %+v", name, checks)
 		}
@@ -366,7 +366,7 @@ func TestVPNGateSoftEtherRuntimeDoctorAPIReportsDependenciesReadOnly(t *testing.
 	if _, exists := got["commands_executed"]; exists {
 		t.Fatalf("doctor endpoint must not report or execute commands: %+v", got)
 	}
-	if strings.Join(probe.calls, ",") != "vpncmd,vpnclient,ip,iptables,microsocks" {
+	if strings.Join(probe.calls, ",") != "vpncmd,vpnclient,ip,iptables,microsocks,dhclient" {
 		t.Fatalf("unexpected probe calls: %+v", probe.calls)
 	}
 	after, err := store.ListOutbounds(context.Background())
@@ -407,7 +407,7 @@ func TestVPNGateSoftEtherRuntimeStartRequiresDoubleConfirmation(t *testing.T) {
 		t.Fatalf("list before: %v", err)
 	}
 	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{
-		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks",
+		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient",
 	}}
 	starter := &fakeVPNGateRuntimeStarter{}
 	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe), web.WithVPNGateRuntimeStarter(starter))
@@ -474,10 +474,10 @@ func TestVPNGateSoftEtherRuntimeStartStopsWhenDoctorFails(t *testing.T) {
 		t.Fatalf("failed preflight must not execute commands, got %+v", got["commands_executed"])
 	}
 	checks, ok := got["checks"].([]interface{})
-	if !ok || len(checks) != 5 {
+	if !ok || len(checks) != 6 {
 		t.Fatalf("expected doctor checks in failed start response, got %+v", got["checks"])
 	}
-	if strings.Join(probe.calls, ",") != "vpncmd,vpnclient,ip,iptables,microsocks" {
+	if strings.Join(probe.calls, ",") != "vpncmd,vpnclient,ip,iptables,microsocks,dhclient" {
 		t.Fatalf("unexpected doctor probes: %+v", probe.calls)
 	}
 	if starter.calls != 0 {
@@ -493,7 +493,7 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedFullSoftEtherAndSocksB
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
 	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{
-		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks",
+		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient",
 	}}
 	runner := &fakeVPNGateRuntimeCommandRunner{}
 	health := &fakeVPNGateRuntimeHealthChecker{result: web.VPNGateRuntimeHealth{VPNConnected: true, SocksBridgeRunning: true, NonNativeEgressOK: true, ExitIP: "198.51.100.44", NativeIP: "203.0.113.9", LatencyMS: 88, KillSwitchOK: true}}
@@ -506,13 +506,26 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedFullSoftEtherAndSocksB
 		t.Fatalf("expected 200 real start, got %d: %s", resp.Code, resp.Body.String())
 	}
 	wantCalls := []struct{ command, args string }{
+		{"sh", "-c '/usr/local/bin/vpncmd' localhost /CLIENT /CMD AccountDisconnect 'migate3' >/dev/null 2>&1 || true; '/usr/local/bin/vpncmd' localhost /CLIENT /CMD AccountDelete 'migate3' >/dev/null 2>&1 || true; '/usr/local/bin/vpncmd' localhost /CLIENT /CMD NicDelete 'migate3' >/dev/null 2>&1 || true; '/sbin/ip' netns del 'migate-vpngate-3' >/dev/null 2>&1 || true; '/sbin/ip' link delete 'mg3h' >/dev/null 2>&1 || true"},
 		{"/sbin/ip", "netns add migate-vpngate-" + strconv.FormatInt(outbound.ID, 10)},
 		{"/usr/local/bin/vpnclient", "start"},
 		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD NicCreate migate3"},
-		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3"},
+		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:203.0.113.10:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3"},
 		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard"},
 		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountConnect migate3"},
-		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " sh -c nohup '/usr/bin/microsocks' -i '127.0.0.1' -p 21080 >/var/log/migate-vpngate-3-microsocks.log 2>&1 &"},
+		{"sh", "-c for i in $(seq 1 30); do '/usr/local/bin/vpncmd' localhost /CLIENT /CMD AccountList | grep -A4 'VPN Connection Setting Name |migate3' | grep -q 'Status[[:space:]]*|Connected' && exit 0; sleep 2; done; '/usr/local/bin/vpncmd' localhost /CLIENT /CMD AccountList; exit 1"},
+		{"/sbin/ip", "link add mg3h type veth peer name mg3n"},
+		{"/sbin/ip", "addr add 10.255.3.1/30 dev mg3h"},
+		{"/sbin/ip", "link set mg3h up"},
+		{"/sbin/ip", "link set mg3n netns migate-vpngate-" + strconv.FormatInt(outbound.ID, 10)},
+		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " ip addr add 10.255.3.2/30 dev mg3n"},
+		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " ip link set lo up"},
+		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " ip link set mg3n up"},
+		{"/sbin/ip", "link set vpn_migate3 netns migate-vpngate-" + strconv.FormatInt(outbound.ID, 10)},
+		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " ip link set vpn_migate3 up"},
+		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " /sbin/dhclient -1 vpn_migate3"},
+		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " sh -c nohup '/usr/bin/microsocks' -i 0.0.0.0 -p 21080 >/var/log/migate-vpngate-3-microsocks.log 2>&1 &"},
+		{"sh", `-c for i in $(seq 1 20); do '/sbin/ip' netns exec 'migate-vpngate-3' sh -c 'ss -ltn | grep -q '\'':21080 '\'' && pgrep microsocks >/dev/null' && exit 0; sleep 1; done; exit 1`},
 	}
 	if len(runner.calls) != len(wantCalls) {
 		t.Fatalf("expected full runtime command chain, got %+v", runner.calls)
@@ -533,7 +546,7 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedFullSoftEtherAndSocksB
 		t.Fatalf("expected runtime health fields after start, got %+v", got)
 	}
 	commands, ok := got["commands_executed"].([]interface{})
-	if !ok || len(commands) != len(wantCalls) || fmt.Sprint(commands[4]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard" || fmt.Sprint(commands[5]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountConnect migate3" || !strings.Contains(fmt.Sprint(commands[6]), "/sbin/ip netns exec migate-vpngate-") || !strings.Contains(fmt.Sprint(commands[6]), "nohup /usr/bin/microsocks -i 127.0.0.1 -p 21080") {
+	if !ok || len(commands) != len(wantCalls) || fmt.Sprint(commands[5]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard" || fmt.Sprint(commands[6]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountConnect migate3" || !strings.Contains(fmt.Sprint(commands[7]), "AccountList") || !strings.Contains(fmt.Sprint(commands[18]), "/sbin/ip netns exec migate-vpngate-") || !strings.Contains(fmt.Sprint(commands[18]), "nohup /usr/bin/microsocks -i 0.0.0.0 -p 21080") || !strings.Contains(fmt.Sprint(commands[19]), "ss -ltn") {
 		t.Fatalf("expected reported full runtime command chain, got %+v", got["commands_executed"])
 	}
 	if strings.Contains(resp.Body.String(), "runtime_start_not_implemented") {
@@ -548,7 +561,7 @@ func TestVPNGateRuntimeDefaultHealthCheckerFailsClosedWhenSocksBridgeMissing(t *
 	}
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
-	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks"}}
+	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient"}}
 	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe), web.WithVPNGateRuntimeRunner(&fakeVPNGateRuntimeCommandRunner{}))
 
 	resp := httptest.NewRecorder()
@@ -577,7 +590,7 @@ func TestVPNGateSoftEtherRuntimeStartRunsRealHealthAndAppliesXrayWhenNonNativeEg
 	}
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
-	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks"}}
+	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient"}}
 	runner := &fakeVPNGateRuntimeCommandRunner{}
 	health := &fakeVPNGateRuntimeHealthChecker{result: web.VPNGateRuntimeHealth{VPNConnected: true, SocksBridgeRunning: true, NonNativeEgressOK: true, ExitIP: "198.51.100.44", NativeIP: "203.0.113.9", LatencyMS: 123, KillSwitchOK: true}}
 	xray := &fakeXrayController{}
@@ -611,7 +624,7 @@ func TestVPNGateSoftEtherRuntimeStartDisablesOutboundWhenHealthFailsClosed(t *te
 	}
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
-	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks"}}
+	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient"}}
 	health := &fakeVPNGateRuntimeHealthChecker{result: web.VPNGateRuntimeHealth{VPNConnected: true, SocksBridgeRunning: true, NonNativeEgressOK: false, ExitIP: "203.0.113.9", NativeIP: "203.0.113.9", LastError: "native_ip_leak", KillSwitchOK: false}}
 	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe), web.WithVPNGateRuntimeRunner(&fakeVPNGateRuntimeCommandRunner{}), web.WithVPNGateRuntimeHealthChecker(health))
 	resp := httptest.NewRecorder()
@@ -634,7 +647,7 @@ func TestVPNGateSoftEtherRuntimeStopRunsCleanupChain(t *testing.T) {
 	}
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
-	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks"}}
+	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient"}}
 	runner := &fakeVPNGateRuntimeCommandRunner{}
 	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe), web.WithVPNGateRuntimeRunner(runner))
 	resp := httptest.NewRecorder()
@@ -658,27 +671,43 @@ func TestVPNGateSoftEtherRuntimeStopRunsCleanupChain(t *testing.T) {
 }
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenSoftEtherStartFails(t *testing.T) {
-	assertVPNGateRuntimeStartRunnerFailure(t, 2, "/usr/local/bin/vpnclient", "start")
+	assertVPNGateRuntimeStartRunnerFailure(t, 3, "/usr/local/bin/vpnclient", "start")
 }
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenNicCreateFails(t *testing.T) {
-	assertVPNGateRuntimeStartRunnerFailure(t, 3, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD NicCreate migate3")
+	assertVPNGateRuntimeStartRunnerFailure(t, 4, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD NicCreate migate3")
 }
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenAccountCreateFails(t *testing.T) {
-	assertVPNGateRuntimeStartRunnerFailure(t, 4, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3")
+	assertVPNGateRuntimeStartRunnerFailure(t, 5, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:203.0.113.10:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3")
 }
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenAccountPasswordSetFails(t *testing.T) {
-	assertVPNGateRuntimeStartRunnerFailure(t, 5, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard")
+	assertVPNGateRuntimeStartRunnerFailure(t, 6, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard")
 }
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenAccountConnectFails(t *testing.T) {
-	assertVPNGateRuntimeStartRunnerFailure(t, 6, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountConnect migate3")
+	assertVPNGateRuntimeStartRunnerFailure(t, 7, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountConnect migate3")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenConnectionWaitFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 8, "sh", "-c for i in $(seq 1 30); do '/usr/local/bin/vpncmd' localhost /CLIENT /CMD AccountList | grep -A4 'VPN Connection Setting Name |migate3' | grep -q 'Status[[:space:]]*|Connected' && exit 0; sleep 2; done; '/usr/local/bin/vpncmd' localhost /CLIENT /CMD AccountList; exit 1")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenVethCreationFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 9, "/sbin/ip", "link add mg3h type veth peer name mg3n")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenDHCPFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 18, "/sbin/ip", "netns exec migate-vpngate-3 /sbin/dhclient -1 vpn_migate3")
 }
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenSocksBridgeFails(t *testing.T) {
-	assertVPNGateRuntimeStartRunnerFailure(t, 7, "/sbin/ip", "netns exec migate-vpngate-3 sh -c nohup '/usr/bin/microsocks' -i '127.0.0.1' -p 21080 >/var/log/migate-vpngate-3-microsocks.log 2>&1 &")
+	assertVPNGateRuntimeStartRunnerFailure(t, 19, "/sbin/ip", "netns exec migate-vpngate-3 sh -c nohup '/usr/bin/microsocks' -i 0.0.0.0 -p 21080 >/var/log/migate-vpngate-3-microsocks.log 2>&1 &")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenSocksBridgeReadinessFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 20, "sh", `-c for i in $(seq 1 20); do '/sbin/ip' netns exec 'migate-vpngate-3' sh -c 'ss -ltn | grep -q '\'':21080 '\'' && pgrep microsocks >/dev/null' && exit 0; sleep 1; done; exit 1`)
 }
 
 func assertVPNGateRuntimeStartRunnerFailure(t *testing.T, errOnCall int, wantCommand, wantArgs string) {
@@ -690,7 +719,7 @@ func assertVPNGateRuntimeStartRunnerFailure(t *testing.T, errOnCall int, wantCom
 	defer store.Close()
 	outbound := createTestVPNGateSoftEtherOutbound(t, store)
 	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{
-		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks",
+		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks", "dhclient": "/sbin/dhclient",
 	}}
 	runner := &fakeVPNGateRuntimeCommandRunner{err: errors.New("runtime command failed"), errOnCall: errOnCall}
 	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe), web.WithVPNGateRuntimeRunner(runner))
@@ -870,7 +899,7 @@ func TestCreateVPNGateSoftEtherEgressCreatesPendingBridgeOutbound(t *testing.T) 
 		t.Fatalf("unexpected created outbound: %+v", got.Outbound)
 	}
 	if got.Outbound.Address != "127.0.0.1" || got.Outbound.Port != 21088 || !got.Outbound.Enabled {
-		t.Fatalf("expected local bridge address to be persisted, got %+v", got.Outbound)
+		t.Fatalf("expected explicit local bridge address to be persisted, got %+v", got.Outbound)
 	}
 	if got.Outbound.VPNGateServerHostName != "vpn123.opengw.net" || got.Outbound.VPNGateServerIP != "203.0.113.10" {
 		t.Fatalf("expected VPN Gate server endpoint to be persisted on outbound, got %+v", got.Outbound)
@@ -922,6 +951,7 @@ func TestCreateVPNGateSoftEtherEgressDefaultsLocalBridgeWithoutRuntimeSideEffect
 		Status   string `json:"status"`
 		Runtime  string `json:"runtime"`
 		Outbound struct {
+			ID       int64  `json:"id"`
 			Protocol string `json:"protocol"`
 			Address  string `json:"address"`
 			Port     int    `json:"port"`
@@ -933,8 +963,8 @@ func TestCreateVPNGateSoftEtherEgressDefaultsLocalBridgeWithoutRuntimeSideEffect
 	if got.Status != "pending_runtime" || got.Runtime != "bridge_not_started" {
 		t.Fatalf("unexpected runtime status: %+v", got)
 	}
-	if got.Outbound.Protocol != "vpngate_softether" || got.Outbound.Address != "127.0.0.1" || got.Outbound.Port != 21080 {
-		t.Fatalf("expected safe default local bridge, got %+v", got.Outbound)
+	if got.Outbound.Protocol != "vpngate_softether" || got.Outbound.Address != "10.255."+strconv.FormatInt(got.Outbound.ID, 10)+".2" || got.Outbound.Port != 21080 {
+		t.Fatalf("expected default VPN Gate runtime bridge, got %+v", got.Outbound)
 	}
 }
 

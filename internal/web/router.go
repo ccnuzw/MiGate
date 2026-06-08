@@ -233,6 +233,17 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
+func vpngateRuntimeBridgePair(outboundID int64) (hostIP, namespaceIP, cidr string) {
+	third := outboundID % 250
+	if third <= 0 {
+		third = 250
+	}
+	hostIP = fmt.Sprintf("10.255.%d.1", third)
+	namespaceIP = fmt.Sprintf("10.255.%d.2", third)
+	cidr = fmt.Sprintf("10.255.%d.0/30", third)
+	return hostIP, namespaceIP, cidr
+}
+
 type execVPNGateRuntimeCommandRunner struct{}
 
 type execVPNGateRuntimeHealthChecker struct{}
@@ -398,16 +409,25 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 	if microsocks == "" {
 		microsocks = "microsocks"
 	}
+	dhclient := strings.TrimSpace(target.DependencyPaths["dhclient"])
+	if dhclient == "" {
+		dhclient = "dhclient"
+	}
 	nicName := fmt.Sprintf("migate%d", target.OutboundID)
-	serverEndpoint := strings.TrimSpace(target.ServerHostName)
+	serverEndpoint := strings.TrimSpace(target.ServerIP)
 	if serverEndpoint == "" {
-		serverEndpoint = strings.TrimSpace(target.ServerIP)
+		serverEndpoint = strings.TrimSpace(target.ServerHostName)
 	}
 	if serverEndpoint == "" {
 		return VPNGateRuntimeStartResult{}, errors.New("vpngate server endpoint is required")
 	}
 	serverAddress := serverEndpoint + ":443"
-	executed := []string{fmt.Sprintf("%s netns add %s", ip, netns)}
+	cleanupCmd := vpngateRuntimeCleanupShell(vpncmd, ip, nicName, netns, target.OutboundID)
+	executed := []string{fmt.Sprintf("sh -c %s", cleanupCmd)}
+	if err := s.runner.Run(ctx, "sh", "-c", cleanupCmd); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns add %s", ip, netns))
 	if err := s.runner.Run(ctx, ip, "netns", "add", netns); err != nil {
 		return VPNGateRuntimeStartResult{}, err
 	}
@@ -431,11 +451,67 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 	if err := s.runner.Run(ctx, vpncmd, "localhost", "/CLIENT", "/CMD", "AccountConnect", nicName); err != nil {
 		return VPNGateRuntimeStartResult{}, err
 	}
-	executed = append(executed, fmt.Sprintf("%s netns exec %s sh -c 'nohup %s -i %s -p %d >/var/log/migate-vpngate-%d-microsocks.log 2>&1 &'", ip, netns, microsocks, target.BridgeAddress, target.BridgePort, target.OutboundID))
-	bridgeCmd := fmt.Sprintf("nohup %s -i %s -p %d >/var/log/migate-vpngate-%d-microsocks.log 2>&1 &", shellQuote(microsocks), shellQuote(target.BridgeAddress), target.BridgePort, target.OutboundID)
+	waitConnectedCmd := fmt.Sprintf("for i in $(seq 1 30); do %s localhost /CLIENT /CMD AccountList | grep -A4 %s | grep -q 'Status[[:space:]]*|Connected' && exit 0; sleep 2; done; %s localhost /CLIENT /CMD AccountList; exit 1", shellQuote(vpncmd), shellQuote("VPN Connection Setting Name |"+nicName), shellQuote(vpncmd))
+	executed = append(executed, fmt.Sprintf("sh -c %s", waitConnectedCmd))
+	if err := s.runner.Run(ctx, "sh", "-c", waitConnectedCmd); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	hostIP, namespaceIP, cidr := vpngateRuntimeBridgePair(target.OutboundID)
+	hostVeth := fmt.Sprintf("mg%dh", target.OutboundID)
+	nsVeth := fmt.Sprintf("mg%dn", target.OutboundID)
+	vpnIface := "vpn_" + nicName
+	executed = append(executed, fmt.Sprintf("%s link add %s type veth peer name %s", ip, hostVeth, nsVeth))
+	if err := s.runner.Run(ctx, ip, "link", "add", hostVeth, "type", "veth", "peer", "name", nsVeth); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s addr add %s/30 dev %s", ip, hostIP, hostVeth))
+	if err := s.runner.Run(ctx, ip, "addr", "add", hostIP+"/30", "dev", hostVeth); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s link set %s up", ip, hostVeth))
+	if err := s.runner.Run(ctx, ip, "link", "set", hostVeth, "up"); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s link set %s netns %s", ip, nsVeth, netns))
+	if err := s.runner.Run(ctx, ip, "link", "set", nsVeth, "netns", netns); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns exec %s ip addr add %s/30 dev %s", ip, netns, namespaceIP, nsVeth))
+	if err := s.runner.Run(ctx, ip, "netns", "exec", netns, "ip", "addr", "add", namespaceIP+"/30", "dev", nsVeth); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns exec %s ip link set lo up", ip, netns))
+	if err := s.runner.Run(ctx, ip, "netns", "exec", netns, "ip", "link", "set", "lo", "up"); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns exec %s ip link set %s up", ip, netns, nsVeth))
+	if err := s.runner.Run(ctx, ip, "netns", "exec", netns, "ip", "link", "set", nsVeth, "up"); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s link set %s netns %s", ip, vpnIface, netns))
+	if err := s.runner.Run(ctx, ip, "link", "set", vpnIface, "netns", netns); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns exec %s ip link set %s up", ip, netns, vpnIface))
+	if err := s.runner.Run(ctx, ip, "netns", "exec", netns, "ip", "link", "set", vpnIface, "up"); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns exec %s %s -1 %s", ip, netns, dhclient, vpnIface))
+	if err := s.runner.Run(ctx, ip, "netns", "exec", netns, dhclient, "-1", vpnIface); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns exec %s sh -c 'nohup %s -i 0.0.0.0 -p %d >/var/log/migate-vpngate-%d-microsocks.log 2>&1 &'", ip, netns, microsocks, target.BridgePort, target.OutboundID))
+	bridgeCmd := fmt.Sprintf("nohup %s -i 0.0.0.0 -p %d >/var/log/migate-vpngate-%d-microsocks.log 2>&1 &", shellQuote(microsocks), target.BridgePort, target.OutboundID)
 	if err := s.runner.Run(ctx, ip, "netns", "exec", netns, "sh", "-c", bridgeCmd); err != nil {
 		return VPNGateRuntimeStartResult{}, err
 	}
+	waitBridgeCmd := fmt.Sprintf("for i in $(seq 1 20); do %s netns exec %s sh -c %s && exit 0; sleep 1; done; exit 1", shellQuote(ip), shellQuote(netns), shellQuote(fmt.Sprintf("ss -ltn | grep -q ':%d ' && pgrep microsocks >/dev/null", target.BridgePort)))
+	executed = append(executed, fmt.Sprintf("sh -c %s", waitBridgeCmd))
+	if err := s.runner.Run(ctx, "sh", "-c", waitBridgeCmd); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	target.BridgeAddress = namespaceIP
+	_ = cidr
 	return VPNGateRuntimeStartResult{
 		Status:              "started",
 		Runtime:             target.Runtime,
@@ -451,6 +527,18 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 		PerformsSideEffects: true,
 		CommandsExecuted:    executed,
 	}, nil
+}
+
+func vpngateRuntimeCleanupShell(vpncmd, ip, nicName, netns string, outboundID int64) string {
+	hostVeth := fmt.Sprintf("mg%dh", outboundID)
+	parts := []string{
+		fmt.Sprintf("%s localhost /CLIENT /CMD AccountDisconnect %s >/dev/null 2>&1 || true", shellQuote(vpncmd), shellQuote(nicName)),
+		fmt.Sprintf("%s localhost /CLIENT /CMD AccountDelete %s >/dev/null 2>&1 || true", shellQuote(vpncmd), shellQuote(nicName)),
+		fmt.Sprintf("%s localhost /CLIENT /CMD NicDelete %s >/dev/null 2>&1 || true", shellQuote(vpncmd), shellQuote(nicName)),
+		fmt.Sprintf("%s netns del %s >/dev/null 2>&1 || true", shellQuote(ip), shellQuote(netns)),
+		fmt.Sprintf("%s link delete %s >/dev/null 2>&1 || true", shellQuote(ip), shellQuote(hostVeth)),
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (s vpngateRuntimeStarter) Stop(ctx context.Context, target VPNGateRuntimeStartTarget) (VPNGateRuntimeStopResult, error) {
@@ -2656,11 +2744,12 @@ func vpngateCreateEgressHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		address := strings.TrimSpace(req.BridgeAddress)
-		if address == "" {
+		defaultBridgeAddress := address == ""
+		if defaultBridgeAddress {
 			address = "127.0.0.1"
 		}
-		if address != "127.0.0.1" && address != "::1" && !strings.HasPrefix(address, "127.") {
-			writeJSONError(w, http.StatusBadRequest, "invalid_bridge_address", map[string]interface{}{"detail": "bridge_address must be a loopback address for this placeholder slice"})
+		if address != "127.0.0.1" && address != "::1" && !strings.HasPrefix(address, "127.") && !strings.HasPrefix(address, "10.255.") {
+			writeJSONError(w, http.StatusBadRequest, "invalid_bridge_address", map[string]interface{}{"detail": "bridge_address must be loopback or a MiGate VPN Gate runtime bridge address"})
 			return
 		}
 		port := req.BridgePort
@@ -2686,6 +2775,10 @@ func vpngateCreateEgressHandler(cfg *routerConfig) http.HandlerFunc {
 			VPNGateServerHostName: strings.TrimSpace(req.Server.HostName),
 			VPNGateServerIP:       strings.TrimSpace(req.Server.IP),
 		})
+		if err == nil && defaultBridgeAddress {
+			_, namespaceIP, _ := vpngateRuntimeBridgePair(outbound.ID)
+			outbound, err = cfg.store.UpdateOutbound(r.Context(), outbound.ID, db.UpdateOutboundParams{Tag: outbound.Tag, Remark: outbound.Remark, Protocol: outbound.Protocol, Address: namespaceIP, Port: outbound.Port, Username: outbound.Username, Password: outbound.Password, Enabled: outbound.Enabled})
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "create_outbound_failed", map[string]interface{}{"detail": err.Error()})
 			return
@@ -3089,6 +3182,9 @@ func vpngateEgressRuntimeStartHandler(cfg *routerConfig) http.HandlerFunc {
 			DependencyPaths: vpngateRuntimeDependencyPaths(doctor.Checks),
 		}
 		result, err := cfg.vpnGateRuntimeStarter.Start(r.Context(), target)
+		if strings.TrimSpace(result.BridgeAddress) != "" {
+			target.BridgeAddress = result.BridgeAddress
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "runtime_start_failed", map[string]interface{}{
 				"status":                "failed",
@@ -3180,6 +3276,7 @@ func buildVPNGateRuntimeDoctor(outbound db.Outbound, probe VPNGateRuntimeProbe) 
 		vpngateRuntimeDependency(probe, "iproute2", "ip", "network namespace tooling"),
 		vpngateRuntimeDependency(probe, "iptables", "iptables", "future fail-closed firewall tooling"),
 		vpngateRuntimeDependency(probe, "socks_bridge", "microsocks", "lightweight local SOCKS bridge inside the namespace"),
+		vpngateRuntimeDependency(probe, "dhcp_client", "dhclient", "DHCP client for the SoftEther virtual NIC inside the namespace"),
 	}
 	status := "ready"
 	for _, check := range checks {

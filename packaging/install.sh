@@ -107,17 +107,17 @@ install_vpngate_runtime_dependencies() {
   fi
 
   if command -v apt-get >/dev/null 2>&1; then
-    echo "正在安装 VPN Gate runtime 依赖：iproute2 iptables microsocks softether-vpnclient softether-vpncmd"
+    echo "正在安装 VPN Gate runtime 依赖：iproute2 iptables microsocks softether-vpnclient softether-vpncmd isc-dhcp-client"
     apt-get update
-    apt-get install -y iproute2 iptables microsocks softether-vpnclient softether-vpncmd || {
+    apt-get install -y iproute2 iptables microsocks softether-vpnclient softether-vpncmd isc-dhcp-client || {
       echo "部分 VPN Gate runtime 依赖安装失败；请确认发行版源是否提供 softether-vpnclient / softether-vpncmd。"
     }
   else
-    echo "当前系统未检测到 apt-get，请手动安装：iproute2 iptables microsocks softether-vpnclient softether-vpncmd"
+    echo "当前系统未检测到 apt-get，请手动安装：iproute2 iptables microsocks softether-vpnclient softether-vpncmd isc-dhcp-client"
   fi
 
   echo "VPN Gate runtime dependencies:"
-  for cmd in ip iptables microsocks vpncmd vpnclient; do
+  for cmd in ip iptables microsocks vpncmd vpnclient dhclient; do
     if command -v "$cmd" >/dev/null 2>&1; then
       echo "  ${cmd}: $(command -v "$cmd")"
     else

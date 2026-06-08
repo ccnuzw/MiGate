@@ -136,6 +136,8 @@ func TestInstallerOffersVPNGateRuntimeDependencies(t *testing.T) {
 		"microsocks",
 		"softether-vpnclient",
 		"softether-vpncmd",
+		"isc-dhcp-client",
+		"dhclient",
 		"vpncmd",
 		"vpnclient",
 		"VPN Gate runtime dependencies:",
