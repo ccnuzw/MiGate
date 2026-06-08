@@ -40,6 +40,55 @@ func TestRemovedVPNGateAPIRoutesReturnNotFound(t *testing.T) {
 	}
 }
 
+func TestSocks5PoolAPIFetchesRegionsAndImportsOutbound(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") == "" {
+			t.Fatalf("expected pool fetch to send user agent")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"proxy":"socks5://sam:secret@184.181.217.201:4145","ip":"184.181.217.201","port":4145,"country":"US","city":"Goodyear","asn":"22773","asOrganization":"Cox Communications","latitude":"33.4353","longitude":"-112.3582","country_cn":"美国","country_en":"United States"},
+			{"ip":"203.0.113.9","port":1080,"country":"JP","city":"Tokyo","asn":"AS64500","org":"Example ISP","latitude":35.6762,"longitude":139.6503}
+		]`))
+	}))
+	defer upstream.Close()
+
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store), web.WithSocks5PoolURL(upstream.URL))
+
+	list := httptest.NewRecorder()
+	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/outbounds/socks5-pool?country=US", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected 200 listing socks5 pool, got %d: %s", list.Code, list.Body.String())
+	}
+	for _, want := range []string{`"regions"`, `"country_code":"US"`, `"city":"Goodyear"`, `"asn":"AS22773"`, `"organization":"Cox Communications"`, `"latitude":33.4353`, `"longitude":-112.3582`} {
+		if !strings.Contains(list.Body.String(), want) {
+			t.Fatalf("socks5 pool response missing %q: %s", want, list.Body.String())
+		}
+	}
+	if strings.Contains(list.Body.String(), `"country_code":"JP"`) {
+		t.Fatalf("country filter should exclude JP: %s", list.Body.String())
+	}
+
+	importResp := httptest.NewRecorder()
+	payload := strings.NewReader(`{"address":"184.181.217.201","port":4145,"city":"Goodyear","asn":"AS22773","organization":"Cox Communications"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/outbounds/socks5-pool/import", payload)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(importResp, req)
+	if importResp.Code != http.StatusCreated {
+		t.Fatalf("expected 201 importing socks5 outbound, got %d: %s", importResp.Code, importResp.Body.String())
+	}
+	for _, want := range []string{`"protocol":"socks"`, `"address":"184.181.217.201"`, `"port":4145`, `"tag":"pool-socks-184-181-217-201-4145"`, `"remark":"Goodyear AS22773 Cox Communications"`} {
+		if !strings.Contains(importResp.Body.String(), want) {
+			t.Fatalf("import response missing %q: %s", want, importResp.Body.String())
+		}
+	}
+}
+
 func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

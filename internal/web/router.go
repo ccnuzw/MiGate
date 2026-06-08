@@ -29,6 +29,7 @@ var validDomain = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9]
 var validEmail = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
 const maxXrayLogLines = 200
+const defaultSocks5PoolURL = "https://github.cmliussss.net/raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data/socks5.json"
 
 type XrayStatusStore interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
@@ -112,6 +113,7 @@ type routerConfig struct {
 	version        string
 	basePath       string
 	statsClient    xray.StatsClient
+	socks5PoolURL  string
 }
 
 type Option func(*routerConfig)
@@ -146,6 +148,12 @@ func WithBasePath(basePath string) Option {
 	}
 }
 
+func WithSocks5PoolURL(poolURL string) Option {
+	return func(cfg *routerConfig) {
+		cfg.socks5PoolURL = strings.TrimSpace(poolURL)
+	}
+}
+
 // WithStatsClient sets the stats client for traffic statistics.
 func WithStatsClient(client xray.StatsClient) Option {
 	return func(cfg *routerConfig) {
@@ -156,6 +164,7 @@ func WithStatsClient(client xray.StatsClient) Option {
 func NewRouter(options ...Option) http.Handler {
 	cfg := routerConfig{
 		xrayController: defaultXrayController{},
+		socks5PoolURL:  defaultSocks5PoolURL,
 	}
 	for _, option := range options {
 		option(&cfg)
@@ -299,11 +308,321 @@ func pingOutbound(address string, port int) map[string]interface{} {
 	return map[string]interface{}{"latency": latency}
 }
 
+type socks5PoolProxy struct {
+	Address      string  `json:"address"`
+	Port         int     `json:"port"`
+	Username     string  `json:"username,omitempty"`
+	Password     string  `json:"password,omitempty"`
+	CountryCode  string  `json:"country_code"`
+	Country      string  `json:"country"`
+	City         string  `json:"city"`
+	ASN          string  `json:"asn"`
+	Organization string  `json:"organization"`
+	Latitude     float64 `json:"latitude"`
+	Longitude    float64 `json:"longitude"`
+	Latency      int64   `json:"latency"`
+}
+
+type socks5PoolRegion struct {
+	Code  string `json:"code"`
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+func fetchSocks5Pool(ctx context.Context, poolURL string) ([]socks5PoolProxy, error) {
+	if poolURL == "" {
+		poolURL = defaultSocks5PoolURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, poolURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "MiGate/1.0 socks5-pool")
+	client := &http.Client{Timeout: 12 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("pool upstream returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	return parseSocks5Pool(body)
+}
+
+func parseSocks5Pool(body []byte) ([]socks5PoolProxy, error) {
+	var raw interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	items := flattenSocks5PoolItems(raw)
+	proxies := make([]socks5PoolProxy, 0, len(items))
+	for _, item := range items {
+		proxyURL := firstString(item, "proxy", "url", "uri")
+		parsedAddress, parsedPort, parsedUser, parsedPass := parseSocks5ProxyURL(proxyURL)
+		proxy := socks5PoolProxy{
+			Address:      firstNonEmpty(firstString(item, "address", "addr", "ip", "host", "server"), parsedAddress),
+			Port:         firstInt(item, "port"),
+			Username:     parsedUser,
+			Password:     parsedPass,
+			CountryCode:  strings.ToUpper(firstString(item, "country_code", "countryCode", "cc", "code")),
+			Country:      firstString(item, "country_cn", "country_en", "country_name", "countryName", "name", "country"),
+			City:         firstString(item, "city", "region", "location"),
+			ASN:          normalizeASN(firstString(item, "asn", "as", "AS")),
+			Organization: firstString(item, "organization", "asOrganization", "org", "isp", "operator"),
+			Latitude:     firstFloat(item, "latitude", "lat"),
+			Longitude:    firstFloat(item, "longitude", "lon", "lng"),
+			Latency:      -1,
+		}
+		if proxy.Port <= 0 && parsedPort > 0 {
+			proxy.Port = parsedPort
+		}
+		if proxy.Address == "" || proxy.Port <= 0 || proxy.Port > 65535 {
+			continue
+		}
+		if proxy.CountryCode == "" {
+			country := firstString(item, "country")
+			if len(country) == 2 {
+				proxy.CountryCode = strings.ToUpper(country)
+			}
+		}
+		proxies = append(proxies, proxy)
+	}
+	return proxies, nil
+}
+
+func flattenSocks5PoolItems(raw interface{}) []map[string]interface{} {
+	switch v := raw.(type) {
+	case []interface{}:
+		items := make([]map[string]interface{}, 0, len(v))
+		for _, entry := range v {
+			if m, ok := entry.(map[string]interface{}); ok {
+				items = append(items, m)
+			}
+		}
+		return items
+	case map[string]interface{}:
+		for _, key := range []string{"proxies", "data", "items", "servers", "socks5"} {
+			if nested, ok := v[key]; ok {
+				return flattenSocks5PoolItems(nested)
+			}
+		}
+		return []map[string]interface{}{v}
+	default:
+		return nil
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func parseSocks5ProxyURL(raw string) (string, int, string, string) {
+	if raw == "" {
+		return "", 0, "", ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "", 0, "", ""
+	}
+	host := parsed.Hostname()
+	port, _ := strconv.Atoi(parsed.Port())
+	username := ""
+	password := ""
+	if parsed.User != nil {
+		username = parsed.User.Username()
+		password, _ = parsed.User.Password()
+	}
+	return host, port, username, password
+}
+
+func firstString(item map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := item[key]; ok {
+			switch x := v.(type) {
+			case string:
+				return strings.TrimSpace(x)
+			case float64:
+				return strconv.FormatInt(int64(x), 10)
+			}
+		}
+	}
+	return ""
+}
+
+func firstInt(item map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		if v, ok := item[key]; ok {
+			switch x := v.(type) {
+			case float64:
+				return int(x)
+			case string:
+				i, _ := strconv.Atoi(strings.TrimSpace(x))
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+func firstFloat(item map[string]interface{}, keys ...string) float64 {
+	for _, key := range keys {
+		if v, ok := item[key]; ok {
+			switch x := v.(type) {
+			case float64:
+				return x
+			case string:
+				f, _ := strconv.ParseFloat(strings.TrimSpace(x), 64)
+				return f
+			}
+		}
+	}
+	return 0
+}
+
+func normalizeASN(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(strings.ToUpper(value), "AS") {
+		return value
+	}
+	return "AS" + value
+}
+
+func socks5PoolRegions(proxies []socks5PoolProxy) []socks5PoolRegion {
+	counts := map[string]*socks5PoolRegion{}
+	for _, proxy := range proxies {
+		code := proxy.CountryCode
+		if code == "" {
+			code = "UNKNOWN"
+		}
+		if counts[code] == nil {
+			name := proxy.Country
+			if name == "" {
+				name = code
+			}
+			counts[code] = &socks5PoolRegion{Code: code, Name: name}
+		}
+		counts[code].Count++
+	}
+	regions := make([]socks5PoolRegion, 0, len(counts))
+	for _, region := range counts {
+		regions = append(regions, *region)
+	}
+	return regions
+}
+
+func socks5PoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	proxies, err := fetchSocks5Pool(r.Context(), cfg.socks5PoolURL)
+	if err != nil {
+		http.Error(w, `{"error":"pool_fetch_failed"}`, http.StatusBadGateway)
+		return
+	}
+	country := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("country")))
+	filtered := make([]socks5PoolProxy, 0, len(proxies))
+	for _, proxy := range proxies {
+		if country == "" || proxy.CountryCode == country {
+			filtered = append(filtered, proxy)
+		}
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for i := range filtered {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			result := pingOutbound(filtered[idx].Address, filtered[idx].Port)
+			if latency, ok := result["latency"].(int64); ok {
+				filtered[idx].Latency = latency
+			}
+		}(i)
+	}
+	wg.Wait()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"regions": socks5PoolRegions(proxies), "proxies": filtered})
+}
+
+func socks5PoolImportHandler(store Store, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Address      string `json:"address"`
+		Port         int    `json:"port"`
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		City         string `json:"city"`
+		ASN          string `json:"asn"`
+		Organization string `json:"organization"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	address := strings.TrimSpace(req.Address)
+	if address == "" || req.Port <= 0 || req.Port > 65535 {
+		http.Error(w, `{"error":"invalid_proxy"}`, http.StatusBadRequest)
+		return
+	}
+	remarkParts := []string{}
+	for _, part := range []string{req.City, normalizeASN(req.ASN), req.Organization} {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			remarkParts = append(remarkParts, part)
+		}
+	}
+	remark := strings.Join(remarkParts, " ")
+	if remark == "" {
+		remark = address
+	}
+	outbound, err := store.CreateOutbound(r.Context(), db.CreateOutboundParams{
+		Tag:      fmt.Sprintf("pool-socks-%s-%d", strings.NewReplacer(".", "-", ":", "-").Replace(address), req.Port),
+		Remark:   remark,
+		Protocol: "socks",
+		Address:  address,
+		Port:     req.Port,
+		Username: strings.TrimSpace(req.Username),
+		Password: req.Password,
+	})
+	if err != nil {
+		http.Error(w, `{"error":"create_outbound_failed"}`, http.StatusBadRequest)
+		return
+	}
+	applyResult := ctrl.Apply(r.Context())
+	_ = tryApplySingbox(r.Context(), store)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"outbound": outbound, "xray": applyResult})
+}
+
 func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 	store := cfg.store
 	ctrl := cfg.xrayController
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/outbounds/")
+		if path == "socks5-pool" {
+			socks5PoolListHandler(cfg, w, r)
+			return
+		}
+		if path == "socks5-pool/import" {
+			socks5PoolImportHandler(store, ctrl, w, r)
+			return
+		}
 		// Handle /api/outbounds/reorder
 		if path == "reorder" {
 			// ...existing reorder handler...
@@ -2775,6 +3094,7 @@ const panelHTML = `<!doctype html>
         <p class="muted" style="margin-bottom:16px">配置链式代理转发（SOCKS5 / HTTP），实现流量经外部代理链路中转。</p>
         <div class="actions">
           <button onclick="openCreateOutbound()">新建出站</button>
+          <button class="secondary" onclick="openSocks5PoolDialog()">导入 SOCKS5 地址池</button>
           <button class="secondary" onclick="batchSpeedTest()">一键测速</button>
         </div>
         <div id="outbound-list" class="list muted">正在加载出站...</div>
@@ -2925,6 +3245,38 @@ const panelHTML = `<!doctype html>
         </form>
         <div id="settings-status" class="notice-slot"></div>
       </section>
+    <!-- SOCKS5 pool dialog -->
+    <div id="socks5-pool-dialog" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal()">
+      <div class="modal-content" style="max-width:920px;width:min(920px,96vw)">
+        <div class="modal-header">
+          <div>
+            <h3 class="modal-title">导入 SOCKS5 地址池</h3>
+            <p class="field-help" style="margin:4px 0 0">从公开地址池选择地区，MiGate 会自动测速并导入为出站 SOCKS5。</p>
+          </div>
+          <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(280px,1fr) minmax(300px,360px);gap:16px;align-items:stretch">
+          <div id="socks5-pool-map" style="min-height:360px;border:1px solid var(--line);border-radius:var(--radius-lg);background:radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 28%),linear-gradient(135deg,var(--surface-subtle),var(--surface));position:relative;overflow:hidden"></div>
+          <div style="display:flex;flex-direction:column;gap:12px;min-height:360px">
+            <div class="field-group">
+              <label class="field-label" for="socks5-pool-region">选择目标地区</label>
+              <select id="socks5-pool-region" onchange="loadSocks5Pool()">
+                <option value="">全部地区</option>
+              </select>
+            </div>
+            <div class="field-group" style="flex:1;min-height:0">
+              <label class="field-label">可用 SOCKS5</label>
+              <div id="socks5-pool-list" class="list muted" style="height:260px;overflow:auto;padding:8px">点击打开后加载地址池...</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary" onclick="closeModal()">取消</button>
+          <button onclick="confirmSocks5PoolProxy()" class="btn-modal-primary">确定</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Create outbound dialog -->
     <div id="create-outbound-dialog" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal()">
       <div class="modal-content" style="max-width:480px">

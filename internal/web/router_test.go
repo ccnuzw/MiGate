@@ -78,6 +78,42 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 	}
 }
 
+func TestPanelWiresSocks5PoolPickerToOutboundManagement(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
+	}
+	body := page.Body.String()
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`onclick="openSocks5PoolDialog()"`,
+		`id="socks5-pool-dialog"`,
+		`id="socks5-pool-region"`,
+		`id="socks5-pool-map"`,
+		`id="socks5-pool-list"`,
+		`导入 SOCKS5 地址池`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing socks5 pool UI contract %q", want)
+		}
+	}
+	for _, want := range []string{
+		`openSocks5PoolDialog()`,
+		`loadSocks5Pool()`,
+		`renderSocks5PoolMap`,
+		`selectSocks5PoolProxy`,
+		`confirmSocks5PoolProxy()`,
+		`fetch(apiPath('/api/outbounds/socks5-pool?country=' + encodeURIComponent(country)))`,
+		`fetch(apiPath('/api/outbounds/socks5-pool/import')`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing socks5 pool contract %q", want)
+		}
+	}
+}
+
 func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
