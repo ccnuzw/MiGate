@@ -608,21 +608,6 @@ func socks5PoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Req
 			filtered = append(filtered, proxy)
 		}
 	}
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-	for i := range filtered {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			result := pingOutbound(filtered[idx].Address, filtered[idx].Port)
-			if latency, ok := result["latency"].(int64); ok {
-				filtered[idx].Latency = latency
-			}
-		}(i)
-	}
-	wg.Wait()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"regions": socks5PoolRegions(proxies), "proxies": filtered,
