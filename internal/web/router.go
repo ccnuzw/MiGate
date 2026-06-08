@@ -2469,10 +2469,15 @@ func vpngateEgressCapabilitiesHandler() http.HandlerFunc {
 }
 
 type vpngateRuntimeStep struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Notes  string `json:"notes,omitempty"`
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	CommandPreview string `json:"command_preview,omitempty"`
+	Notes          string `json:"notes,omitempty"`
 }
+
+type VPNGateRuntimeStartPlan = vpngateRuntimePlan
+
+type VPNGateRuntimeStartStep = vpngateRuntimeStep
 
 type vpngateRuntimePlan struct {
 	Status              string               `json:"status"`
@@ -2482,6 +2487,7 @@ type vpngateRuntimePlan struct {
 	BridgeAddress       string               `json:"bridge_address"`
 	BridgePort          int                  `json:"bridge_port"`
 	PerformsSideEffects bool                 `json:"performs_side_effects"`
+	CommandsExecuted    []string             `json:"commands_executed,omitempty"`
 	WillStartProcesses  bool                 `json:"will_start_processes"`
 	WillCreateNetns     bool                 `json:"will_create_netns"`
 	WillOpenSocksBridge bool                 `json:"will_open_socks_bridge"`
@@ -2529,6 +2535,41 @@ type vpngateRuntimeDoctor struct {
 type vpngateRuntimeStartRequest struct {
 	Confirm            bool `json:"confirm"`
 	AllowSystemChanges bool `json:"allow_system_changes"`
+}
+
+func BuildVPNGateRuntimeStartPlan(target VPNGateRuntimeStartTarget) VPNGateRuntimeStartPlan {
+	netns := fmt.Sprintf("migate-vpngate-%d", target.OutboundID)
+	paths := target.DependencyPaths
+	cmd := func(name string) string {
+		if path := strings.TrimSpace(paths[name]); path != "" {
+			return path
+		}
+		return name
+	}
+	return vpngateRuntimePlan{
+		Status:              "planned",
+		Runtime:             target.Runtime,
+		OutboundID:          target.OutboundID,
+		OutboundTag:         target.OutboundTag,
+		BridgeAddress:       target.BridgeAddress,
+		BridgePort:          target.BridgePort,
+		PerformsSideEffects: false,
+		CommandsExecuted:    []string{},
+		WillStartProcesses:  true,
+		WillCreateNetns:     true,
+		WillOpenSocksBridge: true,
+		Steps: []vpngateRuntimeStep{
+			{Name: "create_network_namespace", Status: "planned", CommandPreview: fmt.Sprintf("%s netns add %s", cmd("ip"), netns), Notes: "future gated runtime step"},
+			{Name: "start_softether_client", Status: "planned", CommandPreview: fmt.Sprintf("%s start --netns %s", cmd("vpnclient"), netns), Notes: "future gated runtime step"},
+			{Name: "wait_vpn_interface", Status: "planned", CommandPreview: fmt.Sprintf("%s netns exec %s %s link show", cmd("ip"), netns, cmd("ip")), Notes: "future gated runtime step"},
+			{Name: "start_socks_bridge", Status: "planned", CommandPreview: fmt.Sprintf("%s -i %s -p %d", cmd("microsocks"), target.BridgeAddress, target.BridgePort), Notes: "future gated runtime step"},
+			{Name: "smoke_test_non_native_egress", Status: "planned", CommandPreview: fmt.Sprintf("%s -t nat -S", cmd("iptables")), Notes: "future fail-closed verification"},
+		},
+		Notes: []string{
+			"纯 runtime 启动计划：只生成命令预览，不执行命令、不启动进程、不创建 network namespace、不打开 SOCKS 监听。",
+			"真实执行仍必须经过双确认、doctor ready 和注入 runner。",
+		},
+	}
 }
 
 func vpngateEgressPlanHandler(cfg *routerConfig) http.HandlerFunc {

@@ -114,6 +114,42 @@ func (s *fakeVPNGateRuntimeStarter) Start(ctx context.Context, outbound web.VPNG
 	return s.result, s.err
 }
 
+func TestBuildVPNGateRuntimeStartPlanIsSideEffectFree(t *testing.T) {
+	plan := web.BuildVPNGateRuntimeStartPlan(web.VPNGateRuntimeStartTarget{
+		Runtime:       "softether_netns_socks_bridge",
+		OutboundID:    42,
+		OutboundTag:   "vpngate-jp-softether",
+		BridgeAddress: "127.0.0.1",
+		BridgePort:    21080,
+		DependencyPaths: map[string]string{
+			"vpncmd":     "/usr/local/bin/vpncmd",
+			"vpnclient":  "/usr/local/bin/vpnclient",
+			"ip":         "/sbin/ip",
+			"iptables":   "/sbin/iptables",
+			"microsocks": "/usr/bin/microsocks",
+		},
+	})
+
+	if plan.Status != "planned" || plan.Runtime != "softether_netns_socks_bridge" {
+		t.Fatalf("unexpected plan identity: %+v", plan)
+	}
+	if plan.PerformsSideEffects || len(plan.CommandsExecuted) != 0 {
+		t.Fatalf("plan builder must be side-effect-free, got %+v", plan)
+	}
+	if len(plan.Steps) != 5 {
+		t.Fatalf("expected five runtime steps, got %+v", plan.Steps)
+	}
+	if plan.Steps[0].Name != "create_network_namespace" || !strings.Contains(plan.Steps[0].CommandPreview, "/sbin/ip netns add") {
+		t.Fatalf("expected netns command preview first, got %+v", plan.Steps[0])
+	}
+	if plan.Steps[1].Name != "start_softether_client" || !strings.Contains(plan.Steps[1].CommandPreview, "/usr/local/bin/vpnclient") {
+		t.Fatalf("expected softether command preview second, got %+v", plan.Steps[1])
+	}
+	if plan.Steps[3].Name != "start_socks_bridge" || !strings.Contains(plan.Steps[3].CommandPreview, "/usr/bin/microsocks") || !strings.Contains(plan.Steps[3].CommandPreview, "21080") {
+		t.Fatalf("expected socks bridge command preview, got %+v", plan.Steps[3])
+	}
+}
+
 func TestVPNGateSoftEtherRuntimeStartDelegatesToInjectedStarterAfterReadyPreflight(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
