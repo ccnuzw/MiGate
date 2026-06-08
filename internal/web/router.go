@@ -283,6 +283,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/vpngate/egress/plan", vpngateEgressPlanHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/egress/status", vpngateEgressRuntimeStatusHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/egress/doctor", vpngateEgressRuntimeDoctorHandler(&cfg))
+	mux.HandleFunc("/api/vpngate/egress/start", vpngateEgressRuntimeStartHandler(&cfg))
 	mux.HandleFunc("/api/vpngate/outbounds/health", vpngateOutboundHealthHandler(cfg.store))
 	mux.HandleFunc("/api/vpngate/auto-health/status", vpngateAutoHealthStatusHandler(&cfg))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
@@ -2494,6 +2495,11 @@ type vpngateRuntimeDoctor struct {
 	Notes               []string                        `json:"notes"`
 }
 
+type vpngateRuntimeStartRequest struct {
+	Confirm            bool `json:"confirm"`
+	AllowSystemChanges bool `json:"allow_system_changes"`
+}
+
 func vpngateEgressPlanHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -2577,39 +2583,103 @@ func vpngateEgressRuntimeDoctorHandler(cfg *routerConfig) http.HandlerFunc {
 		if probe == nil {
 			probe = execVPNGateRuntimeProbe{}
 		}
-		checks := []vpngateRuntimeDependencyCheck{
-			vpngateRuntimeDependency(probe, "softether_vpncmd", "vpncmd", "SoftEther command automation binary"),
-			vpngateRuntimeDependency(probe, "softether_vpnclient", "vpnclient", "SoftEther VPN client service binary"),
-			vpngateRuntimeDependency(probe, "iproute2", "ip", "network namespace tooling"),
-			vpngateRuntimeDependency(probe, "iptables", "iptables", "future fail-closed firewall tooling"),
-			vpngateRuntimeDependency(probe, "socks_bridge", "microsocks", "lightweight local SOCKS bridge inside the namespace"),
-		}
-		status := "ready"
-		for _, check := range checks {
-			if check.Status != "available" {
-				status = "missing_dependencies"
-				break
-			}
-		}
-		doctor := vpngateRuntimeDoctor{
-			Status:              status,
-			Runtime:             "softether_netns_socks_bridge",
-			OutboundID:          outbound.ID,
-			OutboundTag:         outbound.Tag,
-			BridgeAddress:       outbound.Address,
-			BridgePort:          outbound.Port,
-			PerformsSideEffects: false,
-			WillStartProcesses:  false,
-			WillCreateNetns:     false,
-			WillOpenSocksBridge: false,
-			Checks:              checks,
-			Notes: []string{
-				"只读 runtime 预检：只检查本机依赖是否存在，不启动 SoftEther、不创建 network namespace、不打开 SOCKS bridge。",
-				"真实启动会在后续双确认门控接口中实现，并先通过该预检。",
-			},
-		}
+		doctor := buildVPNGateRuntimeDoctor(outbound, probe)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(doctor)
+	}
+}
+
+func vpngateEgressRuntimeStartHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		outbound, ok := loadVPNGateSoftEtherOutbound(w, r, cfg)
+		if !ok {
+			return
+		}
+		var req vpngateRuntimeStartRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		if !req.Confirm || !req.AllowSystemChanges {
+			writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{
+				"status":                "rejected",
+				"runtime":               "softether_netns_socks_bridge",
+				"outbound_id":           outbound.ID,
+				"outbound_tag":          outbound.Tag,
+				"performs_side_effects": false,
+				"commands_executed":     []string{},
+				"required_gates":        []string{"confirm", "allow_system_changes"},
+			})
+			return
+		}
+
+		probe := cfg.vpnGateRuntimeProbe
+		if probe == nil {
+			probe = execVPNGateRuntimeProbe{}
+		}
+		doctor := buildVPNGateRuntimeDoctor(outbound, probe)
+		if doctor.Status != "ready" {
+			writeJSONError(w, http.StatusFailedDependency, "runtime_preflight_failed", map[string]interface{}{
+				"status":                doctor.Status,
+				"runtime":               doctor.Runtime,
+				"outbound_id":           doctor.OutboundID,
+				"outbound_tag":          doctor.OutboundTag,
+				"bridge_address":        doctor.BridgeAddress,
+				"bridge_port":           doctor.BridgePort,
+				"performs_side_effects": false,
+				"commands_executed":     []string{},
+				"checks":                doctor.Checks,
+			})
+			return
+		}
+		writeJSONError(w, http.StatusNotImplemented, "runtime_start_not_implemented", map[string]interface{}{
+			"status":                doctor.Status,
+			"runtime":               doctor.Runtime,
+			"outbound_id":           doctor.OutboundID,
+			"outbound_tag":          doctor.OutboundTag,
+			"bridge_address":        doctor.BridgeAddress,
+			"bridge_port":           doctor.BridgePort,
+			"performs_side_effects": false,
+			"commands_executed":     []string{},
+			"checks":                doctor.Checks,
+		})
+	}
+}
+
+func buildVPNGateRuntimeDoctor(outbound db.Outbound, probe VPNGateRuntimeProbe) vpngateRuntimeDoctor {
+	checks := []vpngateRuntimeDependencyCheck{
+		vpngateRuntimeDependency(probe, "softether_vpncmd", "vpncmd", "SoftEther command automation binary"),
+		vpngateRuntimeDependency(probe, "softether_vpnclient", "vpnclient", "SoftEther VPN client service binary"),
+		vpngateRuntimeDependency(probe, "iproute2", "ip", "network namespace tooling"),
+		vpngateRuntimeDependency(probe, "iptables", "iptables", "future fail-closed firewall tooling"),
+		vpngateRuntimeDependency(probe, "socks_bridge", "microsocks", "lightweight local SOCKS bridge inside the namespace"),
+	}
+	status := "ready"
+	for _, check := range checks {
+		if check.Status != "available" {
+			status = "missing_dependencies"
+			break
+		}
+	}
+	return vpngateRuntimeDoctor{
+		Status:              status,
+		Runtime:             "softether_netns_socks_bridge",
+		OutboundID:          outbound.ID,
+		OutboundTag:         outbound.Tag,
+		BridgeAddress:       outbound.Address,
+		BridgePort:          outbound.Port,
+		PerformsSideEffects: false,
+		WillStartProcesses:  false,
+		WillCreateNetns:     false,
+		WillOpenSocksBridge: false,
+		Checks:              checks,
+		Notes: []string{
+			"只读 runtime 预检：只检查本机依赖是否存在，不启动 SoftEther、不创建 network namespace、不打开 SOCKS bridge。",
+			"真实启动会在后续双确认门控接口中实现，并先通过该预检。",
+		},
 	}
 }
 
