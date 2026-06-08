@@ -100,19 +100,12 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 	}
 }
 
-func TestBuildConfigWithRoutingRulesMapsInboundRemarkToActualXrayTag(t *testing.T) {
-	config, err := xray.BuildConfigWithOutbounds([]db.Inbound{{ID: 71, Remark: "Reality", Protocol: "vless", Port: 40001, Network: "tcp", Security: "none", Enabled: true}}, []db.Outbound{
-		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
-		{Tag: "vpngate-public-vpn-255", Protocol: "vpngate_softether", Address: "10.255.239.2", Port: 21080, Enabled: true, Sort: 1},
-	}, []db.RoutingRule{{InboundTag: "Reality", OutboundTag: "vpngate-public-vpn-255", Enabled: true}})
-	if err != nil {
-		t.Fatalf("build config: %v", err)
-	}
-	if config.Routing == nil || len(config.Routing.Rules) != 1 {
-		t.Fatalf("expected one routing rule, got %+v", config.Routing)
-	}
-	if got := config.Routing.Rules[0].InboundTag; len(got) != 1 || got[0] != "inbound-71-vless" {
-		t.Fatalf("expected UI inbound remark to map to actual Xray inbound tag, got %+v", got)
+func TestBuildConfigRejectsRemovedVPNGateSoftEtherOutbound(t *testing.T) {
+	_, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
+		{Tag: "removed-vpn-outbound", Protocol: "vpngate_softether", Address: "10.77.1.2", Port: 21080, Enabled: true},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected removed vpngate_softether outbound protocol to be rejected")
 	}
 }
 
@@ -153,71 +146,6 @@ func TestBuildConfigWithRoutingRules(t *testing.T) {
 		t.Fatal("expected no routing section when no rules")
 	}
 }
-func TestBuildConfigWithVPNGatePoolBalancer(t *testing.T) {
-	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
-		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
-		{Tag: "vpngate-jp-1", Protocol: "socks", Address: "1.2.3.4", Port: 1080, Enabled: true, Sort: 1},
-		{Tag: "vpngate-us-1", Protocol: "socks", Address: "5.6.7.8", Port: 1080, Enabled: true, Sort: 2},
-		{Tag: "other-socks", Protocol: "socks", Address: "9.9.9.9", Port: 1080, Enabled: true, Sort: 3},
-	}, []db.RoutingRule{
-		{OutboundTag: "vpngate-pool", Domain: "geosite:google", Enabled: true},
-	})
-	if err != nil {
-		t.Fatalf("build config: %v", err)
-	}
-	if config.Routing == nil {
-		t.Fatal("expected routing config")
-	}
-	if len(config.Routing.Balancers) != 1 {
-		t.Fatalf("expected one balancer, got %+v", config.Routing.Balancers)
-	}
-	bal := config.Routing.Balancers[0]
-	if bal.Tag != "vpngate-pool" || len(bal.Selector) != 1 || bal.Selector[0] != "vpngate-" {
-		t.Fatalf("unexpected balancer: %+v", bal)
-	}
-	if len(config.Routing.Rules) != 1 || config.Routing.Rules[0].BalancerTag != "vpngate-pool" || config.Routing.Rules[0].OutboundTag != "" {
-		t.Fatalf("expected routing rule to use balancerTag, got %+v", config.Routing.Rules)
-	}
-	encoded, _ := json.Marshal(config)
-	text := string(encoded)
-	for _, want := range []string{`"balancers"`, `"tag":"vpngate-pool"`, `"selector":["vpngate-"]`, `"balancerTag":"vpngate-pool"`} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("config missing %q: %s", want, text)
-		}
-	}
-}
-
-func TestBuildConfigMapsVPNGateSoftEtherOutboundToLocalSocksBridge(t *testing.T) {
-	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
-		{Tag: "vpngate-jp-softether", Protocol: "vpngate_softether", Address: "10.77.1.2", Port: 21080, Enabled: true, Sort: 1},
-	}, []db.RoutingRule{
-		{OutboundTag: "vpngate-pool", Domain: "geosite:google", Enabled: true},
-	})
-	if err != nil {
-		t.Fatalf("build config: %v", err)
-	}
-	if len(config.Outbounds) != 1 {
-		t.Fatalf("expected one outbound, got %+v", config.Outbounds)
-	}
-	outbound := config.Outbounds[0]
-	if outbound.Tag != "vpngate-jp-softether" || outbound.Protocol != "socks" {
-		t.Fatalf("expected SoftEther egress to expose a local SOCKS bridge to Xray, got %+v", outbound)
-	}
-	encoded, err := json.Marshal(config)
-	if err != nil {
-		t.Fatalf("marshal config: %v", err)
-	}
-	text := string(encoded)
-	for _, want := range []string{`"tag":"vpngate-jp-softether"`, `"protocol":"socks"`, `"address":"10.77.1.2"`, `"port":21080`, `"balancerTag":"vpngate-pool"`, `"selector":["vpngate-"]`} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("SoftEther bridge config missing %q: %s", want, text)
-		}
-	}
-	if strings.Contains(text, `"protocol":"vpngate_softether"`) {
-		t.Fatalf("internal VPN Gate protocol must not be emitted to Xray: %s", text)
-	}
-}
-
 func TestBuildConfigRejectsUnsupportedProtocol(t *testing.T) {
 	_, err := xray.BuildConfig([]db.Inbound{{Protocol: "openvpn", Port: 1194, Enabled: true}})
 	if err == nil {

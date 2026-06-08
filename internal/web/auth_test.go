@@ -38,7 +38,7 @@ func TestAuthShowsLoginPageForUnauthenticatedPanelRoot(t *testing.T) {
 
 func TestAuthAPIEndpointsRequireSession(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
-	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status", "/api/vpngate/import"} {
+	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status"} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		router.ServeHTTP(response, req)
@@ -48,13 +48,13 @@ func TestAuthAPIEndpointsRequireSession(t *testing.T) {
 	}
 }
 
-func TestAuthVPNGateServerListIsPublic(t *testing.T) {
+func TestAuthRemovedVPNGateRoutesAreNotPublicAllowlisted(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/vpngate/servers", nil)
 	router.ServeHTTP(response, req)
-	if response.Code == http.StatusUnauthorized {
-		t.Fatal("/api/vpngate/servers should be public read-only data")
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("removed VPN Gate route should not remain public allowlisted, got %d", response.Code)
 	}
 }
 

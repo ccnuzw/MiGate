@@ -861,56 +861,35 @@ func TestStoreCreateInboundWithoutInitialClient(t *testing.T) {
 	}
 }
 
-func TestStoreCreatesVPNGateSoftEtherOutbound(t *testing.T) {
+func TestStoreRejectsRemovedVPNGateSoftEtherOutbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
 
-	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
-		Tag:      "vpngate-jp-softether",
-		Remark:   "VPN Gate SoftEther - Japan",
+	_, err = store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag:      "removed-vpn-outbound",
+		Remark:   "removed VPN feature",
 		Protocol: "vpngate_softether",
 		Address:  "10.77.1.2",
 		Port:     21080,
 	})
-	if err != nil {
-		t.Fatalf("create vpngate_softether outbound: %v", err)
-	}
-	if outbound.Protocol != "vpngate_softether" || outbound.Address != "10.77.1.2" || outbound.Port != 21080 || !outbound.Enabled {
-		t.Fatalf("unexpected SoftEther outbound: %+v", outbound)
-	}
-
-	listed, err := store.ListOutbounds(context.Background())
-	if err != nil {
-		t.Fatalf("list outbounds: %v", err)
-	}
-	if len(listed) != 3 || listed[2].Protocol != "vpngate_softether" {
-		t.Fatalf("expected SoftEther outbound to persist after default outbounds, got %+v", listed)
+	if err == nil {
+		t.Fatal("expected vpngate_softether outbound protocol to be rejected after removal")
 	}
 }
 
-func TestStoreRoutingRuleAllowsVPNGatePoolVirtualOutbound(t *testing.T) {
+func TestStoreRejectsRemovedVPNGatePoolVirtualOutbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
 
-	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundTag: "vpngate-pool", Domain: "geosite:google", Enabled: true})
-	if err != nil {
-		t.Fatalf("create routing rule with vpngate-pool: %v", err)
-	}
-	if rule.OutboundTag != "vpngate-pool" {
-		t.Fatalf("unexpected outbound tag: %+v", rule)
-	}
-	updated, err := store.UpdateRoutingRule(context.Background(), rule.ID, db.UpdateRoutingRuleParams{OutboundTag: "vpngate-pool", Domain: "geosite:youtube", Enabled: true})
-	if err != nil {
-		t.Fatalf("update routing rule with vpngate-pool: %v", err)
-	}
-	if updated.OutboundTag != "vpngate-pool" || updated.Domain != "geosite:youtube" {
-		t.Fatalf("unexpected updated rule: %+v", updated)
+	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundTag: "vpngate-pool", Domain: "geosite:google", Enabled: true})
+	if err == nil {
+		t.Fatal("expected removed vpngate-pool virtual outbound to be rejected")
 	}
 }
 

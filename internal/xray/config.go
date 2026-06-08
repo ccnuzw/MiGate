@@ -127,18 +127,12 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 			inboundTagAliases[actualTag] = actualTag
 		}
 		r := &RoutingConfig{DomainStrategy: "AsIs", Rules: []RoutingRule{}}
-		needsVPNGatePool := false
 		for _, rule := range routingRules {
 			if !rule.Enabled {
 				continue
 			}
 			xr := RoutingRule{}
-			if rule.OutboundTag == "vpngate-pool" {
-				xr.BalancerTag = "vpngate-pool"
-				needsVPNGatePool = true
-			} else {
-				xr.OutboundTag = rule.OutboundTag
-			}
+			xr.OutboundTag = rule.OutboundTag
 			if rule.InboundTag != "" {
 				if actual, ok := inboundTagAliases[rule.InboundTag]; ok {
 					xr.InboundTag = []string{actual}
@@ -153,9 +147,6 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 				xr.Protocol = []string{rule.Protocol}
 			}
 			r.Rules = append(r.Rules, xr)
-		}
-		if needsVPNGatePool {
-			r.Balancers = append(r.Balancers, Balancer{Tag: "vpngate-pool", Selector: []string{"vpngate-"}})
 		}
 		if len(r.Rules) > 0 {
 			config.Routing = r
@@ -512,11 +503,7 @@ func buildOutbound(ob db.Outbound) (OutboundConfig, error) {
 			Protocol: protocol,
 			Settings: map[string]interface{}{},
 		}, nil
-	case "socks", "vpngate_softether":
-		xrayProtocol := protocol
-		if protocol == "vpngate_softether" {
-			xrayProtocol = "socks"
-		}
+	case "socks":
 		users := []map[string]interface{}{}
 		user := strings.TrimSpace(ob.Username)
 		pass := ob.Password
@@ -536,7 +523,7 @@ func buildOutbound(ob db.Outbound) (OutboundConfig, error) {
 		}
 		return OutboundConfig{
 			Tag:      ob.Tag,
-			Protocol: xrayProtocol,
+			Protocol: protocol,
 			Settings: map[string]interface{}{"servers": servers},
 		}, nil
 	case "http":

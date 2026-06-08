@@ -140,7 +140,7 @@ func TestInstallerDoesNotOfferArchivedVPNGateRuntimeDependencies(t *testing.T) {
 		"VPN Gate runtime dependencies:",
 	} {
 		if strings.Contains(script, forbidden) {
-			t.Fatalf("installer must not offer archived VPN Gate runtime dependency %q", forbidden)
+			t.Fatalf("installer must not offer removed VPN Gate runtime dependency %q", forbidden)
 		}
 	}
 }

@@ -56,11 +56,30 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	}
 }
 
-func TestInstallerDoesNotInstallArchivedVPNGateRuntime(t *testing.T) {
-	script := read(t, "packaging", "install.sh")
-	for _, forbidden := range []string{"install_vpngate_runtime_dependencies", "softether-vpnclient", "softether-vpncmd", "microsocks", "vpnclient", "vpncmd"} {
-		if strings.Contains(script, forbidden) {
-			t.Fatalf("installer must not install archived VPN Gate runtime dependency %q", forbidden)
+func TestVPNGateCodeIsFullyRemoved(t *testing.T) {
+	root := repoRoot(t)
+	for _, removedDir := range []string{
+		filepath.Join(root, "internal", "vpngate"),
+	} {
+		if _, err := os.Stat(removedDir); !os.IsNotExist(err) {
+			t.Fatalf("VPN Gate implementation directory must be removed: %s", removedDir)
+		}
+	}
+
+	for _, file := range []string{
+		filepath.Join("internal", "db", "store.go"),
+		filepath.Join("internal", "web", "router.go"),
+		filepath.Join("internal", "web", "auth.go"),
+		filepath.Join("internal", "web", "static", "app.js"),
+		filepath.Join("internal", "xray", "config.go"),
+		filepath.Join("cmd", "migate", "main.go"),
+		filepath.Join("packaging", "install.sh"),
+	} {
+		content := strings.ToLower(read(t, file))
+		for _, forbidden := range []string{"vpngate", "vpn gate", "softether", "microsocks", "vpncmd", "vpnclient"} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s must not contain removed VPN Gate marker %q", file, forbidden)
+			}
 		}
 	}
 }

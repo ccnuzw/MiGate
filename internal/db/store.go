@@ -24,11 +24,10 @@ var supportedProtocols = map[string]bool{
 }
 
 var supportedOutboundProtocols = map[string]bool{
-	"freedom":           true,
-	"blackhole":         true,
-	"socks":             true,
-	"http":              true,
-	"vpngate_softether": true,
+	"freedom":   true,
+	"blackhole": true,
+	"socks":     true,
+	"http":      true,
 }
 
 type RoutingRule struct {
@@ -105,30 +104,26 @@ type Inbound struct {
 }
 
 type Outbound struct {
-	ID                    int64  `json:"id"`
-	Tag                   string `json:"tag"`
-	Remark                string `json:"remark"`
-	Protocol              string `json:"protocol"`
-	Address               string `json:"address"`
-	Port                  int    `json:"port"`
-	Username              string `json:"username"`
-	Password              string `json:"password"`
-	Enabled               bool   `json:"enabled"`
-	Sort                  int    `json:"sort"`
-	VPNGateServerHostName string `json:"vpngate_server_hostname"`
-	VPNGateServerIP       string `json:"vpngate_server_ip"`
+	ID       int64  `json:"id"`
+	Tag      string `json:"tag"`
+	Remark   string `json:"remark"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Enabled  bool   `json:"enabled"`
+	Sort     int    `json:"sort"`
 }
 
 type CreateOutboundParams struct {
-	Tag                   string `json:"tag"`
-	Remark                string `json:"remark"`
-	Protocol              string `json:"protocol"`
-	Address               string `json:"address"`
-	Port                  int    `json:"port"`
-	Username              string `json:"username"`
-	Password              string `json:"password"`
-	VPNGateServerHostName string `json:"vpngate_server_hostname"`
-	VPNGateServerIP       string `json:"vpngate_server_ip"`
+	Tag      string `json:"tag"`
+	Remark   string `json:"remark"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type UpdateOutboundParams struct {
@@ -313,8 +308,6 @@ CREATE TABLE IF NOT EXISTS outbounds (
   password TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   sort INTEGER NOT NULL DEFAULT 0,
-  vpngate_server_hostname TEXT NOT NULL DEFAULT '',
-  vpngate_server_ip TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS routing_rules (
@@ -340,13 +333,6 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
 	}
 	if err := s.seedDefaultOutbounds(ctx); err != nil {
 		return err
-	}
-	// Migration: add VPN Gate server endpoint metadata to outbounds (ignore errors if already exist)
-	for _, col := range []struct{ name, typ string }{
-		{"vpngate_server_hostname", "TEXT NOT NULL DEFAULT ''"},
-		{"vpngate_server_ip", "TEXT NOT NULL DEFAULT ''"},
-	} {
-		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE outbounds ADD COLUMN %s %s", col.name, col.typ))
 	}
 	// Migration: add traffic/expiry columns (ignore errors if already exist)
 	for _, col := range []struct{ name, typ string }{
@@ -413,7 +399,7 @@ func (s *Store) seedDefaultOutbounds(ctx context.Context) error {
 }
 
 func (s *Store) ListOutbounds(ctx context.Context) ([]Outbound, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort, vpngate_server_hostname, vpngate_server_ip FROM outbounds ORDER BY sort ASC, id ASC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds ORDER BY sort ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +408,7 @@ func (s *Store) ListOutbounds(ctx context.Context) ([]Outbound, error) {
 	for rows.Next() {
 		var outbound Outbound
 		var enabled int
-		if err := rows.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &enabled, &outbound.Sort, &outbound.VPNGateServerHostName, &outbound.VPNGateServerIP); err != nil {
+		if err := rows.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &enabled, &outbound.Sort); err != nil {
 			return nil, err
 		}
 		outbound.Enabled = enabled != 0
@@ -453,10 +439,8 @@ func (s *Store) CreateOutbound(ctx context.Context, params CreateOutboundParams)
 	}
 	var sort int
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort)+1, 0) FROM outbounds`).Scan(&sort)
-	vpngateServerHostName := strings.TrimSpace(params.VPNGateServerHostName)
-	vpngateServerIP := strings.TrimSpace(params.VPNGateServerIP)
-	result, err := s.db.ExecContext(ctx, `INSERT INTO outbounds (tag, remark, protocol, address, port, username, password, enabled, sort, vpngate_server_hostname, vpngate_server_ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
-		tag, remark, protocol, address, params.Port, strings.TrimSpace(params.Username), params.Password, sort, vpngateServerHostName, vpngateServerIP, time.Now().UTC().Format(time.RFC3339))
+	result, err := s.db.ExecContext(ctx, `INSERT INTO outbounds (tag, remark, protocol, address, port, username, password, enabled, sort, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		tag, remark, protocol, address, params.Port, strings.TrimSpace(params.Username), params.Password, sort, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return Outbound{}, err
 	}
@@ -464,7 +448,7 @@ func (s *Store) CreateOutbound(ctx context.Context, params CreateOutboundParams)
 	if err != nil {
 		return Outbound{}, err
 	}
-	return Outbound{ID: id, Tag: tag, Remark: remark, Protocol: protocol, Address: address, Port: params.Port, Username: strings.TrimSpace(params.Username), Password: params.Password, Enabled: true, Sort: sort, VPNGateServerHostName: vpngateServerHostName, VPNGateServerIP: vpngateServerIP}, nil
+	return Outbound{ID: id, Tag: tag, Remark: remark, Protocol: protocol, Address: address, Port: params.Port, Username: strings.TrimSpace(params.Username), Password: params.Password, Enabled: true, Sort: sort}, nil
 }
 
 func (s *Store) UpdateOutbound(ctx context.Context, id int64, params UpdateOutboundParams) (Outbound, error) {
@@ -503,10 +487,10 @@ func (s *Store) UpdateOutbound(ctx context.Context, id int64, params UpdateOutbo
 	if n == 0 {
 		return Outbound{}, fmt.Errorf("outbound not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort, vpngate_server_hostname, vpngate_server_ip FROM outbounds WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
 	var outbound Outbound
 	var dbEnabled int
-	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabled, &outbound.Sort, &outbound.VPNGateServerHostName, &outbound.VPNGateServerIP); err != nil {
+	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabled, &outbound.Sort); err != nil {
 		return Outbound{}, err
 	}
 	outbound.Enabled = dbEnabled != 0
@@ -589,12 +573,12 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 }
 
 func isVirtualOutboundTag(tag string) bool {
-	return tag == "vpngate-pool"
+	return false
 }
 
 func outboundProtocolNeedsAddress(protocol string) bool {
 	switch protocol {
-	case "socks", "http", "vpngate_softether":
+	case "socks", "http":
 		return true
 	default:
 		return false
@@ -1022,10 +1006,10 @@ func (s *Store) SetOutboundEnabled(ctx context.Context, id int64, enabled bool) 
 	if n == 0 {
 		return Outbound{}, fmt.Errorf("outbound not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort, vpngate_server_hostname, vpngate_server_ip FROM outbounds WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
 	var outbound Outbound
 	var dbEnabledInt int
-	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabledInt, &outbound.Sort, &outbound.VPNGateServerHostName, &outbound.VPNGateServerIP); err != nil {
+	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabledInt, &outbound.Sort); err != nil {
 		return Outbound{}, err
 	}
 	outbound.Enabled = dbEnabledInt != 0

@@ -231,13 +231,12 @@
         if (!resp.ok) { el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>'; return; }
         const data = await resp.json();
         const outbounds = Array.isArray(data) ? data : (data.outbounds || []);
-        const visibleOutbounds = outbounds.filter(ob => ob.protocol !== 'vpngate_softether' && !String(ob.tag || '').startsWith('vpngate-'));
-        if (!visibleOutbounds.length) {
+        if (!outbounds.length) {
           el.innerHTML = renderEmptyState('暂无出站', '出站用于链式代理转发。点击上方"新建出站"添加 SOCKS5 / HTTP 代理。');
           return;
         }
         el.innerHTML = '<div style="display:grid;grid-template-columns:1fr;gap:8px" id="outbound-drag-container">' +
-          visibleOutbounds.map(ob => renderOutboundCard(ob)).join('') +
+          outbounds.map(ob => renderOutboundCard(ob)).join('') +
           '</div>';
         setTimeout(attachOutboundDragHandlers, 0);
       } catch(e) {
@@ -273,16 +272,6 @@
       if (!el) return;
       el.textContent = '测速中...';
       fetch(apiPath('/api/outbounds/' + id + '/ping')).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.kind === 'vpngate_runtime') {
-          if (data.latency >= 0 && data.non_native_egress_ok) {
-            el.textContent = ' VPN ' + data.latency + 'ms' + (data.exit_ip ? ' · ' + data.exit_ip : '');
-            el.style.color = 'var(--green)';
-          } else {
-            el.textContent = data.status === 'missing_dependencies' ? ' 未就绪' : ' VPN失败';
-            el.style.color = 'var(--danger)';
-          }
-          return;
-        }
         if (data.latency >= 0) {
           el.textContent = ' ' + data.latency + 'ms';
           el.style.color = data.latency < 200 ? 'var(--green)' : data.latency < 500 ? 'var(--accent2)' : 'var(--danger)';
@@ -312,18 +301,7 @@
           var r = results[id];
           var el = document.getElementById('ping-' + id);
           if (!el) return;
-          if (r.kind === 'vpngate_runtime') {
-            if (r.latency >= 0 && r.non_native_egress_ok) {
-              var vpnMs = Number(r.latency).toFixed(0);
-              el.textContent = ' VPN ' + vpnMs + 'ms' + (r.exit_ip ? ' · ' + r.exit_ip : '');
-              el.style.color = 'var(--green)';
-              okCount++;
-            } else {
-              el.textContent = (r.status === 'missing_dependencies' ? ' 未就绪' : (r.status === 'not_started' ? ' 未接入' : ' VPN失败'));
-              el.style.color = 'var(--danger)';
-              failCount++;
-            }
-          } else if (r.latency >= 0) {
+          if (r.latency >= 0) {
             var ms = Number(r.latency).toFixed(0);
             el.textContent = ' ' + ms + 'ms';
             el.style.color = ms < 200 ? 'var(--green)' : (ms < 500 ? 'orange' : 'var(--danger)');
