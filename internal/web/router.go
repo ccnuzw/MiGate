@@ -296,7 +296,7 @@ func pingOutbound(address string, port int) map[string]interface{} {
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(address, strconv.Itoa(port)), 3*time.Second)
 	if err != nil {
-		return map[string]interface{}{"latency": -1, "error": err.Error()}
+		return map[string]interface{}{"latency": -1, "method": "tcping", "error": err.Error()}
 	}
 	// tcping semantics: measure TCP connect latency only. Do not perform a SOCKS5 handshake.
 	latency := time.Since(start).Milliseconds()
