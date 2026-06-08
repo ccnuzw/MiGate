@@ -56,6 +56,15 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	}
 }
 
+func TestInstallerDoesNotInstallArchivedVPNGateRuntime(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, forbidden := range []string{"install_vpngate_runtime_dependencies", "softether-vpnclient", "softether-vpncmd", "microsocks", "vpnclient", "vpncmd"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not install archived VPN Gate runtime dependency %q", forbidden)
+		}
+	}
+}
+
 func TestReadmeIncludesSimpleInstallAndUsage(t *testing.T) {
 	readme := read(t, "README.md")
 	for _, want := range []string{

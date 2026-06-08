@@ -231,12 +231,13 @@
         if (!resp.ok) { el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>'; return; }
         const data = await resp.json();
         const outbounds = Array.isArray(data) ? data : (data.outbounds || []);
-        if (!outbounds.length) {
+        const visibleOutbounds = outbounds.filter(ob => ob.protocol !== 'vpngate_softether' && !String(ob.tag || '').startsWith('vpngate-'));
+        if (!visibleOutbounds.length) {
           el.innerHTML = renderEmptyState('暂无出站', '出站用于链式代理转发。点击上方"新建出站"添加 SOCKS5 / HTTP 代理。');
           return;
         }
-        el.innerHTML = '<div style=\"display:grid;grid-template-columns:1fr;gap:8px\" id=\"outbound-drag-container\">' +
-          outbounds.map(ob => renderOutboundCard(ob)).join('') +
+        el.innerHTML = '<div style="display:grid;grid-template-columns:1fr;gap:8px" id="outbound-drag-container">' +
+          visibleOutbounds.map(ob => renderOutboundCard(ob)).join('') +
           '</div>';
         setTimeout(attachOutboundDragHandlers, 0);
       } catch(e) {
@@ -247,7 +248,7 @@
     function renderOutboundCard(ob) {
       const protoLabel = ob.protocol === 'freedom' ? '直接连接' :
         ob.protocol === 'blackhole' ? '阻断' :
-        ob.protocol === 'vpngate_softether' ? 'VPN Gate SoftEther' : ob.protocol.toUpperCase();
+        ob.protocol.toUpperCase();
       const detail = ob.address ? ob.address + ':' + ob.port : '';
       const editable = ob.protocol !== 'freedom' && ob.protocol !== 'blackhole';
       const enabledColor = ob.enabled ? 'var(--green)' : 'var(--muted)';
@@ -259,7 +260,6 @@
         '<div style=\"flex:1;min-width:0\">' +
         '<div style=\"font-weight:600;font-size:var(--text-sm)\">' + escHtml(ob.remark||ob.tag) + '</div>' +
         '<div class=\"muted\" style=\"font-size:var(--text-xs)\">' + escHtml(ob.tag) + ' &middot; ' + protoLabel + (detail ? ' &middot; ' + escHtml(detail) : '') + ' <span id=\"ping-' + ob.id + '\"></span></div>' +
-        (ob.protocol === 'vpngate_softether' ? renderVPNGateManagedStatus(ob) : '') +
         '</div><div style=\"display:flex;gap:6px\">' +
         (editable ? '<button class=\"icon-btn\" onclick=\"speedTestOutbound(' + ob.id + ')\" title=\"测速\">&#9889;</button>' +
           '<button class=\"icon-btn\" onclick=\"openEditOutbound(' + ob.id + ')\" title=\"编辑\">&#9998;</button>' +
@@ -267,66 +267,6 @@
         '<span class=\"muted\" style=\"font-size:var(--text-xs);padding:4px 8px\">内置</span>') +
         '</div></div>';
     }
-
-    function renderVPNGateManagedStatus(ob) {
-      return '<div class=\"muted\" style=\"font-size:var(--text-xs);margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap\">' +
-        '<span id=\"vpngate-runtime-' + ob.id + '\">VPN Gate 出口：创建后自动接入，失败会自动保护</span>' +
-        '</div>';
-    }
-
-    async function refreshVPNGateRuntimeStatus(id) {
-      const el = document.getElementById('vpngate-runtime-' + id);
-      if (el) el.textContent = '运行状态：检查中...';
-      try {
-        const resp = await fetch(apiPath('/api/vpngate/egress/status?outbound_id=' + encodeURIComponent(id)));
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'status_failed');
-        const label = data.socks_bridge_running ? 'SOCKS bridge 运行中' : (data.runtime === 'bridge_not_started' ? '暂未启动' : data.status);
-        const healthBits = [];
-        if (data.exit_ip) healthBits.push('出口IP ' + data.exit_ip);
-        if (data.latency_ms) healthBits.push(data.latency_ms + 'ms');
-        healthBits.push('Kill-switch ' + (data.kill_switch_ok ? 'OK' : '未验证'));
-        if (el) el.textContent = '运行状态：' + label + (healthBits.length ? ' · ' + healthBits.join(' · ') : '');
-        showToast('VPN Gate 运行状态：' + label, data.socks_bridge_running ? 'success' : 'error');
-      } catch(e) {
-        if (el) el.textContent = '运行状态：读取失败';
-        showToast('读取 VPN Gate 运行状态失败：' + e.message, 'error');
-      }
-    }
-
-    async function startVPNGateRuntime(id) {
-      const statusEl = document.getElementById('vpngate-runtime-' + id);
-      if (statusEl) statusEl.textContent = 'VPN Gate 出口：正在接入...';
-      try {
-        const resp = await fetch(apiPath('/api/vpngate/egress/start?outbound_id=' + encodeURIComponent(id)), {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({confirm:true, allow_system_changes:true})
-        });
-        const data = await resp.json();
-        if (resp.status === 424 || data.error === 'runtime_preflight_failed') {
-          if (statusEl) statusEl.textContent = 'VPN Gate 出口：系统依赖未就绪';
-          showToast('VPN Gate 出口接入失败：系统依赖未就绪', 'error');
-          return;
-        }
-        if (resp.status === 501 || data.error === 'runtime_start_not_implemented') {
-          if (statusEl) statusEl.textContent = 'VPN Gate 出口：当前版本暂不可用';
-          showToast('VPN Gate 出口暂不可用', 'error');
-          return;
-        }
-        if (!resp.ok) throw new Error(data.error || 'start_failed');
-        const healthBits = [];
-        if (data.exit_ip) healthBits.push('出口IP ' + data.exit_ip);
-        if (data.latency_ms) healthBits.push(data.latency_ms + 'ms');
-        healthBits.push('Kill-switch ' + (data.kill_switch_ok ? 'OK' : '未验证'));
-        if (statusEl) statusEl.textContent = 'VPN Gate 出口：' + (data.non_native_egress_ok ? '出口已验证' : '已接入待验证') + (healthBits.length ? ' · ' + healthBits.join(' · ') : '');
-        showToast('VPN Gate 出口已接入' + (data.xray_applied ? '，配置已应用' : ''), 'success');
-      } catch(e) {
-        if (statusEl) statusEl.textContent = 'VPN Gate 出口：接入失败';
-        showToast('VPN Gate 出口接入失败：' + e.message, 'error');
-      }
-    }
-
 
     function speedTestOutbound(id) {
       const el = document.getElementById('ping-' + id);
@@ -667,7 +607,7 @@ function openCreateRoutingRule() {
       document.getElementById('crr-protocol').value = '';
       document.getElementById('crr-enabled').checked = true;
       var sel = document.getElementById('crr-outbound');
-      sel.innerHTML = '<option value="">-- 选择出站 --</option><option value="vpngate-pool">VPN Gate 出口池（自动均衡）</option>';
+      sel.innerHTML = '<option value="">-- 选择出站 --</option>';
       // Load outbounds for the dropdown
       fetch(apiPath('/api/outbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var obs = Array.isArray(data) ? data : (data.outbounds || []);
@@ -745,7 +685,7 @@ function openCreateRoutingRule() {
       document.getElementById('err-protocol').value = protocol || '';
       document.getElementById('err-enabled').checked = enabled !== false;
       var sel = document.getElementById('err-outbound');
-      sel.innerHTML = '<option value="">-- 选择出站 --</option><option value="vpngate-pool">VPN Gate 出口池（自动均衡）</option>';
+      sel.innerHTML = '<option value="">-- 选择出站 --</option>';
       fetch(apiPath('/api/outbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var obs = Array.isArray(data) ? data : (data.outbounds || []);
         obs.forEach(function(ob) {
@@ -792,177 +732,6 @@ function openCreateRoutingRule() {
         closeModal();
         await refreshRoutingRuleViews();
       } catch(e) { showToast('保存失败: ' + e.message, 'error'); }
-    }
-
-    /* --- VPN Gate --- */
-    var vpngateServers = [];
-    var vpngateSelected = {};
-
-    async function showVPNGateDialog() {
-      showModal('vpngate-dialog');
-      vpngateSelected = {};
-      await loadVPNGateServers(false);
-    }
-
-    async function refreshVPNGateServers() {
-      await loadVPNGateServers(true);
-    }
-
-    async function loadVPNGateServers(forceRefresh) {
-      const cacheKey = 'migate-vpngate-cache-v1';
-      const cacheTTL = 10 * 60 * 1000;
-      document.getElementById('vpngate-loading').style.display = '';
-      document.getElementById('vpngate-error').style.display = 'none';
-      document.getElementById('vpngate-list').style.display = 'none';
-      if (!forceRefresh) {
-        try {
-          const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
-          if (cached && Array.isArray(cached.servers) && Date.now() - cached.ts < cacheTTL) {
-            vpngateServers = cached.servers;
-            document.getElementById('vpngate-loading').style.display = 'none';
-            document.getElementById('vpngate-list').style.display = '';
-            renderVPNGateList();
-            showToast('已使用 VPN Gate 缓存，可点重新拉取刷新', 'success');
-            return;
-          }
-        } catch(e) {}
-      }
-      vpngateServers = [];
-      try {
-        const resp = await fetch(apiPath('/api/vpngate/servers') + (forceRefresh ? '?refresh=1' : ''));
-        if (!resp.ok) throw new Error(await resp.text());
-        vpngateServers = await resp.json();
-        localStorage.setItem(cacheKey, JSON.stringify({ts: Date.now(), servers: vpngateServers}));
-        document.getElementById('vpngate-loading').style.display = 'none';
-        document.getElementById('vpngate-list').style.display = '';
-        renderVPNGateList();
-      } catch (e) {
-        document.getElementById('vpngate-loading').style.display = 'none';
-        document.getElementById('vpngate-error').style.display = '';
-        document.getElementById('vpngate-error-msg').textContent = e.message;
-      }
-    }
-
-    function filteredVPNGateServers() {
-      const filterText = (document.getElementById('vpngate-filter').value || '').toLowerCase();
-      const typeFilter = document.getElementById('vpngate-type-filter').value || 'all';
-      const countryFilter = (document.getElementById('vpngate-country-filter').value || '').toLowerCase();
-      const maxPing = parseInt(document.getElementById('vpngate-max-ping').value || '0', 10);
-      return vpngateServers.filter(function(s) {
-        const type = s.server_type || '家宽';
-        if (typeFilter !== 'all' && type !== typeFilter) return false;
-        if (maxPing > 0 && Number(s.ping || 0) > maxPing) return false;
-        if (countryFilter && !String(s.country_short || '').toLowerCase().includes(countryFilter) && !String(s.country_long || '').toLowerCase().includes(countryFilter)) return false;
-        if (!filterText) return true;
-        return (s.hostname && s.hostname.toLowerCase().indexOf(filterText) >= 0) ||
-               (s.country_long && s.country_long.toLowerCase().indexOf(filterText) >= 0) ||
-               (s.country_short && s.country_short.toLowerCase().indexOf(filterText) >= 0) ||
-               (s.operator && s.operator.toLowerCase().indexOf(filterText) >= 0) ||
-               (s.ip && s.ip.indexOf(filterText) >= 0);
-      });
-    }
-
-    function vpnGateQualityScore(s) {
-      const ping = Math.max(1, Number(s.ping || 9999));
-      const speed = Math.max(0, Number(s.speed || 0));
-      const typeBonus = (s.server_type || '家宽') === '家宽' ? 50000 : 0;
-      return speed / ping + typeBonus;
-    }
-
-    function toggleAllVPNGate() {
-      const checked = document.getElementById('vpngate-select-all').checked;
-      filteredVPNGateServers().forEach(function(s) {
-        var i = vpngateServers.indexOf(s);
-        if (checked) vpngateSelected[i] = true;
-        else delete vpngateSelected[i];
-      });
-      updateVPNGateImportBtn();
-      renderVPNGateList();
-    }
-
-    function smartSelectVPNGate() {
-      vpngateSelected = {};
-      const topN = parseInt(document.getElementById('vpngate-topn').value || '10', 10);
-      filteredVPNGateServers()
-        .slice()
-        .sort(function(a, b) { return vpnGateQualityScore(b) - vpnGateQualityScore(a); })
-        .slice(0, topN)
-        .forEach(function(s) { vpngateSelected[vpngateServers.indexOf(s)] = true; });
-      updateVPNGateImportBtn();
-      renderVPNGateList();
-      showToast('已智能选择 ' + Object.keys(vpngateSelected).length + ' 个候选节点', 'success');
-    }
-
-    function renderVPNGateList() {
-      const tbody = document.getElementById('vpngate-tbody');
-      const filtered = filteredVPNGateServers();
-      document.getElementById('vpngate-count').textContent = '共 ' + vpngateServers.length + ' 台服务器（显示 ' + filtered.length + ' 台）';
-
-      var html = '';
-      filtered.forEach(function(s, idx) {
-        var realIndex = vpngateServers.indexOf(s);
-        var checked = vpngateSelected[realIndex] ? 'checked' : '';
-        var speedStr = s.speed > 1000000 ? (s.speed / 1000000).toFixed(1) + 'M' : s.speed > 1000 ? (s.speed / 1000).toFixed(0) + 'K' : s.speed;
-        html += '<tr>' +
-          '<td style="padding:4px 8px"><input type="checkbox" ' + checked + ' onchange="toggleVPNGateServer(' + realIndex + ')"></td>' +
-          '<td style="padding:4px 8px"><span style="font-weight:600">' + escapeHtml(s.country_short || '') + '</span> ' + escapeHtml(s.country_long || '') + '</td>' +
-          '<td style="padding:4px 8px;font-family:monospace">' + escapeHtml(s.ip || '') + '</td>' +
-          '<td style="padding:4px 8px;text-align:right">' + s.ping + 'ms</td>' +
-          '<td style="padding:4px 8px;text-align:right">' + speedStr + '</td>' +
-          '<td style="padding:4px 8px"><span class="type-pill type-' + (s.server_type === '商宽' ? 'biz' : 'home') + '">' + (s.server_type || '家宽') + '</span></td>' +
-          '<td style="padding:4px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(s.operator || '') + '">' + escapeHtml(s.operator || '-') + '</td>' +
-          '</tr>';
-      });
-      tbody.innerHTML = html;
-      updateVPNGateImportBtn();
-    }
-
-    function toggleVPNGateServer(index) {
-      if (vpngateSelected[index]) delete vpngateSelected[index];
-      else vpngateSelected[index] = true;
-      updateVPNGateImportBtn();
-    }
-
-    function updateVPNGateImportBtn() {
-      var selected = Object.keys(vpngateSelected).length;
-      ['vpngate-import-btn', 'vpngate-import-footer-btn'].forEach(function(id) {
-        var btn = document.getElementById(id);
-        if (!btn) return;
-        btn.disabled = selected !== 1;
-        btn.textContent = selected === 0 ? '选择 1 个节点后创建出口' : selected === 1 ? '创建 VPN Gate 出口' : '一次仅能创建 1 个出口';
-        btn.title = '创建并自动接入 VPN Gate 出口';
-      });
-    }
-
-    async function importSelectedVPNGate() {
-      var selectedIndexes = Object.keys(vpngateSelected);
-      if (selectedIndexes.length !== 1) {
-        updateVPNGateImportBtn();
-        showToast('请选择 1 个 VPN Gate 节点创建出口', 'error');
-        return;
-      }
-      var server = vpngateServers[parseInt(selectedIndexes[0], 10)];
-      var btn = document.getElementById('vpngate-import-btn');
-      if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
-      try {
-        var resp = await fetch(apiPath('/api/vpngate/egress'), {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({server: server})
-        });
-        var data = await resp.json().catch(function() { return {}; });
-        if (!resp.ok) throw new Error(data.error || 'create_failed');
-        var tag = data.outbound && data.outbound.tag ? data.outbound.tag : 'vpngate';
-        showToast('已创建 VPN Gate 出口：' + tag + '，正在自动接入...', 'success');
-        vpngateSelected = {};
-        renderVPNGateList();
-        loadOutbounds();
-        if (data.outbound && data.outbound.id) startVPNGateRuntime(data.outbound.id);
-      } catch (err) {
-        showToast('创建 VPN Gate 出口失败：' + err.message, 'error');
-      } finally {
-        updateVPNGateImportBtn();
-      }
     }
 
     function preferredTheme() {
@@ -1055,7 +824,6 @@ function openCreateRoutingRule() {
     loadOutbounds();
     loadRoutingRules();
     loadStats();
-    setInterval(refreshAutoHealthStatus, 30000);
 
     // === Navigation section switching ===
     function currentSectionFromLocation() {
@@ -1076,7 +844,7 @@ function openCreateRoutingRule() {
       });
       history.replaceState(null, '', sectionId === 'overview' ? panelPath('/') : panelPath('/#' + sectionId));
       if (sectionId === 'overview') { loadStats(); loadOverviewServiceStatuses(); }
-      if (sectionId === 'xray') { fetchXrayStatus(); refreshAutoHealthStatus(); }
+      if (sectionId === 'xray') fetchXrayStatus();
       if (sectionId === 'singbox') fetchSingboxStatus();
     }
     document.querySelectorAll('nav a').forEach((a) => {
@@ -2210,27 +1978,6 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
       } catch (e) {
         document.getElementById('svc-status-badge').textContent = '不可用';
         document.getElementById('svc-status-detail').textContent = '无法查询服务状态';
-      }
-    }
-
-    async function refreshAutoHealthStatus() {
-      try {
-        const res = await fetch(apiPath('/api/vpngate/auto-health/status'));
-        if (!res.ok) { document.getElementById('vpngate-auto-health-card').style.display = 'none'; return; }
-        const data = await res.json();
-        const card = document.getElementById('vpngate-auto-health-card');
-        const status = document.getElementById('vpngate-auto-health-status');
-        const ok = data.results.filter(r => r.ok).length;
-        const total = data.results.length;
-        const disabled = data.disabled_total || 0;
-        if (total === 0) {
-          card.style.display = 'none';
-          return;
-        }
-        card.style.display = '';
-        status.textContent = '可用 ' + ok + '/' + total + ' | 已自动禁用 ' + disabled + ' 个节点';
-      } catch (e) {
-        document.getElementById('vpngate-auto-health-card').style.display = 'none';
       }
     }
 

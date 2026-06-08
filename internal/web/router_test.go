@@ -87,28 +87,19 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 	}
 	body := page.Body.String()
 	jsBody := readAppJS(t)
-	// HTML/CSS elements (in panelHTML)
 	for _, want := range []string{
-		`id="vpngate-type-filter"`,
-		`id="vpngate-country-filter"`,
-		`id="vpngate-max-ping"`,
-		`id="vpngate-topn"`,
-		`vpngate-auto-health-card`,
+		`onclick="openCreateOutbound()"`,
+		`onclick="batchSpeedTest()"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing outbound interaction contract %q", want)
 		}
 	}
-	// JS functions (in app.js)
 	for _, want := range []string{
 		`if (!resp.ok) { showToast('排序保存失败', 'error'); await loadOutbounds(); return; }`,
 		`showToast('排序已保存', 'success');`,
 		`catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); })`,
 		`var ms = Number(r.latency).toFixed(0);`,
-		`function smartSelectVPNGate()`,
-		`function vpnGateQualityScore(s)`,
-		`function refreshAutoHealthStatus()`,
-		`/api/vpngate/auto-health/status`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing outbound interaction contract %q", want)
@@ -119,39 +110,7 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 	}
 }
 
-func TestPanelShowsVPNGateSoftEtherCapabilityPreview(t *testing.T) {
-	router := web.NewRouter()
-	page := httptest.NewRecorder()
-	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
-	if page.Code != http.StatusOK {
-		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
-	}
-	body := page.Body.String()
-	for _, want := range []string{
-		"SoftEther",
-		`id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口"`,
-		`id="vpngate-import-footer-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口"`,
-		"创建 VPN Gate 出口",
-		"官方列表不会被当作 SOCKS5 代理源",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing VPN Gate capability preview %q", want)
-		}
-	}
-	for _, forbidden := range []string{
-		`id="vpngate-import-btn" disabled`,
-		"导入为 SOCKS5 出站",
-		"暂未启动 VPN runtime",
-		"SoftEther 出口占位",
-		"下一步路线",
-	} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("panel should advertise SoftEther placeholder creation, not disabled SOCKS import: found %q", forbidden)
-		}
-	}
-}
-
-func TestPanelShowsSimplifiedVPNGateSoftEtherOutboundStatus(t *testing.T) {
+func TestPanelArchivesVPNGateUserInterface(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
 	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -160,30 +119,27 @@ func TestPanelShowsSimplifiedVPNGateSoftEtherOutboundStatus(t *testing.T) {
 	}
 	body := page.Body.String()
 	jsBody := readAppJS(t)
-	for _, want := range []string{
-		`ob.protocol === 'vpngate_softether'`,
-		`renderVPNGateManagedStatus(ob)`,
-		`function renderVPNGateManagedStatus(ob)`,
-		`VPN Gate 出口：创建后自动接入，失败会自动保护`,
-		`创建 VPN Gate 出口`,
-		`创建并自动接入 VPN Gate 出口`,
+	for _, forbidden := range []string{
+		`onclick="showVPNGateDialog()"`,
+		`id="vpngate-dialog"`,
+		`VPN Gate 公共服务器`,
+		`id="vpngate-import-btn"`,
+		`id="vpngate-import-footer-btn"`,
+		`vpngate-auto-health-card`,
+		`VPN Gate 自动检测`,
 	} {
-		if !strings.Contains(body, want) && !strings.Contains(jsBody, want) {
-			t.Fatalf("panel missing simplified VPN Gate contract %q", want)
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("archived VPN Gate UI must be hidden, found %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{
-		`检测 VPN Gate`,
-		`启动计划`,
-		`依赖预检`,
-		`启动 runtime`,
-		`停止 runtime`,
-		`renderVPNGateRuntimeControls(ob)`,
-		`function checkVPNGateRuntimeDoctor(id)`,
-		`onclick="checkVPNGateOutboundHealth()"`,
+		`VPN Gate 出口池（自动均衡）`,
+		`renderVPNGateManagedStatus(ob)`,
+		`refreshAutoHealthStatus();`,
+		`setInterval(refreshAutoHealthStatus`,
 	} {
-		if strings.Contains(body, forbidden) || strings.Contains(jsBody, forbidden) {
-			t.Fatalf("panel should hide expert VPN Gate controls, found %q", forbidden)
+		if strings.Contains(jsBody, forbidden) {
+			t.Fatalf("archived VPN Gate UI must not be wired from app.js, found %q", forbidden)
 		}
 	}
 }
@@ -1525,41 +1481,33 @@ func TestPanelWiresCoreInstallUninstallActions(t *testing.T) {
 	}
 }
 
-func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
+func TestPanelKeepsVPNGateArchivedFromVisibleFlows(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	router.ServeHTTP(page, req)
 	body := page.Body.String()
 	jsBody := readAppJS(t)
-	for _, want := range []string{
+	for _, forbidden := range []string{
 		`id="vpngate-dialog"`,
 		`VPN Gate 公共服务器`,
 		`onclick="refreshVPNGateServers()"`,
-		`重新拉取`,
-		`VPN Gate 官方列表不是 SOCKS5 代理源`,
-		`选择一个节点后点击“创建 VPN Gate 出口”，MiGate 会把它作为受管 SoftEther 出口接入；官方列表不会被当作 SOCKS5 代理源。`,
-		`id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口"`,
+		`id="vpngate-import-btn"`,
+		`id="vpngate-import-footer-btn"`,
 		`创建 VPN Gate 出口`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel missing VPN Gate dialog contract %q", want)
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("archived VPN Gate dialog must not be rendered, found %q", forbidden)
 		}
 	}
-	for _, want := range []string{
+	for _, forbidden := range []string{
 		`function showVPNGateDialog()`,
-		`function loadVPNGateServers(forceRefresh)`,
-		`function refreshVPNGateServers()`,
-		`migate-vpngate-cache-v1`,
-		`?refresh=1`,
-		`localStorage.setItem(cacheKey`,
-		`function updateVPNGateImportBtn()`,
-		`btn.textContent = selected === 0 ? '选择 1 个节点后创建出口'`,
 		`startVPNGateRuntime(data.outbound.id)`,
 		`fetch(apiPath('/api/vpngate/egress')`,
+		`localStorage.setItem(cacheKey`,
 	} {
-		if !strings.Contains(jsBody, want) {
-			t.Fatalf("app.js missing VPN Gate cache/refresh contract %q", want)
+		if strings.Contains(jsBody, forbidden) {
+			t.Fatalf("archived VPN Gate flow must not be callable from app.js, found %q", forbidden)
 		}
 	}
 }

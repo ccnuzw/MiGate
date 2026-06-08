@@ -4414,7 +4414,6 @@ const panelHTML = `<!doctype html>
         <div class="actions">
           <button onclick="openCreateOutbound()">新建出站</button>
           <button class="secondary" onclick="batchSpeedTest()">一键测速</button>
-          <button class="secondary" onclick="showVPNGateDialog()">VPN Gate</button>
         </div>
         <div id="outbound-list" class="list muted">正在加载出站...</div>
       </section>
@@ -4444,11 +4443,6 @@ const panelHTML = `<!doctype html>
           <div><strong>配置路径</strong>：<span id="xray-config-path">-</span></div>
         </div>
         <div id="xray-unsupported-warning" class="xray-warning muted" style="display:none;margin-top:12px;padding:12px 16px;border-radius:var(--radius-md);background:var(--surface-warning);color:var(--fg)">当前 Xray 版本不支持 Hysteria2 协议，需要使用 sing-box 等后端配合。</div>
-        <div id="vpngate-auto-health-card" class="muted" style="display:none;margin-top:12px;padding:12px 16px;border-radius:var(--radius-md);background:var(--surface-subtle)">
-          <span><strong>VPN Gate 自动检测</strong></span>
-          <span id="vpngate-auto-health-status" style="margin-left:8px">检查中...</span>
-          <button class="icon-btn" onclick="refreshAutoHealthStatus()" title="刷新" style="margin-left:8px;font-size:11px;float:right">⟳</button>
-        </div>
         <div class="action-toolbar xray-toolbar">
           <div class="toolbar-copy">
             <strong>配置操作</strong>
@@ -4756,70 +4750,6 @@ const panelHTML = `<!doctype html>
       </div>
     </div>
 
-    <!-- VPN Gate dialog -->
-    <div id="vpngate-dialog" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal()">
-      <div class="modal-content" style="max-width:800px;max-height:80vh;overflow:hidden;display:flex;flex-direction:column">
-        <div class="modal-header">
-          <h3 class="modal-title">VPN Gate 公共服务器</h3>
-          <button class="modal-close" onclick="closeModal()">✕</button>
-        </div>
-        <div style="flex:1;overflow-y:auto;padding:12px 16px">
-          <div id="vpngate-loading" style="text-align:center;padding:40px;color:var(--muted)">
-            <p style="font-size:18px;margin-bottom:8px">正在获取服务器列表...</p>
-            <p>从 VPN Gate API 获取全球公共代理服务器</p>
-          </div>
-          <div id="vpngate-error" style="display:none;text-align:center;padding:40px">
-            <p style="color:var(--danger);font-size:16px;margin-bottom:8px">获取失败</p>
-            <p id="vpngate-error-msg" class="muted" style="margin-bottom:16px"></p>
-            <button class="secondary" onclick="showVPNGateDialog()">重试</button>
-          </div>
-          <div id="vpngate-list" style="display:none">
-            <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <span id="vpngate-count" class="muted"></span>
-              <input id="vpngate-filter" type="text" placeholder="搜索国家/IP/运营商..." style="flex:1;min-width:180px;max-width:260px" oninput="renderVPNGateList()">
-              <select id="vpngate-type-filter" style="width:110px" onchange="renderVPNGateList()">
-                <option value="all">全部类型</option>
-                <option value="家宽">家宽</option>
-                <option value="商宽">商宽</option>
-              </select>
-              <input id="vpngate-country-filter" type="text" placeholder="国家 JP/US" style="width:110px" oninput="renderVPNGateList()">
-              <input id="vpngate-max-ping" type="number" min="1" placeholder="延迟≤ms" style="width:110px" oninput="renderVPNGateList()">
-              <select id="vpngate-topn" style="width:90px">
-                <option value="5">Top 5</option>
-                <option value="10" selected>Top 10</option>
-                <option value="20">Top 20</option>
-              </select>
-              <button class="secondary" onclick="refreshVPNGateServers()">重新拉取</button>
-              <button class="secondary" onclick="smartSelectVPNGate()">智能选择参考</button>
-              <button class="secondary" id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口">创建 VPN Gate 出口</button>
-            </div>
-            <div class="notice" style="margin-bottom:12px;background:var(--surface-warning);color:var(--fg)">
-              <div class="notice-title">VPN Gate 官方列表不是 SOCKS5 代理源</div>
-              <div class="notice-copy">选择一个节点后点击“创建 VPN Gate 出口”，MiGate 会把它作为受管 SoftEther 出口接入；官方列表不会被当作 SOCKS5 代理源。</div>
-            </div>
-            <table style="width:100%;border-collapse:collapse;font-size:13px">
-              <thead>
-                <tr style="background:var(--surface-subtle)">
-                  <th style="padding:6px 8px;text-align:left"><input type="checkbox" id="vpngate-select-all" onchange="toggleAllVPNGate()"></th>
-                  <th style="padding:6px 8px;text-align:left">国家</th>
-                  <th style="padding:6px 8px;text-align:left">IP</th>
-                  <th style="padding:6px 8px;text-align:right">延迟</th>
-                  <th style="padding:6px 8px;text-align:right">速度</th>
-                  <th style="padding:6px 8px;text-align:left">类型</th>
-                  <th style="padding:6px 8px;text-align:left">运营商</th>
-                </tr>
-              </thead>
-              <tbody id="vpngate-tbody"></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <span class="muted" style="font-size:12px">参考列表/候选信息，来自 vpngate.net；创建出口只生成本地 SoftEther bridge 占位配置</span>
-          <button class="secondary" onclick="closeModal()">关闭</button>
-          <button class="primary" id="vpngate-import-footer-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口">选择 1 个节点后创建出口</button>
-        </div>
-      </div>
-    </div>
     </main>
   </div>
   <script src="static/app.js"></script>

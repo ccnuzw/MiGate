@@ -276,22 +276,12 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	if !xray.StatsClientIsStub(statsClient) {
 		trafficSched = scheduler.NewTrafficSyncScheduler(store, statsClient, 1*time.Minute)
 	}
-	// VPN Gate health scheduler — periodically checks vpngate-* outbounds, auto-disables failed nodes
-	var vpnApplyer scheduler.XrayApplyer
-	if xrayCtrl != nil {
-		vpnApplyer = web.NewXrayApplyer(xrayCtrl)
-	}
-	vpnHealthSched := scheduler.NewVPNGateHealthScheduler(store, vpnApplyer, 5*time.Minute, 3)
-
-	// Wire schedulers into web layer for status reporting
-	opts = append(opts, web.WithHealthScheduler(vpnHealthSched))
 
 	router := web.NewRouter(opts...)
 
 	// Start schedulers in background and wait for them during cleanup.
 	var schedWG sync.WaitGroup
 	trafficStarted := make(chan struct{})
-	vpnStarted := make(chan struct{})
 	if trafficSched != nil {
 		schedWG.Add(1)
 		go func() {
@@ -303,16 +293,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	} else {
 		close(trafficStarted)
 	}
-
-	schedWG.Add(1)
-	go func() {
-		defer schedWG.Done()
-		log.Println("VPN Gate health scheduler started")
-		close(vpnStarted)
-		vpnHealthSched.Start()
-	}()
 	<-trafficStarted
-	<-vpnStarted
 
 	var cleanupOnce sync.Once
 	cleanup := func() {
@@ -320,7 +301,6 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 			if trafficSched != nil {
 				trafficSched.Stop()
 			}
-			vpnHealthSched.Stop()
 			schedWG.Wait()
 			closeStore()
 		})

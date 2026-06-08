@@ -126,24 +126,21 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	}
 }
 
-func TestInstallerOffersVPNGateRuntimeDependencies(t *testing.T) {
+func TestInstallerDoesNotOfferArchivedVPNGateRuntimeDependencies(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
-	for _, want := range []string{
+	for _, forbidden := range []string{
 		"install_vpngate_runtime_dependencies",
 		"是否安装 VPN Gate runtime 依赖？[Y/n]",
-		"iproute2",
-		"iptables",
 		"microsocks",
 		"softether-vpnclient",
 		"softether-vpncmd",
-		"isc-dhcp-client",
 		"dhclient",
 		"vpncmd",
 		"vpnclient",
 		"VPN Gate runtime dependencies:",
 	} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("installer VPN Gate runtime dependency contract missing %q", want)
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not offer archived VPN Gate runtime dependency %q", forbidden)
 		}
 	}
 }
