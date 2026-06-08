@@ -109,7 +109,10 @@ func BuildConfig(inbounds []db.Inbound) Config {
 		}
 		protocol := inbound.Protocol
 
-		port := NextPort(i)
+		port := inbound.Port
+		if port <= 0 {
+			port = NextPort(i)
+		}
 
 		switch protocol {
 		case "hysteria2":

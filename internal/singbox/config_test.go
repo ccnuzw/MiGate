@@ -10,7 +10,7 @@ import (
 func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 	inbounds := []db.Inbound{
 		{
-			ID: 1, Protocol: "hysteria2", Port: 21001, Enabled: true,
+			ID: 1, Protocol: "hysteria2", Port: 40002, Enabled: true,
 			Hy2UpMbps: 100, Hy2DownMbps: 50,
 			Hy2Obfs: "salamander", Hy2ObfsPassword: "obfs-pass",
 			Clients: []db.Client{
@@ -28,8 +28,8 @@ func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 	if ib.Type != "hysteria2" {
 		t.Errorf("expected type hysteria2, got %s", ib.Type)
 	}
-	if ib.ListenPort != SBBasePort {
-		t.Errorf("expected port %d, got %d", SBBasePort, ib.ListenPort)
+	if ib.ListenPort != 40002 {
+		t.Errorf("expected user-facing inbound port 40002, got %d", ib.ListenPort)
 	}
 	if ib.UpMbps != 100 {
 		t.Errorf("expected up_mbps 100, got %d", ib.UpMbps)
@@ -224,8 +224,8 @@ func TestBuildConfig_TUICInbound(t *testing.T) {
 	if ib.Type != "tuic" {
 		t.Errorf("expected type tuic, got %s", ib.Type)
 	}
-	if ib.ListenPort != SBBasePort {
-		t.Errorf("expected port %d, got %d", SBBasePort, ib.ListenPort)
+	if ib.ListenPort != 21010 {
+		t.Errorf("expected user-facing inbound port 21010, got %d", ib.ListenPort)
 	}
 	if ib.TLS == nil || !ib.TLS.Enabled {
 		t.Error("expected TLS enabled for TUIC")
