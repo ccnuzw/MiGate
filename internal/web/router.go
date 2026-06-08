@@ -167,6 +167,10 @@ type VPNGateRuntimeStartResult struct {
 	OutboundTag         string   `json:"outbound_tag"`
 	BridgeAddress       string   `json:"bridge_address"`
 	BridgePort          int      `json:"bridge_port"`
+	VPNConnected        bool     `json:"vpn_connected"`
+	SocksBridgeRunning  bool     `json:"socks_bridge_running"`
+	NonNativeEgressOK   bool     `json:"non_native_egress_ok"`
+	LastError           string   `json:"last_error"`
 	PerformsSideEffects bool     `json:"performs_side_effects"`
 	CommandsExecuted    []string `json:"commands_executed"`
 }
@@ -220,6 +224,10 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 	if vpncmd == "" {
 		vpncmd = "vpncmd"
 	}
+	microsocks := strings.TrimSpace(target.DependencyPaths["microsocks"])
+	if microsocks == "" {
+		microsocks = "microsocks"
+	}
 	nicName := fmt.Sprintf("migate%d", target.OutboundID)
 	serverEndpoint := strings.TrimSpace(target.ServerHostName)
 	if serverEndpoint == "" {
@@ -245,6 +253,18 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 	if err := s.runner.Run(ctx, vpncmd, "localhost", "/CLIENT", "/CMD", "AccountCreate", nicName, "/SERVER:"+serverAddress, "/HUB:VPNGATE", "/USERNAME:vpn", "/NICNAME:"+nicName); err != nil {
 		return VPNGateRuntimeStartResult{}, err
 	}
+	executed = append(executed, fmt.Sprintf("%s localhost /CLIENT /CMD AccountPasswordSet %s /PASSWORD:vpn /TYPE:standard", vpncmd, nicName))
+	if err := s.runner.Run(ctx, vpncmd, "localhost", "/CLIENT", "/CMD", "AccountPasswordSet", nicName, "/PASSWORD:vpn", "/TYPE:standard"); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s localhost /CLIENT /CMD AccountConnect %s", vpncmd, nicName))
+	if err := s.runner.Run(ctx, vpncmd, "localhost", "/CLIENT", "/CMD", "AccountConnect", nicName); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s netns exec %s %s -i %s -p %d", ip, netns, microsocks, target.BridgeAddress, target.BridgePort))
+	if err := s.runner.Run(ctx, ip, "netns", "exec", netns, microsocks, "-i", target.BridgeAddress, "-p", strconv.Itoa(target.BridgePort)); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
 	return VPNGateRuntimeStartResult{
 		Status:              "started",
 		Runtime:             target.Runtime,
@@ -252,6 +272,10 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 		OutboundTag:         target.OutboundTag,
 		BridgeAddress:       target.BridgeAddress,
 		BridgePort:          target.BridgePort,
+		VPNConnected:        true,
+		SocksBridgeRunning:  true,
+		NonNativeEgressOK:   false,
+		LastError:           "",
 		PerformsSideEffects: true,
 		CommandsExecuted:    executed,
 	}, nil
@@ -2607,6 +2631,7 @@ type vpngateRuntimeStatus struct {
 	VPNConnected        bool     `json:"vpn_connected"`
 	SocksBridgeRunning  bool     `json:"socks_bridge_running"`
 	NonNativeEgressOK   bool     `json:"non_native_egress_ok"`
+	LastError           string   `json:"last_error"`
 	PerformsSideEffects bool     `json:"performs_side_effects"`
 	Notes               []string `json:"notes"`
 }
@@ -2732,6 +2757,7 @@ func vpngateEgressRuntimeStatusHandler(cfg *routerConfig) http.HandlerFunc {
 			VPNConnected:        false,
 			SocksBridgeRunning:  false,
 			NonNativeEgressOK:   false,
+			LastError:           "runtime_not_started",
 			PerformsSideEffects: false,
 			Notes: []string{
 				"受管 vpngate_softether 出口已存在，但 SoftEther/netns/SOCKS bridge runtime 尚未启动。",

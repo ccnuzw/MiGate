@@ -461,7 +461,7 @@ func TestVPNGateSoftEtherRuntimeStartStopsWhenDoctorFails(t *testing.T) {
 	}
 }
 
-func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherNicAndAccountPhases(t *testing.T) {
+func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedFullSoftEtherAndSocksBridgePhases(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -480,20 +480,22 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherNicAndAc
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200 real start, got %d: %s", resp.Code, resp.Body.String())
 	}
-	if len(runner.calls) != 4 {
-		t.Fatalf("expected netns, SoftEther start, vpncmd NIC, and account commands, got %+v", runner.calls)
+	wantCalls := []struct{ command, args string }{
+		{"/sbin/ip", "netns add migate-vpngate-" + strconv.FormatInt(outbound.ID, 10)},
+		{"/usr/local/bin/vpnclient", "start"},
+		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD NicCreate migate3"},
+		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3"},
+		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard"},
+		{"/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountConnect migate3"},
+		{"/sbin/ip", "netns exec migate-vpngate-" + strconv.FormatInt(outbound.ID, 10) + " /usr/bin/microsocks -i 127.0.0.1 -p 21080"},
 	}
-	if runner.calls[0].command != "/sbin/ip" || strings.Join(runner.calls[0].args, " ") != "netns add migate-vpngate-"+strconv.FormatInt(outbound.ID, 10) {
-		t.Fatalf("expected injected netns creation command first, got %+v", runner.calls[0])
+	if len(runner.calls) != len(wantCalls) {
+		t.Fatalf("expected full runtime command chain, got %+v", runner.calls)
 	}
-	if runner.calls[1].command != "/usr/local/bin/vpnclient" || strings.Join(runner.calls[1].args, " ") != "start" {
-		t.Fatalf("expected injected SoftEther start command second, got %+v", runner.calls[1])
-	}
-	if runner.calls[2].command != "/usr/local/bin/vpncmd" || strings.Join(runner.calls[2].args, " ") != "localhost /CLIENT /CMD NicCreate migate3" {
-		t.Fatalf("expected injected vpncmd NIC creation command third, got %+v", runner.calls[2])
-	}
-	if runner.calls[3].command != "/usr/local/bin/vpncmd" || strings.Join(runner.calls[3].args, " ") != "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3" {
-		t.Fatalf("expected injected vpncmd account creation command fourth, got %+v", runner.calls[3])
+	for i, want := range wantCalls {
+		if runner.calls[i].command != want.command || strings.Join(runner.calls[i].args, " ") != want.args {
+			t.Fatalf("unexpected command %d: want %s %s, got %+v", i+1, want.command, want.args, runner.calls[i])
+		}
 	}
 	var got map[string]interface{}
 	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
@@ -502,9 +504,12 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherNicAndAc
 	if got["status"] != "started" || got["runtime"] != "softether_netns_socks_bridge" || got["performs_side_effects"] != true {
 		t.Fatalf("unexpected real start response: %+v", got)
 	}
+	if got["vpn_connected"] != true || got["socks_bridge_running"] != true || got["non_native_egress_ok"] != false || got["last_error"] != "" {
+		t.Fatalf("expected runtime health fields after start, got %+v", got)
+	}
 	commands, ok := got["commands_executed"].([]interface{})
-	if !ok || len(commands) != 4 || !strings.Contains(fmt.Sprint(commands[0]), "/sbin/ip netns add migate-vpngate-") || fmt.Sprint(commands[1]) != "/usr/local/bin/vpnclient start" || fmt.Sprint(commands[2]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD NicCreate migate3" || fmt.Sprint(commands[3]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3" {
-		t.Fatalf("expected reported netns, SoftEther start, vpncmd NIC, and account commands, got %+v", got["commands_executed"])
+	if !ok || len(commands) != len(wantCalls) || fmt.Sprint(commands[4]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard" || fmt.Sprint(commands[5]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountConnect migate3" || !strings.Contains(fmt.Sprint(commands[6]), "/sbin/ip netns exec migate-vpngate-") || !strings.Contains(fmt.Sprint(commands[6]), "/usr/bin/microsocks -i 127.0.0.1 -p 21080") {
+		t.Fatalf("expected reported full runtime command chain, got %+v", got["commands_executed"])
 	}
 	if strings.Contains(resp.Body.String(), "runtime_start_not_implemented") {
 		t.Fatalf("ready runtime start must not return placeholder response: %s", resp.Body.String())
@@ -521,6 +526,18 @@ func TestVPNGateSoftEtherRuntimeStartStopsWhenNicCreateFails(t *testing.T) {
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenAccountCreateFails(t *testing.T) {
 	assertVPNGateRuntimeStartRunnerFailure(t, 4, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenAccountPasswordSetFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 5, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountPasswordSet migate3 /PASSWORD:vpn /TYPE:standard")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenAccountConnectFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 6, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountConnect migate3")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenSocksBridgeFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 7, "/sbin/ip", "netns exec migate-vpngate-3 /usr/bin/microsocks -i 127.0.0.1 -p 21080")
 }
 
 func assertVPNGateRuntimeStartRunnerFailure(t *testing.T, errOnCall int, wantCommand, wantArgs string) {
@@ -669,6 +686,7 @@ func TestVPNGateSoftEtherRuntimeStatusAPIReportsPendingBridge(t *testing.T) {
 		"vpn_connected":         false,
 		"socks_bridge_running":  false,
 		"non_native_egress_ok":  false,
+		"last_error":            "runtime_not_started",
 		"performs_side_effects": false,
 	} {
 		if got[key] != want {
