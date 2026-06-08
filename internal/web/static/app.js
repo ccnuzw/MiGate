@@ -223,6 +223,16 @@
       }
     }
 
+    var outbounds = [];
+
+    function isCustomSpeedTestOutbound(ob) {
+      if (!ob) return false;
+      return ob.enabled !== false &&
+        !['direct','blocked'].includes(ob.tag) &&
+        !['freedom','blackhole'].includes(ob.protocol) &&
+        !!ob.address;
+    }
+
     async function loadOutbounds() {
       const el = document.getElementById('outbound-list');
       if (!el) return;
@@ -230,7 +240,7 @@
         const resp = await fetch(apiPath('/api/outbounds'));
         if (!resp.ok) { el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>'; return; }
         const data = await resp.json();
-        const outbounds = Array.isArray(data) ? data : (data.outbounds || []);
+        outbounds = Array.isArray(data) ? data : (data.outbounds || []);
         if (!outbounds.length) {
           el.innerHTML = renderEmptyState('暂无出站', '出站用于链式代理转发。点击上方"新建出站"添加 SOCKS5 / HTTP 代理。');
           return;
@@ -288,7 +298,15 @@
     async function batchSpeedTest() {
       var btn = document.querySelector('[onclick*=\"batchSpeedTest\"]');
       if (btn) btn.disabled = true;
-      document.querySelectorAll('[id^=\"ping-\"]').forEach(function(el) {
+      var targets = outbounds.filter(isCustomSpeedTestOutbound);
+      if (!targets.length) {
+        showToast('没有可测速的自定义出站', 'error');
+        if (btn) btn.disabled = false;
+        return;
+      }
+      targets.forEach(function(ob) {
+        var el = document.getElementById('ping-' + ob.id);
+        if (!el) return;
         el.textContent = ' 测速中';
         el.style.color = 'var(--text)';
       });

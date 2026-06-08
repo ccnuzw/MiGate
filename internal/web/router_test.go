@@ -136,6 +136,10 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 		`showToast('排序已保存', 'success');`,
 		`catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); })`,
 		`var ms = Number(r.latency).toFixed(0);`,
+		`function isCustomSpeedTestOutbound(ob)`,
+		`outbounds.filter(isCustomSpeedTestOutbound)`,
+		`!['direct','blocked'].includes(ob.tag)`,
+		`!['freedom','blackhole'].includes(ob.protocol)`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing outbound interaction contract %q", want)
