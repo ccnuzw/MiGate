@@ -129,7 +129,7 @@ func TestPanelArchivesVPNGateUserInterface(t *testing.T) {
 		`VPN Gate 自动检测`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("archived VPN Gate UI must be hidden, found %q", forbidden)
+			t.Fatalf("removed VPN Gate UI must be absent, found %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{
@@ -139,7 +139,7 @@ func TestPanelArchivesVPNGateUserInterface(t *testing.T) {
 		`setInterval(refreshAutoHealthStatus`,
 	} {
 		if strings.Contains(jsBody, forbidden) {
-			t.Fatalf("archived VPN Gate UI must not be wired from app.js, found %q", forbidden)
+			t.Fatalf("removed VPN Gate UI must not be wired from app.js, found %q", forbidden)
 		}
 	}
 }
@@ -1497,7 +1497,7 @@ func TestPanelKeepsVPNGateArchivedFromVisibleFlows(t *testing.T) {
 		`创建 VPN Gate 出口`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("archived VPN Gate dialog must not be rendered, found %q", forbidden)
+			t.Fatalf("removed VPN Gate dialog must not be rendered, found %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{
@@ -1507,7 +1507,7 @@ func TestPanelKeepsVPNGateArchivedFromVisibleFlows(t *testing.T) {
 		`localStorage.setItem(cacheKey`,
 	} {
 		if strings.Contains(jsBody, forbidden) {
-			t.Fatalf("archived VPN Gate flow must not be callable from app.js, found %q", forbidden)
+			t.Fatalf("removed VPN Gate flow must not be callable from app.js, found %q", forbidden)
 		}
 	}
 }
