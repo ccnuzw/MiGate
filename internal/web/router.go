@@ -210,8 +210,16 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 	if ip == "" {
 		ip = "ip"
 	}
+	vpnclient := strings.TrimSpace(target.DependencyPaths["vpnclient"])
+	if vpnclient == "" {
+		vpnclient = "vpnclient"
+	}
 	executed := []string{fmt.Sprintf("%s netns add %s", ip, netns)}
 	if err := s.runner.Run(ctx, ip, "netns", "add", netns); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s start", vpnclient))
+	if err := s.runner.Run(ctx, vpnclient, "start"); err != nil {
 		return VPNGateRuntimeStartResult{}, err
 	}
 	return VPNGateRuntimeStartResult{

@@ -115,8 +115,9 @@ func (s *fakeVPNGateRuntimeStarter) Start(ctx context.Context, outbound web.VPNG
 }
 
 type fakeVPNGateRuntimeCommandRunner struct {
-	calls []fakeVPNGateRuntimeCommandCall
-	err   error
+	calls     []fakeVPNGateRuntimeCommandCall
+	err       error
+	errOnCall int
 }
 
 type fakeVPNGateRuntimeCommandCall struct {
@@ -127,7 +128,10 @@ type fakeVPNGateRuntimeCommandCall struct {
 func (r *fakeVPNGateRuntimeCommandRunner) Run(ctx context.Context, command string, args ...string) error {
 	_ = ctx
 	r.calls = append(r.calls, fakeVPNGateRuntimeCommandCall{command: command, args: append([]string{}, args...)})
-	return r.err
+	if r.err != nil && (r.errOnCall == 0 || r.errOnCall == len(r.calls)) {
+		return r.err
+	}
+	return nil
 }
 
 func TestBuildVPNGateRuntimeStartPlanIsSideEffectFree(t *testing.T) {
@@ -452,7 +456,7 @@ func TestVPNGateSoftEtherRuntimeStartStopsWhenDoctorFails(t *testing.T) {
 	}
 }
 
-func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsPhase(t *testing.T) {
+func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsAndSoftEtherStartPhases(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -471,11 +475,14 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsPhase(t *testing.
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200 real start, got %d: %s", resp.Code, resp.Body.String())
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected exactly one netns command, got %+v", runner.calls)
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected netns and SoftEther start commands, got %+v", runner.calls)
 	}
 	if runner.calls[0].command != "/sbin/ip" || strings.Join(runner.calls[0].args, " ") != "netns add migate-vpngate-"+strconv.FormatInt(outbound.ID, 10) {
-		t.Fatalf("expected injected netns creation command, got %+v", runner.calls[0])
+		t.Fatalf("expected injected netns creation command first, got %+v", runner.calls[0])
+	}
+	if runner.calls[1].command != "/usr/local/bin/vpnclient" || strings.Join(runner.calls[1].args, " ") != "start" {
+		t.Fatalf("expected injected SoftEther start command second, got %+v", runner.calls[1])
 	}
 	var got map[string]interface{}
 	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
@@ -485,11 +492,49 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsPhase(t *testing.
 		t.Fatalf("unexpected real start response: %+v", got)
 	}
 	commands, ok := got["commands_executed"].([]interface{})
-	if !ok || len(commands) != 1 || !strings.Contains(fmt.Sprint(commands[0]), "/sbin/ip netns add migate-vpngate-") {
-		t.Fatalf("expected reported netns command, got %+v", got["commands_executed"])
+	if !ok || len(commands) != 2 || !strings.Contains(fmt.Sprint(commands[0]), "/sbin/ip netns add migate-vpngate-") || fmt.Sprint(commands[1]) != "/usr/local/bin/vpnclient start" {
+		t.Fatalf("expected reported netns and SoftEther start commands, got %+v", got["commands_executed"])
 	}
 	if strings.Contains(resp.Body.String(), "runtime_start_not_implemented") {
 		t.Fatalf("ready runtime start must not return placeholder response: %s", resp.Body.String())
+	}
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenSoftEtherStartFails(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	outbound := createTestVPNGateSoftEtherOutbound(t, store)
+	probe := &fakeVPNGateRuntimeProbe{paths: map[string]string{
+		"vpncmd": "/usr/local/bin/vpncmd", "vpnclient": "/usr/local/bin/vpnclient", "ip": "/sbin/ip", "iptables": "/sbin/iptables", "microsocks": "/usr/bin/microsocks",
+	}}
+	runner := &fakeVPNGateRuntimeCommandRunner{err: errors.New("vpnclient service failed"), errOnCall: 2}
+	router := web.NewRouter(web.WithStore(store), web.WithVPNGateRuntimeProbe(probe), web.WithVPNGateRuntimeRunner(runner))
+	body := bytes.NewBufferString(`{"confirm":true,"allow_system_changes":true}`)
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/vpngate/egress/start?outbound_id="+strconv.FormatInt(outbound.ID, 10), body))
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 SoftEther start failure, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected failure after second command only, got %+v", runner.calls)
+	}
+	if runner.calls[1].command != "/usr/local/bin/vpnclient" || strings.Join(runner.calls[1].args, " ") != "start" {
+		t.Fatalf("expected SoftEther start to fail on second command, got %+v", runner.calls[1])
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse SoftEther failure response: %v", err)
+	}
+	if got["error"] != "runtime_start_failed" || got["status"] != "failed" || got["performs_side_effects"] != false {
+		t.Fatalf("unexpected SoftEther failure response: %+v", got)
+	}
+	commands, ok := got["commands_executed"].([]interface{})
+	if !ok || len(commands) != 0 {
+		t.Fatalf("failure wrapper must not invent executed commands, got %+v", got["commands_executed"])
 	}
 }
 
