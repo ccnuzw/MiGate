@@ -259,7 +259,7 @@
         '<div style=\"flex:1;min-width:0\">' +
         '<div style=\"font-weight:600;font-size:var(--text-sm)\">' + escHtml(ob.remark||ob.tag) + '</div>' +
         '<div class=\"muted\" style=\"font-size:var(--text-xs)\">' + escHtml(ob.tag) + ' &middot; ' + protoLabel + (detail ? ' &middot; ' + escHtml(detail) : '') + ' <span id=\"ping-' + ob.id + '\"></span></div>' +
-        (ob.protocol === 'vpngate_softether' ? renderVPNGateRuntimeControls(ob) : '') +
+        (ob.protocol === 'vpngate_softether' ? renderVPNGateManagedStatus(ob) : '') +
         '</div><div style=\"display:flex;gap:6px\">' +
         (editable ? '<button class=\"icon-btn\" onclick=\"speedTestOutbound(' + ob.id + ')\" title=\"测速\">&#9889;</button>' +
           '<button class=\"icon-btn\" onclick=\"openEditOutbound(' + ob.id + ')\" title=\"编辑\">&#9998;</button>' +
@@ -268,28 +268,10 @@
         '</div></div>';
     }
 
-    function renderVPNGateRuntimeControls(ob) {
+    function renderVPNGateManagedStatus(ob) {
       return '<div class=\"muted\" style=\"font-size:var(--text-xs);margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap\">' +
-        '<span id=\"vpngate-runtime-' + ob.id + '\">运行状态：暂未启动</span>' +
-        '<span id=\"vpngate-runtime-doctor-' + ob.id + '\">依赖预检：未检查</span>' +
-        '<button class=\"btn-mini\" onclick=\"showVPNGateRuntimePlan(' + ob.id + ')\">启动计划</button>' +
-        '<button class=\"btn-mini\" onclick=\"refreshVPNGateRuntimeStatus(' + ob.id + ')\">运行状态</button>' +
-        '<button class=\"btn-mini\" onclick=\"checkVPNGateRuntimeDoctor(' + ob.id + ')\">依赖预检</button>' +
-        '<button class=\"btn-mini\" onclick=\"startVPNGateRuntime(' + ob.id + ')\">启动 runtime</button>' +
-        '<button class=\"btn-mini\" onclick=\"stopVPNGateRuntime(' + ob.id + ')\">停止 runtime</button>' +
+        '<span id=\"vpngate-runtime-' + ob.id + '\">VPN Gate 出口：创建后自动接入，失败会自动保护</span>' +
         '</div>';
-    }
-
-    async function showVPNGateRuntimePlan(id) {
-      try {
-        const resp = await fetch(apiPath('/api/vpngate/egress/plan?outbound_id=' + encodeURIComponent(id)));
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'plan_failed');
-        const steps = (data.steps || []).map(function(s) { return s.name + ':' + s.status; }).join(' → ');
-        showToast('VPN Gate 启动计划：' + steps, 'success');
-      } catch(e) {
-        showToast('读取 VPN Gate 启动计划失败：' + e.message, 'error');
-      }
     }
 
     async function refreshVPNGateRuntimeStatus(id) {
@@ -312,28 +294,9 @@
       }
     }
 
-    async function checkVPNGateRuntimeDoctor(id) {
-      const el = document.getElementById('vpngate-runtime-doctor-' + id);
-      if (el) el.textContent = '依赖预检：检查中...';
-      try {
-        const resp = await fetch(apiPath('/api/vpngate/egress/doctor?outbound_id=' + encodeURIComponent(id)));
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'doctor_failed');
-        const checks = data.checks || [];
-        const missing = checks.filter(function(c) { return c.status !== 'available'; });
-        const label = missing.length ? '缺少依赖 ' + missing.map(function(c) { return c.command; }).join(', ') : '依赖就绪';
-        if (el) el.textContent = '依赖预检：' + label;
-        showToast('VPN Gate 依赖预检：' + label, missing.length ? 'error' : 'success');
-      } catch(e) {
-        if (el) el.textContent = '依赖预检：读取失败';
-        showToast('读取 VPN Gate 依赖预检失败：' + e.message, 'error');
-      }
-    }
-
     async function startVPNGateRuntime(id) {
       const statusEl = document.getElementById('vpngate-runtime-' + id);
-      const doctorEl = document.getElementById('vpngate-runtime-doctor-' + id);
-      if (statusEl) statusEl.textContent = '运行状态：启动预检中...';
+      if (statusEl) statusEl.textContent = 'VPN Gate 出口：正在接入...';
       try {
         const resp = await fetch(apiPath('/api/vpngate/egress/start?outbound_id=' + encodeURIComponent(id)), {
           method: 'POST',
@@ -341,18 +304,14 @@
           body: JSON.stringify({confirm:true, allow_system_changes:true})
         });
         const data = await resp.json();
-        if (data.checks && doctorEl) {
-          const missing = data.checks.filter(function(c) { return c.status !== 'available'; });
-          doctorEl.textContent = '依赖预检：' + (missing.length ? '缺少依赖 ' + missing.map(function(c) { return c.command; }).join(', ') : '依赖就绪');
-        }
         if (resp.status === 424 || data.error === 'runtime_preflight_failed') {
-          if (statusEl) statusEl.textContent = '运行状态：预检未通过';
-          showToast('VPN Gate runtime 启动已阻断：缺少依赖', 'error');
+          if (statusEl) statusEl.textContent = 'VPN Gate 出口：系统依赖未就绪';
+          showToast('VPN Gate 出口接入失败：系统依赖未就绪', 'error');
           return;
         }
         if (resp.status === 501 || data.error === 'runtime_start_not_implemented') {
-          if (statusEl) statusEl.textContent = '运行状态：启动器待实现';
-          showToast('VPN Gate runtime 启动入口已就绪，真实启动器待实现', 'error');
+          if (statusEl) statusEl.textContent = 'VPN Gate 出口：当前版本暂不可用';
+          showToast('VPN Gate 出口暂不可用', 'error');
           return;
         }
         if (!resp.ok) throw new Error(data.error || 'start_failed');
@@ -360,33 +319,14 @@
         if (data.exit_ip) healthBits.push('出口IP ' + data.exit_ip);
         if (data.latency_ms) healthBits.push(data.latency_ms + 'ms');
         healthBits.push('Kill-switch ' + (data.kill_switch_ok ? 'OK' : '未验证'));
-        if (statusEl) statusEl.textContent = '运行状态：' + (data.non_native_egress_ok ? '出口已验证' : '已启动待验证') + (healthBits.length ? ' · ' + healthBits.join(' · ') : '');
-        showToast('VPN Gate runtime 已启动' + (data.xray_applied ? '，Xray 已应用' : ''), 'success');
+        if (statusEl) statusEl.textContent = 'VPN Gate 出口：' + (data.non_native_egress_ok ? '出口已验证' : '已接入待验证') + (healthBits.length ? ' · ' + healthBits.join(' · ') : '');
+        showToast('VPN Gate 出口已接入' + (data.xray_applied ? '，配置已应用' : ''), 'success');
       } catch(e) {
-        if (statusEl) statusEl.textContent = '运行状态：启动失败';
-        showToast('VPN Gate runtime 启动失败：' + e.message, 'error');
+        if (statusEl) statusEl.textContent = 'VPN Gate 出口：接入失败';
+        showToast('VPN Gate 出口接入失败：' + e.message, 'error');
       }
     }
 
-
-    async function stopVPNGateRuntime(id) {
-      const statusEl = document.getElementById('vpngate-runtime-' + id);
-      if (statusEl) statusEl.textContent = '运行状态：停止中...';
-      try {
-        const resp = await fetch(apiPath('/api/vpngate/egress/stop?outbound_id=' + encodeURIComponent(id)), {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({confirm:true, allow_system_changes:true})
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'stop_failed');
-        if (statusEl) statusEl.textContent = '运行状态：已停止';
-        showToast('VPN Gate runtime 已停止并清理 netns/SOCKS bridge', 'success');
-      } catch(e) {
-        if (statusEl) statusEl.textContent = '运行状态：停止失败';
-        showToast('VPN Gate runtime 停止失败：' + e.message, 'error');
-      }
-    }
 
     function speedTestOutbound(id) {
       const el = document.getElementById('ping-' + id);
@@ -438,37 +378,6 @@
         showToast('测速异常: ' + e.message, 'error');
       } finally {
         if (btn) btn.disabled = false;
-      }
-    }
-
-    async function checkVPNGateOutboundHealth() {
-      var btn = document.querySelector('[onclick*=\"checkVPNGateOutboundHealth\"]');
-      if (btn) { btn.disabled = true; btn.textContent = '检测中...'; }
-      try {
-        var resp = await fetch(apiPath('/api/vpngate/outbounds/health'), {method:'POST'});
-        if (!resp.ok) { showToast('VPN Gate 健康检测失败', 'error'); return; }
-        var data = await resp.json();
-        var summary = data.summary || {total:0, ok:0, fail:0};
-        (data.results || []).forEach(function(r) {
-          var el = document.getElementById('ping-' + r.id);
-          if (!el) return;
-          if (r.ok) {
-            el.textContent = ' VPN Gate: ' + r.latency_ms + 'ms';
-            el.style.color = r.latency_ms < 300 ? 'var(--green)' : (r.latency_ms < 800 ? 'orange' : 'var(--danger)');
-          } else {
-            el.textContent = ' VPN Gate: 失败';
-            el.style.color = 'var(--danger)';
-          }
-        });
-        if (summary.total === 0) {
-          showToast('没有已启用的 VPN Gate 出站', 'error');
-        } else {
-          showToast('VPN Gate 健康检测完成：' + summary.ok + '/' + summary.total + ' 可用', summary.ok > 0 ? 'success' : 'error');
-        }
-      } catch(e) {
-        showToast('VPN Gate 健康检测异常: ' + e.message, 'error');
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '检测 VPN Gate'; }
       }
     }
 
@@ -998,15 +907,15 @@ function openCreateRoutingRule() {
       if (!btn) return;
       var selected = Object.keys(vpngateSelected).length;
       btn.disabled = selected !== 1;
-      btn.textContent = selected === 0 ? '选择 1 个节点后创建出口' : selected === 1 ? '创建 SoftEther 出口占位' : '一次仅能创建 1 个出口';
-      btn.title = '仅创建受管出口配置，暂未启动 VPN runtime';
+      btn.textContent = selected === 0 ? '选择 1 个节点后创建出口' : selected === 1 ? '创建 VPN Gate 出口' : '一次仅能创建 1 个出口';
+      btn.title = '创建并自动接入 VPN Gate 出口';
     }
 
     async function importSelectedVPNGate() {
       var selectedIndexes = Object.keys(vpngateSelected);
       if (selectedIndexes.length !== 1) {
         updateVPNGateImportBtn();
-        showToast('请选择 1 个 VPN Gate 候选节点创建 SoftEther 出口占位', 'error');
+        showToast('请选择 1 个 VPN Gate 节点创建出口', 'error');
         return;
       }
       var server = vpngateServers[parseInt(selectedIndexes[0], 10)];
@@ -1020,12 +929,14 @@ function openCreateRoutingRule() {
         });
         var data = await resp.json().catch(function() { return {}; });
         if (!resp.ok) throw new Error(data.error || 'create_failed');
-        showToast('已创建 SoftEther 出口占位：' + (data.outbound && data.outbound.tag ? data.outbound.tag : 'vpngate'), 'success');
+        var tag = data.outbound && data.outbound.tag ? data.outbound.tag : 'vpngate';
+        showToast('已创建 VPN Gate 出口：' + tag + '，正在自动接入...', 'success');
         vpngateSelected = {};
         renderVPNGateList();
         loadOutbounds();
+        if (data.outbound && data.outbound.id) startVPNGateRuntime(data.outbound.id);
       } catch (err) {
-        showToast('创建 SoftEther 出口占位失败：' + err.message, 'error');
+        showToast('创建 VPN Gate 出口失败：' + err.message, 'error');
       } finally {
         updateVPNGateImportBtn();
       }

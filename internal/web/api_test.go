@@ -865,7 +865,7 @@ func TestVPNGateSoftEtherRuntimeStatusAPIReportsPendingBridge(t *testing.T) {
 	}
 }
 
-func TestCreateVPNGateSoftEtherEgressCreatesPendingBridgeOutbound(t *testing.T) {
+func TestCreateVPNGateSoftEtherEgressCreatesManagedBridgeOutbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -892,8 +892,8 @@ func TestCreateVPNGateSoftEtherEgressCreatesPendingBridgeOutbound(t *testing.T) 
 	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if got.Status != "pending_runtime" || got.Runtime != "bridge_not_started" {
-		t.Fatalf("expected pending runtime status, got %+v body=%s", got, resp.Body.String())
+	if got.Status != "created" || got.Runtime != "managed_by_migate" {
+		t.Fatalf("expected managed runtime status, got %+v body=%s", got, resp.Body.String())
 	}
 	if got.Outbound.ID == 0 || got.Outbound.Protocol != "vpngate_softether" || !strings.HasPrefix(got.Outbound.Tag, "vpngate-") {
 		t.Fatalf("unexpected created outbound: %+v", got.Outbound)
@@ -908,10 +908,8 @@ func TestCreateVPNGateSoftEtherEgressCreatesPendingBridgeOutbound(t *testing.T) 
 		t.Fatalf("expected server identity in remark, got %q", got.Outbound.Remark)
 	}
 	joinedNotes := strings.Join(got.Notes, " ")
-	for _, forbidden := range []string{"connected", "已连接", "started"} {
-		if strings.Contains(strings.ToLower(joinedNotes), forbidden) {
-			t.Fatalf("response must not claim runtime is started/connected: %+v", got.Notes)
-		}
+	if !strings.Contains(joinedNotes, "前端会自动接入 VPN Gate runtime") || !strings.Contains(joinedNotes, "不会被当作 SOCKS5 代理源") {
+		t.Fatalf("expected simplified managed VPN Gate notes, got %+v", got.Notes)
 	}
 
 	outbounds, err := store.ListOutbounds(context.Background())
@@ -960,7 +958,7 @@ func TestCreateVPNGateSoftEtherEgressDefaultsLocalBridgeWithoutRuntimeSideEffect
 	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if got.Status != "pending_runtime" || got.Runtime != "bridge_not_started" {
+	if got.Status != "created" || got.Runtime != "managed_by_migate" {
 		t.Fatalf("unexpected runtime status: %+v", got)
 	}
 	if got.Outbound.Protocol != "vpngate_softether" || got.Outbound.Address != "10.255."+strconv.FormatInt(got.Outbound.ID, 10)+".2" || got.Outbound.Port != 21080 {

@@ -2762,7 +2762,7 @@ func vpngateCreateEgressHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		serverID := firstNonEmpty(req.Server.HostName, req.Server.IP, "server")
 		tag := uniqueVPNGateEgressTag(r.Context(), cfg.store, serverID, port)
-		remark := "VPN Gate SoftEther placeholder - " + serverID
+		remark := "VPN Gate SoftEther - " + serverID
 		if req.Server.CountryLong != "" {
 			remark += " (" + strings.TrimSpace(req.Server.CountryLong) + ")"
 		}
@@ -2784,13 +2784,13 @@ func vpngateCreateEgressHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		resp := vpngateCreateEgressResponse{
-			Status:   "pending_runtime",
-			Runtime:  "bridge_not_started",
+			Status:   "created",
+			Runtime:  "managed_by_migate",
 			Outbound: outbound,
 			Server:   req.Server,
 			Notes: []string{
-				"仅创建受管 vpngate_softether 出口配置，暂未启动 VPN runtime。",
-				"后续 SoftEther/netns/SOCKS bridge runtime 实现后，会由本地 bridge 地址提供流量出口；本次请求不访问外网、不启动进程。",
+				"已创建受管 vpngate_softether 出口，前端会自动接入 VPN Gate runtime。",
+				"官方列表仅作为 SoftEther 候选信息，不会被当作 SOCKS5 代理源。",
 			},
 		}
 		resp.Bridge.Protocol = "socks5"
@@ -4304,7 +4304,6 @@ const panelHTML = `<!doctype html>
         <div class="actions">
           <button onclick="openCreateOutbound()">新建出站</button>
           <button class="secondary" onclick="batchSpeedTest()">一键测速</button>
-          <button class="secondary" onclick="checkVPNGateOutboundHealth()">检测 VPN Gate</button>
           <button class="secondary" onclick="showVPNGateDialog()">VPN Gate</button>
         </div>
         <div id="outbound-list" class="list muted">正在加载出站...</div>
@@ -4682,15 +4681,11 @@ const panelHTML = `<!doctype html>
               </select>
               <button class="secondary" onclick="refreshVPNGateServers()">重新拉取</button>
               <button class="secondary" onclick="smartSelectVPNGate()">智能选择参考</button>
-              <button class="secondary" id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="仅创建受管出口配置，暂未启动 VPN runtime">创建 SoftEther 出口占位</button>
+              <button class="secondary" id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口">创建 VPN Gate 出口</button>
             </div>
             <div class="notice" style="margin-bottom:12px;background:var(--surface-warning);color:var(--fg)">
               <div class="notice-title">VPN Gate 官方列表不是 SOCKS5 代理源</div>
-              <div class="notice-copy">官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 将它们作为 SoftEther 出口候选信息展示；当前创建按钮只生成受管出口占位配置，不会把官方列表当作 SOCKS5 代理源。</div>
-            </div>
-            <div class="notice" style="margin-bottom:12px;background:var(--surface-subtle);color:var(--fg)">
-              <div class="notice-title">下一步路线：SoftEther + 隔离网络命名空间 + SOCKS 桥接</div>
-              <div class="notice-copy">当前按钮仅创建受管 vpngate_softether 出口配置，暂未启动 VPN runtime；后续会将 VPN Gate SoftEther 会话放入隔离网络命名空间，并通过本地 SOCKS 桥接接入 Xray outbound。</div>
+              <div class="notice-copy">选择一个节点后点击“创建 VPN Gate 出口”，MiGate 会把它作为受管 SoftEther 出口接入；官方列表不会被当作 SOCKS5 代理源。</div>
             </div>
             <table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead>

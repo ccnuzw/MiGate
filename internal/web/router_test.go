@@ -107,8 +107,6 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 		`var ms = Number(r.latency).toFixed(0);`,
 		`function smartSelectVPNGate()`,
 		`function vpnGateQualityScore(s)`,
-		`function checkVPNGateOutboundHealth()`,
-		`/api/vpngate/outbounds/health`,
 		`function refreshAutoHealthStatus()`,
 		`/api/vpngate/auto-health/status`,
 	} {
@@ -130,13 +128,10 @@ func TestPanelShowsVPNGateSoftEtherCapabilityPreview(t *testing.T) {
 	}
 	body := page.Body.String()
 	for _, want := range []string{
-		"下一步路线",
 		"SoftEther",
-		"隔离网络命名空间",
-		"SOCKS 桥接",
-		`id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="仅创建受管出口配置，暂未启动 VPN runtime"`,
-		"创建 SoftEther 出口占位",
-		"仅创建受管出口配置，暂未启动 VPN runtime",
+		`id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口"`,
+		"创建 VPN Gate 出口",
+		"官方列表不会被当作 SOCKS5 代理源",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing VPN Gate capability preview %q", want)
@@ -145,6 +140,9 @@ func TestPanelShowsVPNGateSoftEtherCapabilityPreview(t *testing.T) {
 	for _, forbidden := range []string{
 		`id="vpngate-import-btn" disabled`,
 		"导入为 SOCKS5 出站",
+		"暂未启动 VPN runtime",
+		"SoftEther 出口占位",
+		"下一步路线",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("panel should advertise SoftEther placeholder creation, not disabled SOCKS import: found %q", forbidden)
@@ -152,41 +150,39 @@ func TestPanelShowsVPNGateSoftEtherCapabilityPreview(t *testing.T) {
 	}
 }
 
-func TestPanelShowsVPNGateRuntimeControlsForSoftEtherOutbounds(t *testing.T) {
+func TestPanelShowsSimplifiedVPNGateSoftEtherOutboundStatus(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
 	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
 	}
+	body := page.Body.String()
 	jsBody := readAppJS(t)
 	for _, want := range []string{
 		`ob.protocol === 'vpngate_softether'`,
-		`renderVPNGateRuntimeControls(ob)`,
-		`function renderVPNGateRuntimeControls(ob)`,
-		`function showVPNGateRuntimePlan(id)`,
-		`function refreshVPNGateRuntimeStatus(id)`,
-		`function checkVPNGateRuntimeDoctor(id)`,
-		`async function startVPNGateRuntime(id)`,
-		`async function stopVPNGateRuntime(id)`,
-		`/api/vpngate/egress/plan?outbound_id=`,
-		`/api/vpngate/egress/status?outbound_id=`,
-		`/api/vpngate/egress/doctor?outbound_id=`,
-		`/api/vpngate/egress/start?outbound_id=`,
-		`/api/vpngate/egress/stop?outbound_id=`,
-		`JSON.stringify({confirm:true, allow_system_changes:true})`,
+		`renderVPNGateManagedStatus(ob)`,
+		`function renderVPNGateManagedStatus(ob)`,
+		`VPN Gate 出口：创建后自动接入，失败会自动保护`,
+		`创建 VPN Gate 出口`,
+		`创建并自动接入 VPN Gate 出口`,
+	} {
+		if !strings.Contains(body, want) && !strings.Contains(jsBody, want) {
+			t.Fatalf("panel missing simplified VPN Gate contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`检测 VPN Gate`,
 		`启动计划`,
-		`运行状态`,
 		`依赖预检`,
 		`启动 runtime`,
 		`停止 runtime`,
-		`出口IP`,
-		`Kill-switch`,
-		`缺少依赖`,
-		`暂未启动`,
+		`renderVPNGateRuntimeControls(ob)`,
+		`function checkVPNGateRuntimeDoctor(id)`,
+		`onclick="checkVPNGateOutboundHealth()"`,
 	} {
-		if !strings.Contains(jsBody, want) {
-			t.Fatalf("app.js missing VPN Gate runtime control contract %q", want)
+		if strings.Contains(body, forbidden) || strings.Contains(jsBody, forbidden) {
+			t.Fatalf("panel should hide expert VPN Gate controls, found %q", forbidden)
 		}
 	}
 }
@@ -1541,10 +1537,9 @@ func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
 		`onclick="refreshVPNGateServers()"`,
 		`重新拉取`,
 		`VPN Gate 官方列表不是 SOCKS5 代理源`,
-		`官方节点通常开放 HTTPS/SoftEther/OpenVPN 等 VPN 端口；MiGate 将它们作为 SoftEther 出口候选信息展示；当前创建按钮只生成受管出口占位配置，不会把官方列表当作 SOCKS5 代理源。`,
-		`id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="仅创建受管出口配置，暂未启动 VPN runtime"`,
-		`创建 SoftEther 出口占位`,
-		`参考列表/候选信息，来自 vpngate.net；创建出口只生成本地 SoftEther bridge 占位配置`,
+		`选择一个节点后点击“创建 VPN Gate 出口”，MiGate 会把它作为受管 SoftEther 出口接入；官方列表不会被当作 SOCKS5 代理源。`,
+		`id="vpngate-import-btn" onclick="importSelectedVPNGate()" title="创建并自动接入 VPN Gate 出口"`,
+		`创建 VPN Gate 出口`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing VPN Gate dialog contract %q", want)
@@ -1559,6 +1554,7 @@ func TestPanelWiresVPNGateDialogCacheRefresh(t *testing.T) {
 		`localStorage.setItem(cacheKey`,
 		`function updateVPNGateImportBtn()`,
 		`btn.textContent = selected === 0 ? '选择 1 个节点后创建出口'`,
+		`startVPNGateRuntime(data.outbound.id)`,
 		`fetch(apiPath('/api/vpngate/egress')`,
 	} {
 		if !strings.Contains(jsBody, want) {
