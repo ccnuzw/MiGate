@@ -221,6 +221,14 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 		vpncmd = "vpncmd"
 	}
 	nicName := fmt.Sprintf("migate%d", target.OutboundID)
+	serverEndpoint := strings.TrimSpace(target.ServerHostName)
+	if serverEndpoint == "" {
+		serverEndpoint = strings.TrimSpace(target.ServerIP)
+	}
+	if serverEndpoint == "" {
+		return VPNGateRuntimeStartResult{}, errors.New("vpngate server endpoint is required")
+	}
+	serverAddress := serverEndpoint + ":443"
 	executed := []string{fmt.Sprintf("%s netns add %s", ip, netns)}
 	if err := s.runner.Run(ctx, ip, "netns", "add", netns); err != nil {
 		return VPNGateRuntimeStartResult{}, err
@@ -231,6 +239,10 @@ func (s vpngateRuntimeStarter) Start(ctx context.Context, target VPNGateRuntimeS
 	}
 	executed = append(executed, fmt.Sprintf("%s localhost /CLIENT /CMD NicCreate %s", vpncmd, nicName))
 	if err := s.runner.Run(ctx, vpncmd, "localhost", "/CLIENT", "/CMD", "NicCreate", nicName); err != nil {
+		return VPNGateRuntimeStartResult{}, err
+	}
+	executed = append(executed, fmt.Sprintf("%s localhost /CLIENT /CMD AccountCreate %s /SERVER:%s /HUB:VPNGATE /USERNAME:vpn /NICNAME:%s", vpncmd, nicName, serverAddress, nicName))
+	if err := s.runner.Run(ctx, vpncmd, "localhost", "/CLIENT", "/CMD", "AccountCreate", nicName, "/SERVER:"+serverAddress, "/HUB:VPNGATE", "/USERNAME:vpn", "/NICNAME:"+nicName); err != nil {
 		return VPNGateRuntimeStartResult{}, err
 	}
 	return VPNGateRuntimeStartResult{

@@ -461,7 +461,7 @@ func TestVPNGateSoftEtherRuntimeStartStopsWhenDoctorFails(t *testing.T) {
 	}
 }
 
-func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherAndNicPhases(t *testing.T) {
+func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherNicAndAccountPhases(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -480,8 +480,8 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherAndNicPh
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200 real start, got %d: %s", resp.Code, resp.Body.String())
 	}
-	if len(runner.calls) != 3 {
-		t.Fatalf("expected netns, SoftEther start, and vpncmd NIC commands, got %+v", runner.calls)
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected netns, SoftEther start, vpncmd NIC, and account commands, got %+v", runner.calls)
 	}
 	if runner.calls[0].command != "/sbin/ip" || strings.Join(runner.calls[0].args, " ") != "netns add migate-vpngate-"+strconv.FormatInt(outbound.ID, 10) {
 		t.Fatalf("expected injected netns creation command first, got %+v", runner.calls[0])
@@ -492,6 +492,9 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherAndNicPh
 	if runner.calls[2].command != "/usr/local/bin/vpncmd" || strings.Join(runner.calls[2].args, " ") != "localhost /CLIENT /CMD NicCreate migate3" {
 		t.Fatalf("expected injected vpncmd NIC creation command third, got %+v", runner.calls[2])
 	}
+	if runner.calls[3].command != "/usr/local/bin/vpncmd" || strings.Join(runner.calls[3].args, " ") != "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3" {
+		t.Fatalf("expected injected vpncmd account creation command fourth, got %+v", runner.calls[3])
+	}
 	var got map[string]interface{}
 	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
 		t.Fatalf("parse real start response: %v", err)
@@ -500,8 +503,8 @@ func TestVPNGateSoftEtherRuntimeStartReadyPathRunsInjectedNetnsSoftEtherAndNicPh
 		t.Fatalf("unexpected real start response: %+v", got)
 	}
 	commands, ok := got["commands_executed"].([]interface{})
-	if !ok || len(commands) != 3 || !strings.Contains(fmt.Sprint(commands[0]), "/sbin/ip netns add migate-vpngate-") || fmt.Sprint(commands[1]) != "/usr/local/bin/vpnclient start" || fmt.Sprint(commands[2]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD NicCreate migate3" {
-		t.Fatalf("expected reported netns, SoftEther start, and vpncmd NIC commands, got %+v", got["commands_executed"])
+	if !ok || len(commands) != 4 || !strings.Contains(fmt.Sprint(commands[0]), "/sbin/ip netns add migate-vpngate-") || fmt.Sprint(commands[1]) != "/usr/local/bin/vpnclient start" || fmt.Sprint(commands[2]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD NicCreate migate3" || fmt.Sprint(commands[3]) != "/usr/local/bin/vpncmd localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3" {
+		t.Fatalf("expected reported netns, SoftEther start, vpncmd NIC, and account commands, got %+v", got["commands_executed"])
 	}
 	if strings.Contains(resp.Body.String(), "runtime_start_not_implemented") {
 		t.Fatalf("ready runtime start must not return placeholder response: %s", resp.Body.String())
@@ -514,6 +517,10 @@ func TestVPNGateSoftEtherRuntimeStartStopsWhenSoftEtherStartFails(t *testing.T) 
 
 func TestVPNGateSoftEtherRuntimeStartStopsWhenNicCreateFails(t *testing.T) {
 	assertVPNGateRuntimeStartRunnerFailure(t, 3, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD NicCreate migate3")
+}
+
+func TestVPNGateSoftEtherRuntimeStartStopsWhenAccountCreateFails(t *testing.T) {
+	assertVPNGateRuntimeStartRunnerFailure(t, 4, "/usr/local/bin/vpncmd", "localhost /CLIENT /CMD AccountCreate migate3 /SERVER:vpn123.opengw.net:443 /HUB:VPNGATE /USERNAME:vpn /NICNAME:migate3")
 }
 
 func assertVPNGateRuntimeStartRunnerFailure(t *testing.T, errOnCall int, wantCommand, wantArgs string) {
