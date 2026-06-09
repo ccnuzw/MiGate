@@ -1282,10 +1282,10 @@ function openCreateRoutingRule() {
             '</div>' +
           '</div>' +
           '<div class="resource-actions">' +
-            '<button class="icon-btn" onclick="copySubUrl(' + htmlAttrString(shareLink) + ')" title="复制分享链接">Link</button>' +
-            '<button class="icon-btn" onclick="editClient(' + c.id + ',' + inbound.id + ')" title="编辑">Edit</button>' +
-            '<button class="icon-btn" onclick="toggleClient(' + c.id + ')" title="启用/禁用">' + (c.enabled ? 'ON' : 'OFF') + '</button>' +
-            '<button class="danger-icon-btn" onclick="deleteClient(' + inbound.id + ',' + c.id + ')" title="删除">DEL</button>' +
+            '<button id="client-copy-' + c.id + '" class="icon-btn" onclick="copySubUrl(' + htmlAttrString(shareLink) + ')" title="复制分享链接">复制链接</button>' +
+            '<button id="client-edit-' + c.id + '" class="icon-btn" onclick="editClient(' + c.id + ',' + inbound.id + ')" title="编辑客户端">编辑</button>' +
+            '<button id="client-toggle-' + c.id + '" class="icon-btn" onclick="toggleClient(' + c.id + ', \'client-toggle-' + c.id + '\')" title="启用/禁用客户端">' + (c.enabled ? '禁用' : '启用') + '</button>' +
+            '<button id="client-delete-' + c.id + '" class="danger-icon-btn" onclick="deleteClient(' + inbound.id + ',' + c.id + ', \'client-delete-' + c.id + '\')" title="删除客户端">删除</button>' +
           '</div>' +
         '</div>';
       }).join('');
@@ -1350,14 +1350,20 @@ function openCreateRoutingRule() {
       await loadInbounds();
     }
 
-    async function deleteClient(inboundId, clientId) {
+    async function deleteClient(inboundId, clientId, buttonId) {
       if (!await showConfirm('确认删除客户端 ' + clientId + '？')) return;
-      const response = await fetch(apiPath('/api/inbounds/') + inboundId + '/clients/' + clientId, {method: 'DELETE'});
-      if (!response.ok) {
-        showToast('删除失败：' + await response.text(), 'error');
-        return;
+      const restoreButton = setActionButtonBusy(buttonId, '删除中...');
+      try {
+        const response = await apiFetch('/api/inbounds/' + inboundId + '/clients/' + clientId, {method: 'DELETE'});
+        if (!response.ok) {
+          showToast(await responseErrorMessage(response, '删除客户端失败'), 'error');
+          return;
+        }
+        showToast('客户端已删除', 'success');
+        await loadInbounds();
+      } finally {
+        if (restoreButton) restoreButton();
       }
-      await loadInbounds();
     }
 
     // === Edit & toggle functions ===
@@ -1548,48 +1554,58 @@ function openCreateRoutingRule() {
       if (!d) return;
       const email = document.getElementById('ec-email').value.trim();
       if (!email) { showToast('请输入客户端标识', 'error'); return; }
-      const tl = parseInt(document.getElementById('ec-traffic-limit').value) || 0;
-      const eaStr = document.getElementById('ec-expiry-at').value;
-      let ea = 0;
-      if (eaStr) { ea = Math.floor(new Date(eaStr).getTime() / 1000); }
-      const res = await fetch(apiPath('/api/inbounds/') + d.inboundId + '/clients/' + d.id, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          email: email,
-          enabled: document.getElementById('ec-enabled').checked,
-          traffic_limit: tl,
-          expiry_at: ea
-        })
-      });
-      if (!res.ok) { showToast('编辑客户端失败', 'error'); return; }
-      showToast('客户端已更新', 'success');
-      closeEditClient();
-      await loadInbounds();
+      const restoreButton = setActionButtonBusy('edit-client-submit-btn', '保存中...');
+      try {
+        const tl = parseInt(document.getElementById('ec-traffic-limit').value) || 0;
+        const eaStr = document.getElementById('ec-expiry-at').value;
+        let ea = 0;
+        if (eaStr) { ea = Math.floor(new Date(eaStr).getTime() / 1000); }
+        const res = await apiFetch('/api/inbounds/' + d.inboundId + '/clients/' + d.id, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            email: email,
+            enabled: document.getElementById('ec-enabled').checked,
+            traffic_limit: tl,
+            expiry_at: ea
+          })
+        });
+        if (!res.ok) { showToast(await responseErrorMessage(res, '编辑客户端失败'), 'error'); return; }
+        showToast('客户端已更新', 'success');
+        closeEditClient();
+        await loadInbounds();
+      } finally {
+        if (restoreButton) restoreButton();
+      }
     }
 
-    async function toggleClient(id) {
-      const inboundRes = await fetch(apiPath('/api/inbounds'));
-      const data = await inboundRes.json();
-      const inbounds = data.inbounds || [];
-      let foundInbound = null, foundClient = null;
-      for (const ib of inbounds) {
-        const c = (ib.clients || []).find(c => c.id === id);
-        if (c) { foundInbound = ib; foundClient = c; break; }
+    async function toggleClient(id, buttonId) {
+      const restoreButton = setActionButtonBusy(buttonId, '切换中...');
+      try {
+        const inboundRes = await apiFetch('/api/inbounds');
+        const data = await inboundRes.json();
+        const inbounds = data.inbounds || [];
+        let foundInbound = null, foundClient = null;
+        for (const ib of inbounds) {
+          const c = (ib.clients || []).find(c => c.id === id);
+          if (c) { foundInbound = ib; foundClient = c; break; }
+        }
+        if (!foundInbound || !foundClient) return;
+        foundClient.enabled = !foundClient.enabled;
+        const res = await apiFetch('/api/inbounds/' + foundInbound.id + '/clients/' + id + '/enabled', {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled: foundClient.enabled})
+        });
+        if (!res.ok) {
+          showToast(await responseErrorMessage(res, '开关客户端失败'), 'error');
+          return;
+        }
+        showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success');
+        await loadInbounds();
+      } finally {
+        if (restoreButton) restoreButton();
       }
-      if (!foundInbound || !foundClient) return;
-      foundClient.enabled = !foundClient.enabled;
-      const res = await fetch(apiPath('/api/inbounds/') + foundInbound.id + '/clients/' + id + '/enabled', {
-        method: 'PATCH',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: foundClient.enabled})
-      });
-      if (!res.ok) {
-        showToast('开关客户端失败', 'error');
-        return;
-      }
-      showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success');
-      await loadInbounds();
     }
 
     async function resetClientTraffic() {
@@ -1597,19 +1613,24 @@ function openCreateRoutingRule() {
       if (!d) return;
       const confirmed = await showConfirm('确定要重置此客户端的流量数据吗？此操作不可恢复。');
       if (!confirmed) return;
-      const res = await fetch(apiPath('/api/inbounds/') + d.inboundId + '/clients/' + d.id + '/reset-traffic', {
-        method: 'POST'
-      });
-      if (!res.ok) {
-        showToast('重置流量失败', 'error');
-        return;
+      const restoreButton = setActionButtonBusy('reset-client-traffic-btn', '重置中...');
+      try {
+        const res = await apiFetch('/api/inbounds/' + d.inboundId + '/clients/' + d.id + '/reset-traffic', {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          showToast(await responseErrorMessage(res, '重置流量失败'), 'error');
+          return;
+        }
+        const updated = await res.json();
+        document.getElementById('ec-up-display').textContent = formatBytes(updated.up || 0);
+        document.getElementById('ec-down-display').textContent = formatBytes(updated.down || 0);
+        document.getElementById('ec-total-display').textContent = formatBytes((updated.up || 0) + (updated.down || 0));
+        showToast('流量已重置', 'success');
+        await loadInbounds();
+      } finally {
+        if (restoreButton) restoreButton();
       }
-      const updated = await res.json();
-      document.getElementById('ec-up-display').textContent = formatBytes(updated.up || 0);
-      document.getElementById('ec-down-display').textContent = formatBytes(updated.down || 0);
-      document.getElementById('ec-total-display').textContent = formatBytes((updated.up || 0) + (updated.down || 0));
-      showToast('流量已重置', 'success');
-      await loadInbounds();
     }
 
     function openCreateClient(inboundId) {
@@ -1648,13 +1669,13 @@ function openCreateRoutingRule() {
         const eaStr = document.getElementById('client-expiry').value;
         let ea = 0;
         if (eaStr) { ea = Math.floor(new Date(eaStr).getTime() / 1000); }
-        const response = await fetch(apiPath('/api/inbounds/') + inboundId + '/clients', {
+        const response = await apiFetch('/api/inbounds/' + inboundId + '/clients', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({email: email, uuid: clientUUID, traffic_limit: tl, expiry_at: ea})
         });
         if (!response.ok) {
-          showToast('创建客户端失败：' + await response.text(), 'error');
+          showToast(await responseErrorMessage(response, '创建客户端失败'), 'error');
           return;
         }
         formEl.reset();

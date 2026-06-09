@@ -442,8 +442,24 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`uuid: clientUUID`,
 		`protocolForClientModal()`,
 		`btnWrap.className = 'client-add-row';`,
+		`id="edit-client-submit-btn"`,
+		`id="reset-client-traffic-btn"`,
+		`setActionButtonBusy('edit-client-submit-btn', '保存中...')`,
+		`setActionButtonBusy('reset-client-traffic-btn', '重置中...')`,
+		`responseErrorMessage(res, '编辑客户端失败')`,
+		`responseErrorMessage(res, '重置流量失败')`,
+		`id="client-copy-' + c.id + '"`,
+		`id="client-edit-' + c.id + '"`,
+		`id="client-toggle-' + c.id + '"`,
+		`id="client-delete-' + c.id + '"`,
+		`复制链接`,
+		`重置流量`,
+		`删除中...`,
+		`切换中...`,
+		`.client-resource-row .resource-actions { flex-wrap:wrap; justify-content:flex-end; max-width:280px; }`,
+		`.client-resource-row .icon-btn, .client-resource-row .danger-icon-btn { min-width:64px; }`,
 	} {
-		if !strings.Contains(jsBody, want) {
+		if !strings.Contains(jsBody, want) && !strings.Contains(body, want) {
 			t.Fatalf("app.js missing client JS %q", want)
 		}
 	}

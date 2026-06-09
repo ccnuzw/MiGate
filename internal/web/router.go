@@ -1422,6 +1422,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 	}
 	var payload struct {
 		Email        string `json:"email"`
+		UUID         string `json:"uuid"`
 		TrafficLimit int64  `json:"traffic_limit"`
 		ExpiryAt     int64  `json:"expiry_at"`
 	}
@@ -1429,8 +1430,14 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
-	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
+	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate client") {
+			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{
+				"message": "同一入站下客户端邮箱或凭据已存在，请更换后重试",
+			})
+			return
+		}
 		http.Error(w, `{"error":"create_client_failed"}`, http.StatusBadRequest)
 		return
 	}
@@ -1557,6 +1564,12 @@ func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID 
 	}
 	updated, err := store.UpdateClient(r.Context(), clientID, payload)
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate client") {
+			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{
+				"message": "同一入站下客户端邮箱已存在，请更换后重试",
+			})
+			return
+		}
 		http.Error(w, `{"error":"update_client_failed"}`, http.StatusNotFound)
 		return
 	}
@@ -2740,6 +2753,8 @@ const panelHTML = `<!doctype html>
     .status-badge.enabled { color:var(--accent2); background:rgba(22,163,74,.14); }
     .status-badge.disabled { color:var(--muted); background:rgba(161,161,170,.14); }
     .resource-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
+    .client-resource-row .resource-actions { flex-wrap:wrap; justify-content:flex-end; max-width:280px; }
+    .client-resource-row .icon-btn, .client-resource-row .danger-icon-btn { min-width:64px; }
     .outbound-card { padding:12px 16px; display:flex; align-items:center; gap:12px; min-width:0; }
     .outbound-card.is-disabled { opacity:.68; }
     .outbound-status-dot { flex:0 0 auto; font-size:18px; line-height:1; }
@@ -3269,7 +3284,7 @@ const panelHTML = `<!doctype html>
               <span style="font-size:13px;margin-left:16px">↓ 下行: <strong id="ec-down-display">0 B</strong></span>
               <span style="font-size:13px;margin-left:16px">总计: <strong id="ec-total-display">0 B</strong></span>
             </div>
-            <button type="button" class="btn-confirm" onclick="resetClientTraffic()">重置流量</button>
+            <button id="reset-client-traffic-btn" type="button" class="btn-confirm" onclick="resetClientTraffic()">重置流量</button>
           </div>
           <p class="field-help" style="margin-bottom:0">点击重置会将上下行数据清零，不可恢复。</p>
         </div>
@@ -3280,7 +3295,7 @@ const panelHTML = `<!doctype html>
         </div>
         <div class="form-actions modal-actions">
           <button type="button" class="btn-cancel" onclick="closeEditClient()">取消</button>
-          <button type="submit" class="btn-modal-primary" onclick="saveEditClient()">保存</button>
+          <button id="edit-client-submit-btn" type="submit" class="btn-modal-primary" onclick="saveEditClient()">保存</button>
         </div>
       </form>
     </div>

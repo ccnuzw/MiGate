@@ -40,6 +40,75 @@ func TestRemovedLegacyAPIRoutesReturnNotFound(t *testing.T) {
 	}
 }
 
+func TestCreateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "dupe", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	for i := 0; i < 2; i++ {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients", strings.NewReader(`{"email":"sam@example.com","uuid":"11111111-1111-4111-8111-111111111111"}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(resp, req)
+		if i == 0 && resp.Code != http.StatusCreated {
+			t.Fatalf("expected first client 201, got %d: %s", resp.Code, resp.Body.String())
+		}
+		if i == 1 {
+			if resp.Code != http.StatusConflict {
+				t.Fatalf("expected duplicate client 409, got %d: %s", resp.Code, resp.Body.String())
+			}
+			for _, want := range []string{`"error":"duplicate_client"`, `"message"`} {
+				if !strings.Contains(resp.Body.String(), want) {
+					t.Fatalf("duplicate response missing %q: %s", want, resp.Body.String())
+				}
+			}
+		}
+	}
+}
+
+func TestUpdateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "dupe-update", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	if err != nil {
+		t.Fatalf("create first client: %v", err)
+	}
+	second, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "other@example.com"})
+	if err != nil {
+		t.Fatalf("create second client: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(second.ID, 10), strings.NewReader(`{"email":"sam@example.com","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate client update 409, got %d: %s", resp.Code, resp.Body.String())
+	}
+	for _, want := range []string{`"error":"duplicate_client"`, `"message"`} {
+		if !strings.Contains(resp.Body.String(), want) {
+			t.Fatalf("duplicate update response missing %q: %s", want, resp.Body.String())
+		}
+	}
+}
+
 func TestSocks5PoolAPIFetchesRegionsAndImportsOutbound(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("User-Agent") == "" {

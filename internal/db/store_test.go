@@ -335,6 +335,48 @@ func TestStoreMigratesAndCreatesInboundWithClients(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsDuplicateClientEmailAndUUID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "dupe", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "sam@example.com", UUID: "11111111-1111-4111-8111-111111111111",
+	})
+	if err != nil {
+		t.Fatalf("create first client: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "sam@example.com", UUID: "22222222-2222-4222-8222-222222222222",
+	}); err == nil || !strings.Contains(err.Error(), "duplicate client email") {
+		t.Fatalf("expected duplicate client email error, got %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "other@example.com", UUID: "11111111-1111-4111-8111-111111111111",
+	}); err == nil || !strings.Contains(err.Error(), "duplicate client uuid") {
+		t.Fatalf("expected duplicate client uuid error, got %v", err)
+	}
+	second, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "other@example.com", UUID: "33333333-3333-4333-8333-333333333333",
+	})
+	if err != nil {
+		t.Fatalf("create second client: %v", err)
+	}
+	if _, err := store.UpdateClient(context.Background(), second.ID, db.UpdateClientParams{
+		Email: "sam@example.com", Enabled: true,
+	}); err == nil || !strings.Contains(err.Error(), "duplicate client email") {
+		t.Fatalf("expected duplicate client email on update, got %v", err)
+	}
+}
+
 func TestStoreRejectsUnsupportedProtocol(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

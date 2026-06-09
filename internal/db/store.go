@@ -807,6 +807,17 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 	if uuid == "" {
 		uuid = newUUID()
 	}
+	var existingID int64
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE inbound_id = ? AND email = ? LIMIT 1`, params.InboundID, email).Scan(&existingID); err == nil {
+		return Client{}, fmt.Errorf("duplicate client email: %s", email)
+	} else if err != sql.ErrNoRows {
+		return Client{}, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE uuid = ? LIMIT 1`, uuid).Scan(&existingID); err == nil {
+		return Client{}, fmt.Errorf("duplicate client uuid: %s", uuid)
+	} else if err != sql.ErrNoRows {
+		return Client{}, err
+	}
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO clients (inbound_id, uuid, email, enabled, created_at, traffic_limit, expiry_at)
 VALUES (?, ?, ?, 1, ?, ?, ?)
@@ -935,6 +946,16 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	enabled := 0
 	if params.Enabled {
 		enabled = 1
+	}
+	var inboundID int64
+	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id FROM clients WHERE id = ?`, id).Scan(&inboundID); err != nil {
+		return Client{}, err
+	}
+	var existingID int64
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE inbound_id = ? AND email = ? AND id <> ? LIMIT 1`, inboundID, email, id).Scan(&existingID); err == nil {
+		return Client{}, fmt.Errorf("duplicate client email: %s", email)
+	} else if err != sql.ErrNoRows {
+		return Client{}, err
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE clients SET email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
 		email, enabled, params.TrafficLimit, params.ExpiryAt, id)
