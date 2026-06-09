@@ -4,12 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
@@ -180,7 +182,7 @@ func BuildConfig(inbounds []db.Inbound) Config {
 			for _, client := range enabledClients(inbound.Clients) {
 				ib.Users = append(ib.Users, UserConfig{
 					Name:     client.Email,
-					UUID:     generateUUID(),
+					UUID:     stableTUICUUID(client.UUID),
 					Password: client.UUID,
 				})
 			}
@@ -333,4 +335,36 @@ func generateUUID() string {
 	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
 	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 10
 	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
+}
+
+func stableTUICUUID(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if isUUID(seed) {
+		return seed
+	}
+	sum := sha256.Sum256([]byte(seed))
+	uuid := make([]byte, 16)
+	copy(uuid, sum[:16])
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
+}
+
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }

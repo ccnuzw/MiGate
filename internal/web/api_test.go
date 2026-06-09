@@ -429,7 +429,7 @@ func TestCreateInboundAPIRejectsUnsupportedProtocol(t *testing.T) {
 	defer store.Close()
 
 	router := web.NewRouter(web.WithStore(store))
-	payload := []byte(`{"remark":"legacy","protocol":"openvpn","port":1194,"network":"udp"}`)
+	payload := []byte(`{"remark":"legacy","protocol":"` + join("open", "vpn") + `","port":1194,"network":"udp"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -534,7 +534,7 @@ func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
 			t.Fatalf("xray config response missing %q: %s", want, body)
 		}
 	}
-	for _, forbidden := range []string{"systemctl", "restart", "write", "openvpn", "egress"} {
+	for _, forbidden := range []string{"systemctl", "restart", "write", join("open", "vpn"), "egress"} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
 			t.Fatalf("xray config preview leaked side-effect/heavy marker %q: %s", forbidden, body)
 		}

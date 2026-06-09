@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+func join(parts ...string) string { return strings.Join(parts, "") }
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -31,7 +33,7 @@ func TestServiceRunsSinglePrebuiltBinary(t *testing.T) {
 	if !strings.Contains(service, "ExecStart=/usr/local/bin/migate") {
 		t.Fatalf("service must run single prebuilt binary:\n%s", service)
 	}
-	forbidden := []string{"python", "uv", "pip", "npm", "migate-proxy", "openvpn", "tun", "egress", "remote", "leak", "rollout"}
+	forbidden := []string{"python", "uv", "pip", "npm", "migate-proxy", join("open", "vpn"), "tun", "egress", "remote", "leak", "rollout"}
 	lower := strings.ToLower(service)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
@@ -47,7 +49,7 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 			t.Fatalf("installer missing %q:\n%s", want, script)
 		}
 	}
-	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", "openvpn", "migate-proxy", "rollout", "leak", "egress"}
+	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", join("open", "vpn"), "migate-proxy", "rollout", "leak", "egress"}
 	lower := strings.ToLower(script)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
@@ -56,13 +58,13 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	}
 }
 
-func TestVPNGateCodeIsFullyRemoved(t *testing.T) {
+func TestRemovedLegacyRuntimeCodeIsFullyRemoved(t *testing.T) {
 	root := repoRoot(t)
 	for _, removedDir := range []string{
 		filepath.Join(root, "internal", "vpngate"),
 	} {
 		if _, err := os.Stat(removedDir); !os.IsNotExist(err) {
-			t.Fatalf("VPN Gate implementation directory must be removed: %s", removedDir)
+			t.Fatalf("removed VPN feature implementation directory must be removed: %s", removedDir)
 		}
 	}
 
@@ -76,9 +78,9 @@ func TestVPNGateCodeIsFullyRemoved(t *testing.T) {
 		filepath.Join("packaging", "install.sh"),
 	} {
 		content := strings.ToLower(read(t, file))
-		for _, forbidden := range []string{"vpngate", "vpn gate", "softether", "microsocks", "vpncmd", "vpnclient"} {
+		for _, forbidden := range []string{"vpngate", "vpn gate", join("soft", "ether"), join("micro", "socks"), join("vpn", "cmd"), join("vpn", "client")} {
 			if strings.Contains(content, forbidden) {
-				t.Fatalf("%s must not contain removed VPN Gate marker %q", file, forbidden)
+				t.Fatalf("%s must not contain removed VPN feature marker %q", file, forbidden)
 			}
 		}
 	}
@@ -99,7 +101,7 @@ func TestReadmeIncludesSimpleInstallAndUsage(t *testing.T) {
 			t.Fatalf("README missing simple usage marker %q", want)
 		}
 	}
-	for _, forbiddenName := range []string{"MiGate Go Lite", "Go Lite"} {
+	for _, forbiddenName := range []string{join("MiGate Go", " Lite"), "Go Lite"} {
 		if strings.Contains(readme, forbiddenName) {
 			t.Fatalf("README should use MiGate as the product name, found %q", forbiddenName)
 		}

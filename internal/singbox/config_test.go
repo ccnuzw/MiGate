@@ -251,6 +251,25 @@ func TestBuildConfig_TUICInbound(t *testing.T) {
 	}
 }
 
+func TestBuildConfig_TUICUserCredentialsAreStable(t *testing.T) {
+	inbounds := []db.Inbound{
+		{
+			ID: 1, Protocol: "tuic", Port: 21010, Enabled: true,
+			Clients: []db.Client{{ID: 1, UUID: "123e4567-e89b-12d3-a456-426614174000", Email: "user1@test", Enabled: true}},
+		},
+	}
+
+	first := BuildConfig(inbounds)
+	second := BuildConfig(inbounds)
+
+	if first.Inbounds[0].Users[0].UUID != second.Inbounds[0].Users[0].UUID {
+		t.Fatalf("TUIC user UUID must be stable across config builds, got %q then %q", first.Inbounds[0].Users[0].UUID, second.Inbounds[0].Users[0].UUID)
+	}
+	if first.Inbounds[0].Users[0].Password != second.Inbounds[0].Users[0].Password {
+		t.Fatalf("TUIC user password must be stable across config builds")
+	}
+}
+
 func TestBuildConfig_WireGuardInbound(t *testing.T) {
 	// WireGuard inbound requires sing-box >= 1.14
 	// Currently skipped — test verifies it's NOT added to the config

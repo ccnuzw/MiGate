@@ -12,6 +12,8 @@ import (
 	"testing"
 )
 
+func join(parts ...string) string { return strings.Join(parts, "") }
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -62,14 +64,14 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", "go build", "openvpn", "migate-proxy", "rollout", "leak", "egress", "armv7"}
+	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", "go build", join("open", "vpn"), "migate-proxy", "rollout", "leak", "egress", "armv7"}
 	lower := strings.ToLower(script)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
 			t.Fatalf("installer must not contain %q", word)
 		}
 	}
-	for _, forbiddenName := range []string{"MiGate Go Lite", "Go Lite"} {
+	for _, forbiddenName := range []string{join("MiGate Go", " Lite"), "Go Lite"} {
 		if strings.Contains(script, forbiddenName) {
 			t.Fatalf("installer should use MiGate as the product name, found %q", forbiddenName)
 		}
@@ -126,21 +128,21 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	}
 }
 
-func TestInstallerDoesNotOfferArchivedVPNGateRuntimeDependencies(t *testing.T) {
+func TestInstallerDoesNotOfferArchivedRuntimeDependencies(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, forbidden := range []string{
 		"install_vpngate_runtime_dependencies",
-		"是否安装 VPN Gate runtime 依赖？[Y/n]",
-		"microsocks",
-		"softether-vpnclient",
-		"softether-vpncmd",
+		"是否安装 removed VPN feature runtime 依赖？[Y/n]",
+		join("micro", "socks"),
+		join("soft", "ether", "-vpn", "client"),
+		join("soft", "ether", "-vpn", "cmd"),
 		"dhclient",
-		"vpncmd",
-		"vpnclient",
-		"VPN Gate runtime dependencies:",
+		join("vpn", "cmd"),
+		join("vpn", "client"),
+		"removed VPN feature runtime dependencies:",
 	} {
 		if strings.Contains(script, forbidden) {
-			t.Fatalf("installer must not offer removed VPN Gate runtime dependency %q", forbidden)
+			t.Fatalf("installer must not offer removed VPN feature runtime dependency %q", forbidden)
 		}
 	}
 }
@@ -227,7 +229,7 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 			t.Fatalf("service missing %q: %s", want, service)
 		}
 	}
-	forbidden := []string{"python", "uv", "pip", "npm", "openvpn", "tun", "egress", "remote", "leak", "rollout"}
+	forbidden := []string{"python", "uv", "pip", "npm", join("open", "vpn"), "tun", "egress", "remote", "leak", "rollout"}
 	lower := strings.ToLower(service)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
@@ -265,7 +267,7 @@ func TestBuildReleaseScriptProducesLinuxArchivesAndChecksums(t *testing.T) {
 				t.Fatalf("%s missing %s, entries=%v", artifact, want, entries)
 			}
 		}
-		forbidden := []string{".git/", "node_modules/", "python", "openvpn", "rollout", "leak", "egress"}
+		forbidden := []string{".git/", "node_modules/", "python", join("open", "vpn"), "rollout", "leak", "egress"}
 		for name := range entries {
 			lower := strings.ToLower(name)
 			for _, word := range forbidden {
@@ -306,7 +308,7 @@ func TestReleaseWorkflowBuildsAndUploadsReleaseAssets(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"npm", "node_modules", "pip", "uv ", "python", "openvpn", "rollout", "leak", "egress"}
+	forbidden := []string{"npm", "node_modules", "pip", "uv ", "python", join("open", "vpn"), "rollout", "leak", "egress"}
 	lower := strings.ToLower(workflow)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {

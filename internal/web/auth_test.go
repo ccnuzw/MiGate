@@ -38,7 +38,7 @@ func TestAuthShowsLoginPageForUnauthenticatedPanelRoot(t *testing.T) {
 
 func TestAuthAPIEndpointsRequireSession(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
-	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status"} {
+	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status", "/api/singbox/config"} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		router.ServeHTTP(response, req)

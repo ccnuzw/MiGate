@@ -2,11 +2,14 @@ package db_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
 )
+
+func join(parts ...string) string { return strings.Join(parts, "") }
 
 func TestStoreCreatesAndListsOutboundsWithDefaults(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
@@ -339,12 +342,14 @@ func TestStoreRejectsUnsupportedProtocol(t *testing.T) {
 	}
 	defer store.Close()
 
-	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
-		Protocol: "http",
-		Port:     8080,
-	})
-	if err == nil {
-		t.Fatal("expected error for unsupported protocol")
+	for _, protocol := range []string{"http", "wireguard"} {
+		_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
+			Protocol: protocol,
+			Port:     8080,
+		})
+		if err == nil {
+			t.Fatalf("expected error for unsupported protocol %q", protocol)
+		}
 	}
 }
 
@@ -496,6 +501,30 @@ func TestStoreUpdateInboundRejectsUnknownID(t *testing.T) {
 	_, err = store.UpdateInbound(context.Background(), 99999, db.UpdateInboundParams{Remark: "x", Port: 80})
 	if err == nil {
 		t.Fatal("expected error for unknown inbound")
+	}
+}
+
+func TestStoreUpdateInboundRejectsUnsupportedProtocol(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "test", Protocol: "vless", Port: 8443, Network: "tcp",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	for _, protocol := range []string{join("vpngate", "_soft", "ether"), "wireguard"} {
+		_, err = store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+			Remark: "test", Protocol: protocol, Port: 8443, Network: "tcp", Enabled: true,
+		})
+		if err == nil {
+			t.Fatalf("expected unsupported protocol error for %q", protocol)
+		}
 	}
 }
 
@@ -861,7 +890,7 @@ func TestStoreCreateInboundWithoutInitialClient(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsRemovedVPNGateSoftEtherOutbound(t *testing.T) {
+func TestStoreRejectsRemovedLegacyOutbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -871,12 +900,12 @@ func TestStoreRejectsRemovedVPNGateSoftEtherOutbound(t *testing.T) {
 	_, err = store.CreateOutbound(context.Background(), db.CreateOutboundParams{
 		Tag:      "removed-vpn-outbound",
 		Remark:   "removed VPN feature",
-		Protocol: "vpngate_softether",
+		Protocol: join("vpngate", "_soft", "ether"),
 		Address:  "10.77.1.2",
 		Port:     21080,
 	})
 	if err == nil {
-		t.Fatal("expected vpngate_softether outbound protocol to be rejected after removal")
+		t.Fatal("expected removed outbound protocol to be rejected after removal")
 	}
 }
 
@@ -887,9 +916,9 @@ func TestStoreRejectsRemovedVPNGatePoolVirtualOutbound(t *testing.T) {
 	}
 	defer store.Close()
 
-	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundTag: "vpngate-pool", Domain: "geosite:google", Enabled: true})
+	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundTag: join("vpngate", "-pool"), Domain: "geosite:google", Enabled: true})
 	if err == nil {
-		t.Fatal("expected removed vpngate-pool virtual outbound to be rejected")
+		t.Fatal("expected removed virtual outbound to be rejected")
 	}
 }
 

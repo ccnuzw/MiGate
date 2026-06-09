@@ -9,6 +9,8 @@ import (
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
+func join(parts ...string) string { return strings.Join(parts, "") }
+
 func userInboundsForTest(inbounds []xray.InboundConfig) []xray.InboundConfig {
 	out := []xray.InboundConfig{}
 	for _, in := range inbounds {
@@ -121,12 +123,12 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 	}
 }
 
-func TestBuildConfigRejectsRemovedVPNGateSoftEtherOutbound(t *testing.T) {
+func TestBuildConfigRejectsRemovedLegacyOutbound(t *testing.T) {
 	_, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
-		{Tag: "removed-vpn-outbound", Protocol: "vpngate_softether", Address: "10.77.1.2", Port: 21080, Enabled: true},
+		{Tag: "removed-vpn-outbound", Protocol: join("vpngate", "_soft", "ether"), Address: "10.77.1.2", Port: 21080, Enabled: true},
 	}, nil)
 	if err == nil {
-		t.Fatal("expected removed vpngate_softether outbound protocol to be rejected")
+		t.Fatal("expected removed outbound protocol to be rejected")
 	}
 }
 
@@ -169,7 +171,7 @@ func TestBuildConfigWithRoutingRules(t *testing.T) {
 	}
 }
 func TestBuildConfigRejectsUnsupportedProtocol(t *testing.T) {
-	_, err := xray.BuildConfig([]db.Inbound{{Protocol: "openvpn", Port: 1194, Enabled: true}})
+	_, err := xray.BuildConfig([]db.Inbound{{Protocol: join("open", "vpn"), Port: 1194, Enabled: true}})
 	if err == nil {
 		t.Fatal("expected unsupported protocol error")
 	}

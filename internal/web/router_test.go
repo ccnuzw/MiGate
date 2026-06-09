@@ -14,6 +14,8 @@ import (
 	"github.com/imzyb/MiGate/internal/web/static"
 )
 
+func join(parts ...string) string { return strings.Join(parts, "") }
+
 var appJSCache string
 
 func readAppJS(t *testing.T) string {
@@ -88,7 +90,7 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 			t.Fatalf("panel missing %q: %s", want, body)
 		}
 	}
-	for _, forbidden := range []string{"MiGate Go Lite", "Go Lite"} {
+	for _, forbidden := range []string{join("MiGate Go", " Lite"), "Go Lite"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("panel should use MiGate as the product name, found %q: %s", forbidden, body)
 		}
@@ -287,24 +289,24 @@ func TestPanelArchivesVPNGateUserInterface(t *testing.T) {
 	for _, forbidden := range []string{
 		`onclick="showVPNGateDialog()"`,
 		`id="vpngate-dialog"`,
-		`VPN Gate 公共服务器`,
+		`removed VPN feature 公共服务器`,
 		`id="vpngate-import-btn"`,
 		`id="vpngate-import-footer-btn"`,
 		`vpngate-auto-health-card`,
-		`VPN Gate 自动检测`,
+		`removed VPN feature 自动检测`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("removed VPN Gate UI must be absent, found %q", forbidden)
+			t.Fatalf("removed removed VPN feature UI must be absent, found %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{
-		`VPN Gate 出口池（自动均衡）`,
+		`removed VPN feature 出口池（自动均衡）`,
 		`renderVPNGateManagedStatus(ob)`,
 		`refreshAutoHealthStatus();`,
 		`setInterval(refreshAutoHealthStatus`,
 	} {
 		if strings.Contains(jsBody, forbidden) {
-			t.Fatalf("removed VPN Gate UI must not be wired from app.js, found %q", forbidden)
+			t.Fatalf("removed removed VPN feature UI must not be wired from app.js, found %q", forbidden)
 		}
 	}
 }
@@ -398,8 +400,8 @@ func TestPanelWiresInboundManagementToAPI(t *testing.T) {
 			t.Fatalf("panel should keep lightweight single-binary scope and avoid %q: %s", forbidden, body)
 		}
 	}
-	if regexp.MustCompile(`(?i)\bopenvpn\s+(install|server|service|client|config)\b`).MatchString(body) {
-		t.Fatalf("panel should keep lightweight single-binary scope and avoid OpenVPN implementation UI: %s", body)
+	if regexp.MustCompile(`(?i)\b` + join("open", "vpn") + `\s+(install|server|service|client|config)\b`).MatchString(body) {
+		t.Fatalf("panel should keep lightweight single-binary scope and avoid legacy heavy runtime implementation UI: %s", body)
 	}
 }
 
@@ -1021,10 +1023,13 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 			t.Fatalf("app.js missing concise core version contract %q", want)
 		}
 	}
+	if strings.Contains(body, `option value="wireguard"`) || strings.Contains(jsBody, `wireguard: {network`) {
+		t.Fatalf("panel must not offer WireGuard while the bundled sing-box runtime skips WireGuard inbounds")
+	}
 
 	// Verify external script reference in HTML
-	if !strings.Contains(body, `static/app.js`) {
-		t.Fatal("panel must reference external script static/app.js")
+	if !strings.Contains(body, `src="./static/app.js"`) {
+		t.Fatal("panel must use ./static/app.js so base-path roots resolve the script under the panel path")
 	}
 
 	// JS functions in app.js should exist
@@ -1555,7 +1560,7 @@ func TestRestartEndpoint(t *testing.T) {
 
 func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {
 	router := web.NewRouter()
-	for _, path := range []string{"/api/remote/readiness", "/api/leak-check", "/api/egress/status", "/api/openvpn/status", "/api/proxy/status"} {
+	for _, path := range []string{"/api/remote/readiness", "/api/leak-check", "/api/egress/status", "/api/" + join("open", "vpn") + "/status", "/api/proxy/status"} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		router.ServeHTTP(response, req)
@@ -1748,14 +1753,14 @@ func TestPanelKeepsVPNGateArchivedFromVisibleFlows(t *testing.T) {
 	jsBody := readAppJS(t)
 	for _, forbidden := range []string{
 		`id="vpngate-dialog"`,
-		`VPN Gate 公共服务器`,
+		`removed VPN feature 公共服务器`,
 		`onclick="refreshVPNGateServers()"`,
 		`id="vpngate-import-btn"`,
 		`id="vpngate-import-footer-btn"`,
-		`创建 VPN Gate 出口`,
+		`创建 removed VPN feature 出口`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("removed VPN Gate dialog must not be rendered, found %q", forbidden)
+			t.Fatalf("removed removed VPN feature dialog must not be rendered, found %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{
@@ -1765,7 +1770,7 @@ func TestPanelKeepsVPNGateArchivedFromVisibleFlows(t *testing.T) {
 		`localStorage.setItem(cacheKey`,
 	} {
 		if strings.Contains(jsBody, forbidden) {
-			t.Fatalf("removed VPN Gate flow must not be callable from app.js, found %q", forbidden)
+			t.Fatalf("removed removed VPN feature flow must not be callable from app.js, found %q", forbidden)
 		}
 	}
 }

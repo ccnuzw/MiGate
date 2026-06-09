@@ -1681,7 +1681,6 @@ function openCreateRoutingRule() {
       shadowsocks: {network: 'tcp', security: 'none'},
       hysteria2: {network: 'quic', security: 'none'},
       tuic: {network: 'quic', security: 'tls'},
-      wireguard: {network: 'udp', security: 'none'},
       shadowtls: {network: 'tcp', security: 'tls'},
     };
     function applyProtocolPreset(proto) {
@@ -1697,7 +1696,7 @@ function openCreateRoutingRule() {
     }
     function onProtocolChange() {
       const proto = document.getElementById('inbound-protocol').value;
-      const isSingbox = ['hysteria2','tuic','wireguard','shadowtls'].includes(proto);
+      const isSingbox = ['hysteria2','tuic','shadowtls'].includes(proto);
       const desc = document.getElementById('protocol-description');
 
       // Protocol descriptions
@@ -1708,7 +1707,6 @@ function openCreateRoutingRule() {
         shadowsocks: 'Shadowsocks：轻量加密代理。',
         hysteria2: 'Hysteria2：基于 QUIC 的 UDP 加速协议，抗丢包。',
         tuic: 'TUIC：基于 QUIC 的低延迟 UDP 代理，适合弱网环境。',
-        wireguard: 'WireGuard ⚠️ 当前需要升级 sing-box 至 v1.14+ 才能生效。',
         shadowtls: 'ShadowTLS：将流量伪装成标准 TLS 连接，可绕过深度包检测。',
       };
       desc.textContent = labels[proto] || '';

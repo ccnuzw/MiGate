@@ -19,7 +19,6 @@ var supportedProtocols = map[string]bool{
 	"shadowsocks": true,
 	"hysteria2":   true,
 	"tuic":        true,
-	"wireguard":   true,
 	"shadowtls":   true,
 }
 
@@ -864,6 +863,9 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	protocol := strings.ToLower(strings.TrimSpace(params.Protocol))
 	if protocol == "" {
 		protocol = "vless"
+	}
+	if !supportedProtocols[protocol] {
+		return Inbound{}, fmt.Errorf("unsupported protocol: %s", params.Protocol)
 	}
 	enabled := 0
 	if params.Enabled {

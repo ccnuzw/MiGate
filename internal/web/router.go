@@ -2857,7 +2857,6 @@ const panelHTML = `<!doctype html>
             <option value="shadowsocks">Shadowsocks</option>
             <option value="hysteria2">Hysteria2</option>
             <option value="tuic">TUIC</option>
-            <option value="wireguard">WireGuard ⚠️ (需升级 sing-box v1.14+)</option>
             <option value="shadowtls">ShadowTLS</option>
           </select>
           <p id="protocol-description" class="field-help" style="color:var(--accent);font-weight:500">选择核心入站协议，自动配置传输方式与安全层。</p>
@@ -3735,5 +3734,5 @@ const panelHTML = `<!doctype html>
 
     </main>
   </div>
-  <script src="static/app.js"></script>
+  <script src="./static/app.js"></script>
 </html>`
