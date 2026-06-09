@@ -614,11 +614,16 @@ func TestSubscriptionHysteria2DefaultGeneratedTLSLink(t *testing.T) {
 	}
 	defer store.Close()
 	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
-		Remark:   "hy2",
-		Protocol: "hysteria2",
-		Port:     21001,
-		Network:  "quic",
-		Security: "none",
+		Remark:          "hy2",
+		Protocol:        "hysteria2",
+		Port:            21001,
+		Network:         "quic",
+		Security:        "none",
+		Hy2UpMbps:       100,
+		Hy2DownMbps:     200,
+		Hy2Obfs:         "salamander",
+		Hy2ObfsPassword: "obfs secret",
+		Hy2MPort:        "40000-50000",
 	})
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
@@ -638,7 +643,7 @@ func TestSubscriptionHysteria2DefaultGeneratedTLSLink(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"hysteria2://" + client.UUID + "@panel.example.com:21001", "security=tls", "insecure=1"} {
+	for _, want := range []string{"hysteria2://" + client.UUID + "@panel.example.com:21001", "up_mbps=100", "down_mbps=200", "obfs=salamander", "obfs-password=obfs+secret", "mport=40000-50000", "security=tls", "insecure=1"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("hysteria2 default generated TLS link missing %q: %s", want, body)
 		}

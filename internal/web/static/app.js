@@ -1220,6 +1220,17 @@ function openCreateRoutingRule() {
           var ssMethod = inbound.ss_method || '2022-blake3-aes-128-gcm';
           var userPass = ssMethod + ':' + inbound.uuid;
           try { shareLink = 'ss://' + btoa(userPass) + '@' + hostName + ':' + inbound.port + '#' + escapeHtml(c.email); } catch(e) { shareLink = ''; }
+        } else if (inbound.protocol === 'hysteria2') {
+          var hp = [];
+          if (inbound.hy2_up_mbps > 0) hp.push('up_mbps=' + encodeURIComponent(inbound.hy2_up_mbps));
+          if (inbound.hy2_down_mbps > 0) hp.push('down_mbps=' + encodeURIComponent(inbound.hy2_down_mbps));
+          if (inbound.hy2_obfs) hp.push('obfs=' + encodeURIComponent(inbound.hy2_obfs));
+          if (inbound.hy2_obfs_password) hp.push('obfs-password=' + encodeURIComponent(inbound.hy2_obfs_password));
+          if (inbound.hy2_mport) hp.push('mport=' + encodeURIComponent(inbound.hy2_mport));
+          hp.push('security=tls');
+          if (inbound.reality_server_names) hp.push('sni=' + encodeURIComponent(inbound.reality_server_names));
+          hp.push('insecure=1');
+          shareLink = 'hysteria2://' + c.uuid + '@' + hostName + ':' + inbound.port + '?' + hp.join('&') + '#' + encodeURIComponent(c.email);
         } else {
           var p = [];
           p.push('type=' + (inbound.network||'tcp'));
@@ -1398,6 +1409,7 @@ function openCreateRoutingRule() {
       document.getElementById('ei-hy2-down').value = inbound.hy2_down_mbps || 0;
       document.getElementById('ei-hy2-obfs').value = inbound.hy2_obfs || '';
       document.getElementById('ei-hy2-obfs-password').value = inbound.hy2_obfs_password || '';
+      document.getElementById('ei-hy2-mport').value = inbound.hy2_mport || '';
       document.getElementById('ei-tuic-cc').value = inbound.tuic_congestion_control || 'bbr';
       document.getElementById('ei-tuic-zero-rtt').checked = inbound.tuic_zero_rtt || false;
       document.getElementById('ei-shadowtls-password').value = inbound.shadowtls_password || '';
@@ -1437,6 +1449,7 @@ function openCreateRoutingRule() {
         hy2_down_mbps: Number(document.getElementById('ei-hy2-down').value) || 0,
         hy2_obfs: document.getElementById('ei-hy2-obfs').value,
         hy2_obfs_password: document.getElementById('ei-hy2-obfs-password').value,
+        hy2_mport: document.getElementById('ei-hy2-mport').value,
         tuic_congestion_control: document.getElementById('ei-tuic-cc').value,
         tuic_zero_rtt: document.getElementById('ei-tuic-zero-rtt').checked,
         shadowtls_password: document.getElementById('ei-shadowtls-password').value,

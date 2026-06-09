@@ -88,6 +88,7 @@ type Inbound struct {
 	Hy2DownMbps           int      `json:"hy2_down_mbps"`
 	Hy2Obfs               string   `json:"hy2_obfs"`
 	Hy2ObfsPassword       string   `json:"hy2_obfs_password"`
+	Hy2MPort              string   `json:"hy2_mport"`
 	TuicCongestionControl string   `json:"tuic_congestion_control"`
 	TuicZeroRTT           bool     `json:"tuic_zero_rtt"`
 	WgPrivateKey          string   `json:"wg_private_key"`
@@ -175,6 +176,7 @@ type CreateInboundParams struct {
 	Hy2DownMbps           int                 `json:"hy2_down_mbps"`
 	Hy2Obfs               string              `json:"hy2_obfs"`
 	Hy2ObfsPassword       string              `json:"hy2_obfs_password"`
+	Hy2MPort              string              `json:"hy2_mport"`
 	TuicCongestionControl string              `json:"tuic_congestion_control"`
 	TuicZeroRTT           bool                `json:"tuic_zero_rtt"`
 	WgPrivateKey          string              `json:"wg_private_key"`
@@ -224,6 +226,7 @@ type UpdateInboundParams struct {
 	Hy2DownMbps           int    `json:"hy2_down_mbps"`
 	Hy2Obfs               string `json:"hy2_obfs"`
 	Hy2ObfsPassword       string `json:"hy2_obfs_password"`
+	Hy2MPort              string `json:"hy2_mport"`
 	TuicCongestionControl string `json:"tuic_congestion_control"`
 	TuicZeroRTT           bool   `json:"tuic_zero_rtt"`
 	WgPrivateKey          string `json:"wg_private_key"`
@@ -361,6 +364,7 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
 		{"hy2_down_mbps", "INTEGER", "DEFAULT 0"},
 		{"hy2_obfs", "TEXT", "DEFAULT ''"},
 		{"hy2_obfs_password", "TEXT", "DEFAULT ''"},
+		{"hy2_mport", "TEXT", "DEFAULT ''"},
 		{"tls_sni", "TEXT", "DEFAULT ''"},
 		{"tls_fingerprint", "TEXT", "DEFAULT ''"},
 		{"tls_alpn", "TEXT", "DEFAULT ''"},
@@ -707,7 +711,7 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		params.WsPath, params.WsHost, params.GrpcServiceName,
 		params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey,
 		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.TLSSNI, params.TLSFingerprint, params.TLSALPN, params.XHTTPPath, params.XHTTPMode,
-		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword,
+		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword, params.Hy2MPort,
 		params.TuicCongestionControl, params.TuicZeroRTT,
 		params.WgPrivateKey, params.WgAddress, params.WgPeerPublicKey, params.WgAllowedIPs, params.WgEndpoint, params.WgPresharedKey, params.WgMTU,
 		params.ShadowTLSVersion, params.ShadowTLSPassword)
@@ -733,7 +737,7 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		TLSSNI: params.TLSSNI, TLSFingerprint: params.TLSFingerprint, TLSALPN: params.TLSALPN,
 		XHTTPPath: params.XHTTPPath, XHTTPMode: params.XHTTPMode,
 		Hy2UpMbps: params.Hy2UpMbps, Hy2DownMbps: params.Hy2DownMbps,
-		Hy2Obfs: params.Hy2Obfs, Hy2ObfsPassword: params.Hy2ObfsPassword,
+		Hy2Obfs: params.Hy2Obfs, Hy2ObfsPassword: params.Hy2ObfsPassword, Hy2MPort: params.Hy2MPort,
 		TuicCongestionControl: params.TuicCongestionControl,
 		TuicZeroRTT:           params.TuicZeroRTT,
 		WgPrivateKey:          params.WgPrivateKey,
@@ -750,7 +754,7 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 
 func (s *Store) insertInbound(ctx context.Context, inboundUUID, remark, protocol string, port int, network, security string,
 	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, tlsSNI, tlsFingerprint, tlsALPN, xhttpPath, xhttpMode string,
-	hy2UpMbps, hy2DownMbps int, hy2Obfs, hy2ObfsPassword string,
+	hy2UpMbps, hy2DownMbps int, hy2Obfs, hy2ObfsPassword, hy2MPort string,
 	tuicCongestionControl string, tuicZeroRTT bool,
 	wgPrivateKey, wgAddress, wgPeerPublicKey, wgAllowedIPs, wgEndpoint, wgPresharedKey string, wgMTU int,
 	shadowTLSVersion int, shadowTLSPassword string) (int64, string, error) {
@@ -765,19 +769,19 @@ func (s *Store) insertInbound(ctx context.Context, inboundUUID, remark, protocol
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO inbounds (uuid, remark, protocol, port, network, security, enabled, created_at,
   ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method, tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password, hy2_mport,
   tuic_congestion_control, tuic_zero_rtt,
   wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
   shadowtls_version, shadowtls_password)
 VALUES (?, ?, ?, ?, ?, ?, 1, ?,
   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-  ?, ?, ?, ?,
+  ?, ?, ?, ?, ?,
   ?, ?,
   ?, ?, ?, ?, ?, ?, ?,
   ?, ?)`,
 		uuid, remark, protocol, port, network, security, time.Now().UTC().Format(time.RFC3339),
 		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, tlsSNI, tlsFingerprint, tlsALPN, xhttpPath, xhttpMode,
-		hy2UpMbps, hy2DownMbps, hy2Obfs, hy2ObfsPassword,
+		hy2UpMbps, hy2DownMbps, hy2Obfs, hy2ObfsPassword, hy2MPort,
 		tuicCongestionControl, tuicZeroRTTInt,
 		wgPrivateKey, wgAddress, wgPeerPublicKey, wgAllowedIPs, wgEndpoint, wgPresharedKey, wgMTU,
 		shadowTLSVersion, shadowTLSPassword)
@@ -878,14 +882,14 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
 		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, reality_private_key=?, reality_public_key=?, ss_method=?,
 		tls_cert_file=?, tls_key_file=?, tls_sni=?, tls_fingerprint=?, tls_alpn=?, xhttp_path=?, xhttp_mode=?,
-		hy2_up_mbps=?, hy2_down_mbps=?, hy2_obfs=?, hy2_obfs_password=?,
+		hy2_up_mbps=?, hy2_down_mbps=?, hy2_obfs=?, hy2_obfs_password=?, hy2_mport=?,
 		tuic_congestion_control=?, tuic_zero_rtt=?,
 		wg_private_key=?, wg_address=?, wg_peer_public_key=?, wg_allowed_ips=?, wg_endpoint=?, wg_preshared_key=?, wg_mtu=?,
 		shadowtls_version=?, shadowtls_password=? WHERE id=?`,
 		remark, protocol, params.Port, network, security, enabled,
 		params.WsPath, params.WsHost, params.GrpcServiceName, params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey, params.SSMethod,
 		params.TLSCertFile, params.TLSKeyFile, params.TLSSNI, params.TLSFingerprint, params.TLSALPN, params.XHTTPPath, params.XHTTPMode,
-		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword,
+		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword, params.Hy2MPort,
 		params.TuicCongestionControl, tuicZeroRTTInt,
 		params.WgPrivateKey, params.WgAddress, params.WgPeerPublicKey, params.WgAllowedIPs, params.WgEndpoint, params.WgPresharedKey, params.WgMTU,
 		params.ShadowTLSVersion, params.ShadowTLSPassword, id)
@@ -903,7 +907,7 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
 		tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password, hy2_mport,
 		tuic_congestion_control, tuic_zero_rtt,
 		wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
 		shadowtls_version, shadowtls_password FROM inbounds WHERE id=?`, id)
@@ -912,7 +916,7 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
 		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
 		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
-		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword,
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword, &inbound.Hy2MPort,
 		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
 		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
 		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {
@@ -973,7 +977,7 @@ func (s *Store) SetInboundEnabled(ctx context.Context, id int64, enabled bool) (
 	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
 		tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password, hy2_mport,
 		tuic_congestion_control, tuic_zero_rtt,
 		wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
 		shadowtls_version, shadowtls_password FROM inbounds WHERE id=?`, id)
@@ -981,7 +985,7 @@ func (s *Store) SetInboundEnabled(ctx context.Context, id int64, enabled bool) (
 	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &dbEnabled,
 		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
 		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
-		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword,
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword, &inbound.Hy2MPort,
 		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
 		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
 		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {
@@ -1048,7 +1052,7 @@ func (s *Store) ListInbounds(ctx context.Context) ([]Inbound, error) {
 SELECT id, uuid, remark, protocol, port, network, security, enabled,
   ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
   tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
-  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password,
+  hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password, hy2_mport,
   tuic_congestion_control, tuic_zero_rtt,
   wg_private_key, wg_address, wg_peer_public_key, wg_allowed_ips, wg_endpoint, wg_preshared_key, wg_mtu,
   shadowtls_version, shadowtls_password
@@ -1068,7 +1072,7 @@ ORDER BY id ASC
 		if err := rows.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled,
 			&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
 			&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
-			&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword,
+			&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword, &inbound.Hy2MPort,
 			&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
 			&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
 			&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {

@@ -553,6 +553,23 @@ func TestLoginPageVercelStyle(t *testing.T) {
 	}
 }
 
+func TestPanelHysteria2LinkIncludesSpecialParams(t *testing.T) {
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`inbound.protocol === 'hysteria2'`,
+		`hp.push('up_mbps=' + encodeURIComponent(inbound.hy2_up_mbps))`,
+		`hp.push('down_mbps=' + encodeURIComponent(inbound.hy2_down_mbps))`,
+		`hp.push('obfs=' + encodeURIComponent(inbound.hy2_obfs))`,
+		`hp.push('obfs-password=' + encodeURIComponent(inbound.hy2_obfs_password))`,
+		`hp.push('mport=' + encodeURIComponent(inbound.hy2_mport))`,
+		`shareLink = 'hysteria2://' + c.uuid + '@' + hostName + ':' + inbound.port`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js Hysteria2 Link generation missing %q", want)
+		}
+	}
+}
+
 func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
@@ -1032,6 +1049,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`name="hy2_down_mbps"`, `id="ei-hy2-down"`,
 		`name="hy2_obfs"`, `id="ei-hy2-obfs"`,
 		`name="hy2_obfs_password"`, `id="ei-hy2-obfs-password"`,
+		`name="hy2_mport"`, `id="ei-hy2-mport"`,
 		`id="tuic-settings"`, `id="ei-tuic-settings"`,
 		`name="tuic_congestion_control"`, `id="ei-tuic-cc"`,
 		`name="tuic_zero_rtt"`, `id="ei-tuic-zero-rtt"`,
@@ -1046,6 +1064,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	for _, want := range []string{
 		`document.getElementById('ei-hy2-up').value`,
 		`hy2_up_mbps: Number(document.getElementById('ei-hy2-up').value) || 0`,
+		`document.getElementById('ei-hy2-mport').value`,
+		`hy2_mport: document.getElementById('ei-hy2-mport').value`,
 		`document.getElementById('ei-tuic-cc').value`,
 		`tuic_congestion_control: document.getElementById('ei-tuic-cc').value`,
 		`document.getElementById('ei-shadowtls-password').value`,

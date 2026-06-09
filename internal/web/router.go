@@ -2273,6 +2273,7 @@ func shareLink(host string, inbound db.Inbound, client db.Client) string {
 		}
 		addParam("obfs", inbound.Hy2Obfs)
 		addParam("obfs-password", inbound.Hy2ObfsPassword)
+		addParam("mport", inbound.Hy2MPort)
 		// sing-box v1.13 requires TLS for Hysteria2 server inbounds.
 		// MiGate uses generated self-signed certs by default, so share links must
 		// include TLS + insecure even when the UI stores security=none.
@@ -2957,7 +2958,8 @@ const panelHTML = `<!doctype html>
             <input name="hy2_down_mbps" type="number" min="0" placeholder="下行速率 mbps (0=不限) 默认 0">
             <input name="hy2_obfs" placeholder="混淆类型 (如 salamander, 可选)">
             <div class="inline-field-tools"><input id="inbound-hy2-obfs-password" name="hy2_obfs_password" type="password" placeholder="混淆密码 (可选)"><button type="button" class="btn-mini" onclick="regenerateField('inbound-hy2-obfs-password')">重新生成</button><button type="button" class="btn-mini" onclick="toggleSecretField('inbound-hy2-obfs-password')">显示/隐藏</button></div>
-            <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander。</p>
+            <input name="hy2_mport" placeholder="端口跳跃范围 mport (如 40000-50000, 可选)">
+            <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander；端口跳跃会写入分享链接的 mport 参数。</p>
           </div>
           <div id="tuic-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">TUIC 设置</div>
@@ -3179,7 +3181,8 @@ const panelHTML = `<!doctype html>
             <input id="ei-hy2-down" type="number" min="0" placeholder="下行速率 mbps (0=不限) 默认 0">
             <input id="ei-hy2-obfs" placeholder="混淆类型 (如 salamander, 可选)">
             <input id="ei-hy2-obfs-password" placeholder="混淆密码 (可选)">
-            <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander。</p>
+            <input id="ei-hy2-mport" placeholder="端口跳跃范围 mport (如 40000-50000, 可选)">
+            <p class="field-help">速率限制为 0 表示不限制。混淆类型通常为 salamander；端口跳跃会写入分享链接的 mport 参数。</p>
           </div>
           <div id="ei-tuic-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">TUIC 设置</div>
