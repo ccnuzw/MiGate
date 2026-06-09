@@ -1023,7 +1023,41 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 			t.Fatalf("app.js missing concise core version contract %q", want)
 		}
 	}
-	if strings.Contains(body, `option value="wireguard"`) || strings.Contains(jsBody, `wireguard: {network`) {
+	for _, want := range []string{
+		`<option value="hysteria2">Hysteria2</option>`,
+		`<option value="tuic">TUIC</option>`,
+		`<option value="shadowtls">ShadowTLS</option>`,
+		`id="hy2-settings"`, `id="ei-hy2-settings"`,
+		`name="hy2_up_mbps"`, `id="ei-hy2-up"`,
+		`name="hy2_down_mbps"`, `id="ei-hy2-down"`,
+		`name="hy2_obfs"`, `id="ei-hy2-obfs"`,
+		`name="hy2_obfs_password"`, `id="ei-hy2-obfs-password"`,
+		`id="tuic-settings"`, `id="ei-tuic-settings"`,
+		`name="tuic_congestion_control"`, `id="ei-tuic-cc"`,
+		`name="tuic_zero_rtt"`, `id="ei-tuic-zero-rtt"`,
+		`id="shadowtls-settings"`, `id="ei-shadowtls-settings"`,
+		`name="shadowtls_password"`, `id="ei-shadowtls-password"`,
+		`name="shadowtls_version"`, `id="ei-shadowtls-version"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("create/edit inbound sing-box protocol fields must stay aligned, missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`document.getElementById('ei-hy2-up').value`,
+		`hy2_up_mbps: Number(document.getElementById('ei-hy2-up').value) || 0`,
+		`document.getElementById('ei-tuic-cc').value`,
+		`tuic_congestion_control: document.getElementById('ei-tuic-cc').value`,
+		`document.getElementById('ei-shadowtls-password').value`,
+		`shadowtls_password: document.getElementById('ei-shadowtls-password').value`,
+		`document.getElementById('ei-shadowtls-version').value`,
+		`shadowtls_version: Number(document.getElementById('ei-shadowtls-version').value) || 3`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js must populate and save edit sing-box field %q", want)
+		}
+	}
+	if strings.Contains(body, `option value="wireguard"`) || strings.Contains(jsBody, `wireguard: {network`) || strings.Contains(body, `id="ei-wireguard-settings"`) {
 		t.Fatalf("panel must not offer WireGuard while the bundled sing-box runtime skips WireGuard inbounds")
 	}
 

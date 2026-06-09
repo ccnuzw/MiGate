@@ -638,9 +638,43 @@ func TestSubscriptionHysteria2DefaultGeneratedTLSLink(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"hy2://" + client.UUID + "@panel.example.com:21001", "security=tls", "allowInsecure=1"} {
+	for _, want := range []string{"hysteria2://" + client.UUID + "@panel.example.com:21001", "security=tls", "insecure=1"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("hysteria2 default generated TLS link missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"hy2://", "allowInsecure=1"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("hysteria2 subscription must use client-compatible URI params, found %q in %s", forbidden, body)
+		}
+	}
+}
+
+func TestStatsMarksSingBoxClientTrafficAsUnavailable(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-user"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"protocol":"hysteria2"`, `"traffic_stats_source":"unavailable"`, `"traffic_stats_note":"sing-box realtime traffic stats are not yet wired"`, fmt.Sprintf(`"id":%d`, client.ID)} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sing-box stats response missing %q: %s", want, body)
 		}
 	}
 }

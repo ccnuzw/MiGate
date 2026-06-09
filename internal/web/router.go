@@ -944,6 +944,15 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 	}
 }
 
+func isSingBoxProtocol(protocol string) bool {
+	switch protocol {
+	case "hysteria2", "tuic", "shadowtls":
+		return true
+	default:
+		return false
+	}
+}
+
 func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -976,24 +985,33 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 			clientStats = stats
 		}
 
-		// Build client traffic list from DB + stats
+		// Build client traffic list from DB + stats. Xray protocols can use the
+		// live Xray stats API; sing-box protocols are not wired to a realtime
+		// counter source yet, so label them explicitly instead of presenting DB
+		// values as live traffic.
 		var clientList []map[string]interface{}
 		for _, in := range inb {
 			for _, c := range in.Clients {
 				info := map[string]interface{}{
-					"id":            c.ID,
-					"inbound_id":    c.InboundID,
-					"email":         c.Email,
-					"enabled":       c.Enabled,
-					"up":            c.Up,
-					"down":          c.Down,
-					"traffic_limit": c.TrafficLimit,
-					"expiry_at":     c.ExpiryAt,
+					"id":                   c.ID,
+					"inbound_id":           c.InboundID,
+					"protocol":             in.Protocol,
+					"email":                c.Email,
+					"enabled":              c.Enabled,
+					"up":                   c.Up,
+					"down":                 c.Down,
+					"traffic_limit":        c.TrafficLimit,
+					"expiry_at":            c.ExpiryAt,
+					"traffic_stats_source": "db",
 				}
-				// Override with live stats if available
-				if liveStats, ok := clientStats[c.Email]; ok {
+				if isSingBoxProtocol(in.Protocol) {
+					info["traffic_stats_source"] = "unavailable"
+					info["traffic_stats_note"] = "sing-box realtime traffic stats are not yet wired"
+				} else if liveStats, ok := clientStats[c.Email]; ok {
+					// Override with live stats if available.
 					info["up"] = liveStats.Uplink
 					info["down"] = liveStats.Downlink
+					info["traffic_stats_source"] = "xray"
 				}
 				clientList = append(clientList, info)
 			}
@@ -2240,7 +2258,7 @@ func shareLink(host string, inbound db.Inbound, client db.Client) string {
 	case "shadowsocks":
 		return ssShareLink(host, inbound, client)
 	case "hysteria2":
-		// hy2://password@host:port/?params#name
+		// hysteria2://password@host:port/?params#name
 		var params []string
 		addParam := func(k, v string) {
 			if v != "" {
@@ -2257,16 +2275,16 @@ func shareLink(host string, inbound db.Inbound, client db.Client) string {
 		addParam("obfs-password", inbound.Hy2ObfsPassword)
 		// sing-box v1.13 requires TLS for Hysteria2 server inbounds.
 		// MiGate uses generated self-signed certs by default, so share links must
-		// include TLS + allowInsecure even when the UI stores security=none.
+		// include TLS + insecure even when the UI stores security=none.
 		params = append(params, "security=tls")
 		addParam("sni", inbound.RealityServerNames)
-		params = append(params, "allowInsecure=1")
+		params = append(params, "insecure=1")
 		query := strings.Join(params, "&")
 		suffix := ""
 		if query != "" {
 			suffix = "?" + query
 		}
-		return "hy2://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + suffix + "#" + url.QueryEscape(client.Email)
+		return "hysteria2://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + suffix + "#" + url.QueryEscape(client.Email)
 	default:
 		// vless, trojan, etc. use universal link format
 		var params []string
@@ -3072,6 +3090,8 @@ const panelHTML = `<!doctype html>
             <option value="trojan">Trojan</option>
             <option value="shadowsocks">Shadowsocks</option>
             <option value="hysteria2">Hysteria2</option>
+            <option value="tuic">TUIC</option>
+            <option value="shadowtls">ShadowTLS</option>
           </select>
           <p class="field-help">保存后会影响客户端链接格式。</p>
         </div>
@@ -3172,19 +3192,6 @@ const panelHTML = `<!doctype html>
             </select>
             <label><input id="ei-tuic-zero-rtt" type="checkbox" value="1"> 启用 0-RTT 握手</label>
             <p class="field-help">拥塞控制和 0-RTT 握手可优化延迟。</p>
-          </div>
-          <div id="ei-wireguard-settings" class="advanced-fieldset field-group span-2 hidden">
-            <div class="advanced-fieldset-title">WireGuard 设置</div>
-            <div class="advanced-fieldset-copy">WireGuard 简单高效的 VPN 协议。</div>
-            <label class="field-label" for="ei-wg-private-key">WireGuard 私钥</label>
-            <input id="ei-wg-private-key" placeholder="私钥 (PrivateKey) 必填">
-            <input id="ei-wg-address" placeholder="本地地址 (如 10.0.0.1/24) 必填">
-            <input id="ei-wg-peer-public-key" placeholder="客户端公钥 (PublicKey) 必填">
-            <input id="ei-wg-allowed-ips" placeholder="允许的 IP (默认 0.0.0.0/0, ::/0)">
-            <input id="ei-wg-endpoint" placeholder="客户端 Endpoint (可选)">
-            <input id="ei-wg-preshared-key" placeholder="预共享密钥 (PreSharedKey, 可选)">
-            <input id="ei-wg-mtu" type="number" min="1280" placeholder="MTU (默认 1420)">
-            <p class="field-help">WireGuard 需要服务器端生成私钥/公钥对。</p>
           </div>
           <div id="ei-shadowtls-settings" class="advanced-fieldset field-group span-2 hidden">
             <div class="advanced-fieldset-title">ShadowTLS 设置</div>

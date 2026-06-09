@@ -1365,7 +1365,6 @@ function openCreateRoutingRule() {
       document.getElementById('ei-tls-settings').classList.toggle('hidden', sec !== 'tls');
       document.getElementById('ei-hy2-settings').classList.toggle('hidden', proto !== 'hysteria2');
       document.getElementById('ei-tuic-settings').classList.toggle('hidden', proto !== 'tuic');
-      document.getElementById('ei-wireguard-settings').classList.toggle('hidden', proto !== 'wireguard');
       document.getElementById('ei-shadowtls-settings').classList.toggle('hidden', proto !== 'shadowtls');
     }
 
@@ -1401,13 +1400,6 @@ function openCreateRoutingRule() {
       document.getElementById('ei-hy2-obfs-password').value = inbound.hy2_obfs_password || '';
       document.getElementById('ei-tuic-cc').value = inbound.tuic_congestion_control || 'bbr';
       document.getElementById('ei-tuic-zero-rtt').checked = inbound.tuic_zero_rtt || false;
-      document.getElementById('ei-wg-private-key').value = inbound.wg_private_key || '';
-      document.getElementById('ei-wg-address').value = inbound.wg_address || '';
-      document.getElementById('ei-wg-peer-public-key').value = inbound.wg_peer_public_key || '';
-      document.getElementById('ei-wg-allowed-ips').value = inbound.wg_allowed_ips || '';
-      document.getElementById('ei-wg-endpoint').value = inbound.wg_endpoint || '';
-      document.getElementById('ei-wg-preshared-key').value = inbound.wg_preshared_key || '';
-      document.getElementById('ei-wg-mtu').value = inbound.wg_mtu || 1420;
       document.getElementById('ei-shadowtls-password').value = inbound.shadowtls_password || '';
       document.getElementById('ei-shadowtls-version').value = inbound.shadowtls_version || 3;
       eiUpdateDynamicFields();
@@ -1447,13 +1439,6 @@ function openCreateRoutingRule() {
         hy2_obfs_password: document.getElementById('ei-hy2-obfs-password').value,
         tuic_congestion_control: document.getElementById('ei-tuic-cc').value,
         tuic_zero_rtt: document.getElementById('ei-tuic-zero-rtt').checked,
-        wg_private_key: document.getElementById('ei-wg-private-key').value,
-        wg_address: document.getElementById('ei-wg-address').value,
-        wg_peer_public_key: document.getElementById('ei-wg-peer-public-key').value,
-        wg_allowed_ips: document.getElementById('ei-wg-allowed-ips').value,
-        wg_endpoint: document.getElementById('ei-wg-endpoint').value,
-        wg_preshared_key: document.getElementById('ei-wg-preshared-key').value,
-        wg_mtu: Number(document.getElementById('ei-wg-mtu').value) || 1420,
         shadowtls_password: document.getElementById('ei-shadowtls-password').value,
         shadowtls_version: Number(document.getElementById('ei-shadowtls-version').value) || 3,
       };
