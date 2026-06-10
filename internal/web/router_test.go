@@ -110,6 +110,130 @@ func TestRouterServesStaticPanelAndHealthAPI(t *testing.T) {
 	}
 }
 
+func TestUpdateAPIStartsInstallerUpdateWithoutBlockingResponse(t *testing.T) {
+	router := web.NewRouter()
+
+	get := httptest.NewRecorder()
+	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/update", nil))
+	if get.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected GET /api/update 405, got %d", get.Code)
+	}
+
+	post := httptest.NewRecorder()
+	router.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/api/update", nil))
+	if post.Code != http.StatusOK {
+		t.Fatalf("expected POST /api/update 200, got %d: %s", post.Code, post.Body.String())
+	}
+	for _, want := range []string{`"status":"updating"`, `"command":"/usr/local/bin/migate-install --update"`} {
+		if !strings.Contains(post.Body.String(), want) {
+			t.Fatalf("update response missing %q: %s", want, post.Body.String())
+		}
+	}
+}
+
+func TestPanelWiresWebUIUpdateActionAndI18nMessages(t *testing.T) {
+	router := web.NewRouter()
+	page := httptest.NewRecorder()
+	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("expected 200 for panel, got %d: %s", page.Code, page.Body.String())
+	}
+	body := page.Body.String()
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`id="update-button"`,
+		`onclick="updateMiGate()"`,
+		`updateNow:"立即更新"`,
+		`updateNow:"Update now"`,
+		`newVersionAvailablePrefix`,
+		`updateReleaseNotes`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("panel missing WebUI update/i18n contract %q", want)
+		}
+	}
+	for _, want := range []string{
+		`async function updateMiGate()`,
+		`apiFetch('/api/update', {method: 'POST'})`,
+		`t('updateChecking')`,
+		`t('updateStarted')`,
+		`t('updateFailed')`,
+		`t('newVersionAvailablePrefix')`,
+		`t('updateReleaseNotes')`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js missing WebUI update/i18n contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`🚀 新版本 <strong>v`,
+		`已发布（当前 v`,
+		`查看 <a href=`,
+	} {
+		if strings.Contains(jsBody, forbidden) {
+			t.Fatalf("app.js should use i18n for dynamic update copy, found %q", forbidden)
+		}
+	}
+}
+
+func TestAppJSDynamicCopyUsesI18nKeys(t *testing.T) {
+	jsBody := readAppJS(t)
+	inString := false
+	quote := byte(0)
+	stringStart := 0
+	for i := 0; i < len(jsBody); i++ {
+		ch := jsBody[i]
+		if !inString {
+			if ch == '/' && i+1 < len(jsBody) && jsBody[i+1] == '/' {
+				if next := strings.IndexByte(jsBody[i+2:], '\n'); next >= 0 {
+					i += next + 2
+				} else {
+					break
+				}
+				continue
+			}
+			if ch == '/' && i+1 < len(jsBody) && jsBody[i+1] == '*' {
+				if next := strings.Index(jsBody[i+2:], "*/"); next >= 0 {
+					i += next + 3
+				} else {
+					break
+				}
+				continue
+			}
+			if ch == '\'' || ch == '"' {
+				inString = true
+				quote = ch
+				stringStart = i
+			}
+			continue
+		}
+		if ch == '\\' {
+			i++
+			continue
+		}
+		if ch == quote {
+			j := i + 1
+			for j < len(jsBody) && (jsBody[j] == ' ' || jsBody[j] == '\n' || jsBody[j] == '\t' || jsBody[j] == '\r') {
+				j++
+			}
+			isObjectKey := j < len(jsBody) && jsBody[j] == ':'
+			literal := jsBody[stringStart : i+1]
+			containsHan := false
+			for _, r := range literal {
+				if r >= '\u4e00' && r <= '\u9fff' {
+					containsHan = true
+					break
+				}
+			}
+			if !isObjectKey && containsHan {
+				t.Fatalf("app.js dynamic string literal should use i18n key, found Han near %q", literal)
+			}
+			inString = false
+			continue
+		}
+	}
+}
+
 func TestPanelWiresSocks5PoolPickerToOutboundManagement(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
@@ -126,7 +250,7 @@ func TestPanelWiresSocks5PoolPickerToOutboundManagement(t *testing.T) {
 		`id="socks5-pool-detail"`,
 		`id="socks5-pool-list"`,
 		`导入 SOCKS5 地址池`,
-		`请选择地区后显示对应 SOCKS5`,
+		`dyn052`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel missing socks5 pool UI contract %q", want)
@@ -146,15 +270,15 @@ func TestPanelWiresSocks5PoolPickerToOutboundManagement(t *testing.T) {
 		`renderSocks5RegionOptions`,
 		`groupSocks5RegionsByContinent`,
 		`formatSocks5ProxyCompactLine`,
-		`请选择地区后显示对应 SOCKS5`,
+		`dyn052`,
 		`overflow-x:hidden`,
 		`apiFetch('/api/outbounds/socks5-pool?country=' + encodeURIComponent(country))`,
 		`apiFetch('/api/outbounds/socks5-pool/ping'`,
 		`tcping`,
 		`apiFetch('/api/outbounds/socks5-pool/import'`,
 		`socks5-pool-confirm-btn`,
-		`导入中...`,
-		`SOCKS5 已添加：`,
+		`t("dyn081")`,
+		`t("dyn083")`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing socks5 pool contract %q", want)
@@ -187,14 +311,14 @@ func TestPanelRoutingRuleSaveButtonsProvideFeedback(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`setActionButtonBusy('create-routing-rule-submit-btn', '创建中...')`,
-		`setActionButtonBusy('edit-routing-rule-submit-btn', '保存中...')`,
+		`setActionButtonBusy('create-routing-rule-submit-btn', t("dyn112"))`,
+		`setActionButtonBusy('edit-routing-rule-submit-btn', t("dyn116"))`,
 		`apiFetch('/api/routing-rules'`,
 		`apiFetch('/api/routing-rules/' + id`,
-		`responseErrorMessage(resp, '创建失败')`,
-		`responseErrorMessage(resp, '保存失败')`,
-		`showToast('路由规则已创建', 'success')`,
-		`showToast('路由规则已更新', 'success')`,
+		`responseErrorMessage(resp, t("dyn088"))`,
+		`responseErrorMessage(resp, t("dyn117"))`,
+		`showToast(t("dyn113"), 'success')`,
+		`showToast(t("dyn118"), 'success')`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing routing save feedback contract %q", want)
@@ -259,9 +383,9 @@ func TestPanelOutboundInteractionsReportFailuresAndConsistentLatencyUnits(t *tes
 		}
 	}
 	for _, want := range []string{
-		`if (!resp.ok) { showToast('排序保存失败', 'error'); await loadOutbounds(); return; }`,
-		`showToast('排序已保存', 'success');`,
-		`catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); })`,
+		`if (!resp.ok) { showToast(t("dyn049"), 'error'); await loadOutbounds(); return; }`,
+		`showToast(t("dyn050"), 'success');`,
+		`catch(function() { showToast(t("dyn049"), 'error'); loadOutbounds(); })`,
 		`var ms = Number(r.latency).toFixed(0);`,
 		`function isCustomSpeedTestOutbound(ob)`,
 		`outbounds.filter(isCustomSpeedTestOutbound)`,
@@ -444,23 +568,23 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`btnWrap.className = 'client-add-row';`,
 		`id="edit-client-submit-btn"`,
 		`id="reset-client-traffic-btn"`,
-		`setActionButtonBusy('edit-client-submit-btn', '保存中...')`,
-		`setActionButtonBusy('reset-client-traffic-btn', '重置中...')`,
-		`responseErrorMessage(res, '编辑客户端失败')`,
-		`responseErrorMessage(res, '重置流量失败')`,
+		`setActionButtonBusy('edit-client-submit-btn', t("dyn116"))`,
+		`setActionButtonBusy('reset-client-traffic-btn', t("dyn169"))`,
+		`responseErrorMessage(res, t("dyn163"))`,
+		`responseErrorMessage(res, t("dyn170"))`,
 		`id="client-copy-' + c.id + '"`,
 		`id="client-edit-' + c.id + '"`,
 		`id="client-toggle-' + c.id + '"`,
 		`id="client-delete-' + c.id + '"`,
 		`toggleClientSection(`,
-		`展开客户端">客户端</button>`,
-		`title="编辑">编辑</button>`,
-		`title="启用/禁用">' + (inbound.enabled ? '禁用' : '启用') + '</button>`,
-		`title="删除">删除</button>`,
-		`复制链接`,
+		`t("dyn008")`,
+		`t("dyn009")`,
+		`t("dyn010") + (inbound.enabled ? t("dyn011") : t("dyn012"))`,
+		`t("dyn013")`,
+		`t("dyn136")`,
 		`重置流量`,
-		`删除中...`,
-		`切换中...`,
+		`t("dyn147")`,
+		`t("dyn165")`,
 		`.client-resource-row .resource-actions { flex-wrap:wrap; justify-content:flex-end; max-width:280px; }`,
 		`.client-resource-row .icon-btn, .client-resource-row .danger-icon-btn { min-width:64px; }`,
 	} {
@@ -607,8 +731,8 @@ func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 		`function showManualCopyDialog(text)`,
 		`if (navigator.clipboard && navigator.clipboard.writeText)`,
 		`const copied = await copyToClipboard(text)`,
-		`showToast('已复制链接', 'success')`,
-		`showToast('复制失败，请手动复制', 'error')`,
+		`showToast(t("dyn141"), 'success')`,
+		`showToast(t("dyn142"), 'error')`,
 		`function jsString(value)`,
 		`function htmlAttrString(value)`,
 	} {
@@ -618,7 +742,7 @@ func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 	}
 	// HTML items (in app.js via JS string concatenation for onclick)
 	for _, want := range []string{
-		`onclick="copySubUrl(' + htmlAttrString(shareLink) + ')"`,
+		`onclick="copySubUrl(' + htmlAttrString(shareLink) + t("dyn136")`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing create-refresh/copy safety contract %q", want)
@@ -670,7 +794,7 @@ func TestPanelWiresDeleteInboundButton(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`确认删除此`,
+		`t("dyn143")`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing delete confirm text %q", want)
@@ -698,7 +822,7 @@ func TestPanelWiresDeleteClientButton(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`确认删除此`,
+		`t("dyn143")`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing delete confirm text %q", want)
@@ -993,8 +1117,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	// Overview Xray metric must display service runtime status, not the literal service name.
 	for _, want := range []string{
 		`function formatServiceStatus(service)`,
-		`if (service.status === 'running' || service.status === 'active') return '运行中';`,
-		`if (service.status === 'stopped' || service.status === 'inactive') return '已停止';`,
+		`if (service.status === 'running' || service.status === 'active') return t("dyn024");`,
+		`if (service.status === 'stopped' || service.status === 'inactive') return t("dyn025");`,
 		`xrayStatusMetric.textContent = formatServiceStatus(xs)`,
 	} {
 		if !strings.Contains(jsBody, want) {
@@ -1079,8 +1203,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`versionText.match(/(?:Xray\s+)?v?(\d+\.\d+\.\d+)/i)`,
 		`document.getElementById('xray-version').textContent = formatCoreVersion(data.version) || '-'`,
 		`document.getElementById('singbox-version').textContent = formatCoreVersion(data.version) || '-'`,
-		`data.status === 'no_inbounds' ? '无入站'`,
-		`data.status === 'not_managed' ? '已安装 / 未托管'`,
+		`data.status === 'no_inbounds' ? t("dyn192")`,
+		`data.status === 'not_managed' ? t("dyn193")`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing concise core version contract %q", want)
@@ -1164,9 +1288,9 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`if (_creatingClient) return;`,
 		`_creatingClient = true;`,
 		`submitBtn.disabled = true;`,
-		`submitBtn.textContent = '创建中...'`,
+		`submitBtn.textContent = t("dyn112")`,
 		`_creatingClient = false;`,
-		`submitBtn.textContent = '创建客户端'`,
+		`submitBtn.textContent = t("dyn133")`,
 	} {
 		if !strings.Contains(body+jsBody, want) {
 			t.Fatalf("create client modal must guard duplicate submit, missing %q", want)
@@ -1278,9 +1402,9 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`class="empty-state-copy"`,
 		`class="empty-state-actions"`,
 		`function renderEmptyState`,
-		`renderEmptyState('暂无入站'`,
-		`renderEmptyState('暂无出站'`,
-		`renderEmptyState('暂无客户端'`,
+		`renderEmptyState(t("dyn002")`,
+		`renderEmptyState(t("dyn032")`,
+		`renderEmptyState(t("dyn131")`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing empty-state JS %q", want)
@@ -1303,11 +1427,11 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 	for _, want := range []string{
 		`function renderNotice`,
-		`renderNotice('正在应用'`,
-		`renderNotice('应用完成'`,
-		`renderNotice('应用失败'`,
-		`renderNotice('数据库'`,
-		`renderNotice('设置不可用'`,
+		`renderNotice(t("dyn207")`,
+		`renderNotice(t("dyn215")`,
+		`renderNotice(t("dyn212")`,
+		`renderNotice(t("dyn228")`,
+		`renderNotice(t("dyn231")`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing notice JS %q", want)
@@ -1338,8 +1462,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		t.Fatalf("panel toggle handlers must not reference undefined newEnabled")
 	}
 	for _, want := range []string{
-		`showToast('入站 ' + (inbound.enabled ? '已启用' : '已禁用'), 'success')`,
-		`showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success')`,
+		`showToast(t("dyn158") + (inbound.enabled ? t("dyn159") : t("dyn160")), 'success')`,
+		`showToast(t("dyn167") + (foundClient.enabled ? t("dyn159") : t("dyn160")), 'success')`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("panel missing safe toggle toast expression %q", want)
@@ -1676,7 +1800,7 @@ func TestRestartEndpoint(t *testing.T) {
 		}
 		// JS functions (in app.js)
 		jsBody := readAppJS(t)
-		for _, want := range []string{"/api/restart", "重启中"} {
+		for _, want := range []string{"/api/restart", `btn.textContent = t("dyn251")`} {
 			if !strings.Contains(jsBody, want) {
 				t.Fatalf("app.js missing restart element %q", want)
 			}

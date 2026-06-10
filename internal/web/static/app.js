@@ -10,7 +10,7 @@
 
     function handleSessionExpired(response) {
       if (!response || response.status !== 401) return false;
-      showToast('登录状态已过期，请重新登录', 'error');
+      showToast(t("dyn001"), 'error');
       setTimeout(function() { window.location.href = panelPath('/login'); }, 600);
       return true;
     }
@@ -81,10 +81,10 @@
       updateProtocolBreakdown(inbounds);
       if (inbounds.length === 0) {
         inboundList.className = 'list';
-        inboundList.innerHTML = renderEmptyState('暂无入站', '先创建一个 VLESS / VMess / Trojan / Shadowsocks 节点；MiGate 会自动生成客户端与 Xray 配置。', [
-          {label:'创建入站', onclick:"openCreateInbound()"},
-          {label:'查看 Xray', onclick:"navigateTo('xray')", secondary:true},
-          {label:'查看 Sing-box', onclick:"navigateTo('singbox')", secondary:true}
+        inboundList.innerHTML = renderEmptyState(t("dyn002"), t("dyn003"), [
+          {label:t("dyn004"), onclick:"openCreateInbound()"},
+          {label:t("dyn005"), onclick:"navigateTo('xray')", secondary:true},
+          {label:t("dyn006"), onclick:"navigateTo('singbox')", secondary:true}
         ]);
         return;
       }
@@ -95,13 +95,13 @@
         return '<div class="resource-row">' +
           '<div class="resource-main">' +
             '<div class="resource-title"><strong>' + escapeHtml(inbound.remark || '-') + '</strong><span class="status-badge ' + enabledClass + '">' + enabledText + '</span></div>' +
-            '<div class="resource-meta"><span>' + escapeHtml(inbound.protocol) + '</span><span>:' + inbound.port + '</span><span>' + escapeHtml(inbound.network || 'tcp') + ' / ' + escapeHtml(inbound.security || 'none') + '</span><span>' + ((inbound.clients || []).length) + ' 客户端</span></div>' +
+            '<div class="resource-meta"><span>' + escapeHtml(inbound.protocol) + '</span><span>:' + inbound.port + '</span><span>' + escapeHtml(inbound.network || 'tcp') + ' / ' + escapeHtml(inbound.security || 'none') + '</span><span>' + ((inbound.clients || []).length) + t("dyn007") +
           '</div>' +
           '<div class="resource-actions">' +
-            '<button class="icon-btn" onclick="toggleClientSection(' + inbound.id + ')" title="展开客户端">客户端</button>' +
-            '<button class="icon-btn" onclick="editInbound(' + inbound.id + ')" title="编辑">编辑</button>' +
-            '<button class="icon-btn" onclick="toggleInbound(' + inbound.id + ')" title="启用/禁用">' + (inbound.enabled ? '禁用' : '启用') + '</button>' +
-            '<button class="danger-icon-btn" onclick="deleteInbound(' + inbound.id + ')" title="删除">删除</button>' +
+            '<button class="icon-btn" onclick="toggleClientSection(' + inbound.id + t("dyn008") +
+            '<button class="icon-btn" onclick="editInbound(' + inbound.id + t("dyn009") +
+            '<button class="icon-btn" onclick="toggleInbound(' + inbound.id + t("dyn010") + (inbound.enabled ? t("dyn011") : t("dyn012")) + '</button>' +
+            '<button class="danger-icon-btn" onclick="deleteInbound(' + inbound.id + t("dyn013") +
           '</div>' +
         '</div>' +
         '<div id="client-section-' + inbound.id + '" class="client-subsection" style="display:none"></div>';
@@ -133,7 +133,7 @@
       const allowedIds = new Set(list.map(ib => ib.id));
       const rows = inboundList.querySelectorAll('.resource-row');
       if (rows.length > 0 && allowedIds.size === 0) {
-        inboundList.innerHTML = '<div class="empty-state"><div class="empty-state-title">无匹配结果</div><div class="empty-state-copy">没有入站匹配当前的搜索或筛选条件。</div></div>';
+        inboundList.innerHTML = t("dyn014");
         return;
       }
       rows.forEach(row => {
@@ -175,11 +175,11 @@
       const expiredClients = allClients.filter(c => c.expiry_at && c.expiry_at > 0 && c.expiry_at <= Math.floor(Date.now() / 1000)).length;
       if (health) {
         health.textContent = inbounds.length === 0
-          ? '还没有入站。建议先创建一个 VLESS/REALITY 或 TLS 入站，再添加客户端。'
-          : '已启用 ' + enabledInbounds + ' 个入站，停用 ' + disabledInbounds + ' 个；受限客户端 ' + limitedClients + ' 个，过期客户端 ' + expiredClients + ' 个。';
+          ? t("dyn015")
+          : t("dyn016") + enabledInbounds + t("dyn017") + disabledInbounds + t("dyn018") + limitedClients + t("dyn019") + expiredClients + t("dyn020");
       }
       if (activeSummary) {
-        activeSummary.textContent = '活跃客户端 ' + active + ' / ' + allClients.length;
+        activeSummary.textContent = t("dyn021") + active + ' / ' + allClients.length;
       }
     }
 
@@ -239,11 +239,11 @@
     }
 
     function formatServiceStatus(service) {
-      if (!service) return '无法连接';
-      if (service.installed === false) return '未安装';
-      if (service.status === 'running' || service.status === 'active') return '运行中';
-      if (service.status === 'stopped' || service.status === 'inactive') return '已停止';
-      return service.status || '未知';
+      if (!service) return t("dyn022");
+      if (service.installed === false) return t("dyn023");
+      if (service.status === 'running' || service.status === 'active') return t("dyn024");
+      if (service.status === 'stopped' || service.status === 'inactive') return t("dyn025");
+      return service.status || t("dyn026");
     }
 
     async function loadOverviewServiceStatuses() {
@@ -253,7 +253,7 @@
         const xs = await xr.json();
         xrayStatusMetric.textContent = formatServiceStatus(xs);
       } catch (e) {
-        xrayStatusMetric.textContent = '无法连接';
+        xrayStatusMetric.textContent = t("dyn022");
       }
       try {
         const sr = await fetch(apiPath('/api/singbox/status'));
@@ -261,7 +261,7 @@
         const ss = await sr.json();
         document.getElementById('singbox-status-metric').textContent = formatServiceStatus(ss);
       } catch (e) {
-        document.getElementById('singbox-status-metric').textContent = '无法连接';
+        document.getElementById('singbox-status-metric').textContent = t("dyn022");
       }
     }
 
@@ -275,9 +275,9 @@
       const days = Math.floor(total / 86400);
       const hours = Math.floor((total % 86400) / 3600);
       const minutes = Math.floor((total % 3600) / 60);
-      if (days > 0) return days + '天 ' + hours + '小时';
-      if (hours > 0) return hours + '小时 ' + minutes + '分钟';
-      return minutes + '分钟';
+      if (days > 0) return days + t("dyn027") + hours + t("dyn028");
+      if (hours > 0) return hours + t("dyn029") + minutes + t("dyn030");
+      return minutes + t("dyn030");
     }
 
     function formatCoreVersion(versionText) {
@@ -332,11 +332,11 @@
       if (!el) return;
       try {
         const resp = await fetch(apiPath('/api/outbounds'));
-        if (!resp.ok) { el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>'; return; }
+        if (!resp.ok) { el.innerHTML = t("dyn031"); return; }
         const data = await resp.json();
         outbounds = Array.isArray(data) ? data : (data.outbounds || []);
         if (!outbounds.length) {
-          el.innerHTML = renderEmptyState('暂无出站', '出站用于链式代理转发。点击上方"新建出站"添加 SOCKS5 / HTTP 代理。');
+          el.innerHTML = renderEmptyState(t("dyn032"), t("dyn033"));
           return;
         }
         el.innerHTML = '<div style="display:grid;grid-template-columns:1fr;gap:8px" id="outbound-drag-container">' +
@@ -344,13 +344,13 @@
           '</div>';
         setTimeout(attachOutboundDragHandlers, 0);
       } catch(e) {
-        el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>';
+        el.innerHTML = t("dyn031");
       }
     }
 
     function renderOutboundCard(ob) {
-      const protoLabel = ob.protocol === 'freedom' ? '直接连接' :
-        ob.protocol === 'blackhole' ? '阻断' :
+      const protoLabel = ob.protocol === 'freedom' ? t("dyn034") :
+        ob.protocol === 'blackhole' ? t("dyn035") :
         ob.protocol.toUpperCase();
       const detail = ob.address ? ob.address + ':' + ob.port : '';
       const editable = ob.protocol !== 'freedom' && ob.protocol !== 'blackhole';
@@ -365,27 +365,27 @@
         '<div style=\"font-weight:600;font-size:var(--text-sm)\">' + escHtml(ob.remark||ob.tag) + '</div>' +
         '<div class=\"outbound-meta\">' + escHtml(ob.tag) + ' &middot; ' + protoLabel + (detail ? ' &middot; ' + escHtml(detail) : '') + ' <span id=\"ping-' + ob.id + '\"></span></div>' +
         '</div><div class=\"outbound-actions\">' +
-        (editable ? '<button class=\"icon-btn\" onclick=\"speedTestOutbound(' + ob.id + ')\" title=\"测速\">&#9889;</button>' +
-          '<button class=\"icon-btn\" onclick=\"openEditOutbound(' + ob.id + ')\" title=\"编辑\">&#9998;</button>' +
-          '<button class=\"danger-icon-btn\" onclick=\"deleteOutbound(' + ob.id + ')\" title=\"删除\">&#10005;</button>' :
-        '<span class=\"muted\" style=\"font-size:var(--text-xs);padding:4px 8px\">内置</span>') +
+        (editable ? '<button class=\"icon-btn\" onclick=\"speedTestOutbound(' + ob.id + t("dyn036") +
+          '<button class=\"icon-btn\" onclick=\"openEditOutbound(' + ob.id + t("dyn037") +
+          '<button class=\"danger-icon-btn\" onclick=\"deleteOutbound(' + ob.id + t("dyn038") :
+        t("dyn039")) +
         '</div></div>';
     }
 
     function speedTestOutbound(id) {
       const el = document.getElementById('ping-' + id);
       if (!el) return;
-      el.textContent = '测速中...';
+      el.textContent = t("dyn040");
       fetch(apiPath('/api/outbounds/' + id + '/ping')).then(function(r) { return r.json(); }).then(function(data) {
         if (data.latency >= 0) {
           el.textContent = ' ' + data.latency + 'ms';
           el.style.color = data.latency < 200 ? 'var(--green)' : data.latency < 500 ? 'var(--accent2)' : 'var(--danger)';
         } else {
-          el.textContent = ' 超时';
+          el.textContent = t("dyn041");
           el.style.color = 'var(--danger)';
         }
       }).catch(function() {
-        el.textContent = ' 失败';
+        el.textContent = t("dyn042");
         el.style.color = 'var(--danger)';
       });
     }
@@ -395,19 +395,19 @@
       if (btn) btn.disabled = true;
       var targets = outbounds.filter(isCustomSpeedTestOutbound);
       if (!targets.length) {
-        showToast('没有可测速的自定义出站', 'error');
+        showToast(t("dyn043"), 'error');
         if (btn) btn.disabled = false;
         return;
       }
       targets.forEach(function(ob) {
         var el = document.getElementById('ping-' + ob.id);
         if (!el) return;
-        el.textContent = ' 测速中';
+        el.textContent = t("dyn044");
         el.style.color = 'var(--text)';
       });
       try {
         var resp = await fetch(apiPath('/api/outbounds/speedtest-all'), {method:'POST'});
-        if (!resp.ok) { showToast('测速失败', 'error'); return; }
+        if (!resp.ok) { showToast(t("dyn045"), 'error'); return; }
         var results = await resp.json();
         var okCount = 0, failCount = 0;
         Object.keys(results).forEach(function(id) {
@@ -420,14 +420,14 @@
             el.style.color = ms < 200 ? 'var(--green)' : (ms < 500 ? 'orange' : 'var(--danger)');
             okCount++;
           } else {
-            el.textContent = ' 失败';
+            el.textContent = t("dyn042");
             el.style.color = 'var(--danger)';
             failCount++;
           }
         });
-        showToast('完成: ' + okCount + ' 成功, ' + failCount + ' 失败', okCount > 0 ? 'success' : 'error');
+        showToast(t("dyn046") + okCount + t("dyn047") + failCount + t("dyn042"), okCount > 0 ? 'success' : 'error');
       } catch(e) {
-        showToast('测速异常: ' + e.message, 'error');
+        showToast(t("dyn048") + e.message, 'error');
       } finally {
         if (btn) btn.disabled = false;
       }
@@ -472,9 +472,9 @@
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ids: ids})
         }).then(async function(resp) {
-          if (!resp.ok) { showToast('排序保存失败', 'error'); await loadOutbounds(); return; }
-          showToast('排序已保存', 'success');
-        }).catch(function() { showToast('排序保存失败', 'error'); loadOutbounds(); });
+          if (!resp.ok) { showToast(t("dyn049"), 'error'); await loadOutbounds(); return; }
+          showToast(t("dyn050"), 'success');
+        }).catch(function() { showToast(t("dyn049"), 'error'); loadOutbounds(); });
       });
     }
 
@@ -498,8 +498,8 @@
       socks5PoolState = {regions: [], proxies: [], selected: null, cache: null, country: ''};
       const list = document.getElementById('socks5-pool-list');
       const regionSelect = document.getElementById('socks5-pool-region');
-      if (regionSelect) regionSelect.innerHTML = '<option value="">-- 请选择地区 --</option>';
-      if (list) list.innerHTML = '<div class="empty-state"><div class="empty-state-title">请选择地区后显示对应 SOCKS5</div><div class="empty-state-copy">先从上方选择国家/地区，再逐行测延时。</div></div>';
+      if (regionSelect) regionSelect.innerHTML = t("dyn051");
+      if (list) list.innerHTML = t("dyn052");
       renderSocks5PoolDetail();
       showModal('socks5-pool-dialog');
       loadSocks5PoolRegions();
@@ -518,7 +518,7 @@
       for (const name in groups) {
         if (groups[name].includes(c)) return name;
       }
-      return '其他 / OT';
+      return t("dyn053");
     }
 
     function groupSocks5RegionsByContinent(regions) {
@@ -536,13 +536,13 @@
 
     function renderSocks5RegionOptions(regions) {
       const grouped = groupSocks5RegionsByContinent(regions);
-      const order = ['北美 / NA','亚洲 / AS','欧洲 / EU','南美 / SA','大洋洲 / OC','非洲 / AF','其他 / OT'];
-      let html = '<option value="">-- 请选择地区 --</option>';
+      const order = [t("dyn054"),t("dyn055"),t("dyn056"),t("dyn057"),t("dyn058"),t("dyn059"),t("dyn053")];
+      let html = t("dyn051");
       order.forEach(function(group) {
         if (!grouped[group] || !grouped[group].length) return;
         html += '<optgroup label="🌎 ' + escapeHtml(group) + '">';
         html += grouped[group].map(function(r) {
-          const code = r.code || '未知';
+          const code = r.code || t("dyn026");
           const label = code + ' ' + (r.name || '') + ' (' + (r.count || 0) + ')';
           return '<option value="' + escapeHtml(code) + '">' + escapeHtml(label) + '</option>';
         }).join('');
@@ -563,7 +563,7 @@
 
     function formatSocks5ProxyCompactLine(p) {
       const latency = Number(p.latency);
-      const status = latency >= 0 ? latency.toFixed(0) + 'ms' : '测速中';
+      const status = latency >= 0 ? latency.toFixed(0) + 'ms' : t("dyn060");
       const city = p.city || p.country_code || p.address;
       const asn = p.asn ? 'AS' + String(p.asn).replace(/^AS/i, '') : 'AS-';
       return status + ' · ' + city + ' · ' + asn;
@@ -581,7 +581,7 @@
         renderSocks5PoolDetail();
       } catch(e) {
         const list = document.getElementById('socks5-pool-list');
-        if (list) list.innerHTML = '<div class="empty-state"><div class="empty-state-title">地址池加载失败</div><div class="empty-state-copy">' + escapeHtml(e.message) + '</div></div>';
+        if (list) list.innerHTML = t("dyn061") + escapeHtml(e.message) + '</div></div>';
       }
     }
 
@@ -593,7 +593,7 @@
       socks5PoolState.selected = null;
       if (!country) {
         const list = document.getElementById('socks5-pool-list');
-        if (list) list.innerHTML = '<div class="empty-state"><div class="empty-state-title">请选择地区后显示对应 SOCKS5</div><div class="empty-state-copy">不会默认展开全量列表，避免滚动和测速压力。</div></div>';
+        if (list) list.innerHTML = t("dyn062");
         renderSocks5PoolDetail();
         return;
       }
@@ -604,12 +604,12 @@
       const list = document.getElementById('socks5-pool-list');
       const country = socks5PoolState.country || '';
       if (!country) { onSocks5PoolRegionChange(); return; }
-      if (list) list.innerHTML = '<div class="empty-state"><div class="empty-state-title">正在加载地区 SOCKS5</div><div class="empty-state-copy">加载后会逐行测延时。</div></div>';
+      if (list) list.innerHTML = t("dyn063");
       try {
         const resp = await apiFetch('/api/outbounds/socks5-pool?country=' + encodeURIComponent(country));
         if (!resp.ok) throw new Error('pool api ' + resp.status);
         const data = await resp.json();
-        if (data.cache_status && data.cache_status !== 'hit') showToast('SOCKS5 地址池缓存状态：' + data.cache_status, 'success');
+        if (data.cache_status && data.cache_status !== 'hit') showToast(t("dyn064") + data.cache_status, 'success');
         socks5PoolState.regions = data.regions || socks5PoolState.regions || [];
         socks5PoolState.proxies = (data.proxies || []).map(function(p) { p.latency = -1; return p; });
         socks5PoolState.selected = socks5PoolState.proxies[0] || null;
@@ -617,7 +617,7 @@
         renderSocks5PoolDetail();
         socks5PoolState.proxies.forEach(function(_, index) { pingSocks5PoolProxy(index); });
       } catch(e) {
-        if (list) list.innerHTML = '<div class="empty-state"><div class="empty-state-title">地址池加载失败</div><div class="empty-state-copy">' + escapeHtml(e.message) + '</div></div>';
+        if (list) list.innerHTML = t("dyn061") + escapeHtml(e.message) + '</div></div>';
         renderSocks5PoolDetail();
       }
     }
@@ -627,11 +627,11 @@
       if (!list) return;
       const proxies = socks5PoolState.proxies || [];
       if (!socks5PoolState.country) {
-        list.innerHTML = '<div class="empty-state"><div class="empty-state-title">请选择地区后显示对应 SOCKS5</div></div>';
+        list.innerHTML = t("dyn065");
         return;
       }
       if (!proxies.length) {
-        list.innerHTML = '<div class="empty-state"><div class="empty-state-title">暂无可用代理</div><div class="empty-state-copy">换一个地区或稍后重试。</div></div>';
+        list.innerHTML = t("dyn066");
         return;
       }
       list.innerHTML = proxies.map(function(p, idx) {
@@ -659,26 +659,26 @@
       if (!p) {
         const regions = socks5PoolState.regions || [];
         detail.innerHTML = '<div class="muted" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase">SOCKS5 Pool</div>' +
-          '<h3 style="margin:10px 0 8px;font-size:18px">选择地区后查看详情</h3>' +
-          '<p class="field-help" style="margin:0 0 14px">左侧显示当前选中 SOCKS5 的详细信息；右侧只在选择地区后展示列表并逐行测延时。</p>' +
+          t("dyn067") +
+          t("dyn068") +
           '<div style="display:grid;gap:8px;font-size:var(--text-sm)">' +
-          '<div><span class="muted">地区数</span><br><strong>' + regions.length + '</strong></div>' +
-          '<div><span class="muted">缓存状态</span><br><strong>' + escapeHtml((socks5PoolState.cache && socks5PoolState.cache.cache_status) || '加载中') + '</strong></div>' +
-          '<div><span class="muted">刷新策略</span><br><strong>每日 06:00</strong></div></div>';
+          t("dyn069") + regions.length + '</strong></div>' +
+          t("dyn070") + escapeHtml((socks5PoolState.cache && socks5PoolState.cache.cache_status) || t("dyn071")) + '</strong></div>' +
+          t("dyn072");
         return;
       }
       const latency = Number(p.latency);
-      const latencyText = latency >= 0 ? latency.toFixed(0) + ' ms' : '测速中';
+      const latencyText = latency >= 0 ? latency.toFixed(0) + ' ms' : t("dyn060");
       const asn = p.asn ? 'AS' + String(p.asn).replace(/^AS/i, '') : '-';
       detail.innerHTML = '<div class="muted" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase">Selected SOCKS5</div>' +
         '<h3 style="margin:10px 0 8px;color:var(--accent2);font-size:20px;word-break:break-word">' + escapeHtml(p.city || p.country || p.country_code || p.address) + '</h3>' +
         '<div style="display:grid;gap:10px;font-size:var(--text-sm);word-break:break-word">' +
-        '<div><span class="muted">地址</span><br><strong>' + escapeHtml(p.address + ':' + p.port) + '</strong></div>' +
-        '<div><span class="muted">延时</span><br><strong>' + escapeHtml(latencyText) + '</strong></div>' +
-        '<div><span class="muted">地区</span><br><strong>' + escapeHtml((p.country || '-') + ' / ' + (p.country_code || '-')) + '</strong></div>' +
+        t("dyn073") + escapeHtml(p.address + ':' + p.port) + '</strong></div>' +
+        t("dyn074") + escapeHtml(latencyText) + '</strong></div>' +
+        t("dyn075") + escapeHtml((p.country || '-') + ' / ' + (p.country_code || '-')) + '</strong></div>' +
         '<div><span class="muted">ASN</span><br><strong>' + escapeHtml(asn) + '</strong></div>' +
-        '<div><span class="muted">运营商</span><br><strong>' + escapeHtml(p.organization || '-') + '</strong></div>' +
-        '<div><span class="muted">认证</span><br><strong>' + escapeHtml(p.username ? '需要账号密码' : '无认证') + '</strong></div></div>';
+        t("dyn076") + escapeHtml(p.organization || '-') + '</strong></div>' +
+        t("dyn077") + escapeHtml(p.username ? t("dyn078") : t("dyn079")) + '</strong></div></div>';
     }
 
     async function pingSocks5PoolProxy(index) {
@@ -702,20 +702,20 @@
 
     async function confirmSocks5PoolProxy() {
       const p = socks5PoolState.selected;
-      if (!p) { showToast('请选择一个 SOCKS5', 'error'); return; }
-      const restoreButton = setActionButtonBusy('socks5-pool-confirm-btn', '导入中...');
+      if (!p) { showToast(t("dyn080"), 'error'); return; }
+      const restoreButton = setActionButtonBusy('socks5-pool-confirm-btn', t("dyn081"));
       try {
         const resp = await apiFetch('/api/outbounds/socks5-pool/import', {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({address:p.address, port:p.port, username:p.username, password:p.password, city:p.city, asn:p.asn, organization:p.organization})
         });
-        if (!resp.ok) throw new Error(await responseErrorMessage(resp, '导入失败'));
+        if (!resp.ok) throw new Error(await responseErrorMessage(resp, t("dyn082")));
         const result = await resp.json();
         const outbound = result.outbound || {};
-        showToast('SOCKS5 已添加：' + (outbound.remark || (p.address + ':' + p.port)), 'success');
+        showToast(t("dyn083") + (outbound.remark || (p.address + ':' + p.port)), 'success');
         closeModal();
         await loadOutbounds();
-      } catch(e) { showToast('导入失败: ' + e.message, 'error'); }
+      } catch(e) { showToast(t("dyn084") + e.message, 'error'); }
       finally { if (restoreButton) restoreButton(); }
     }
 
@@ -750,15 +750,15 @@
 
     async function submitCreateOutbound() {
       const tag = document.getElementById('co-tag').value.trim();
-      if (!tag) { showToast('请输入出站标识', 'error'); return; }
+      if (!tag) { showToast(t("dyn085"), 'error'); return; }
       const remark = document.getElementById('co-remark').value.trim() || tag;
       const protocol = document.getElementById('co-protocol').value;
       const body = {tag: tag, remark: remark, protocol: protocol};
       if (protocol === 'socks' || protocol === 'http') {
         body.address = document.getElementById('co-address').value.trim();
-        if (!body.address) { showToast('请输入代理地址', 'error'); return; }
+        if (!body.address) { showToast(t("dyn086"), 'error'); return; }
         body.port = parseInt(document.getElementById('co-port').value) || 0;
-        if (body.port <= 0 || body.port > 65535) { showToast('请输入有效端口(1-65535)', 'error'); return; }
+        if (body.port <= 0 || body.port > 65535) { showToast(t("dyn087"), 'error'); return; }
         const user = document.getElementById('co-username').value.trim();
         if (user) { body.username = user; body.password = document.getElementById('co-password').value; }
       }
@@ -767,18 +767,18 @@
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify(body)
         });
-        if (!resp.ok) { showToast('创建失败', 'error'); return; }
-        showToast('出站已创建', 'success');
+        if (!resp.ok) { showToast(t("dyn088"), 'error'); return; }
+        showToast(t("dyn089"), 'success');
         closeModal();
         await loadOutbounds();
-      } catch(e) { showToast('创建失败: ' + e.message, 'error'); }
+      } catch(e) { showToast(t("dyn090") + e.message, 'error'); }
     }
 
     function openEditOutbound(id) {
       fetch(apiPath('/api/outbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var obs = Array.isArray(data) ? data : (data.outbounds || []);
         var ob = obs.find(function(o) { return o.id === id; });
-        if (!ob) { showToast('未找到出站', 'error'); return; }
+        if (!ob) { showToast(t("dyn091"), 'error'); return; }
         document.getElementById('eo-id').value = ob.id;
         document.getElementById('eo-tag').value = ob.tag;
         document.getElementById('eo-remark').value = ob.remark;
@@ -793,13 +793,13 @@
           document.getElementById('eo-' + pt + '-row').style.display = isRemote ? '' : 'none';
         });
         showModal('edit-outbound-dialog');
-      }).catch(function() { showToast('加载失败','error'); });
+      }).catch(function() { showToast(t("dyn092"),'error'); });
     }
 
     async function submitEditOutbound() {
       var id = parseInt(document.getElementById('eo-id').value);
       var tag = document.getElementById('eo-tag').value.trim();
-      if (!tag) { showToast('请输入出站标识', 'error'); return; }
+      if (!tag) { showToast(t("dyn085"), 'error'); return; }
       var body = {
         tag: tag, remark: document.getElementById('eo-remark').value.trim() || tag,
         protocol: document.getElementById('eo-protocol').value,
@@ -816,22 +816,22 @@
           method: 'PUT', headers: {'Content-Type':'application/json'},
           body: JSON.stringify(body)
         });
-        if (!resp.ok) { showToast('更新失败', 'error'); return; }
-        showToast('出站已更新', 'success');
+        if (!resp.ok) { showToast(t("dyn093"), 'error'); return; }
+        showToast(t("dyn094"), 'success');
         closeModal();
         await loadOutbounds();
-      } catch(e) { showToast('更新失败: ' + e.message, 'error'); }
+      } catch(e) { showToast(t("dyn095") + e.message, 'error'); }
     }
 
     function deleteOutbound(id) {
-      showConfirm('确认删除此出站？').then(async function(confirmed) {
+      showConfirm(t("dyn096")).then(async function(confirmed) {
         if (!confirmed) return;
         try {
           const resp = await fetch(apiPath('/api/outbounds/' + id), {method:'DELETE'});
-          if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || '删除失败'); }
-          showToast('出站已删除', 'success');
+          if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || t("dyn097")); }
+          showToast(t("dyn098"), 'success');
           await loadOutbounds();
-        } catch(e) { showToast('删除失败: ' + e.message, 'error'); }
+        } catch(e) { showToast(t("dyn099") + e.message, 'error'); }
       });
     }
 
@@ -840,10 +840,10 @@
       if (!el) return;
       try {
         const resp = await fetch(apiPath('/api/routing-rules'));
-        if (!resp.ok) { el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>'; return; }
+        if (!resp.ok) { el.innerHTML = t("dyn031"); return; }
         const rules = await resp.json();
         if (!rules || !rules.length) {
-          el.innerHTML = '<div class=\"empty-state\"><div class=\"empty-state-title\">暂无路由规则</div><div class=\"empty-state-copy\">添加规则可将特定域名、入站或协议的流量转发到指定出站。点击上方"新建规则"开始。</div></div>';
+          el.innerHTML = t("dyn100");
           return;
         }
         el.innerHTML = '<div id=\"routing-rule-drag-container\" style=\"display:grid;grid-template-columns:1fr;gap:8px\">' +
@@ -851,16 +851,16 @@
           '</div>';
         setTimeout(attachRoutingRuleDragHandlers, 0);
       } catch(e) {
-        el.innerHTML = '<div class=\"muted\" style=\"padding:12px\">加载失败</div>';
+        el.innerHTML = t("dyn031");
       }
     }
 
     function renderRoutingRuleCard(r) {
       var parts = [];
-      if (r.inbound_tag) parts.push('入站: ' + escHtml(r.inbound_tag));
-      if (r.domain) parts.push('域名: ' + escHtml(r.domain));
-      if (r.protocol) parts.push('协议: ' + escHtml(r.protocol));
-      if (!parts.length) parts.push('所有流量');
+      if (r.inbound_tag) parts.push(t("dyn101") + escHtml(r.inbound_tag));
+      if (r.domain) parts.push(t("dyn102") + escHtml(r.domain));
+      if (r.protocol) parts.push(t("dyn103") + escHtml(r.protocol));
+      if (!parts.length) parts.push(t("dyn104"));
       var detail = parts.join(' & ');
       var enabledColor = r.enabled ? 'var(--green)' : 'var(--muted)';
       return '<div class=\"card\" style=\"padding:12px 16px;display:flex;align-items:center;gap:12px\" draggable=\"true\" data-rule-id=\"' + r.id + '\">' +
@@ -869,8 +869,8 @@
         '<div style=\"font-weight:600;font-size:var(--text-sm)\">' + detail + '</div>' +
         '<div class=\"muted\" style=\"font-size:var(--text-xs)\">→ ' + escHtml(r.outbound_tag) + '</div>' +
         '</div>' +
-        '<button class=\"icon-btn\" onclick=\"openEditRoutingRule(this,' + r.id + ')\" title=\"编辑\" data-rule-outbound=\"' + escapeHtml(r.outbound_tag) + '\" data-rule-domain=\"' + escapeHtml(r.domain || '') + '\" data-rule-inbound=\"' + escapeHtml(r.inbound_tag || '') + '\" data-rule-protocol=\"' + escapeHtml(r.protocol || '') + '\" data-rule-enabled=\"' + (r.enabled||false) + '\">&#9998;</button>' +
-        '<button class=\"danger-icon-btn\" onclick=\"deleteRoutingRule(' + r.id + ')\" title=\"删除\">&#10005;</button>' +
+        '<button class=\"icon-btn\" onclick=\"openEditRoutingRule(this,' + r.id + t("dyn105") + escapeHtml(r.outbound_tag) + '\" data-rule-domain=\"' + escapeHtml(r.domain || '') + '\" data-rule-inbound=\"' + escapeHtml(r.inbound_tag || '') + '\" data-rule-protocol=\"' + escapeHtml(r.protocol || '') + '\" data-rule-enabled=\"' + (r.enabled||false) + '\">&#9998;</button>' +
+        '<button class=\"danger-icon-btn\" onclick=\"deleteRoutingRule(' + r.id + t("dyn038") +
         '</div>';
     }
 
@@ -914,18 +914,18 @@
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ids: ids})
         }).then(async function(resp) {
-          if (!resp.ok) { showToast('排序保存失败', 'error'); await loadRoutingRules(); return; }
-          showToast('排序已保存', 'success');
-        }).catch(function() { showToast('排序保存失败', 'error'); loadRoutingRules(); });
+          if (!resp.ok) { showToast(t("dyn049"), 'error'); await loadRoutingRules(); return; }
+          showToast(t("dyn050"), 'success');
+        }).catch(function() { showToast(t("dyn049"), 'error'); loadRoutingRules(); });
       });
     }
 function openCreateRoutingRule() {
       document.getElementById('crr-domain').value = '';
-      document.getElementById('crr-inbound').innerHTML = '<option value="">留空 = 所有入站</option>';
+      document.getElementById('crr-inbound').innerHTML = t("dyn106");
       document.getElementById('crr-protocol').value = '';
       document.getElementById('crr-enabled').checked = true;
       var sel = document.getElementById('crr-outbound');
-      sel.innerHTML = '<option value="">-- 选择出站 --</option>';
+      sel.innerHTML = t("dyn107");
       // Load outbounds for the dropdown
       fetch(apiPath('/api/outbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var obs = Array.isArray(data) ? data : (data.outbounds || []);
@@ -936,7 +936,7 @@ function openCreateRoutingRule() {
           sel.appendChild(opt);
         });
         sel.value = '';
-      }).catch(function(e) { showToast('加载下拉选项失败: ' + e.message, 'error'); });
+      }).catch(function(e) { showToast(t("dyn108") + e.message, 'error'); });
       // Load inbounds for the inbound dropdown
       fetch(apiPath('/api/inbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var ibs = Array.isArray(data) ? data : (data.inbounds || []);
@@ -944,17 +944,17 @@ function openCreateRoutingRule() {
         ibs.forEach(function(ib) {
           var opt = document.createElement('option');
           opt.value = ib.remark || '';
-          opt.textContent = (ib.remark || '未命名') + ' (端口 ' + ib.port + ')';
+          opt.textContent = (ib.remark || t("dyn109")) + t("dyn110") + ib.port + ')';
           ibSel.appendChild(opt);
         });
-      }).catch(function(e) { showToast('加载下拉选项失败: ' + e.message, 'error'); });
+      }).catch(function(e) { showToast(t("dyn108") + e.message, 'error'); });
       showModal('create-routing-rule-dialog');
     }
 
     async function submitCreateRoutingRule() {
       var outboundTag = document.getElementById('crr-outbound').value;
-      if (!outboundTag) { showToast('请选择目标出站', 'error'); return; }
-      var restoreButton = setActionButtonBusy('create-routing-rule-submit-btn', '创建中...');
+      if (!outboundTag) { showToast(t("dyn111"), 'error'); return; }
+      var restoreButton = setActionButtonBusy('create-routing-rule-submit-btn', t("dyn112"));
       var body = {
         outbound_tag: outboundTag,
         domain: document.getElementById('crr-domain').value.trim(),
@@ -967,11 +967,11 @@ function openCreateRoutingRule() {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify(body)
         });
-        if (!resp.ok) throw new Error(await responseErrorMessage(resp, '创建失败'));
-        showToast('路由规则已创建', 'success');
+        if (!resp.ok) throw new Error(await responseErrorMessage(resp, t("dyn088")));
+        showToast(t("dyn113"), 'success');
         closeModal();
         await refreshRoutingRuleViews();
-      } catch(e) { showToast('创建失败: ' + e.message, 'error'); }
+      } catch(e) { showToast(t("dyn090") + e.message, 'error'); }
       finally { if (restoreButton) restoreButton(); }
     }
 
@@ -982,14 +982,14 @@ function openCreateRoutingRule() {
     }
 
     function deleteRoutingRule(id) {
-      showConfirm('确认删除此路由规则？').then(async function(confirmed) {
+      showConfirm(t("dyn114")).then(async function(confirmed) {
         if (!confirmed) return;
         try {
           var resp = await fetch(apiPath('/api/routing-rules/' + id), {method:'DELETE'});
-          if (!resp.ok) { showToast('删除失败', 'error'); return; }
-          showToast('路由规则已删除', 'success');
+          if (!resp.ok) { showToast(t("dyn097"), 'error'); return; }
+          showToast(t("dyn115"), 'success');
           await refreshRoutingRuleViews();
-        } catch(e) { showToast('删除失败: ' + e.message, 'error'); }
+        } catch(e) { showToast(t("dyn099") + e.message, 'error'); }
       });
     }
 
@@ -1001,11 +1001,11 @@ function openCreateRoutingRule() {
       var enabled = btn.getAttribute('data-rule-enabled') !== 'false';
       document.getElementById('err-id').value = id;
       document.getElementById('err-domain').value = domain || '';
-      document.getElementById('err-inbound').innerHTML = '<option value="">留空 = 所有入站</option>';
+      document.getElementById('err-inbound').innerHTML = t("dyn106");
       document.getElementById('err-protocol').value = protocol || '';
       document.getElementById('err-enabled').checked = enabled !== false;
       var sel = document.getElementById('err-outbound');
-      sel.innerHTML = '<option value="">-- 选择出站 --</option>';
+      sel.innerHTML = t("dyn107");
       fetch(apiPath('/api/outbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var obs = Array.isArray(data) ? data : (data.outbounds || []);
         obs.forEach(function(ob) {
@@ -1015,7 +1015,7 @@ function openCreateRoutingRule() {
           sel.appendChild(opt);
           if (ob.tag === outboundTag) opt.selected = true;
         });
-      }).catch(function(e) { showToast('加载下拉选项失败: ' + e.message, 'error'); });
+      }).catch(function(e) { showToast(t("dyn108") + e.message, 'error'); });
       // Load inbounds for the inbound dropdown
       fetch(apiPath('/api/inbounds')).then(function(r) { return r.json(); }).then(function(data) {
         var ibs = Array.isArray(data) ? data : (data.inbounds || []);
@@ -1023,19 +1023,19 @@ function openCreateRoutingRule() {
         ibs.forEach(function(ib) {
           var opt = document.createElement('option');
           opt.value = ib.remark || '';
-          opt.textContent = (ib.remark || '未命名') + ' (端口 ' + ib.port + ')';
+          opt.textContent = (ib.remark || t("dyn109")) + t("dyn110") + ib.port + ')';
           ibSel.appendChild(opt);
           if ((ib.remark || '') === (inboundTag || '')) opt.selected = true;
         });
-      }).catch(function(e) { showToast('加载下拉选项失败: ' + e.message, 'error'); });
+      }).catch(function(e) { showToast(t("dyn108") + e.message, 'error'); });
       showModal('edit-routing-rule-dialog');
     }
 
     async function submitEditRoutingRule() {
       var id = parseInt(document.getElementById('err-id').value);
       var outboundTag = document.getElementById('err-outbound').value;
-      if (!outboundTag) { showToast('请选择目标出站', 'error'); return; }
-      var restoreButton = setActionButtonBusy('edit-routing-rule-submit-btn', '保存中...');
+      if (!outboundTag) { showToast(t("dyn111"), 'error'); return; }
+      var restoreButton = setActionButtonBusy('edit-routing-rule-submit-btn', t("dyn116"));
       var body = {
         outbound_tag: outboundTag,
         domain: document.getElementById('err-domain').value.trim(),
@@ -1048,11 +1048,11 @@ function openCreateRoutingRule() {
           method: 'PUT', headers: {'Content-Type':'application/json'},
           body: JSON.stringify(body)
         });
-        if (!resp.ok) throw new Error(await responseErrorMessage(resp, '保存失败'));
-        showToast('路由规则已更新', 'success');
+        if (!resp.ok) throw new Error(await responseErrorMessage(resp, t("dyn117")));
+        showToast(t("dyn118"), 'success');
         closeModal();
         await refreshRoutingRuleViews();
-      } catch(e) { showToast('保存失败: ' + e.message, 'error'); }
+      } catch(e) { showToast(t("dyn119") + e.message, 'error'); }
       finally { if (restoreButton) restoreButton(); }
     }
 
@@ -1067,7 +1067,7 @@ function openCreateRoutingRule() {
       document.documentElement.dataset.theme = theme;
       localStorage.setItem('migate-theme', theme);
       const btn = document.getElementById('theme-toggle');
-      if (btn) btn.textContent = theme === 'dark' ? '浅色模式' : '深色模式';
+      if (btn) btn.textContent = theme === 'dark' ? t("dyn120") : t("dyn121");
     }
 
     function toggleTheme() {
@@ -1082,19 +1082,19 @@ function openCreateRoutingRule() {
         const loginBtn = document.getElementById('login-button');
         const logoutBtn = document.getElementById('logout-button');
         const authenticated = !!session.authenticated;
-        if (name) name.textContent = session.username || (session.auth_enabled ? '未登录' : '未启用认证');
+        if (name) name.textContent = session.username || (session.auth_enabled ? t("dyn122") : t("dyn123"));
         if (loginBtn) loginBtn.style.display = authenticated ? 'none' : '';
         if (logoutBtn) logoutBtn.style.display = authenticated ? '' : 'none';
       } catch (e) {
         const name = document.getElementById('current-username');
-        if (name) name.textContent = '无法读取用户';
+        if (name) name.textContent = t("dyn124");
       }
     }
 
     async function logoutPanel() {
       const res = await fetch(apiPath('/api/logout'), {method: 'POST'});
-      if (!res.ok) { showToast('登出失败', 'error'); return; }
-      showToast('已登出', 'success');
+      if (!res.ok) { showToast(t("dyn125"), 'error'); return; }
+      showToast(t("dyn126"), 'success');
       window.location.href = panelPath('/login');
     }
 
@@ -1117,18 +1117,18 @@ function openCreateRoutingRule() {
         return;
       }
       el.style.display = 'block';
-      el.innerHTML = '<div class="list" style="margin:0">正在加载客户端...</div>';
+      el.innerHTML = t("dyn127");
       fetch(apiPath('/api/inbounds')).then(r => r.json()).then(data => {
         const inbound = (data.inbounds || []).find(i => i.id === inboundId);
-        if (!inbound) { el.innerHTML = '<div class="muted" style="padding:12px">入站未找到</div>'; return; }
+        if (!inbound) { el.innerHTML = t("dyn128"); return; }
         renderClients(inbound, el.querySelector('.list') || el);
         // Append "新增客户端" button at bottom
         const btnWrap = document.createElement('div');
         btnWrap.className = 'client-add-row';
-        btnWrap.innerHTML = '<button onclick="openCreateClient(' + inboundId + ')" class="btn-sm">新增客户端</button>';
+        btnWrap.innerHTML = '<button onclick="openCreateClient(' + inboundId + t("dyn129");
         el.appendChild(btnWrap);
       }).catch(() => {
-        el.innerHTML = '<div class="muted" style="padding:12px">加载失败</div>';
+        el.innerHTML = t("dyn130");
       });
     }
 
@@ -1193,8 +1193,8 @@ function openCreateRoutingRule() {
       const clients = inbound.clients || [];
       if (clients.length === 0) {
         list.className = 'list';
-        list.innerHTML = renderEmptyState('暂无客户端', '在当前入站下创建第一个客户端后，即可复制订阅或分享链接。', [
-          {label:'创建客户端', onclick:"openCreateClient(" + inbound.id + ")"}
+        list.innerHTML = renderEmptyState(t("dyn131"), t("dyn132"), [
+          {label:t("dyn133"), onclick:"openCreateClient(" + inbound.id + ")"}
         ]);
         return;
       }
@@ -1264,7 +1264,7 @@ function openCreateRoutingRule() {
         const pct = limit > 0 ? Math.min(100, used / limit * 100) : 0;
         const isOverLimit = limit > 0 && used >= limit;
         const isExpired = c.expiry_at && c.expiry_at > 0 && c.expiry_at <= Math.floor(Date.now() / 1000);
-        const expiredText = c.expiry_at && c.expiry_at > 0 ? new Date(c.expiry_at * 1000).toLocaleDateString() : '不限';
+        const expiredText = c.expiry_at && c.expiry_at > 0 ? new Date(c.expiry_at * 1000).toLocaleDateString() : t("dyn134");
         const expireStyle = isExpired ? 'color:var(--danger);font-weight:500' : '';
         const trafficStyle = isOverLimit ? 'color:var(--danger)' : '';
         const badgeClass = c.enabled && !isExpired && !isOverLimit ? 'enabled' : 'disabled';
@@ -1277,15 +1277,15 @@ function openCreateRoutingRule() {
               '<span class="mono">' + c.uuid.substring(0,8) + '…</span>' +
               '<span style="' + trafficStyle + '">↑' + formatBytes(c.up||0) + ' ↓' + formatBytes(c.down||0) + '</span>' +
               '<span>' + formatBytes(used) + ' / ' + (limit > 0 ? formatBytes(limit) : '∞') + '</span>' +
-              '<span style="' + expireStyle + '">到期 ' + expiredText + '</span>' +
+              '<span style="' + expireStyle + t("dyn135") + expiredText + '</span>' +
               (limit > 0 ? '<span><div class="traffic-track"><div class="traffic-fill ' + fillClass + '" style="width:' + pct + '%"></div></div></span>' : '') +
             '</div>' +
           '</div>' +
           '<div class="resource-actions">' +
-            '<button id="client-copy-' + c.id + '" class="icon-btn" onclick="copySubUrl(' + htmlAttrString(shareLink) + ')" title="复制分享链接">复制链接</button>' +
-            '<button id="client-edit-' + c.id + '" class="icon-btn" onclick="editClient(' + c.id + ',' + inbound.id + ')" title="编辑客户端">编辑</button>' +
-            '<button id="client-toggle-' + c.id + '" class="icon-btn" onclick="toggleClient(' + c.id + ', \'client-toggle-' + c.id + '\')" title="启用/禁用客户端">' + (c.enabled ? '禁用' : '启用') + '</button>' +
-            '<button id="client-delete-' + c.id + '" class="danger-icon-btn" onclick="deleteClient(' + inbound.id + ',' + c.id + ', \'client-delete-' + c.id + '\')" title="删除客户端">删除</button>' +
+            '<button id="client-copy-' + c.id + '" class="icon-btn" onclick="copySubUrl(' + htmlAttrString(shareLink) + t("dyn136") +
+            '<button id="client-edit-' + c.id + '" class="icon-btn" onclick="editClient(' + c.id + ',' + inbound.id + t("dyn137") +
+            '<button id="client-toggle-' + c.id + '" class="icon-btn" onclick="toggleClient(' + c.id + ', \'client-toggle-' + c.id + t("dyn138") + (c.enabled ? t("dyn011") : t("dyn012")) + '</button>' +
+            '<button id="client-delete-' + c.id + '" class="danger-icon-btn" onclick="deleteClient(' + inbound.id + ',' + c.id + ', \'client-delete-' + c.id + t("dyn139") +
           '</div>' +
         '</div>';
       }).join('');
@@ -1338,41 +1338,41 @@ function openCreateRoutingRule() {
 
     function showManualCopyDialog(text) {
       const value = String(text || '');
-      window.prompt('复制失败，请手动复制下面的链接', value);
+      window.prompt(t("dyn140"), value);
     }
 
     async function copySubUrl(text) {
       try {
         const copied = await copyToClipboard(text);
         if (copied) {
-          showToast('已复制链接', 'success');
+          showToast(t("dyn141"), 'success');
           return;
         }
       } catch (_) {}
-      showToast('复制失败，请手动复制', 'error');
+      showToast(t("dyn142"), 'error');
       showManualCopyDialog(text);
     }
 
     async function deleteInbound(id) {
-      if (!await showConfirm('确认删除入站 ' + id + '？此操作不可撤销，其下的客户端也将被删除。')) return;
+      if (!await showConfirm(t("dyn143") + id + t("dyn144"))) return;
       const response = await fetch(apiPath('/api/inbounds/') + id, {method: 'DELETE'});
       if (!response.ok) {
-        showToast('删除失败：' + await response.text(), 'error');
+        showToast(t("dyn145") + await response.text(), 'error');
         return;
       }
       await loadInbounds();
     }
 
     async function deleteClient(inboundId, clientId, buttonId) {
-      if (!await showConfirm('确认删除客户端 ' + clientId + '？')) return;
-      const restoreButton = setActionButtonBusy(buttonId, '删除中...');
+      if (!await showConfirm(t("dyn146") + clientId + '？')) return;
+      const restoreButton = setActionButtonBusy(buttonId, t("dyn147"));
       try {
         const response = await apiFetch('/api/inbounds/' + inboundId + '/clients/' + clientId, {method: 'DELETE'});
         if (!response.ok) {
-          showToast(await responseErrorMessage(response, '删除客户端失败'), 'error');
+          showToast(await responseErrorMessage(response, t("dyn148")), 'error');
           return;
         }
-        showToast('客户端已删除', 'success');
+        showToast(t("dyn149"), 'success');
         await loadInbounds();
       } finally {
         if (restoreButton) restoreButton();
@@ -1415,7 +1415,7 @@ function openCreateRoutingRule() {
       const res = await fetch(apiPath('/api/inbounds'));
       const data = await res.json();
       const inbound = (data.inbounds || []).find(i => i.id === id);
-      if (!inbound) { showToast('入站未找到', 'error'); return; }
+      if (!inbound) { showToast(t("dyn150"), 'error'); return; }
       _editingInboundId = id;
       document.getElementById('ei-remark').value = inbound.remark || '';
       document.getElementById('ei-protocol').value = inbound.protocol || 'vless';
@@ -1487,18 +1487,18 @@ function openCreateRoutingRule() {
         shadowtls_password: document.getElementById('ei-shadowtls-password').value,
         shadowtls_version: Number(document.getElementById('ei-shadowtls-version').value) || 3,
       };
-      if (!data.remark || !data.port) { showToast('请填写备注和端口', 'error'); return; }
+      if (!data.remark || !data.port) { showToast(t("dyn151"), 'error'); return; }
       // Port conflict check (client-side, exclude current inbound)
       const existingInbounds = window._cachedInbounds || [];
       const conflictInb = existingInbounds.find(ib => ib.id !== id && ib.port === data.port);
-      if (conflictInb) { showToast('端口 ' + data.port + ' 已被入站 ' + (conflictInb.remark || conflictInb.id) + ' 使用', 'error'); return; }
+      if (conflictInb) { showToast(t("dyn152") + data.port + t("dyn153") + (conflictInb.remark || conflictInb.id) + t("dyn154"), 'error'); return; }
       const res = await fetch(apiPath('/api/inbounds/') + id, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
       });
-      if (!res.ok) { showToast('编辑入站失败', 'error'); return; }
-      showToast('入站已更新', 'success');
+      if (!res.ok) { showToast(t("dyn155"), 'error'); return; }
+      showToast(t("dyn156"), 'success');
       closeEditInbound();
       await loadInbounds();
     }
@@ -1518,10 +1518,10 @@ function openCreateRoutingRule() {
         body: JSON.stringify({enabled: inbound.enabled})
       });
       if (!res.ok) {
-        showToast('开关入站失败', 'error');
+        showToast(t("dyn157"), 'error');
         return;
       }
-      showToast('入站 ' + (inbound.enabled ? '已启用' : '已禁用'), 'success');
+      showToast(t("dyn158") + (inbound.enabled ? t("dyn159") : t("dyn160")), 'success');
       await loadInbounds();
     }
 
@@ -1538,13 +1538,13 @@ function openCreateRoutingRule() {
           if (client) break;
         }
       }
-      if (!client) { showToast('客户端未找到', 'error'); return; }
+      if (!client) { showToast(t("dyn161"), 'error'); return; }
       _editingClientData = {id: id, inboundId: client.inbound_id};
       document.getElementById('ec-email').value = client.email || '';
       document.getElementById('ec-enabled').checked = client.enabled;
-      document.getElementById('ec-enabled-label').textContent = client.enabled ? '已启用' : '已禁用';
+      document.getElementById('ec-enabled-label').textContent = client.enabled ? t("dyn159") : t("dyn160");
       document.getElementById('ec-enabled').onchange = function() {
-        document.getElementById('ec-enabled-label').textContent = this.checked ? '已启用' : '已禁用';
+        document.getElementById('ec-enabled-label').textContent = this.checked ? t("dyn159") : t("dyn160");
       };
       document.getElementById('ec-traffic-limit').value = client.traffic_limit || '';
       document.getElementById('ec-up-display').textContent = formatBytes(client.up || 0);
@@ -1566,8 +1566,8 @@ function openCreateRoutingRule() {
       const d = _editingClientData;
       if (!d) return;
       const email = document.getElementById('ec-email').value.trim();
-      if (!email) { showToast('请输入客户端标识', 'error'); return; }
-      const restoreButton = setActionButtonBusy('edit-client-submit-btn', '保存中...');
+      if (!email) { showToast(t("dyn162"), 'error'); return; }
+      const restoreButton = setActionButtonBusy('edit-client-submit-btn', t("dyn116"));
       try {
         const tl = parseInt(document.getElementById('ec-traffic-limit').value) || 0;
         const eaStr = document.getElementById('ec-expiry-at').value;
@@ -1583,8 +1583,8 @@ function openCreateRoutingRule() {
             expiry_at: ea
           })
         });
-        if (!res.ok) { showToast(await responseErrorMessage(res, '编辑客户端失败'), 'error'); return; }
-        showToast('客户端已更新', 'success');
+        if (!res.ok) { showToast(await responseErrorMessage(res, t("dyn163")), 'error'); return; }
+        showToast(t("dyn164"), 'success');
         closeEditClient();
         await loadInbounds();
       } finally {
@@ -1593,7 +1593,7 @@ function openCreateRoutingRule() {
     }
 
     async function toggleClient(id, buttonId) {
-      const restoreButton = setActionButtonBusy(buttonId, '切换中...');
+      const restoreButton = setActionButtonBusy(buttonId, t("dyn165"));
       try {
         const inboundRes = await apiFetch('/api/inbounds');
         const data = await inboundRes.json();
@@ -1611,10 +1611,10 @@ function openCreateRoutingRule() {
           body: JSON.stringify({enabled: foundClient.enabled})
         });
         if (!res.ok) {
-          showToast(await responseErrorMessage(res, '开关客户端失败'), 'error');
+          showToast(await responseErrorMessage(res, t("dyn166")), 'error');
           return;
         }
-        showToast('客户端 ' + (foundClient.enabled ? '已启用' : '已禁用'), 'success');
+        showToast(t("dyn167") + (foundClient.enabled ? t("dyn159") : t("dyn160")), 'success');
         await loadInbounds();
       } finally {
         if (restoreButton) restoreButton();
@@ -1624,22 +1624,22 @@ function openCreateRoutingRule() {
     async function resetClientTraffic() {
       const d = _editingClientData;
       if (!d) return;
-      const confirmed = await showConfirm('确定要重置此客户端的流量数据吗？此操作不可恢复。');
+      const confirmed = await showConfirm(t("dyn168"));
       if (!confirmed) return;
-      const restoreButton = setActionButtonBusy('reset-client-traffic-btn', '重置中...');
+      const restoreButton = setActionButtonBusy('reset-client-traffic-btn', t("dyn169"));
       try {
         const res = await apiFetch('/api/inbounds/' + d.inboundId + '/clients/' + d.id + '/reset-traffic', {
           method: 'POST'
         });
         if (!res.ok) {
-          showToast(await responseErrorMessage(res, '重置流量失败'), 'error');
+          showToast(await responseErrorMessage(res, t("dyn170")), 'error');
           return;
         }
         const updated = await res.json();
         document.getElementById('ec-up-display').textContent = formatBytes(updated.up || 0);
         document.getElementById('ec-down-display').textContent = formatBytes(updated.down || 0);
         document.getElementById('ec-total-display').textContent = formatBytes((updated.up || 0) + (updated.down || 0));
-        showToast('流量已重置', 'success');
+        showToast(t("dyn171"), 'success');
         await loadInbounds();
       } finally {
         if (restoreButton) restoreButton();
@@ -1664,19 +1664,19 @@ function openCreateRoutingRule() {
       _creatingClient = true;
       if (submitBtn) {
         submitBtn.disabled = true;
-        submitBtn.textContent = '创建中...';
+        submitBtn.textContent = t("dyn112");
       }
       try {
         const formEl = document.getElementById('create-client-form');
         const inboundId = document.getElementById('client-inbound-id').value;
         if (!inboundId) {
-          showToast('请先展开入站再创建客户端', 'error');
+          showToast(t("dyn172"), 'error');
           closeCreateClient();
           return;
         }
         const form = new FormData(formEl);
         const email = form.get('email');
-        if (!email) { showToast('请输入客户端标识', 'error'); return; }
+        if (!email) { showToast(t("dyn162"), 'error'); return; }
         const tl = parseInt(form.get('traffic_limit')) || 0;
         const clientUUID = String(form.get('uuid') || '').trim();
         const eaStr = document.getElementById('client-expiry').value;
@@ -1688,18 +1688,18 @@ function openCreateRoutingRule() {
           body: JSON.stringify({email: email, uuid: clientUUID, traffic_limit: tl, expiry_at: ea})
         });
         if (!response.ok) {
-          showToast(await responseErrorMessage(response, '创建客户端失败'), 'error');
+          showToast(await responseErrorMessage(response, t("dyn173")), 'error');
           return;
         }
         formEl.reset();
         closeCreateClient();
-        showToast('客户端创建成功', 'success');
+        showToast(t("dyn174"), 'success');
         await loadInbounds();
       } finally {
         _creatingClient = false;
         if (submitBtn) {
           submitBtn.disabled = false;
-          submitBtn.textContent = '创建客户端';
+          submitBtn.textContent = t("dyn133");
         }
       }
     }
@@ -1762,13 +1762,13 @@ function openCreateRoutingRule() {
 
       // Protocol descriptions
       const labels = {
-        vless: 'VLESS + Reality：高性能，推荐优先使用。',
-        vmess: 'VMess + WebSocket + TLS：适合 CDN 反代场景。',
-        trojan: 'Trojan + TLS：兼容性广泛的协议。',
-        shadowsocks: 'Shadowsocks：轻量加密代理。',
-        hysteria2: 'Hysteria2：基于 QUIC 的 UDP 加速协议；sing-box 1.13 服务端需要 TLS，MiGate 默认使用自签证书。',
-        tuic: 'TUIC：基于 QUIC 的低延迟 UDP 代理，适合弱网环境。',
-        shadowtls: 'ShadowTLS：将流量伪装成标准 TLS 连接，可绕过深度包检测。',
+        vless: t("dyn175"),
+        vmess: t("dyn176"),
+        trojan: t("dyn177"),
+        shadowsocks: t("dyn178"),
+        hysteria2: t("dyn179"),
+        tuic: t("dyn180"),
+        shadowtls: t("dyn181"),
       };
       desc.textContent = labels[proto] || '';
 
@@ -1859,8 +1859,8 @@ function openCreateRoutingRule() {
       return inbound ? inbound.protocol : 'vless';
     }
     function makeFieldTools(id, secret) {
-      const buttons = ['<button type="button" class="btn-mini" onclick="regenerateField(\'' + id + '\')">重新生成</button>'];
-      if (secret) buttons.push('<button type="button" class="btn-mini" onclick="toggleSecretField(\'' + id + '\')">显示/隐藏</button>');
+      const buttons = ['<button type="button" class="btn-mini" onclick="regenerateField(\'' + id + t("dyn182")];
+      if (secret) buttons.push('<button type="button" class="btn-mini" onclick="toggleSecretField(\'' + id + t("dyn183"));
       return '<span style="display:inline-flex;gap:6px;align-items:center;margin-left:8px;flex-wrap:wrap">' + buttons.join('') + '</span>';
     }
     function regenerateField(id) {
@@ -1923,8 +1923,8 @@ function openCreateRoutingRule() {
       }
       const credentialHelp = document.getElementById('init-client-credential-help');
       if (credentialHelp) {
-        const label = proto === 'vless' || proto === 'vmess' ? 'UUID' : proto === 'shadowsocks' || proto === 'wireguard' ? '密码/密钥' : '密码';
-        credentialHelp.textContent = '客户端凭据已自动生成为 ' + label + '，可以手动修改；不懂时保持默认即可。';
+        const label = proto === 'vless' || proto === 'vmess' ? 'UUID' : proto === 'shadowsocks' || proto === 'wireguard' ? t("dyn184") : t("dyn185");
+        credentialHelp.textContent = t("dyn186") + label + t("dyn187");
       }
     }
 
@@ -1940,11 +1940,11 @@ function openCreateRoutingRule() {
       payload.hy2_down_mbps = Number(payload.hy2_down_mbps) || 0;
       payload.wg_mtu = Number(payload.wg_mtu) || 0;
       payload.shadowtls_version = Number(payload.shadowtls_version) || 3;
-      if (!payload.remark || !payload.port) { showToast('请填写备注和端口', 'error'); return; }
+      if (!payload.remark || !payload.port) { showToast(t("dyn151"), 'error'); return; }
       // Port conflict check (client-side)
       const existingInbounds = window._cachedInbounds || [];
       const conflictInb = existingInbounds.find(ib => ib.port === payload.port);
-      if (conflictInb) { showToast('端口 ' + payload.port + ' 已被入站 ' + (conflictInb.remark || conflictInb.id) + ' 使用', 'error'); return; }
+      if (conflictInb) { showToast(t("dyn152") + payload.port + t("dyn153") + (conflictInb.remark || conflictInb.id) + t("dyn154"), 'error'); return; }
       // Pack initial client if email is provided
       const initEmail = document.getElementById('init-client-email').value.trim();
       if (initEmail) {
@@ -1964,12 +1964,12 @@ function openCreateRoutingRule() {
       delete payload.init_traffic;
       const response = await fetch(apiPath('/api/inbounds'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
       if (!response.ok) {
-        showToast('创建入站失败', 'error');
+        showToast(t("dyn188"), 'error');
         return;
       }
       formEl.reset();
       closeCreateInbound();
-      showToast('入站创建成功', 'success');
+      showToast(t("dyn189"), 'success');
       await loadInbounds();
     }
 
@@ -1984,27 +1984,27 @@ function openCreateRoutingRule() {
         const res = await fetch(apiPath('/api/xray/status'));
         const data = await res.json();
         if (!data.installed) {
-          document.getElementById('xray-status').textContent = '未安装';
+          document.getElementById('xray-status').textContent = t("dyn023");
           document.getElementById('xray-version').textContent = '-';
           document.getElementById('xray-memory').textContent = '-';
           document.getElementById('xray-uptime').textContent = '-';
           document.getElementById('xray-connections').textContent = '-';
-          document.getElementById('xray-managed').textContent = data.managed ? '是' : '否';
+          document.getElementById('xray-managed').textContent = data.managed ? t("dyn190") : t("dyn191");
           document.getElementById('xray-service').textContent = data.service || 'xray';
           document.getElementById('xray-config-path').textContent = data.config_path || '-';
           return;
         }
         document.getElementById('xray-status').textContent =
-          data.status === 'running' ? '运行中' : (data.status === 'stopped' ? '已停止' : (data.status === 'no_inbounds' ? '无入站' : (data.status === 'not_managed' ? '已安装 / 未托管' : (data.status || '未知'))));
+          data.status === 'running' ? t("dyn024") : (data.status === 'stopped' ? t("dyn025") : (data.status === 'no_inbounds' ? t("dyn192") : (data.status === 'not_managed' ? t("dyn193") : (data.status || t("dyn026")))));
         document.getElementById('xray-version').textContent = formatCoreVersion(data.version) || '-';
         document.getElementById('xray-memory').textContent = data.memory_rss_bytes ? formatBytes(data.memory_rss_bytes) : '-';
         document.getElementById('xray-uptime').textContent = data.uptime || '-';
         document.getElementById('xray-connections').textContent = data.active_connections != null ? data.active_connections.toString() : '-';
-        document.getElementById('xray-managed').textContent = data.managed ? '是' : '否';
+        document.getElementById('xray-managed').textContent = data.managed ? t("dyn190") : t("dyn191");
         document.getElementById('xray-service').textContent = data.service || 'xray';
         document.getElementById('xray-config-path').textContent = data.config_path || '-';
       } catch (e) {
-        document.getElementById('xray-status').textContent = '连接失败';
+        document.getElementById('xray-status').textContent = t("dyn194");
         document.getElementById('xray-memory').textContent = '-';
         document.getElementById('xray-uptime').textContent = '-';
         document.getElementById('xray-connections').textContent = '-';
@@ -2012,11 +2012,11 @@ function openCreateRoutingRule() {
     }
     async function runCoreAction(core, action) {
       const label = core === 'xray' ? 'Xray' : 'Sing-box';
-      const verb = action === 'install' ? '安装' : '卸载';
-      const confirmed = await showConfirm('确认' + verb + ' ' + label + ' 核心？这会修改系统服务和二进制文件。');
+      const verb = action === 'install' ? t("dyn195") : t("dyn196");
+      const confirmed = await showConfirm(t("dyn197") + verb + ' ' + label + t("dyn198"));
       if (!confirmed) return;
       const resultId = core === 'xray' ? 'xray-result' : 'singbox-result';
-      document.getElementById(resultId).innerHTML = renderNotice('正在' + verb, label + ' 核心操作执行中，请稍候。');
+      document.getElementById(resultId).innerHTML = renderNotice(t("dyn199") + verb, label + t("dyn200"));
       const endpoint = {
         xray: {install: '/api/xray/install', uninstall: '/api/xray/uninstall'},
         singbox: {install: '/api/singbox/install', uninstall: '/api/singbox/uninstall'}
@@ -2029,14 +2029,14 @@ function openCreateRoutingRule() {
         });
         const data = await res.json();
         if (!res.ok || data.status === 'failed') {
-          throw new Error(data.output || data.error || '操作失败');
+          throw new Error(data.output || data.error || t("dyn201"));
         }
-        document.getElementById(resultId).innerHTML = renderNotice(verb + '完成', (data.output || label + ' 核心已' + verb).trim(), 'success');
-        showToast(label + ' 核心' + verb + '完成', 'success');
+        document.getElementById(resultId).innerHTML = renderNotice(verb + t("dyn202"), (data.output || label + t("dyn203") + verb).trim(), 'success');
+        showToast(label + t("dyn204") + verb + t("dyn202"), 'success');
         if (core === 'xray') await fetchXrayStatus(); else await fetchSingboxStatus();
       } catch (e) {
-        document.getElementById(resultId).innerHTML = renderNotice(verb + '失败', e.message || '请检查系统权限、网络和服务状态。', 'error');
-        showToast(label + ' 核心' + verb + '失败', 'error');
+        document.getElementById(resultId).innerHTML = renderNotice(verb + t("dyn205"), e.message || t("dyn206"), 'error');
+        showToast(label + t("dyn204") + verb + t("dyn205"), 'error');
       }
     }
     function installXrayCore() { return runCoreAction('xray', 'install'); }
@@ -2045,7 +2045,7 @@ function openCreateRoutingRule() {
     function uninstallSingboxCore() { return runCoreAction('singbox', 'uninstall'); }
 
     async function applyXrayConfig() {
-      document.getElementById('xray-result').innerHTML = renderNotice('正在应用', '正在写入 xray.json、执行配置校验并尝试重启 Xray 及 sing-box。');
+      document.getElementById('xray-result').innerHTML = renderNotice(t("dyn207"), t("dyn208"));
       try {
         const res = await fetch(apiPath('/api/xray/apply'), {method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({confirm:true, allow_system_changes:true})});
         const data = await res.json();
@@ -2053,19 +2053,19 @@ function openCreateRoutingRule() {
         const xray = data.xray || data;
         const singboxResult = data.singbox;
         const commands = xray.commands_executed && xray.commands_executed.length ? '\n' + xray.commands_executed.join('\n') : '';
-const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ 已应用' + (singboxResult.inbounds ? '(' + singboxResult.inbounds + ' 个入站)' : '') : singboxResult.reason === 'not_needed' ? '\nSing-box: ⏭ 无 sing-box 入站' : '\nSing-box: ❌ ' + (singboxResult.error || singboxResult.reason || '失败')) : '';
+const singboxLine = singboxResult ? (singboxResult.applied ? t("dyn209") + (singboxResult.inbounds ? '(' + singboxResult.inbounds + t("dyn210") : '') : singboxResult.reason === 'not_needed' ? t("dyn211") : '\nSing-box: ❌ ' + (singboxResult.error || singboxResult.reason || t("dyn205"))) : '';
         if (xray.status && xray.status.startsWith('failed')) {
           const errDetail = xray.error_output ? '\n\n' + xray.error_output : '';
-          document.getElementById('xray-result').innerHTML = renderNotice('应用失败', 'Xray 状态：' + xray.status + errDetail + commands + singboxLine, 'error');
-          showToast('应用配置失败', 'error');
+          document.getElementById('xray-result').innerHTML = renderNotice(t("dyn212"), t("dyn213") + xray.status + errDetail + commands + singboxLine, 'error');
+          showToast(t("dyn214"), 'error');
         } else {
-          document.getElementById('xray-result').innerHTML = renderNotice('应用完成', 'Xray 状态：' + (xray.status || '完成') + commands + singboxLine, 'success');
-          showToast('配置已应用', 'success');
+          document.getElementById('xray-result').innerHTML = renderNotice(t("dyn215"), t("dyn213") + (xray.status || t("dyn202")) + commands + singboxLine, 'success');
+          showToast(t("dyn216"), 'success');
         }
         await fetchXrayStatus();
       } catch (e) {
-        document.getElementById('xray-result').innerHTML = renderNotice('应用失败', '请检查 Xray 配置目录、xray 命令和 systemd 服务状态。', 'error');
-        showToast('应用配置失败', 'error');
+        document.getElementById('xray-result').innerHTML = renderNotice(t("dyn212"), t("dyn217"), 'error');
+        showToast(t("dyn214"), 'error');
       }
     }
 
@@ -2084,7 +2084,7 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         pre.textContent = JSON.stringify(json, null, 2);
         el.style.display = '';
       } catch (e) {
-        pre.textContent = '加载配置失败';
+        pre.textContent = t("dyn218");
         el.style.display = '';
       }
     }
@@ -2098,14 +2098,14 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
       const pre = document.getElementById('xray-logs-text');
       if (_logsVisible) return;
       _logsVisible = true;
-      pre.textContent = '加载中...';
+      pre.textContent = t("dyn219");
       el.style.display = '';
       try {
         const res = await fetch(apiPath('/api/xray/logs?lines=80'));
         const data = await res.json();
-        pre.textContent = data.logs || '暂无日志';
+        pre.textContent = data.logs || t("dyn220");
       } catch (e) {
-        pre.textContent = '加载日志失败';
+        pre.textContent = t("dyn221");
       }
     }
     function closeXrayLogs() {
@@ -2119,7 +2119,7 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         const res = await fetch(apiPath('/api/singbox/status'));
         const data = await res.json();
         if (!data.installed) {
-          document.getElementById('singbox-status').textContent = '未安装';
+          document.getElementById('singbox-status').textContent = t("dyn023");
           document.getElementById('singbox-version').textContent = '-';
           document.getElementById('singbox-memory').textContent = '-';
           document.getElementById('singbox-uptime').textContent = '-';
@@ -2127,34 +2127,34 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
           return;
         }
         document.getElementById('singbox-status').textContent =
-          data.status === 'running' ? '运行中' : (data.status === 'stopped' ? '已停止' : data.status);
+          data.status === 'running' ? t("dyn024") : (data.status === 'stopped' ? t("dyn025") : data.status);
         document.getElementById('singbox-version').textContent = formatCoreVersion(data.version) || '-';
         document.getElementById('singbox-memory').textContent = data.memory_rss_bytes ? formatBytes(data.memory_rss_bytes) : '-';
         document.getElementById('singbox-uptime').textContent = data.uptime || '-';
         document.getElementById('singbox-connections').textContent = data.active_connections != null ? data.active_connections.toString() : '-';
       } catch (e) {
-        document.getElementById('singbox-status').textContent = '连接失败';
+        document.getElementById('singbox-status').textContent = t("dyn194");
         document.getElementById('singbox-memory').textContent = '-';
         document.getElementById('singbox-uptime').textContent = '-';
         document.getElementById('singbox-connections').textContent = '-';
       }
     }
     async function applySingboxConfig() {
-      document.getElementById('singbox-result').innerHTML = renderNotice('正在应用', '正在写入 sing-box 配置并尝试重启服务。');
+      document.getElementById('singbox-result').innerHTML = renderNotice(t("dyn207"), t("dyn222"));
       try {
         const res = await fetch(apiPath('/api/singbox/apply'), {method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({confirm:true, allow_system_changes:true})});
         const data = await res.json();
         if (data.applied) {
-          document.getElementById('singbox-result').innerHTML = renderNotice('应用完成', 'Sing-box 配置已应用' + (data.inbounds ? '（' + data.inbounds + ' 个入站）' : ''), 'success');
-          showToast('Sing-box 配置已应用', 'success');
+          document.getElementById('singbox-result').innerHTML = renderNotice(t("dyn215"), t("dyn223") + (data.inbounds ? '（' + data.inbounds + t("dyn224") : ''), 'success');
+          showToast(t("dyn223"), 'success');
         } else {
-          document.getElementById('singbox-result').innerHTML = renderNotice('应用失败', data.error || data.reason || '未知错误', 'error');
-          showToast('Sing-box 应用失败', 'error');
+          document.getElementById('singbox-result').innerHTML = renderNotice(t("dyn212"), data.error || data.reason || t("dyn225"), 'error');
+          showToast(t("dyn226"), 'error');
         }
         await fetchSingboxStatus();
       } catch (e) {
-        document.getElementById('singbox-result').innerHTML = renderNotice('应用失败', '请求失败，请检查网络连接和服务状态。', 'error');
-        showToast('Sing-box 应用失败', 'error');
+        document.getElementById('singbox-result').innerHTML = renderNotice(t("dyn212"), t("dyn227"), 'error');
+        showToast(t("dyn226"), 'error');
       }
     }
     // === Sing-box config preview ===
@@ -2170,7 +2170,7 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         pre.textContent = text;
         el.style.display = '';
       } catch (e) {
-        pre.textContent = '加载配置失败';
+        pre.textContent = t("dyn218");
         el.style.display = '';
       }
     }
@@ -2186,14 +2186,14 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
       const pre = document.getElementById('singbox-logs-text');
       if (_singboxLogsVisible) return;
       _singboxLogsVisible = true;
-      pre.textContent = '加载中...';
+      pre.textContent = t("dyn219");
       el.style.display = '';
       try {
         const res = await fetch(apiPath('/api/singbox/logs?lines=80'));
         const data = await res.json();
-        pre.textContent = data.logs || '暂无日志';
+        pre.textContent = data.logs || t("dyn220");
       } catch (e) {
-        pre.textContent = '加载日志失败';
+        pre.textContent = t("dyn221");
       }
     }
     function closeSingboxLogs() {
@@ -2215,12 +2215,12 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         document.getElementById('set-cert-domain').value = data.cert_domain || '';
         document.getElementById('set-cert-email').value = data.cert_email || '';
         if (data.database_path) {
-          document.getElementById('settings-status').innerHTML = renderNotice('数据库', data.database_path + (data.has_password ? ' | 密码已设置' : ' | 无密码'), 'success');
+          document.getElementById('settings-status').innerHTML = renderNotice(t("dyn228"), data.database_path + (data.has_password ? t("dyn229") : t("dyn230")), 'success');
         }
         fetchCertStatus();
         fetchServiceStatus();
       } catch (e) {
-        document.getElementById('settings-status').innerHTML = renderNotice('设置不可用', '需要在 panel.json 配置文件下运行，或检查配置目录是否已传入。', 'error');
+        document.getElementById('settings-status').innerHTML = renderNotice(t("dyn231"), t("dyn232"), 'error');
       }
     }
     async function fetchCertStatus() {
@@ -2232,15 +2232,15 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         const label = document.getElementById('cert-status-label');
         const pathEl = document.getElementById('cert-path-label');
         if (data.issued) {
-          label.textContent = '✓ 已签发';
+          label.textContent = t("dyn233");
           label.style.color = 'var(--accent2)';
-          pathEl.textContent = '证书：' + (data.cert_path || '') + ' | 密钥：' + (data.key_path || '');
+          pathEl.textContent = t("dyn234") + (data.cert_path || '') + t("dyn235") + (data.key_path || '');
         } else if (data.domain) {
-          label.textContent = '待获取（域名已配置）';
+          label.textContent = t("dyn236");
           label.style.color = 'var(--amber)';
           pathEl.textContent = '';
         } else {
-          label.textContent = '未配置';
+          label.textContent = t("dyn237");
           label.style.color = '';
           pathEl.textContent = '';
         }
@@ -2250,13 +2250,13 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
       const domain = document.getElementById('set-cert-domain').value.trim();
       const email = document.getElementById('set-cert-email').value.trim();
       if (!domain || !email) {
-        showToast('请先填写域名和邮箱', 'error');
+        showToast(t("dyn238"), 'error');
         return;
       }
       const btn = document.getElementById('btn-issue-cert');
       btn.disabled = true;
-      btn.textContent = '签发中…';
-      document.getElementById('cert-status-label').textContent = '签发中，请等待…';
+      btn.textContent = t("dyn239");
+      document.getElementById('cert-status-label').textContent = t("dyn240");
       try {
         const res = await fetch(apiPath('/api/cert/issue'), {
           method: 'POST',
@@ -2265,24 +2265,24 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         });
         const data = await res.json();
         if (res.ok && data.status === 'issued') {
-          showToast('证书获取成功', 'success');
+          showToast(t("dyn241"), 'success');
           fetchCertStatus();
         } else {
-          showToast('签发失败：' + (data.detail || data.error || '未知错误'), 'error');
-          document.getElementById('cert-status-label').textContent = '签发失败';
+          showToast(t("dyn242") + (data.detail || data.error || t("dyn225")), 'error');
+          document.getElementById('cert-status-label').textContent = t("dyn243");
         }
       } catch (e) {
-        showToast('签发失败：网络错误', 'error');
-        document.getElementById('cert-status-label').textContent = '签发失败';
+        showToast(t("dyn244"), 'error');
+        document.getElementById('cert-status-label').textContent = t("dyn243");
       }
       btn.disabled = false;
-      btn.textContent = '获取证书';
+      btn.textContent = t("dyn245");
     }
     async function saveSettings() {
       var btn = document.querySelector('[onclick*="saveSettings"]');
       if (btn.disabled) return;
       btn.disabled = true;
-      btn.textContent = '保存中...';
+      btn.textContent = t("dyn116");
       const data = {
         panel_port: parseInt(document.getElementById('set-panel-port').value) || 0,
         panel_username: document.getElementById('set-username').value.trim(),
@@ -2292,32 +2292,32 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         cert_domain: document.getElementById('set-cert-domain').value.trim(),
         cert_email: document.getElementById('set-cert-email').value.trim(),
       };
-      if (!data.panel_port) { showToast('请输入面板端口', 'error'); return; }
+      if (!data.panel_port) { showToast(t("dyn246"), 'error'); return; }
       try {
         const res = await fetch(apiPath('/api/settings'), {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(data)
         });
-        if (!res.ok) { showToast('保存设置失败', 'error'); return; }
-        showToast('设置已保存，重启服务后生效', 'success');
+        if (!res.ok) { showToast(t("dyn247"), 'error'); return; }
+        showToast(t("dyn248"), 'success');
         document.getElementById('set-password').value = '';
         await loadSettings();
       } catch (e) {
-        showToast('保存设置失败', 'error');
+        showToast(t("dyn247"), 'error');
       }
       btn.disabled = false;
-      btn.textContent = '保存设置';
+      btn.textContent = t("dyn249");
     }
     async function restartService() {
-      if (!await showConfirm('确认重启 MiGate 服务？页面将暂时无法访问，重启后自动重试恢复。')) return;
+      if (!await showConfirm(t("dyn250"))) return;
       const btn = document.querySelector('button.danger');
       btn.disabled = true;
-      btn.textContent = '重启中…';
+      btn.textContent = t("dyn251");
       try {
         const res = await fetch(apiPath('/api/restart'), { method: 'POST' });
-        if (!res.ok) { showToast('重启失败', 'error'); btn.disabled = false; btn.textContent = '重启服务'; return; }
-        showToast('正在重启 MiGate 服务…', 'success');
+        if (!res.ok) { showToast(t("dyn252"), 'error'); btn.disabled = false; btn.textContent = t("dyn253"); return; }
+        showToast(t("dyn254"), 'success');
         // Retry reload until the page comes back up
         let retries = 0;
         const maxRetries = 30;
@@ -2325,18 +2325,31 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         function tryReload() {
           retries++;
           if (retries >= maxRetries) {
-            showToast('重启超时，请手动刷新', 'error');
+            showToast(t("dyn255"), 'error');
             btn.disabled = false;
-            btn.textContent = '重启服务';
+            btn.textContent = t("dyn253");
             return;
           }
           setTimeout(function() { location.reload(true); }, retryDelay);
         }
         setTimeout(tryReload, 1000);
       } catch (e) {
-        showToast('重启请求失败', 'error');
+        showToast(t("dyn256"), 'error');
         btn.disabled = false;
-        btn.textContent = '重启服务';
+        btn.textContent = t("dyn253");
+      }
+    }
+
+    async function updateMiGate() {
+      const btn = document.getElementById('update-button');
+      if (btn) { btn.disabled = true; btn.textContent = t('updateChecking'); }
+      try {
+        const res = await apiFetch('/api/update', {method: 'POST'});
+        if (!res.ok) { throw new Error('update failed'); }
+        showToast(t('updateStarted'), 'success');
+      } catch (e) {
+        showToast(t('updateFailed'), 'error');
+        if (btn) { btn.disabled = false; btn.textContent = t('updateNow'); }
       }
     }
 
@@ -2348,21 +2361,21 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         const badge = document.getElementById('svc-status-badge');
         const detail = document.getElementById('svc-status-detail');
         if (data.status === 'active') {
-          badge.innerHTML = '<span style="color:var(--accent2)">●</span> 运行中';
+          badge.innerHTML = t("dyn257");
           badge.style.background = 'rgba(0,180,0,0.1)';
           detail.textContent = data.detail || '';
         } else if (data.status === 'inactive' || data.status === 'failed') {
-          badge.innerHTML = '<span style="color:var(--danger)">●</span> ' + (data.status === 'failed' ? '异常' : '未运行');
+          badge.innerHTML = '<span style="color:var(--danger)">●</span> ' + (data.status === 'failed' ? t("dyn258") : t("dyn259"));
           badge.style.background = 'rgba(220,40,40,0.1)';
           detail.textContent = '';
         } else {
-          badge.textContent = '未知';
+          badge.textContent = t("dyn026");
           badge.style.background = 'var(--surface-subtle)';
-          detail.textContent = '非 systemd 环境或服务未安装';
+          detail.textContent = t("dyn260");
         }
       } catch (e) {
-        document.getElementById('svc-status-badge').textContent = '不可用';
-        document.getElementById('svc-status-detail').textContent = '无法查询服务状态';
+        document.getElementById('svc-status-badge').textContent = t("dyn261");
+        document.getElementById('svc-status-detail').textContent = t("dyn262");
       }
     }
 
@@ -2381,7 +2394,7 @@ const singboxLine = singboxResult ? (singboxResult.applied ? '\nSing-box: ✅ �
         const cur = current.replace(/^v/, '');
         if (latest && latest !== cur) {
           const banner = document.getElementById('version-banner');
-          banner.innerHTML = '🚀 新版本 <strong>v' + escapeHtml(latest) + '</strong> 已发布（当前 v' + escapeHtml(cur) + '）。查看 <a href="' + gh.html_url + '" target="_blank">更新日志</a>';
+          banner.innerHTML = t('newVersionAvailablePrefix') + ' <strong>v' + escapeHtml(latest) + '</strong> ' + t('newVersionAvailableMiddle') + ' v' + escapeHtml(cur) + '）。<a href="' + gh.html_url + '" target="_blank">' + t('updateReleaseNotes') + '</a>';
           banner.style.display = 'block';
         }
       } catch (e) { /* silent */ }
