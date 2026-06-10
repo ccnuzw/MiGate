@@ -96,16 +96,25 @@ download_release_asset() {
 
 install_migate_binary_from_tmp() {
   mkdir -p "$INSTALL_DIR"
-  cp "$TMP/migate" /usr/local/bin/migate
-  chmod +x /usr/local/bin/migate
+  local migate_tmp
+  migate_tmp="$(mktemp /usr/local/bin/.migate.XXXXXX)"
+  cat "$TMP/migate" > "$migate_tmp"
+  chmod +x "$migate_tmp"
+  mv -f "$migate_tmp" /usr/local/bin/migate
   ln -sf /usr/local/bin/migate /usr/local/bin/mg
   if [ -f "$TMP/packaging/install.sh" ]; then
-    cp "$TMP/packaging/install.sh" /usr/local/bin/migate-install
-    chmod +x /usr/local/bin/migate-install
+    local installer_tmp
+    installer_tmp="$(mktemp /usr/local/bin/.migate-install.XXXXXX)"
+    cat "$TMP/packaging/install.sh" > "$installer_tmp"
+    chmod +x "$installer_tmp"
+    mv -f "$installer_tmp" /usr/local/bin/migate-install
   fi
   if [ -f "$TMP/packaging/uninstall.sh" ]; then
-    cp "$TMP/packaging/uninstall.sh" /usr/local/bin/migate-uninstall
-    chmod +x /usr/local/bin/migate-uninstall
+    local uninstaller_tmp
+    uninstaller_tmp="$(mktemp /usr/local/bin/.migate-uninstall.XXXXXX)"
+    cat "$TMP/packaging/uninstall.sh" > "$uninstaller_tmp"
+    chmod +x "$uninstaller_tmp"
+    mv -f "$uninstaller_tmp" /usr/local/bin/migate-uninstall
   fi
 }
 

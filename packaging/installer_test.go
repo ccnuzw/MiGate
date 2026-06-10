@@ -48,8 +48,8 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 		"migate-linux-${ARCH}.tar.gz",
 		"systemctl enable migate",
 		"systemctl start migate",
-		"cp \"$TMP/packaging/uninstall.sh\" /usr/local/bin/migate-uninstall",
-		"chmod +x /usr/local/bin/migate-uninstall",
+		"mktemp /usr/local/bin/.migate-uninstall.XXXXXX",
+		"mv -f \"$uninstaller_tmp\" /usr/local/bin/migate-uninstall",
 		"ln -sf /usr/local/bin/migate /usr/local/bin/mg",
 		"CLI: mg",
 		"WebUI",
@@ -191,6 +191,25 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 	}
 	if strings.Index(script, "update_migate()") > strings.Index(script, "main()") {
 		t.Fatalf("update_migate must be defined before main dispatch")
+	}
+}
+
+func TestInstallerReplacesRunningBinaryAtomicallyDuringUpdate(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"local migate_tmp",
+		"mktemp /usr/local/bin/.migate.XXXXXX",
+		"cat \"$TMP/migate\" > \"$migate_tmp\"",
+		"chmod +x \"$migate_tmp\"",
+		"mv -f \"$migate_tmp\" /usr/local/bin/migate",
+		"ln -sf /usr/local/bin/migate /usr/local/bin/mg",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer atomic binary replacement contract missing %q", want)
+		}
+	}
+	if strings.Contains(script, "cp \"$TMP/migate\" /usr/local/bin/migate") {
+		t.Fatalf("installer must not cp over the running migate binary; use temp file plus atomic mv")
 	}
 }
 
