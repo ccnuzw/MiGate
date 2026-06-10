@@ -92,7 +92,7 @@ func TestReadmeIncludesSimpleInstallAndUsage(t *testing.T) {
 		"bash <(curl -Ls https://raw.githubusercontent.com/imzyb/MiGate/main/packaging/install.sh)",
 		"MIGATE_VERSION=",
 		"http://SERVER_IP:9999/panel",
-		"Web 路径，默认 `/panel`",
+		"Web path, default `/panel`",
 		"systemctl status migate",
 		"systemctl restart migate",
 		"/etc/migate/panel.json",
