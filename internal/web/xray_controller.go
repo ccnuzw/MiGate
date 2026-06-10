@@ -58,6 +58,9 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 	version := c.Version(ctx)
 	if version != "" {
 		executed = append(executed, "xray version")
+		if status == "unknown" {
+			status = "not_managed"
+		}
 	}
 
 	activeConnections := countXrayActiveConnections(ctx, c.store, c.runCmd)

@@ -1051,6 +1051,7 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		`versionText.match(/(?:Xray\s+)?v?(\d+\.\d+\.\d+)/i)`,
 		`document.getElementById('xray-version').textContent = formatCoreVersion(data.version) || '-'`,
 		`document.getElementById('singbox-version').textContent = formatCoreVersion(data.version) || '-'`,
+		`data.status === 'not_managed' ? '已安装 / 未托管'`,
 	} {
 		if !strings.Contains(jsBody, want) {
 			t.Fatalf("app.js missing concise core version contract %q", want)
