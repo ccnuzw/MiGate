@@ -2855,6 +2855,12 @@ const panelHTML = `<!doctype html>
     }
     @media (max-width: 560px) { .grid,.overview-grid,.protocols, form { grid-template-columns:1fr; } main { padding:calc(var(--space-5) + 56px) var(--space-3) var(--space-4); } .mobile-topbar { padding-left:var(--space-3); padding-right:var(--space-3); } .modal-content,#confirm-dialog { min-width:0; width:calc(100vw - 28px); max-width:calc(100vw - 28px); } .modal-form { grid-template-columns:1fr; } .form-actions,.modal-footer { flex-direction:column-reverse; align-items:stretch; } .socks5-pool-layout { grid-template-columns:1fr; } .socks5-pool-detail-card { min-height:auto; } .socks5-pool-list-panel { min-height:auto; } .socks5-pool-list { height:min(48vh, 360px); } }
   </style>
+  <script>
+const i18n={zh:{overview:"概览",inbounds:"入站",outbound:"出站",routing:"路由",settings:"设置",currentUser:"当前用户",loading:"加载中...",logout:"登出",darkMode:"深色模式",lightMode:"浅色模式",langToggle:"English",serverResources:"服务器资源",cpu:"CPU",memory:"内存",disk:"硬盘",uptime:"开机时长",businessStatus:"业务状态",clients:"客户端",totalTraffic:"总流量",routingRules:"路由规则",runningStatus:"运行状态",protocolDistribution:"协议分布",coreProtocols:"核心协议",newInbound:"新增入站",searchInbound:"搜索入站...",defaultSort:"默认排序",byPort:"按端口",byProtocol:"按协议",byClients:"按客户端数",loadingInbounds:"正在加载入站...",outboundManagement:"出站管理",outboundDesc:"配置链式代理转发（SOCKS5 / HTTP），实现流量经外部代理链路中转。",newOutbound:"新增出站",loadingOutbounds:"正在加载出站...",routingManagement:"路由管理",routingDesc:"配置域名/IP 路由规则，决定匹配流量的出站选择。",newRoute:"新增路由",loadingRoutes:"正在加载路由...",xrayConfig:"Xray 配置",xrayDesc:"Xray 运行状态、生成的配置预览与应用操作。",preview:"预览",apply:"应用",validate:"验证",restart:"重启",reloadConfig:"重载配置",singboxConfig:"Sing-box 配置",singboxDesc:"Sing-box 运行状态、生成的配置预览与应用操作。",panelSettings:"面板设置",panelSettingsDesc:"WebUI 端口、路径、凭据等面板运行参数。",refresh:"刷新",saveSettings:"保存设置",confirmRestart:"确认重启 MiGate 服务？",cancel:"取消",confirm:"确认",name:"名称",protocol:"协议类型",port:"端口",enabled:"启用",actions:"操作",edit:"编辑",delete:"删除",copy:"复制",active:"活跃",total:"总计",usedTotal:"已用 / 总量",systemUptime:"系统运行时间",checking:"检查中...",runningOverview:"运行概况",activeClients:"活跃客户端",noInbounds:"暂无入站",noOutbounds:"暂无出站",noRoutes:"暂无路由"},en:{overview:"Overview",inbounds:"Inbounds",outbound:"Outbound",routing:"Routing",settings:"Settings",currentUser:"Current User",loading:"Loading...",logout:"Logout",darkMode:"Dark Mode",lightMode:"Light Mode",langToggle:"中文",serverResources:"Server Resources",cpu:"CPU",memory:"Memory",disk:"Disk",uptime:"Uptime",businessStatus:"Business Status",clients:"Clients",totalTraffic:"Total Traffic",routingRules:"Routing Rules",runningStatus:"Running Status",protocolDistribution:"Protocol Distribution",coreProtocols:"Core Protocols",newInbound:"New Inbound",searchInbound:"Search inbound...",defaultSort:"Default Sort",byPort:"By Port",byProtocol:"By Protocol",byClients:"By Clients",loadingInbounds:"Loading inbounds...",outboundManagement:"Outbound Management",outboundDesc:"Configure chained proxy forwarding (SOCKS5 / HTTP) to relay traffic through external proxy chains.",newOutbound:"New Outbound",loadingOutbounds:"Loading outbounds...",routingManagement:"Routing Management",routingDesc:"Configure domain/IP routing rules to determine outbound selection for matched traffic.",newRoute:"New Route",loadingRoutes:"Loading routes...",xrayConfig:"Xray Config",xrayDesc:"Xray running status, generated config preview and apply operations.",preview:"Preview",apply:"Apply",validate:"Validate",restart:"Restart",reloadConfig:"Reload Config",singboxConfig:"Sing-box Config",singboxDesc:"Sing-box running status, generated config preview and apply operations.",panelSettings:"Panel Settings",panelSettingsDesc:"WebUI port, path, credentials and other panel runtime parameters.",refresh:"Refresh",saveSettings:"Save Settings",confirmRestart:"Confirm restart MiGate service?",cancel:"Cancel",confirm:"Confirm",name:"Name",protocol:"Protocol",port:"Port",enabled:"Enabled",actions:"Actions",edit:"Edit",delete:"Delete",copy:"Copy",active:"Active",total:"Total",usedTotal:"Used / Total",systemUptime:"System Uptime",checking:"Checking...",runningOverview:"Running Overview",activeClients:"Active Clients",noInbounds:"No inbounds",noOutbounds:"No outbounds",noRoutes:"No routes"}};
+let currentLang=((document.cookie.match(/migate_lang=([^;]+)/)||[])[1]||'zh');
+function t(k){return i18n[currentLang][k]||k}
+function toggleLang(){currentLang=currentLang==='zh'?'en':'zh';document.cookie='migate_lang='+currentLang+';path=/;max-age=31536000';location.reload()}
+  </script>
 </head>
 <body>
   <div id="toast-container"></div>
@@ -2862,8 +2868,8 @@ const panelHTML = `<!doctype html>
     <div id="confirm-dialog">
       <p id="confirm-msg"></p>
       <div class="actions">
-        <button class="btn-cancel" onclick="rejectConfirm()">取消</button>
-        <button class="btn-confirm" onclick="resolveConfirm()">确认</button>
+        <button class="btn-cancel" onclick="rejectConfirm()"><script>document.write(t('cancel'))</script></button>
+        <button class="btn-confirm" onclick="resolveConfirm()"><script>document.write(t('confirm'))</script></button>
       </div>
     </div>
   </div>
@@ -3307,20 +3313,21 @@ const panelHTML = `<!doctype html>
       <div class="brand">MiGate</div>
       <div class="subtitle">轻量单二进制面板，专注协议、客户端与双核心管理。</div>
       <nav>
-        <a class="active" href="#">概览</a>
-        <a href="#inbounds">入站</a>
-        <a href="#outbound">出站</a>
-        <a href="#routing">路由</a>
+        <a class="active" href="#"><script>document.write(t('overview'))</script></a>
+        <a href="#inbounds"><script>document.write(t('inbounds'))</script></a>
+        <a href="#outbound"><script>document.write(t('outbound'))</script></a>
+        <a href="#routing"><script>document.write(t('routing'))</script></a>
         <a href="#xray">Xray</a>
         <a href="#singbox">Sing-box</a>
-        <a href="#settings">设置</a>
+        <a href="#settings"><script>document.write(t('settings'))</script></a>
       </nav>
       <div class="account-panel" aria-label="当前账号">
-        <div class="account-label">当前用户</div>
-        <div id="current-username" class="account-name">加载中...</div>
+        <div class="account-label"><script>document.write(t('currentUser'))</script></div>
+        <div id="current-username" class="account-name"><script>document.write(t('loading'))</script></div>
         <div class="account-actions">
-          <button id="logout-button" class="secondary" onclick="logoutPanel()">登出</button>
-          <button id="theme-toggle" class="secondary" onclick="toggleTheme()">深色模式</button>
+          <button id="logout-button" class="secondary" onclick="logoutPanel()"><script>document.write(t('logout'))</script></button>
+          <button id="theme-toggle" class="secondary" onclick="toggleTheme()"><script>document.write(t('darkMode'))</script></button>
+          <button id="lang-toggle" class="secondary" onclick="toggleLang()"><script>document.write(t('langToggle'))</script></button>
         </div>
       </div>
     </aside>
@@ -3333,36 +3340,36 @@ const panelHTML = `<!doctype html>
       <section id="overview" class="overview-grid" aria-label="概览指标">
         <div id="version-banner" class="version-banner" style="display:none; grid-column:1 / -1"></div>
         <div class="overview-section" aria-label="服务器资源占用">
-          <div class="overview-section-title">服务器资源</div>
+          <div class="overview-section-title"><script>document.write(t('serverResources'))</script></div>
         </div>
-        <div class="card panel"><div>CPU</div><div id="server-cpu" class="metric">--</div><p>当前系统 CPU 占用</p></div>
-        <div class="card panel"><div>内存</div><div id="server-memory" class="metric">--</div><p id="server-memory-detail">已用 / 总量</p></div>
-        <div class="card panel"><div>硬盘</div><div id="server-disk" class="metric">--</div><p id="server-disk-detail">根分区已用 / 总量</p></div>
-        <div class="card panel"><div>开机时长</div><div id="server-uptime" class="metric">--</div><p>系统运行时间</p></div>
+        <div class="card panel"><div><script>document.write(t('cpu'))</script></div><div id="server-cpu" class="metric">--</div><p>当前系统 CPU 占用</p></div>
+        <div class="card panel"><div><script>document.write(t('memory'))</script></div><div id="server-memory" class="metric">--</div><p id="server-memory-detail"><script>document.write(t('usedTotal'))</script></p></div>
+        <div class="card panel"><div><script>document.write(t('disk'))</script></div><div id="server-disk" class="metric">--</div><p id="server-disk-detail">根分区已用 / 总量</p></div>
+        <div class="card panel"><div><script>document.write(t('uptime'))</script></div><div id="server-uptime" class="metric">--</div><p><script>document.write(t('systemUptime'))</script></p></div>
         <div class="overview-section" aria-label="业务状态">
-          <div class="overview-section-title">业务状态</div>
+          <div class="overview-section-title"><script>document.write(t('businessStatus'))</script></div>
         </div>
-        <div class="card panel"><div>入站</div><div id="inbound-count" class="metric">0</div><p>VLESS / VMess / Trojan / Shadowsocks</p></div>
-        <div class="card panel"><div>客户端</div><div id="client-count" class="metric">0</div><p>活跃 / 总计</p></div>
-        <div class="card panel"><div>总流量</div><div id="total-traffic" class="metric">0 B</div><p>所有客户端上行+下行累计</p></div>
-        <div class="card panel"><div>出站</div><div id="outbound-stats" class="metric">0</div><p>已启用 / 总计</p></div>
-        <div class="card panel"><div>路由规则</div><div id="routing-stats" class="metric">0</div><p>已启用 / 总计</p></div>
-        <div class="card panel"><div>Xray</div><div id="xray-status-metric" class="metric">检查中...</div><p>运行状态</p></div>
-        <div class="card panel"><div>Sing-box</div><div id="singbox-status-metric" class="metric">检查中...</div><p>Hysteria2 / TUIC / ShadowTLS</p></div>
+        <div class="card panel"><div><script>document.write(t('inbounds'))</script></div><div id="inbound-count" class="metric">0</div><p>VLESS / VMess / Trojan / Shadowsocks</p></div>
+        <div class="card panel"><div><script>document.write(t('clients'))</script></div><div id="client-count" class="metric">0</div><p><script>document.write(t('active'))</script> / <script>document.write(t('total'))</script></p></div>
+        <div class="card panel"><div><script>document.write(t('totalTraffic'))</script></div><div id="total-traffic" class="metric">0 B</div><p>所有客户端上行+下行累计</p></div>
+        <div class="card panel"><div><script>document.write(t('outbound'))</script></div><div id="outbound-stats" class="metric">0</div><p>已启用 / 总计</p></div>
+        <div class="card panel"><div><script>document.write(t('routingRules'))</script></div><div id="routing-stats" class="metric">0</div><p>已启用 / 总计</p></div>
+        <div class="card panel"><div>Xray</div><div id="xray-status-metric" class="metric"><script>document.write(t('checking'))</script></div><p><script>document.write(t('runningStatus'))</script></p></div>
+        <div class="card panel"><div>Sing-box</div><div id="singbox-status-metric" class="metric"><script>document.write(t('checking'))</script></div><p>Hysteria2 / TUIC / ShadowTLS</p></div>
         <div class="overview-insights">
           <div class="overview-card">
-            <div class="overview-card-title">运行概况</div>
+            <div class="overview-card-title"><script>document.write(t('runningOverview'))</script></div>
             <div id="overview-health-summary" class="muted">正在读取入站、客户端与 Xray 状态...</div>
-            <div id="overview-active-summary" class="overview-pill">活跃客户端 0 / 0</div>
+            <div id="overview-active-summary" class="overview-pill"><script>document.write(t('activeClients'))</script> 0 / 0</div>
           </div>
           <div class="overview-card">
-            <div class="overview-card-title">协议分布</div>
+            <div class="overview-card-title"><script>document.write(t('protocolDistribution'))</script></div>
             <div id="overview-protocol-breakdown" class="protocol-breakdown"></div>
           </div>
         </div>
       </section>
       <section id="inbounds" class="card panel">
-        <h2 class="section-heading">核心协议</h2>
+        <h2 class="section-heading"><script>document.write(t('coreProtocols'))</script></h2>
         <div class="protocols">
           <div class="protocol"><strong>VLESS</strong><span>Reality / TLS 入站</span></div>
           <div class="protocol"><strong>VMess</strong><span>WebSocket / TLS 兼容</span></div>
@@ -3370,43 +3377,43 @@ const panelHTML = `<!doctype html>
           <div class="protocol"><strong>Shadowsocks</strong><span>轻量转发协议</span></div>
         </div>
         <div class="actions">
-          <button onclick="openCreateInbound()">新增入站</button>
-          <button class="secondary" onclick="navigateTo('outbound')">出站</button>
+          <button onclick="openCreateInbound()"><script>document.write(t('newInbound'))</script></button>
+          <button class="secondary" onclick="navigateTo('outbound')"><script>document.write(t('outbound'))</script></button>
           <input id="inbound-search" type="text" placeholder="搜索入站..." class="search-input" oninput="filterInbounds()">
           <select id="inbound-sort" class="sort-select" onchange="sortInbounds()">
-            <option value="id">默认排序</option>
-            <option value="port">按端口</option>
-            <option value="protocol">按协议</option>
-            <option value="clients">按客户端数</option>
+            <option value="id"><script>document.write(t('defaultSort'))</script></option>
+            <option value="port"><script>document.write(t('byPort'))</script></option>
+            <option value="protocol"><script>document.write(t('byProtocol'))</script></option>
+            <option value="clients"><script>document.write(t('byClients'))</script></option>
           </select>
         </div>
-        <div id="inbound-list" class="list muted">正在加载入站...</div>
+        <div id="inbound-list" class="list muted"><script>document.write(t('loadingInbounds'))</script></div>
       </section>
       <section id="outbound" class="card panel">
-        <h2 class="section-title">出站管理</h2>
-        <p class="muted" style="margin-bottom:16px">配置链式代理转发（SOCKS5 / HTTP），实现流量经外部代理链路中转。</p>
+        <h2 class="section-title"><script>document.write(t('outboundManagement'))</script></h2>
+        <p class="muted" style="margin-bottom:16px"><script>document.write(t('outboundDesc'))</script></p>
         <div class="actions">
-          <button onclick="openCreateOutbound()">新建出站</button>
+          <button onclick="openCreateOutbound()"><script>document.write(t('newOutbound'))</script></button>
           <button class="secondary" onclick="openSocks5PoolDialog()">导入 SOCKS5 地址池</button>
           <button class="secondary" onclick="batchSpeedTest()">一键测速</button>
         </div>
-        <div id="outbound-list" class="list muted">正在加载出站...</div>
+        <div id="outbound-list" class="list muted"><script>document.write(t('loadingOutbounds'))</script></div>
       </section>
       <section id="routing" class="card panel">
-        <h2 class="section-title">路由规则</h2>
-        <p class="muted" style="margin-bottom:16px">按域名、入站、协议将流量分配到指定出站。规则按顺序匹配，命中的规则立即生效。</p>
+        <h2 class="section-title"><script>document.write(t('routingManagement'))</script></h2>
+        <p class="muted" style="margin-bottom:16px"><script>document.write(t('routingDesc'))</script></p>
         <div class="actions">
-          <button onclick="openCreateRoutingRule()">新建规则</button>
+          <button onclick="openCreateRoutingRule()"><script>document.write(t('newRoute'))</script></button>
         </div>
-        <div id="routing-rule-list" class="list muted">正在加载路由规则...</div>
+        <div id="routing-rule-list" class="list muted"><script>document.write(t('loadingRoutes'))</script></div>
         <div class="notice" style="margin-top:16px">
           <div class="notice-title">提示</div>
           <div class="notice-copy">启用规则后系统会自动重写 Xray 配置文件并重启服务。可用的域名格式包括 <code>google.com</code>（精确域名）、<code>geosite:netflix</code>（地理位置组）、<code>regex:.*\.youtube\.com$</code>（正则）。</div>
         </div>
       </section>
       <section id="xray" class="card panel">
-        <h2 class="section-title">Xray 管理</h2>
-        <p class="muted" style="margin-bottom:16px">查看 Xray 服务状态，应用配置变更。</p>
+        <h2 class="section-title"><script>document.write(t('xrayConfig'))</script></h2>
+        <p class="muted" style="margin-bottom:16px"><script>document.write(t('xrayDesc'))</script></p>
         <div class="xray-status-panel">
           <div><strong>状态</strong>：<span id="xray-status">未知</span></div>
           <div><strong>版本</strong>：<span id="xray-version">-</span></div>
@@ -3423,11 +3430,11 @@ const panelHTML = `<!doctype html>
             <span>应用、预览与刷新统一集中在右侧操作区。</span>
           </div>
           <div class="toolbar-actions">
-            <button onclick="fetchXrayStatus()">刷新状态</button>
+            <button onclick="fetchXrayStatus()"><script>document.write(t('refresh'))</script></button>
             <button class="secondary" onclick="installXrayCore()">安装核心</button>
             <button class="danger" onclick="uninstallXrayCore()">卸载核心</button>
-            <button class="secondary" onclick="previewXrayConfig()">预览配置</button>
-            <button class="secondary" onclick="applyXrayConfig()">应用配置</button>
+            <button class="secondary" onclick="previewXrayConfig()"><script>document.write(t('preview'))</script></button>
+            <button class="secondary" onclick="applyXrayConfig()"><script>document.write(t('apply'))</script></button>
             <button class="secondary" onclick="loadXrayLogs()">查看日志</button>
           </div>
         </div>
@@ -3436,8 +3443,8 @@ const panelHTML = `<!doctype html>
         <div id="xray-logs-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Xray 运行日志</span><button class="icon-btn" onclick="closeXrayLogs()" title="关闭" style="font-size:12px">✕</button></div><pre id="xray-logs-text" class="xray-preview-pre mono"></pre></div>
       </section>
       <section id="singbox" class="card panel">
-        <h2 class="section-title">Sing-box 管理</h2>
-        <p class="muted" style="margin-bottom:16px">查看 Sing-box 服务状态，管理 Hysteria2 / TUIC / ShadowTLS 等协议配置。</p>
+        <h2 class="section-title"><script>document.write(t('singboxConfig'))</script></h2>
+        <p class="muted" style="margin-bottom:16px"><script>document.write(t('singboxDesc'))</script></p>
         <div class="xray-status-panel">
           <div><strong>状态</strong>：<span id="singbox-status">未知</span></div>
           <div><strong>版本</strong>：<span id="singbox-version">-</span></div>
@@ -3453,11 +3460,11 @@ const panelHTML = `<!doctype html>
             <span>应用、预览与刷新统一集中在右侧操作区。</span>
           </div>
           <div class="toolbar-actions">
-            <button onclick="fetchSingboxStatus()">刷新状态</button>
+            <button onclick="fetchSingboxStatus()"><script>document.write(t('refresh'))</script></button>
             <button class="secondary" onclick="installSingboxCore()">安装核心</button>
             <button class="danger" onclick="uninstallSingboxCore()">卸载核心</button>
-            <button class="secondary" onclick="previewSingboxConfig()">预览配置</button>
-            <button class="secondary" onclick="applySingboxConfig()">应用配置</button>
+            <button class="secondary" onclick="previewSingboxConfig()"><script>document.write(t('preview'))</script></button>
+            <button class="secondary" onclick="applySingboxConfig()"><script>document.write(t('apply'))</script></button>
             <button class="secondary" onclick="loadSingboxLogs()">查看日志</button>
           </div>
         </div>
@@ -3466,8 +3473,8 @@ const panelHTML = `<!doctype html>
         <div id="singbox-logs-preview" class="list muted" style="margin-top:12px;display:none"><div class="xray-preview-header"><span class="muted" style="font-weight:600">Sing-box 运行日志</span><button class="icon-btn" onclick="closeSingboxLogs()" title="关闭" style="font-size:12px">✕</button></div><pre id="singbox-logs-text" class="xray-preview-pre mono"></pre></div>
       </section>
       <section id="settings" class="card panel">
-        <h2 class="section-title">面板设置</h2>
-        <p class="muted" style="margin-bottom:16px">编辑 panel.json 配置。修改面板端口或认证后需重启服务生效。</p>
+        <h2 class="section-title"><script>document.write(t('panelSettings'))</script></h2>
+        <p class="muted" style="margin-bottom:16px"><script>document.write(t('panelSettingsDesc'))</script></p>
         <form id="settings-form" class="form-grid" onsubmit="return false">
           <div class="field-group">
             <label class="field-label" for="set-panel-port">面板端口</label>
@@ -3529,9 +3536,9 @@ const panelHTML = `<!doctype html>
               <span>保存配置后按需重启 MiGate 服务。</span>
             </div>
             <div class="toolbar-actions">
-              <button type="button" class="secondary" onclick="loadSettings()">刷新</button>
-              <button type="submit" onclick="saveSettings()">保存设置</button>
-              <button type="button" class="danger" onclick="restartService()">重启服务</button>
+              <button type="button" class="secondary" onclick="loadSettings()"><script>document.write(t('refresh'))</script></button>
+              <button type="submit" onclick="saveSettings()"><script>document.write(t('saveSettings'))</script></button>
+              <button type="button" class="danger" onclick="restartService()"><script>document.write(t('restart'))</script></button>
             </div>
           </div>
         </form>

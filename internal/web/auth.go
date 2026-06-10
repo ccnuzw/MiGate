@@ -351,22 +351,27 @@ button:hover{opacity:.85}
 @media (max-width: 480px){.login-card{padding:var(--space-5)}}
 </style>
 <script>
-(function(){try{var t=localStorage.getItem('migate-theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');document.documentElement.dataset.theme=t}catch(e){}})()
+const i18n={zh:{panelLogin:"面板登录",username:"用户名",password:"密码",login:"登录",loginFailed:"登录失败",networkError:"网络错误"},en:{panelLogin:"Panel Login",username:"Username",password:"Password",login:"Login",loginFailed:"Login failed",networkError:"Network error"}};
+let currentLang=((document.cookie.match(/migate_lang=([^;]+)/)||[])[1]||'zh');
+function t(k){return i18n[currentLang][k]||k}
+</script>
+<script>
+(function(){try{var t=localStorage.getItem('migate-theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');document.documentElement.dataset.theme=t}catch(e)})()
 </script>
 </head>
 <body>
 <div class="login-card">
 <h1>MiGate</h1>
-<p>面板登录</p>
+<p><script>document.write(t('panelLogin'))</script></p>
 <form id="loginForm">
-<div class="form-group"><label for="username">用户名</label><input type="text" id="username" name="username" placeholder="admin" autocomplete="username" required></div>
-<div class="form-group"><label for="password">密码</label><input type="password" id="password" name="password" placeholder="........" autocomplete="current-password" required></div>
-<button type="submit">登录</button>
+<div class="form-group"><label for="username"><script>document.write(t('username'))</script></label><input type="text" id="username" name="username" placeholder="admin" autocomplete="username" required></div>
+<div class="form-group"><label for="password"><script>document.write(t('password'))</script></label><input type="password" id="password" name="password" placeholder="........" autocomplete="current-password" required></div>
+<button type="submit"><script>document.write(t('login'))</script></button>
 <div class="error" id="errorMsg"></div>
 </form>
 </div>
 <script>
-document.getElementById('loginForm').addEventListener('submit',async function(e){e.preventDefault();const u=document.getElementById('username').value;const p=document.getElementById('password').value;const base=(()=>{let path=window.location.pathname||'/';if(path.endsWith('/login'))path=path.slice(0,-6);if(path.endsWith('/')&&path!=='/')path=path.slice(0,-1);return path==='/'?'':path})();try{const r=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){window.location.href=(base||'')+'/'}else{let msg='登录失败';try{const d=await r.json();msg=d.error||msg}catch{}const err=document.getElementById('errorMsg');err.textContent=msg;err.style.display='block'}}catch{const err=document.getElementById('errorMsg');err.textContent='网络错误';err.style.display='block'}})
+document.getElementById('loginForm').addEventListener('submit',async function(e){e.preventDefault();const u=document.getElementById('username').value;const p=document.getElementById('password').value;const base=(()=>{let path=window.location.pathname||'/';if(path.endsWith('/login'))path=path.slice(0,-6);if(path.endsWith('/')&&path!=='/')path=path.slice(0,-1);return path==='/'?'':path})();try{const r=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){window.location.href=(base||'')+'/'}else{let msg=t('loginFailed');try{const d=await r.json();msg=d.error||msg}catch{}const err=document.getElementById('errorMsg');err.textContent=msg;err.style.display='block'}}catch{const err=document.getElementById('errorMsg');err.textContent=t('networkError');err.style.display='block'}})
 </script>
 </body>
 </html>`)
