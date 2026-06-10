@@ -1215,11 +1215,11 @@ function openCreateRoutingRule() {
             vmessSni = inbound.reality_server_names || '';
           }
           var vmessData = {v:'2',ps:c.email,add:hostName,port:String(inbound.port),id:c.uuid,aid:'0',scy:'auto',net:inbound.network||'tcp',type:'none',host:vmessHost,path:vmessPath,tls:(inbound.security==='tls'||inbound.security==='reality')?'tls':'',sni:vmessSni};
-          try { shareLink = 'vmess://' + btoa(JSON.stringify(vmessData)); } catch(e) { shareLink = ''; }
+          try { shareLink = 'vmess://' + base64EncodeUnicode(JSON.stringify(vmessData)); } catch(e) { shareLink = ''; }
         } else if (inbound.protocol === 'shadowsocks') {
           var ssMethod = inbound.ss_method || '2022-blake3-aes-128-gcm';
           var userPass = ssMethod + ':' + inbound.uuid;
-          try { shareLink = 'ss://' + btoa(userPass) + '@' + hostName + ':' + inbound.port + '#' + escapeHtml(c.email); } catch(e) { shareLink = ''; }
+          try { shareLink = 'ss://' + base64EncodeUnicode(userPass) + '@' + hostName + ':' + inbound.port + '#' + encodeURIComponent(c.email); } catch(e) { shareLink = ''; }
         } else if (inbound.protocol === 'hysteria2') {
           var hp = [];
           if (inbound.hy2_up_mbps > 0) hp.push('up_mbps=' + encodeURIComponent(inbound.hy2_up_mbps));
@@ -1257,7 +1257,7 @@ function openCreateRoutingRule() {
             if (inbound.xhttp_path) p.push('path=' + encodeURIComponent(inbound.xhttp_path));
             if (inbound.xhttp_mode) p.push('mode=' + encodeURIComponent(inbound.xhttp_mode));
           }
-          shareLink = inbound.protocol + '://' + c.uuid + '@' + hostName + ':' + inbound.port + '?' + p.join('&') + '#' + escapeHtml(c.email);
+          shareLink = inbound.protocol + '://' + c.uuid + '@' + hostName + ':' + inbound.port + '?' + p.join('&') + '#' + encodeURIComponent(c.email);
         }
         const used = (c.up||0) + (c.down||0);
         const limit = c.traffic_limit || 0;
@@ -1300,6 +1300,13 @@ function openCreateRoutingRule() {
 
     function jsString(value) {
       return JSON.stringify(String(value || ''));
+    }
+
+    function base64EncodeUnicode(value) {
+      const bytes = new TextEncoder().encode(String(value || ''));
+      let binary = '';
+      bytes.forEach((b) => { binary += String.fromCharCode(b); });
+      return btoa(binary);
     }
 
     function htmlAttrString(value) {

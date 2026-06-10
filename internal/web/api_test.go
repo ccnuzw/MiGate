@@ -1006,7 +1006,7 @@ func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "ss-user"})
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "ss-用户"})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
@@ -1042,8 +1042,8 @@ func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
 	if !strings.Contains(creds, ":") || !strings.Contains(creds, inbound.UUID) {
 		t.Fatalf("ss:// decoded credentials %q should contain method:password with inbound password/key", creds)
 	}
-	if !strings.HasSuffix(body, "#ss-user") {
-		t.Fatalf("ss:// missing remark fragment: %s", body)
+	if !strings.HasSuffix(body, "#ss-%E7%94%A8%E6%88%B7") {
+		t.Fatalf("ss:// missing URL-encoded remark fragment: %s", body)
 	}
 }
 

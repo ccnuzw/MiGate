@@ -2394,7 +2394,7 @@ func ssShareLink(host string, inbound db.Inbound, client db.Client) string {
 	}
 	userPass := method + ":" + inbound.UUID
 	encoded := base64.StdEncoding.EncodeToString([]byte(userPass))
-	return "ss://" + encoded + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + client.Email
+	return "ss://" + encoded + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + url.QueryEscape(client.Email)
 }
 
 func subscriptionHost(host string) string {

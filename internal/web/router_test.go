@@ -629,6 +629,27 @@ func TestPanelRefreshesAfterCreateAndCopiesLinksSafely(t *testing.T) {
 	}
 }
 
+func TestPanelClientCopyLinksAreUnicodeSafeForAllProtocols(t *testing.T) {
+	jsBody := readAppJS(t)
+	for _, want := range []string{
+		`function base64EncodeUnicode(value)`,
+		`shareLink = 'vmess://' + base64EncodeUnicode(JSON.stringify(vmessData))`,
+		`'#' + encodeURIComponent(c.email)`,
+	} {
+		if !strings.Contains(jsBody, want) {
+			t.Fatalf("app.js client copy links must be Unicode-safe for every protocol, missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`btoa(JSON.stringify(vmessData))`,
+		`'#' + escapeHtml(c.email)`,
+	} {
+		if strings.Contains(jsBody, forbidden) {
+			t.Fatalf("app.js client copy links must not use Unicode-unsafe/HTML-only encoding %q", forbidden)
+		}
+	}
+}
+
 func TestPanelWiresDeleteInboundButton(t *testing.T) {
 	router := web.NewRouter()
 	page := httptest.NewRecorder()
