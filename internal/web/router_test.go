@@ -653,10 +653,11 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`id="client-uuid"`,
 		`name="uuid"`,
 		`客户端 UUID / 密码 / 密钥`,
-		`.client-subsection { margin:8px 0 var(--space-3) var(--space-5);`,
-		`border-left:1px solid var(--line); box-shadow:none;`,
+		`.client-subsection { margin:8px 0 var(--space-3) var(--space-6);`,
+		`border-left:2px solid var(--line); box-shadow:none;`,
 		`.client-subsection .list { margin-top:0; gap:8px; }`,
 		`.client-add-row { display:flex; justify-content:flex-start;`,
+		`.client-resource-row .resource-actions { flex-wrap:nowrap;`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("panel client management missing %q: %s", want, body)
@@ -690,7 +691,7 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`重置流量`,
 		`t("dyn147")`,
 		`t("dyn165")`,
-		`.client-resource-row .resource-actions { flex-wrap:wrap; justify-content:flex-end; max-width:280px; }`,
+		`.client-resource-row .resource-actions { flex-wrap:nowrap; justify-content:flex-end; }`,
 		`.client-resource-row .icon-btn, .client-resource-row .danger-icon-btn { min-width:64px; }`,
 	} {
 		if !strings.Contains(jsBody, want) && !strings.Contains(body, want) {
