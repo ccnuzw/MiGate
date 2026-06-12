@@ -2261,6 +2261,26 @@ const singboxLine = singboxResult ? (singboxResult.applied ? t("dyn209") + (sing
         showToast(t("dyn238"), 'error');
         return;
       }
+
+    async function importSettingsCert() {
+      try {
+        const res = await fetch(apiPath('/api/cert/status'));
+        if (!res.ok) throw new Error('cert status unavailable');
+        const data = await res.json();
+        if (!data.issued || !data.cert_path || !data.key_path) {
+          showToast(t('certNotIssued'), 'error');
+          return;
+        }
+        document.getElementById('ei-tls-cert-file').value = data.cert_path;
+        document.getElementById('ei-tls-key-file').value = data.key_path;
+        if (data.domain) {
+          document.getElementById('ei-tls-sni').value = data.domain;
+        }
+        showToast(t('certImported'), 'success');
+      } catch (e) {
+        showToast(t('certStatusError') + e.message, 'error');
+      }
+    }
       const btn = document.getElementById('btn-issue-cert');
       btn.disabled = true;
       btn.textContent = t("dyn239");
