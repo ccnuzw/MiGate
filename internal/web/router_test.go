@@ -691,8 +691,8 @@ func TestPanelWiresClientManagement(t *testing.T) {
 		`重置流量`,
 		`t("dyn147")`,
 		`t("dyn165")`,
-		`.client-resource-row .resource-actions { flex-wrap:nowrap; justify-content:flex-end; }`,
-		`.client-resource-row .icon-btn, .client-resource-row .danger-icon-btn { min-width:64px; }`,
+		`.client-resource-row .resource-actions { flex-wrap:nowrap; justify-content:flex-end; margin-left:auto; gap:6px; }`,
+		`.client-resource-row .icon-btn, .client-resource-row .danger-icon-btn { min-width:64px; padding:0 var(--space-2); white-space:nowrap; }`,
 	} {
 		if !strings.Contains(jsBody, want) && !strings.Contains(body, want) {
 			t.Fatalf("app.js missing client JS %q", want)
