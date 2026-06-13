@@ -218,10 +218,11 @@ func sessionHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		resp := map[string]interface{}{
-			"auth_enabled":  cfg.authEnabled,
-			"authenticated": false,
-			"username":      "",
-			"revoked":       false,
+			"auth_enabled":     cfg.authEnabled,
+			"authenticated":    false,
+			"username":         "",
+			"revoked":          false,
+			"default_password": false,
 		}
 		if !cfg.authEnabled {
 			resp["username"] = "未启用认证"
@@ -237,6 +238,7 @@ func sessionHandler(cfg *routerConfig) http.HandlerFunc {
 			if !revoked {
 				resp["authenticated"] = true
 				resp["username"] = cfg.authUsername
+				resp["default_password"] = cfg.authPassword == "admin"
 			}
 			resp["revoked"] = revoked
 		}

@@ -2227,6 +2227,21 @@ const singboxLine = singboxResult ? (singboxResult.applied ? t("dyn209") + (sing
         }
         fetchCertStatus();
         fetchServiceStatus();
+        // Check for default password warning
+        const sessionRes = await fetch(apiPath('/api/session'));
+        if (sessionRes.ok) {
+          const session = await sessionRes.json();
+          if (session.default_password) {
+            var existing = document.getElementById('default-pw-warning');
+            if (!existing) {
+              var warn = document.createElement('div');
+              warn.id = 'default-pw-warning';
+              warn.style.cssText = 'margin-bottom:var(--space-4);padding:12px 16px;border-radius:var(--radius-md);background:rgba(220,40,40,0.1);border:1px solid rgba(220,40,40,0.3);color:var(--danger);font-size:var(--text-sm);line-height:1.5';
+              warn.innerHTML = '<strong>⚠ ' + t('dyn263') + '</strong><br>' + t('dyn264') + ' <a href="#settings" style="color:var(--danger);text-decoration:underline">' + t('settings') + '</a>';
+              document.querySelector('main').insertBefore(warn, document.querySelector('main').firstChild);
+            }
+          }
+        }
       } catch (e) {
         document.getElementById('settings-status').innerHTML = renderNotice(t("dyn231"), t("dyn232"), 'error');
       }
