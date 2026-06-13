@@ -16,6 +16,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/web"
+	"github.com/imzyb/MiGate/internal/xray"
 )
 
 func TestRemovedLegacyAPIRoutesReturnNotFound(t *testing.T) {
@@ -787,6 +788,47 @@ func TestStatsMarksSingBoxClientTrafficAsUnavailable(t *testing.T) {
 	for _, want := range []string{`"protocol":"hysteria2"`, `"traffic_stats_source":"unavailable"`, `"traffic_stats_note":"sing-box realtime traffic stats are not yet wired"`, fmt.Sprintf(`"id":%d`, client.ID)} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sing-box stats response missing %q: %s", want, body)
+		}
+	}
+}
+
+type fixedStatsClient struct {
+	stats map[string]*xray.ClientStats
+}
+
+func (c fixedStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.ClientStats, error) {
+	return c.stats, nil
+}
+
+func (c fixedStatsClient) Close() error { return nil }
+
+func TestStatsAPIReportsTotalTrafficFromLiveXrayStats(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"sam@example.com": {Email: "sam@example.com", Uplink: 1234, Downlink: 5678},
+	}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"traffic_up":1234`, `"traffic_down":5678`, `"traffic_total":6912`, `"traffic_stats_source":"xray"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stats response missing %q: %s", want, body)
 		}
 	}
 }

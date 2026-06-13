@@ -990,16 +990,20 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 		// counter source yet, so label them explicitly instead of presenting DB
 		// values as live traffic.
 		var clientList []map[string]interface{}
+		var totalUp int64
+		var totalDown int64
 		for _, in := range inb {
 			for _, c := range in.Clients {
+				up := c.Up
+				down := c.Down
 				info := map[string]interface{}{
 					"id":                   c.ID,
 					"inbound_id":           c.InboundID,
 					"protocol":             in.Protocol,
 					"email":                c.Email,
 					"enabled":              c.Enabled,
-					"up":                   c.Up,
-					"down":                 c.Down,
+					"up":                   up,
+					"down":                 down,
 					"traffic_limit":        c.TrafficLimit,
 					"expiry_at":            c.ExpiryAt,
 					"traffic_stats_source": "db",
@@ -1009,10 +1013,14 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 					info["traffic_stats_note"] = "sing-box realtime traffic stats are not yet wired"
 				} else if liveStats, ok := clientStats[c.Email]; ok {
 					// Override with live stats if available.
-					info["up"] = liveStats.Uplink
-					info["down"] = liveStats.Downlink
+					up = liveStats.Uplink
+					down = liveStats.Downlink
+					info["up"] = up
+					info["down"] = down
 					info["traffic_stats_source"] = "xray"
 				}
+				totalUp += up
+				totalDown += down
 				clientList = append(clientList, info)
 			}
 		}
@@ -1022,6 +1030,9 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 			"inbounds":              len(inb),
 			"clients":               clientCount,
 			"client_details":        clientList,
+			"traffic_up":            totalUp,
+			"traffic_down":          totalDown,
+			"traffic_total":         totalUp + totalDown,
 			"outbounds":             totalObs,
 			"outbounds_enabled":     enabledObs,
 			"routing_rules":         totalRules,
@@ -1742,7 +1753,7 @@ func coreInstallHandler(core string) http.HandlerFunc {
 		switch core {
 		case "xray":
 			commands = []string{"download Xray-install script", "run installed script", "mkdir -p /usr/local/etc/xray", "ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json", "systemctl enable --now xray"}
-		script = `set -euo pipefail
+			script = `set -euo pipefail
 if ! command -v curl >/dev/null 2>&1; then echo 'curl is required' >&2; exit 1; fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -1929,27 +1940,27 @@ func certStatusHandler(cfg *routerConfig) http.HandlerFunc {
 					}
 				}
 			}
-		if domain != "" {
-			// Check /etc/xray/certs/{domain}.pem and .key first
-			certPath = "/etc/xray/certs/" + domain + ".pem"
-			keyPath = "/etc/xray/certs/" + domain + ".key"
-			if _, err := os.Stat(certPath); err == nil {
-				if _, err := os.Stat(keyPath); err == nil {
-					issued = true
-				}
-			}
-			// Fallback to config dir for tests
-			if !issued && cfg.configDir != "" {
-				certDir := cfg.configDir + "/certs/" + domain
-				certPath = certDir + "/fullchain.pem"
-				keyPath = certDir + "/privkey.pem"
+			if domain != "" {
+				// Check /etc/xray/certs/{domain}.pem and .key first
+				certPath = "/etc/xray/certs/" + domain + ".pem"
+				keyPath = "/etc/xray/certs/" + domain + ".key"
 				if _, err := os.Stat(certPath); err == nil {
 					if _, err := os.Stat(keyPath); err == nil {
 						issued = true
 					}
 				}
+				// Fallback to config dir for tests
+				if !issued && cfg.configDir != "" {
+					certDir := cfg.configDir + "/certs/" + domain
+					certPath = certDir + "/fullchain.pem"
+					keyPath = certDir + "/privkey.pem"
+					if _, err := os.Stat(certPath); err == nil {
+						if _, err := os.Stat(keyPath); err == nil {
+							issued = true
+						}
+					}
+				}
 			}
-		}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -2027,50 +2038,50 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 
-	// Issue cert via acme.sh directly to /etc/xray/certs/
-	certDir := "/etc/xray/certs"
-	if err := os.MkdirAll(certDir, 0755); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "mkdir_cert_dir_failed"})
-		return
-	}
+		// Issue cert via acme.sh directly to /etc/xray/certs/
+		certDir := "/etc/xray/certs"
+		if err := os.MkdirAll(certDir, 0755); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "mkdir_cert_dir_failed"})
+			return
+		}
 
-	certFile := certDir + "/" + req.Domain + ".pem"
-	keyFile := certDir + "/" + req.Domain + ".key"
+		certFile := certDir + "/" + req.Domain + ".pem"
+		keyFile := certDir + "/" + req.Domain + ".key"
 
-	// Check if acme.sh is installed; if not, install it without interpolating
-	// request data into a shell command string.
-	if _, err := exec.LookPath("acme.sh"); err != nil {
-		installOut, err := installACMESh(req.Email)
+		// Check if acme.sh is installed; if not, install it without interpolating
+		// request data into a shell command string.
+		if _, err := exec.LookPath("acme.sh"); err != nil {
+			installOut, err := installACMESh(req.Email)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":  "install_acme_failed",
+					"detail": installOut,
+				})
+				return
+			}
+		}
+
+		// Run acme.sh --issue --standalone
+		out, err := exec.Command("acme.sh",
+			"--issue", "--standalone", "-d", req.Domain,
+			"--keylength", "ec-256",
+			"--fullchain-file", certFile,
+			"--key-file", keyFile,
+			"--reloadcmd", "systemctl restart xray || true",
+		).CombinedOutput()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":  "install_acme_failed",
-				"detail": installOut,
+				"error":  "issue_cert_failed",
+				"detail": string(out),
 			})
 			return
 		}
-	}
 
-	// Run acme.sh --issue --standalone
-	out, err := exec.Command("acme.sh",
-		"--issue", "--standalone", "-d", req.Domain,
-		"--keylength", "ec-256",
-		"--fullchain-file", certFile,
-		"--key-file", keyFile,
-		"--reloadcmd", "systemctl restart xray || true",
-	).CombinedOutput()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"error":  "issue_cert_failed",
-			"detail": string(out),
-		})
-		return
-	}
-
-	// Set permissions for xray user
-	exec.Command("chmod", "644", certFile, keyFile).Run()
+		// Set permissions for xray user
+		exec.Command("chmod", "644", certFile, keyFile).Run()
 
 		// Update panel.json with cert domain/email
 		configPath := cfg.configDir + "/panel.json"
@@ -2100,13 +2111,13 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "issued",
-		"domain":    req.Domain,
-		"cert_path": certFile,
-		"key_path":  keyFile,
-	})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "issued",
+			"domain":    req.Domain,
+			"cert_path": certFile,
+			"key_path":  keyFile,
+		})
 	}
 }
 

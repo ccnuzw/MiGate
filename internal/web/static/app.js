@@ -291,7 +291,10 @@
     function startOverviewResourceRefresh() {
       clearInterval(overviewResourceTimer);
       overviewResourceTimer = setInterval(function() {
-        if (!document.hidden) loadSystemResources();
+        if (!document.hidden) {
+          loadStats();
+          loadSystemResources();
+        }
       }, 5000);
     }
 
@@ -302,6 +305,7 @@
 
     document.addEventListener('visibilitychange', function() {
       if (document.getElementById('overview').style.display !== 'none' && !document.hidden) {
+        loadStats();
         loadSystemResources();
       }
     });
@@ -1147,6 +1151,10 @@ function openCreateRoutingRule() {
         const s = await resp.json();
         document.getElementById('inbound-count').textContent = s.inbounds;
         document.getElementById('client-count').textContent = s.clients;
+        const trafficTotal = Number.isFinite(Number(s.traffic_total))
+          ? Number(s.traffic_total)
+          : (s.client_details || []).reduce((sum, c) => sum + Number(c.up || 0) + Number(c.down || 0), 0);
+        totalTraffic.textContent = formatBytes(trafficTotal);
         document.getElementById('outbound-stats').textContent = s.outbounds_enabled + ' / ' + s.outbounds;
         document.getElementById('routing-stats').textContent = s.routing_rules_enabled + ' / ' + s.routing_rules;
       } catch(e) {}

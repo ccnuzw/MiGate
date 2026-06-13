@@ -1601,6 +1601,9 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 	}
 	for _, want := range []string{
 		"formatBytes",
+		"const trafficTotal = Number.isFinite(Number(s.traffic_total))",
+		"totalTraffic.textContent = formatBytes(trafficTotal)",
+		"(s.client_details || []).reduce((sum, c) => sum + Number(c.up || 0) + Number(c.down || 0), 0)",
 		"formatPercent",
 		"formatUptime",
 		"async function loadSystemResources()",
@@ -1612,7 +1615,8 @@ func TestPanelWiresAdvancedWebUI(t *testing.T) {
 		"function startOverviewResourceRefresh()",
 		"clearInterval(overviewResourceTimer)",
 		"overviewResourceTimer = setInterval(function()",
-		"if (!document.hidden) loadSystemResources()",
+		"loadStats();",
+		"loadSystemResources();",
 		"if (sectionId !== 'overview') stopOverviewResourceRefresh();",
 		"async function loadOverviewServiceStatuses()",
 		"xrayStatusMetric.textContent = formatServiceStatus(xs)",
