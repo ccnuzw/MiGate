@@ -176,7 +176,7 @@ install_xray() {
   install_xray_choice="${install_xray_choice:-Y}"
   if [ "$install_xray_choice" != "Y" ] && [ "$install_xray_choice" != "y" ] && [ "$install_xray_choice" != "" ]; then
     echo "跳过 Xray 安装。可通过后续手动安装："
-    echo "  bash -c \"\$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)\""
+    echo "  mg tools xray"
     return
   fi
 
@@ -184,7 +184,11 @@ install_xray() {
     echo "Xray 已安装 ($(xray --version 2>/dev/null | head -1))"
   else
     echo "正在安装 Xray..."
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" 2>&1
+    local xray_tmp
+    xray_tmp="$(mktemp -d)"
+    curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"
+    bash "$xray_tmp/install-release.sh" 2>&1
+    rm -rf "$xray_tmp"
     echo "Xray 安装完成"
   fi
 

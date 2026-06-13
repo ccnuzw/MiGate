@@ -138,7 +138,7 @@ func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
 	}
 	body := string(source)
 	for _, want := range []string{
-		`exec.Command("systemd-run", "--unit=migate-update", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update")`,
+		`exec.Command("systemd-run", "--unit=migate-update", "--replace", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=180", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update")`,
 		`/var/log/migate-update.log`,
 	} {
 		if !strings.Contains(body, want) {

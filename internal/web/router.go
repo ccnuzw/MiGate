@@ -1,7 +1,6 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -275,7 +274,7 @@ func outboundsHandler(store Store, ctrl XrayController) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(outbounds)
 		case http.MethodPost:
 			var params db.CreateOutboundParams
-			if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+			if err := decodeJSONBody(r, &params); err != nil {
 				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 				return
 			}
@@ -624,7 +623,7 @@ func socks5PoolPingHandler(w http.ResponseWriter, r *http.Request) {
 		Address string `json:"address"`
 		Port    int    `json:"port"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -651,7 +650,7 @@ func socks5PoolImportHandler(store Store, ctrl XrayController, w http.ResponseWr
 		ASN          string `json:"asn"`
 		Organization string `json:"organization"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -718,7 +717,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			var req struct {
 				IDs []int64 `json:"ids"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+			if err := decodeJSONBody(r, &req); err != nil || len(req.IDs) == 0 {
 				http.Error(w, `{"error":"invalid_payload"}`, http.StatusBadRequest)
 				return
 			}
@@ -805,7 +804,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodPut:
 			var params db.UpdateOutboundParams
-			if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+			if err := decodeJSONBody(r, &params); err != nil {
 				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 				return
 			}
@@ -853,7 +852,7 @@ func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(rules)
 		case http.MethodPost:
 			var params db.CreateRoutingRuleParams
-			if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+			if err := decodeJSONBody(r, &params); err != nil {
 				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 				return
 			}
@@ -884,7 +883,7 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 			var req struct {
 				IDs []int64 `json:"ids"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+			if err := decodeJSONBody(r, &req); err != nil || len(req.IDs) == 0 {
 				http.Error(w, `{"error":"invalid_payload"}`, http.StatusBadRequest)
 				return
 			}
@@ -906,7 +905,7 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 		switch r.Method {
 		case http.MethodPut:
 			var params db.UpdateRoutingRuleParams
-			if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+			if err := decodeJSONBody(r, &params); err != nil {
 				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 				return
 			}
@@ -1215,6 +1214,13 @@ func writeJSONError(w http.ResponseWriter, status int, code string, fields ...ma
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// decodeJSONBody wraps r.Body with a 512KB MaxBytesReader and decodes JSON
+// into v. Returns an error if the body is too large or invalid JSON.
+func decodeJSONBody(r *http.Request, v interface{}) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, 1<<19) // 512KB
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
 func deriveRealityPublicKeys(inbounds []db.Inbound) {
 	for i := range inbounds {
 		if inbounds[i].Security == "reality" && inbounds[i].RealityPublicKey == "" && inbounds[i].RealityPrivateKey != "" {
@@ -1246,7 +1252,7 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 		return
 	}
 	var payload db.CreateInboundParams
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBody(r, &payload); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -1427,7 +1433,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 		TrafficLimit int64  `json:"traffic_limit"`
 		ExpiryAt     int64  `json:"expiry_at"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBody(r, &payload); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -1455,7 +1461,7 @@ func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, in
 	var payload struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBody(r, &payload); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -1476,7 +1482,7 @@ func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, inb
 	var payload struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBody(r, &payload); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -1508,7 +1514,7 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 		return
 	}
 	var payload db.UpdateInboundParams
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBody(r, &payload); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -1559,7 +1565,7 @@ func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID 
 		return
 	}
 	var payload db.UpdateClientParams
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBody(r, &payload); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
 	}
@@ -1632,7 +1638,7 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 			Confirm            bool `json:"confirm"`
 			AllowSystemChanges bool `json:"allow_system_changes"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		if err := decodeJSONBody(r, &payload); err != nil {
 			http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 			return
 		}
@@ -1711,7 +1717,7 @@ type coreActionPayload struct {
 
 func decodeCoreActionPayload(w http.ResponseWriter, r *http.Request) (coreActionPayload, bool) {
 	var payload coreActionPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBody(r, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return payload, false
 	}
@@ -1735,10 +1741,13 @@ func coreInstallHandler(core string) http.HandlerFunc {
 		var commands []string
 		switch core {
 		case "xray":
-			commands = []string{"bash -c curl Xray-install", "mkdir -p /usr/local/etc/xray", "ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json", "systemctl enable --now xray"}
-			script = `set -euo pipefail
+			commands = []string{"download Xray-install script", "run installed script", "mkdir -p /usr/local/etc/xray", "ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json", "systemctl enable --now xray"}
+		script = `set -euo pipefail
 if ! command -v curl >/dev/null 2>&1; then echo 'curl is required' >&2; exit 1; fi
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$tmp/install-release.sh"
+bash "$tmp/install-release.sh"
 mkdir -p /usr/local/etc/xray
 ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json
 ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
@@ -1955,6 +1964,13 @@ func certStatusHandler(cfg *routerConfig) http.HandlerFunc {
 }
 
 func installACMESh(email string) (string, error) {
+	tmpDir, err := os.MkdirTemp("", "acmesh-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	scriptPath := tmpDir + "/acme.sh"
 	resp, err := http.Get("https://get.acme.sh")
 	if err != nil {
 		return "", err
@@ -1963,12 +1979,14 @@ func installACMESh(email string) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("download acme.sh installer failed: status %d", resp.StatusCode)
 	}
-	script, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command("sh", "-s", "email="+email)
-	cmd.Stdin = bytes.NewReader(script)
+	if err := os.WriteFile(scriptPath, body, 0755); err != nil {
+		return "", fmt.Errorf("write acme.sh: %w", err)
+	}
+	cmd := exec.Command(scriptPath, "--email", email)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -1983,7 +2001,7 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			Domain string `json:"domain"`
 			Email  string `json:"email"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(r, &req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_json"})
 			return
@@ -2123,7 +2141,7 @@ func updateHandler() http.HandlerFunc {
 		}
 		go func() {
 			time.Sleep(500 * time.Millisecond)
-			_ = exec.Command("systemd-run", "--unit=migate-update", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update").Run()
+			_ = exec.Command("systemd-run", "--unit=migate-update", "--replace", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=180", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update").Run()
 		}()
 	}
 }
@@ -2157,7 +2175,7 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(raw)
 		case http.MethodPut:
 			var updated map[string]interface{}
-			if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+			if err := decodeJSONBody(r, &updated); err != nil {
 				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 				return
 			}
