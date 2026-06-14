@@ -30,6 +30,7 @@ PANEL_PORT=9999
 PANEL_USERNAME="admin"
 PANEL_PASSWORD=""
 WEB_BASE_PATH="/panel"
+PANEL_BIND_HOST="${MIGATE_PANEL_BIND_HOST:-127.0.0.1}"
 GENERATED_PASSWORD=0
 
 log_info() { printf '[INFO] %s\n' "$*"; }
@@ -63,6 +64,7 @@ Options:
 Environment:
   MIGATE_VERSION=vX.Y.Z
   MIGATE_REPO=owner/repo
+  MIGATE_PANEL_BIND_HOST=127.0.0.1
   SINGBOX_VERSION=1.13.13
 EOF
 }
@@ -583,7 +585,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${MIGATE_BIN} serve --config ${CONFIG_PATH}
+ExecStart=${MIGATE_BIN} serve --host ${PANEL_BIND_HOST} --config ${CONFIG_PATH}
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
@@ -850,6 +852,7 @@ finish_message() {
   log_ok "MiGate binary: $MIGATE_BIN"
   log_ok "CLI: mg"
   log_info "WebUI: http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}"
+  log_warn "默认仅监听 ${PANEL_BIND_HOST}。公网访问请通过 Nginx/Caddy 等反向代理并启用 HTTPS。"
   log_info "Username: ${PANEL_USERNAME}"
   if [ "$GENERATED_PASSWORD" -eq 1 ] || [ -n "$PANEL_PASSWORD" ]; then
     log_warn "Password: ${PANEL_PASSWORD}"

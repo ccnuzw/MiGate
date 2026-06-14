@@ -79,10 +79,10 @@ export const api = {
   settings: () => get<Settings>('/api/settings'),
   saveSettings: (body: Settings) => put<{ status: string }>('/api/settings', body),
   certStatus: () => get<CertStatus>('/api/cert/status'),
-  issueCert: (domain: string, email: string) => post<{ status: string; domain: string; cert_path: string; key_path: string }>('/api/cert/issue', { domain, email }),
-  restart: () => post<{ status: string }>('/api/restart'),
+  issueCert: (domain: string, email: string) => post<{ status: string; domain: string; cert_path: string; key_path: string }>('/api/cert/issue', { domain, email, confirm: true, allow_system_changes: true }),
+  restart: () => post<{ status: string }>('/api/restart', { confirm: true, allow_system_changes: true }),
   serviceStatus: () => get<{ service: string; status: string; detail?: string }>('/api/service/status'),
   updateCheck: () => get<UpdateCheck>('/api/update/check'),
   updateStatus: () => get<UpdateStatus>('/api/update/status'),
-  update: () => post<{ status: string; command: string; message?: string }>('/api/update'),
+  update: () => post<{ status: string; command: string; message?: string }>('/api/update', { confirm: true, allow_system_changes: true }),
 };

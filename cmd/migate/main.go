@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -174,6 +176,8 @@ type panelConfig struct {
 	PanelUsername  string `json:"panel_username"`
 	PanelPassword  string `json:"panel_password"`
 	WebPath        string `json:"web_base_path"`
+	PublicHost     string `json:"public_host"`
+	TrustProxy     bool   `json:"trust_proxy"`
 	DatabasePath   string `json:"database_path"`
 	XrayConfigPath string `json:"xray_config_path"`
 }
@@ -211,7 +215,7 @@ func runServer(args []string) int {
 	var port int
 	var configPath string
 	fs := flag.NewFlagSet("migate serve", flag.ExitOnError)
-	fs.StringVar(&host, "host", "0.0.0.0", "bind host")
+	fs.StringVar(&host, "host", "127.0.0.1", "bind host")
 	fs.IntVar(&port, "port", 9999, "bind port")
 	fs.StringVar(&configPath, "config", "", "panel config path")
 	if err := fs.Parse(args); err != nil {
@@ -662,7 +666,11 @@ func listeningStatus(ssOutput string, port int) string {
 }
 
 func generatedPassword() string {
-	return fmt.Sprintf("migate-%d", time.Now().Unix())
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("migate-%d", time.Now().UnixNano())
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func defaultBackupPath() string {
@@ -712,6 +720,12 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	opts := []web.Option{web.WithStore(store), web.WithVersion(Version)}
 	if cfg.WebPath != "" {
 		opts = append(opts, web.WithBasePath(cfg.WebPath))
+	}
+	if cfg.PublicHost != "" {
+		opts = append(opts, web.WithPublicHost(cfg.PublicHost))
+	}
+	if cfg.TrustProxy {
+		opts = append(opts, web.WithTrustedProxyHeaders(true))
 	}
 	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
 		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))

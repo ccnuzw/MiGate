@@ -544,7 +544,7 @@ function defaultClientCredential(protocol?: string) {
 }
 
 function subscriptionURL(client: Client) {
-  return `${window.location.origin}${appPath(`/sub/${client.uuid}`)}`;
+  return `${window.location.origin}${appPath(`/sub/${subscriptionToken(client)}`)}`;
 }
 
 async function copyText(value: string, title: string, showToast: (title: string, tone?: 'success' | 'error' | 'info') => void) {
@@ -554,13 +554,17 @@ async function copyText(value: string, title: string, showToast: (title: string,
 
 async function copyShareLink(client: Client, showToast: (title: string, tone?: 'success' | 'error' | 'info') => void) {
   try {
-    const response = await fetch(appPath(`/sub/${client.uuid}`), { credentials: 'same-origin' });
+    const response = await fetch(appPath(`/sub/${subscriptionToken(client)}`), { credentials: 'same-origin' });
     if (!response.ok) throw new Error('share_link_unavailable');
     const text = await response.text();
     await copyText(text.trim(), '客户端分享链接已复制', showToast);
   } catch {
     showToast('复制分享链接失败', 'error');
   }
+}
+
+function subscriptionToken(client: Client) {
+  return client.subscription_token || client.uuid;
 }
 
 function errorMessage(error: unknown, fallback: string) {

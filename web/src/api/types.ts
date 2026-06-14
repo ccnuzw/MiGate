@@ -11,6 +11,7 @@ export interface Client {
   inbound_id: number;
   email: string;
   uuid: string;
+  subscription_token?: string;
   enabled: boolean;
   up?: number;
   down?: number;

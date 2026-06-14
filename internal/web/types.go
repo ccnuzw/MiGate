@@ -50,6 +50,7 @@ type inboundView struct {
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
 	GetSubscriptionByClientUUID(ctx context.Context, uuid string) (db.Inbound, db.Client, bool, error)
+	GetSubscriptionByToken(ctx context.Context, token string) (db.Inbound, db.Client, bool, error)
 	CreateInbound(ctx context.Context, params db.CreateInboundParams) (db.Inbound, error)
 	ListOutbounds(ctx context.Context) ([]db.Outbound, error)
 	CreateOutbound(ctx context.Context, params db.CreateOutboundParams) (db.Outbound, error)
@@ -132,6 +133,9 @@ type routerConfig struct {
 	statsClient    xray.StatsClient
 	socks5PoolURL  string
 	updateCheckURL string
+	publicHost     string
+	trustProxy     bool
+	loginLimiter   *loginLimiter
 	sessionTouches map[string]time.Time
 	sessionTouchGC time.Time
 	sessionTouchMu sync.Mutex

@@ -3,12 +3,14 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
 )
@@ -112,6 +114,9 @@ func TestAuthLoginSucceedsWithValidCredentials(t *testing.T) {
 	if sessionCookie.HttpOnly == false {
 		t.Error("session cookie should be HttpOnly")
 	}
+	if sessionCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("session cookie should use SameSite=Strict, got %v", sessionCookie.SameSite)
+	}
 	if sessionCookie.Value == "" {
 		t.Error("session cookie value should not be empty")
 	}
@@ -123,6 +128,158 @@ func TestAuthLoginSucceedsWithValidCredentials(t *testing.T) {
 	router.ServeHTTP(protected, protectedReq)
 	if protected.Code != http.StatusOK {
 		t.Fatalf("expected 200 with valid session cookie, got %d: %s", protected.Code, protected.Body.String())
+	}
+}
+
+func TestAuthLoginSetsSecureCookieForHTTPS(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithTrustedProxyHeaders(true))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(response, req)
+
+	var sessionCookie *http.Cookie
+	for _, c := range response.Result().Cookies() {
+		if c.Name == "migate_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected session cookie")
+	}
+	if !sessionCookie.Secure {
+		t.Fatal("HTTPS login should set Secure cookie")
+	}
+	if !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("unexpected cookie security attributes: %+v", sessionCookie)
+	}
+}
+
+func TestAuthLoginSetsSecureCookieForDirectTLS(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.TLS = &tls.ConnectionState{}
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 for direct TLS login, got %d: %s", response.Code, response.Body.String())
+	}
+	sessionCookie := findSessionCookie(response.Result().Cookies())
+	if sessionCookie == nil {
+		t.Fatal("expected session cookie")
+	}
+	if !sessionCookie.Secure {
+		t.Fatalf("direct TLS login should set Secure cookie: %+v", sessionCookie)
+	}
+}
+
+func TestAuthLoginDoesNotTrustForwardedProtoByDefault(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 login despite spoofed header, got %d: %s", response.Code, response.Body.String())
+	}
+	sessionCookie := findSessionCookie(response.Result().Cookies())
+	if sessionCookie == nil {
+		t.Fatal("expected session cookie")
+	}
+	if sessionCookie.Secure {
+		t.Fatalf("default router must not trust spoofed X-Forwarded-Proto: %+v", sessionCookie)
+	}
+}
+
+func TestAuthLoginRateLimitAndSuccessfulLoginClearsFailures(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithLoginRateLimit(2, 20*time.Millisecond))
+	for i := 0; i < 2; i++ {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "198.51.100.10:12345"
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("expected failed login %d to return 401, got %d", i+1, resp.Code)
+		}
+	}
+	limited := httptest.NewRecorder()
+	limitedReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	limitedReq.Header.Set("Content-Type", "application/json")
+	limitedReq.RemoteAddr = "198.51.100.10:12345"
+	router.ServeHTTP(limited, limitedReq)
+	if limited.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected login to be rate limited, got %d: %s", limited.Code, limited.Body.String())
+	}
+
+	waitForLoginStatus(t, router, "198.51.100.10:12345", http.StatusOK, 200*time.Millisecond)
+
+	afterReset := httptest.NewRecorder()
+	afterResetReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong"}`)))
+	afterResetReq.Header.Set("Content-Type", "application/json")
+	afterResetReq.RemoteAddr = "198.51.100.10:12345"
+	router.ServeHTTP(afterReset, afterResetReq)
+	if afterReset.Code != http.StatusUnauthorized {
+		t.Fatalf("successful login should clear failure state, got %d", afterReset.Code)
+	}
+}
+
+func findSessionCookie(cookies []*http.Cookie) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == "migate_session" {
+			return cookie
+		}
+	}
+	return nil
+}
+
+func waitForLoginStatus(t *testing.T, router http.Handler, remoteAddr string, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastCode int
+	var lastBody string
+	for time.Now().Before(deadline) {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		router.ServeHTTP(resp, req)
+		lastCode = resp.Code
+		lastBody = resp.Body.String()
+		if resp.Code == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected login status %d before timeout, last got %d: %s", want, lastCode, lastBody)
+}
+
+func TestAuthLoginRateLimitDoesNotTrustForwardedForByDefault(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithLoginRateLimit(2, time.Minute))
+	for i := 0; i < 2; i++ {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", i+1))
+		req.RemoteAddr = "198.51.100.20:12345"
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("expected failed login %d to return 401, got %d", i+1, resp.Code)
+		}
+	}
+	limited := httptest.NewRecorder()
+	limitedReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	limitedReq.Header.Set("Content-Type", "application/json")
+	limitedReq.Header.Set("X-Forwarded-For", "203.0.113.99")
+	limitedReq.RemoteAddr = "198.51.100.20:12345"
+	router.ServeHTTP(limited, limitedReq)
+	if limited.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected spoofed X-Forwarded-For to remain rate limited, got %d", limited.Code)
 	}
 }
 
@@ -170,11 +327,11 @@ func TestAuthLogoutClearsSession(t *testing.T) {
 		t.Fatalf("expected 200 on logout, got %d", logoutResp.Code)
 	}
 
-	// Verify cookie is cleared (max-age = 0 or empty value)
+	// Verify cookie is cleared with the same security attributes.
 	logoutCookies := logoutResp.Result().Cookies()
 	var cleared bool
 	for _, c := range logoutCookies {
-		if c.Name == "migate_session" && c.MaxAge < 0 {
+		if c.Name == "migate_session" && c.MaxAge < 0 && c.Path == "/" && c.SameSite == http.SameSiteStrictMode {
 			cleared = true
 		}
 	}
@@ -208,7 +365,7 @@ func TestAuthLogoutClearsSessionAtBasePath(t *testing.T) {
 	router.ServeHTTP(logoutResp, logoutReq)
 
 	for _, c := range logoutResp.Result().Cookies() {
-		if c.Name == "migate_session" && c.MaxAge < 0 && c.Path == "/migate" {
+		if c.Name == "migate_session" && c.MaxAge < 0 && c.Path == "/migate" && c.SameSite == http.SameSiteStrictMode {
 			return
 		}
 	}

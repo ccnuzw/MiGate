@@ -13,12 +13,17 @@ import (
 	"github.com/imzyb/MiGate/internal/db"
 )
 
-func subscriptionHandler(store Store) http.HandlerFunc {
+func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
 			return
 		}
+		if cfg == nil {
+			http.NotFound(w, r)
+			return
+		}
+		store := cfg.store
 		if store == nil {
 			http.NotFound(w, r)
 			return
@@ -28,13 +33,16 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		inbound, client, found, err := store.GetSubscriptionByClientUUID(r.Context(), token)
+		inbound, client, found, err := store.GetSubscriptionByToken(r.Context(), token)
+		if err == nil && !found {
+			inbound, client, found, err = store.GetSubscriptionByClientUUID(r.Context(), token)
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "get_subscription_failed")
 			return
 		}
 		if !found || !inbound.Enabled {
-			http.NotFound(w, r)
+			writeInactiveSubscription(w)
 			return
 		}
 		inbounds := []db.Inbound{inbound}
@@ -42,23 +50,33 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 		inbound = inbounds[0]
 		now := time.Now().Unix()
 		if !client.Enabled {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write([]byte("// Subscription disabled"))
+			writeInactiveSubscription(w)
 			return
 		}
 		if client.ExpiryAt > 0 && client.ExpiryAt <= now {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write([]byte("// Subscription expired"))
+			writeInactiveSubscription(w)
 			return
 		}
 		if client.TrafficLimit > 0 && (client.Up+client.Down) >= client.TrafficLimit {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write([]byte("// Traffic limit exceeded"))
+			writeInactiveSubscription(w)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(shareLink(r.Host, inbound, client)))
+		_, _ = w.Write([]byte(shareLink(subscriptionRequestHost(cfg, r), inbound, client)))
 	}
+}
+
+func writeInactiveSubscription(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte("// Subscription unavailable"))
+}
+
+func subscriptionRequestHost(cfg *routerConfig, r *http.Request) string {
+	if cfg != nil && strings.TrimSpace(cfg.publicHost) != "" {
+		return cfg.publicHost
+	}
+	return r.Host
 }
 
 func shareLink(host string, inbound db.Inbound, client db.Client) string {
@@ -196,12 +214,56 @@ func ssShareLink(host string, inbound db.Inbound, client db.Client) string {
 }
 
 func subscriptionHost(host string) string {
+	host = strings.TrimSpace(host)
 	if host == "" {
 		return "SERVER_IP"
 	}
+	if strings.Contains(host, "://") {
+		parsed, err := url.Parse(host)
+		if err != nil {
+			return "SERVER_IP"
+		}
+		host = parsed.Hostname()
+		if host == "" {
+			return "SERVER_IP"
+		}
+	}
 	name, _, err := net.SplitHostPort(host)
 	if err == nil && name != "" {
-		return name
+		host = name
 	}
-	return strings.Trim(host, "[]")
+	host = strings.Trim(host, "[]")
+	if validSubscriptionHost(host) {
+		if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return "SERVER_IP"
+}
+
+func validSubscriptionHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" || strings.ContainsAny(host, "/\\@?#") {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, ch := range label {
+			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }

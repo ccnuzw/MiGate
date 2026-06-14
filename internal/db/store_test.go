@@ -1269,6 +1269,35 @@ func TestStoreGetSubscriptionByClientUUIDLoadsOnlyMatchedClient(t *testing.T) {
 	}
 }
 
+func TestStoreCreatesAndLooksUpIndependentSubscriptionToken(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "sub-token", Protocol: "vless", Port: 9443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "token@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if client.SubscriptionToken == "" || client.SubscriptionToken == client.UUID {
+		t.Fatalf("expected independent subscription token, got client=%+v", client)
+	}
+
+	loadedInbound, loadedClient, found, err := store.GetSubscriptionByToken(ctx, client.SubscriptionToken)
+	if err != nil {
+		t.Fatalf("lookup by token: %v", err)
+	}
+	if !found || loadedInbound.ID != inbound.ID || loadedClient.ID != client.ID {
+		t.Fatalf("unexpected token lookup result: found=%v inbound=%+v client=%+v", found, loadedInbound, loadedClient)
+	}
+}
+
 func TestStoreUpdateClientTrafficByEmailUpdatesDuplicateEmailsAcrossInbounds(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

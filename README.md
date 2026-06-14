@@ -66,8 +66,16 @@ During first installation, you will be prompted for:
 After installation, access:
 
 ```text
-http://SERVER_IP:9999/panel
+http://127.0.0.1:9999/panel
 ```
+
+The panel service binds to `127.0.0.1` by default. For public access, expose it
+through a reverse proxy such as Nginx or Caddy with HTTPS, and set
+`public_host` in `/etc/migate/panel.json` so subscription share links use your
+public domain or address. If MiGate is behind a trusted HTTPS reverse proxy, set
+`trust_proxy` to `true` so Secure cookies and HSTS can use `X-Forwarded-Proto`.
+`migate serve --host 0.0.0.0` remains available only when you intentionally
+override the safer default.
 
 ## Common Commands
 

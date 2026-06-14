@@ -182,9 +182,20 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
+		keys := loginRateLimitKeys(r, req.Username, cfg.trustProxy)
+		if cfg.loginLimiter != nil && !cfg.loginLimiter.allow(keys...) {
+			writeJSONError(w, http.StatusTooManyRequests, "login_rate_limited")
+			return
+		}
 		if !constantTimeStringEqual(req.Username, cfg.authUsername) || !constantTimeStringEqual(req.Password, cfg.authPassword) {
+			if cfg.loginLimiter != nil {
+				cfg.loginLimiter.recordFailure(keys...)
+			}
 			writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")
 			return
+		}
+		if cfg.loginLimiter != nil {
+			cfg.loginLimiter.reset(keys...)
 		}
 		token := createSessionToken(req.Username, cfg.sessionSecret)
 		cookiePath := cfg.basePath
@@ -196,6 +207,7 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			Value:    token,
 			Path:     cookiePath,
 			HttpOnly: true,
+			Secure:   requestIsHTTPS(r, cfg),
 			SameSite: http.SameSiteStrictMode,
 			MaxAge:   86400 * 7,
 		})
@@ -238,6 +250,8 @@ func logoutHandler(cfg *routerConfig) http.HandlerFunc {
 			Value:    "",
 			Path:     cookiePath,
 			HttpOnly: true,
+			Secure:   requestIsHTTPS(r, cfg),
+			SameSite: http.SameSiteStrictMode,
 			MaxAge:   -1,
 		})
 		writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})

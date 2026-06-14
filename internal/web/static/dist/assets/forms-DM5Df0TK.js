@@ -9,7 +9,7 @@ import{n as e,t}from"./rolldown-runtime-Bh1tDfsg.js";var n=t((e=>{var t=Symbol.f
             })));
           }
         }
-
+        
         if (${n}.value === undefined) {
           if (${o} in input) {
             newResult[${o}] = undefined;
@@ -17,7 +17,7 @@ import{n as e,t}from"./rolldown-runtime-Bh1tDfsg.js";var n=t((e=>{var t=Symbol.f
         } else {
           newResult[${o}] = ${n}.value;
         }
-
+        
       `):c?t.write(`
         if (${n}.issues.length) {
           payload.issues = payload.issues.concat(${n}.issues.map(iss => ({
@@ -25,7 +25,7 @@ import{n as e,t}from"./rolldown-runtime-Bh1tDfsg.js";var n=t((e=>{var t=Symbol.f
             path: iss.path ? [${o}, ...iss.path] : [${o}]
           })));
         }
-
+        
         if (${n}.value === undefined) {
           if (${o} in input) {
             newResult[${o}] = undefined;
@@ -33,7 +33,7 @@ import{n as e,t}from"./rolldown-runtime-Bh1tDfsg.js";var n=t((e=>{var t=Symbol.f
         } else {
           newResult[${o}] = ${n}.value;
         }
-
+        
       `):t.write(`
         const ${n}_present = ${o} in input;
         if (${n}.issues.length) {

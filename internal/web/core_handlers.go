@@ -71,7 +71,13 @@ checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${version
 curl -fL "$url" -o "$tmp/sing-box.tar.gz"
 curl -fL "$checksums_url" -o "$tmp/checksums.txt"
 grep "sing-box-${version}-linux-${asset_arch}.tar.gz" "$tmp/checksums.txt" > "$tmp/sing-box.tar.gz.sha256"
-(cd "$tmp" && sha256sum -c "sing-box.tar.gz.sha256")
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$tmp" && sha256sum -c "sing-box.tar.gz.sha256")
+elif command -v shasum >/dev/null 2>&1; then
+  (cd "$tmp" && shasum -a 256 -c "sing-box.tar.gz.sha256")
+else
+  echo "sha256sum or shasum is required" >&2; exit 1
+fi
 tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp"
 cp "$tmp"/sing-box-*/sing-box /usr/local/bin/sing-box
 chmod +x /usr/local/bin/sing-box
@@ -133,10 +139,14 @@ func coreUninstallHandler(core string) http.HandlerFunc {
 		var commands []string
 		switch core {
 		case "xray":
-			commands = []string{"systemctl disable --now xray", "bash Xray-install remove", "remove MiGate xray symlinks"}
+			commands = []string{"systemctl disable --now xray", "download Xray-install script from official XTLS repository", "bash installed script remove", "remove MiGate xray symlinks"}
 			script = `set -euo pipefail
+if ! command -v curl >/dev/null 2>&1; then echo 'curl is required' >&2; exit 1; fi
 systemctl disable --now xray 2>/dev/null || true
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -- remove --purge 2>&1 || true
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$tmp/install-release.sh"
+bash "$tmp/install-release.sh" remove --purge 2>&1 || true
 rm -f /usr/local/etc/xray/xray.json /usr/local/etc/xray/config.json
 printf 'Xray removed or disabled\n'`
 		case "singbox":

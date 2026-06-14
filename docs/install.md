@@ -101,6 +101,15 @@ The installer writes or repairs:
 /etc/systemd/system/migate.service
 ```
 
+The generated service binds the panel to `127.0.0.1`. Publish the WebUI with a
+reverse proxy and HTTPS instead of exposing the panel listener directly. Use
+`public_host` in `/etc/migate/panel.json` to control the host embedded in
+subscription share links. If the proxy terminates HTTPS, set `trust_proxy` to
+`true` only when MiGate is reachable exclusively through that trusted proxy, so
+the service can honor `X-Forwarded-Proto` for Secure cookies and HSTS. Passing
+`migate serve --host 0.0.0.0` is still supported for explicit deployments that
+accept that exposure.
+
 Useful commands:
 
 ```bash
@@ -147,6 +156,11 @@ download and execution commands are printed instead.
 sing-box installation downloads the configured release archive, downloads
 checksums, verifies the archive before extracting, installs
 `/usr/local/bin/sing-box`, and writes `migate-singbox.service`.
+
+MiGate and sing-box release archives are installed only after checksum
+verification. Xray and acme.sh still rely on their official upstream installer
+scripts, so treat those actions as privileged system changes and keep the WebUI
+behind trusted administrator access.
 
 Skipping core installation does not block the panel installation. Xray-backed
 protocols or sing-box-backed protocols may not listen until the relevant core is

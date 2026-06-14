@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -117,6 +118,53 @@ func TestRouterServesEmbeddedSPAAndHealthAPI(t *testing.T) {
 	}
 }
 
+func TestRouterSetsSecurityHeaders(t *testing.T) {
+	router := web.NewRouter()
+	for _, tc := range []struct {
+		path  string
+		https bool
+	}{
+		{path: "/"},
+		{path: "/api/health", https: true},
+	} {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		if tc.https {
+			req.Header.Set("X-Forwarded-Proto", "https")
+		}
+		router.ServeHTTP(resp, req)
+		for _, header := range []string{"X-Content-Type-Options", "Referrer-Policy", "Content-Security-Policy"} {
+			if resp.Header().Get(header) == "" {
+				t.Fatalf("%s response missing %s", tc.path, header)
+			}
+		}
+		if resp.Header().Get("X-Frame-Options") != "DENY" {
+			t.Fatalf("%s response should deny framing, got %q", tc.path, resp.Header().Get("X-Frame-Options"))
+		}
+		if tc.https && resp.Header().Get("Strict-Transport-Security") != "" {
+			t.Fatalf("%s response should not trust X-Forwarded-Proto by default", tc.path)
+		}
+	}
+
+	trusted := web.NewRouter(web.WithTrustedProxyHeaders(true))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	trusted.ServeHTTP(resp, req)
+	if resp.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("trusted proxy HTTPS response missing HSTS")
+	}
+
+	directTLS := web.NewRouter()
+	tlsResp := httptest.NewRecorder()
+	tlsReq := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	tlsReq.TLS = &tls.ConnectionState{}
+	directTLS.ServeHTTP(tlsResp, tlsReq)
+	if tlsResp.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("direct TLS response missing HSTS")
+	}
+}
+
 func TestRouterServesViteAssets(t *testing.T) {
 	entries, err := fs.ReadDir(static.Dist(), "assets")
 	if err != nil {
@@ -228,8 +276,18 @@ func TestUpdateAPIStartsInstallerUpdateWithoutBlockingResponse(t *testing.T) {
 		t.Fatalf("expected GET /api/update 405, got %d", get.Code)
 	}
 
+	missingConfirm := httptest.NewRecorder()
+	reqMissing := httptest.NewRequest(http.MethodPost, "/api/update", strings.NewReader(`{}`))
+	reqMissing.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(missingConfirm, reqMissing)
+	if missingConfirm.Code != http.StatusForbidden {
+		t.Fatalf("expected POST /api/update without confirmation 403, got %d", missingConfirm.Code)
+	}
+
 	post := httptest.NewRecorder()
-	router.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/api/update", nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/update", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(post, req)
 	if post.Code != http.StatusOK {
 		t.Fatalf("expected POST /api/update 200, got %d: %s", post.Code, post.Body.String())
 	}
@@ -358,7 +416,8 @@ func TestRestartEndpoint(t *testing.T) {
 	t.Run("POST returns restarting status", func(t *testing.T) {
 		router := web.NewRouter()
 		response := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/restart", nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/restart", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(response, req)
 		if response.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())

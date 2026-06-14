@@ -10,6 +10,7 @@ func NewRouter(options ...Option) http.Handler {
 		xrayController: defaultXrayController{},
 		socks5PoolURL:  defaultSocks5PoolURL,
 		updateCheckURL: defaultUpdateCheckURL,
+		loginLimiter:   newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
 	}
 	for _, option := range options {
 		option(&cfg)
@@ -57,9 +58,10 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/singbox/config", singboxConfigHandler())
 	mux.HandleFunc("/api/singbox/version", singboxVersionHandler())
 	mux.HandleFunc("/api/singbox/logs", singboxLogsHandler())
-	mux.HandleFunc("/sub/", subscriptionHandler(cfg.store))
+	mux.HandleFunc("/sub/", subscriptionHandler(&cfg))
 	mux.HandleFunc("/", spaHandler(cfg.basePath))
 	handler := authMiddleware(mux, &cfg)
+	handler = securityHeadersMiddleware(handler, &cfg)
 	if cfg.basePath != "" {
 		return basePathMiddleware(handler, cfg.basePath)
 	}

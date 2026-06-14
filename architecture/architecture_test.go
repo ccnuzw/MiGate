@@ -117,7 +117,9 @@ func TestReadmeIncludesSimpleInstallAndUsage(t *testing.T) {
 	for _, want := range []string{
 		"bash <(curl -Ls https://raw.githubusercontent.com/imzyb/MiGate/main/packaging/install.sh)",
 		"MIGATE_VERSION=",
-		"http://SERVER_IP:9999/panel",
+		"http://127.0.0.1:9999/panel",
+		"reverse proxy",
+		"public_host",
 		"Web path, default `/panel`",
 		"systemctl status migate",
 		"systemctl restart migate",

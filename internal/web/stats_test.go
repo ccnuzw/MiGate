@@ -44,6 +44,9 @@ func (s *countingSummaryStore) ListRoutingRules(ctx context.Context) ([]db.Routi
 func (s *countingSummaryStore) GetSubscriptionByClientUUID(ctx context.Context, uuid string) (db.Inbound, db.Client, bool, error) {
 	return db.Inbound{}, db.Client{}, false, nil
 }
+func (s *countingSummaryStore) GetSubscriptionByToken(ctx context.Context, token string) (db.Inbound, db.Client, bool, error) {
+	return db.Inbound{}, db.Client{}, false, nil
+}
 
 func (s *countingSummaryStore) CreateInbound(ctx context.Context, params db.CreateInboundParams) (db.Inbound, error) {
 	return db.Inbound{}, errors.New("not implemented")

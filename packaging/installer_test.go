@@ -57,6 +57,7 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"migate-linux-${ARCH}.tar.gz",
 		"systemctl enable migate",
 		"systemctl restart migate",
+		"MIGATE_PANEL_BIND_HOST=127.0.0.1",
 		"mktemp /usr/local/bin/.migate-uninstall.XXXXXX",
 		"mv -f \"$uninstaller_tmp\" \"$UNINSTALLER_BIN\"",
 		"ln -sf \"$MIGATE_BIN\" \"$MIGATE_LINK\"",
@@ -418,6 +419,7 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 	service := read(t, "packaging", "migate.service")
 	for _, want := range []string{
 		"ExecStart=/usr/local/bin/migate serve",
+		"--host 127.0.0.1",
 		"--config /etc/migate/panel.json",
 		"User=root",
 		"Restart=on-failure",

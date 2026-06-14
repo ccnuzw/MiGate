@@ -130,6 +130,9 @@ func updateHandler(version string) http.HandlerFunc {
 			methodNotAllowed(w)
 			return
 		}
+		if _, ok := decodeCoreActionPayload(w, r); !ok {
+			return
+		}
 		current := strings.TrimSpace(version)
 		if current == "" {
 			current = "dev"

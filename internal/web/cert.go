@@ -108,11 +108,17 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		var req struct {
-			Domain string `json:"domain"`
-			Email  string `json:"email"`
+			Domain             string `json:"domain"`
+			Email              string `json:"email"`
+			Confirm            bool   `json:"confirm"`
+			AllowSystemChanges bool   `json:"allow_system_changes"`
 		}
 		if err := decodeJSONBody(r, &req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_json")
+			return
+		}
+		if !req.Confirm || !req.AllowSystemChanges {
+			writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{"commands_executed": []string{}})
 			return
 		}
 		if req.Domain == "" || req.Email == "" {

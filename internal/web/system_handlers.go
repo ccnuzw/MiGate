@@ -19,6 +19,9 @@ func restartHandler() http.HandlerFunc {
 			methodNotAllowed(w)
 			return
 		}
+		if _, ok := decodeCoreActionPayload(w, r); !ok {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"restarting"}`))
 		if f, ok := w.(http.Flusher); ok {
