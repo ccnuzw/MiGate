@@ -33,8 +33,8 @@ func TestAuthShowsLoginPageForUnauthenticatedPanelRoot(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200 login page without session cookie, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "面板登录") {
-		t.Fatalf("expected login page without session cookie, got: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), `id="root"`) {
+		t.Fatalf("expected SPA shell without session cookie, got: %s", response.Body.String())
 	}
 }
 
@@ -132,7 +132,7 @@ func TestAuthLoginPageContainsLoginForm(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/login", nil)
 	router.ServeHTTP(response, req)
 	body := response.Body.String()
-	for _, want := range []string{"login", "password", "submit"} {
+	for _, want := range []string{"migate", `id="root"`, `./assets/`} {
 		if !strings.Contains(strings.ToLower(body), want) {
 			t.Fatalf("login page missing %q: %s", want, body)
 		}

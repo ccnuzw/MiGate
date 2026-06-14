@@ -28,6 +28,19 @@ func read(t *testing.T, parts ...string) string {
 	return string(b)
 }
 
+func readIfExists(t *testing.T, parts ...string) (string, bool) {
+	t.Helper()
+	path := filepath.Join(append([]string{repoRoot(t)}, parts...)...)
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", false
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b), true
+}
+
 func TestServiceRunsSinglePrebuiltBinary(t *testing.T) {
 	service := read(t, "packaging", "migate.service")
 	if !strings.Contains(service, "ExecStart=/usr/local/bin/migate") {
@@ -68,14 +81,18 @@ func TestRemovedLegacyRuntimeCodeIsFullyRemoved(t *testing.T) {
 		}
 	}
 
+	if _, exists := readIfExists(t, "internal", "web", "static", "app.js"); exists {
+		t.Fatal("legacy internal/web/static/app.js must be removed after frontend split")
+	}
+
 	for _, file := range []string{
 		filepath.Join("internal", "db", "store.go"),
 		filepath.Join("internal", "web", "router.go"),
 		filepath.Join("internal", "web", "auth.go"),
-		filepath.Join("internal", "web", "static", "app.js"),
 		filepath.Join("internal", "xray", "config.go"),
 		filepath.Join("cmd", "migate", "main.go"),
 		filepath.Join("packaging", "install.sh"),
+		filepath.Join("web", "src", "App.tsx"),
 	} {
 		content := strings.ToLower(read(t, file))
 		for _, forbidden := range []string{join("vpn", "gate"), join("vpn", " gate"), join("soft", "ether"), join("micro", "socks"), join("vpn", "cmd"), join("vpn", "client")} {

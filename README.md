@@ -7,10 +7,10 @@ Currently suitable for users familiar with VPS/Xray for testing.
 ## Features
 
 - Single binary deployment, no Python/Node runtime required
-- WebUI management for inbounds, clients, and basic settings
+- React WebUI for inbounds, clients, outbounds, SOCKS5 pool import, routing, Xray/sing-box core config, TLS certificates, settings, sessions, and updates
 - Local SQLite database
 - Generate and apply Xray configuration
-- Supported protocols: VLESS, VMess, Trojan, Shadowsocks, Hysteria2
+- Supported inbound protocols: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, ShadowTLS
 - systemd service management
 
 ## One-Click Install
@@ -78,6 +78,22 @@ Xray config:
 ```text
 /usr/local/migate/xray.json
 ```
+
+## Development
+
+The WebUI source lives in `web/` and builds into `internal/web/static/dist`, which is embedded into the Go binary.
+
+```bash
+make web-install   # install frontend dependencies
+make web-dev       # start Vite dev server
+make web-build     # build embedded frontend dist
+make go-build      # build final migate binary
+make test          # run frontend and Go tests
+```
+
+Node/npm are only build-time tools for contributors and release automation. The one-click installer and VPS runtime continue to use the Go single binary only.
+
+See `docs/frontend-refactor.md` for the split architecture and route compatibility details.
 
 ## Note
 

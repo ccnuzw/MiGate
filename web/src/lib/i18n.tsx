@@ -1,0 +1,449 @@
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+
+type Lang = 'zh' | 'en';
+
+const dict = {
+  zh: {
+    overview: '概览',
+    inbounds: '入站',
+    outbounds: '出站',
+    routing: '路由',
+    xray: 'Xray',
+    singbox: 'sing-box',
+    settings: '设置',
+    logout: '登出',
+    login: '登录',
+    username: '用户名',
+    password: '密码',
+    refresh: '刷新',
+    save: '保存',
+    create: '新增',
+    edit: '编辑',
+    delete: '删除',
+    enabled: '启用',
+    disabled: '禁用',
+    confirm: '确认',
+    cancel: '取消',
+    logoutFailed: '登出失败',
+    singleBinaryPanel: '单二进制面板',
+    notLoggedIn: '未登录',
+  },
+  en: {
+    overview: 'Overview',
+    inbounds: 'Inbounds',
+    outbounds: 'Outbounds',
+    routing: 'Routing',
+    xray: 'Xray',
+    singbox: 'sing-box',
+    settings: 'Settings',
+    logout: 'Logout',
+    login: 'Login',
+    username: 'Username',
+    password: 'Password',
+    refresh: 'Refresh',
+    save: 'Save',
+    create: 'Create',
+    edit: 'Edit',
+    delete: 'Delete',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    confirm: 'Confirm',
+    cancel: 'Cancel',
+    logoutFailed: 'Logout failed',
+    singleBinaryPanel: 'Single-binary panel',
+    notLoggedIn: 'Not signed in',
+  },
+} as const;
+
+const zhToEn: Record<string, string> = {
+  概览: 'Overview',
+  入站: 'Inbounds',
+  出站: 'Outbounds',
+  路由: 'Routing',
+  设置: 'Settings',
+  登出: 'Logout',
+  登录: 'Login',
+  用户名: 'Username',
+  密码: 'Password',
+  刷新: 'Refresh',
+  保存: 'Save',
+  新增: 'Create',
+  编辑: 'Edit',
+  删除: 'Delete',
+  启用: 'Enable',
+  禁用: 'Disable',
+  取消: 'Cancel',
+  确认: 'Confirm',
+  加载中: 'Loading',
+  '加载中...': 'Loading...',
+  运行概览: 'Overview',
+  'VPS 面板、核心服务和流量资源的实时摘要。': 'Realtime summary for the panel, core services, traffic, and server resources.',
+  总流量: 'Total traffic',
+  客户端: 'Clients',
+  实时流量: 'Realtime traffic',
+  路由规则: 'Routing rules',
+  流量走势: 'Traffic trend',
+  服务器资源: 'Server resources',
+  内存: 'Memory',
+  磁盘: 'Disk',
+  运行时间: 'Uptime',
+  协议分布: 'Protocol distribution',
+  暂无入站: 'No inbounds',
+  入站与客户端: 'Inbounds and clients',
+  '管理协议入站、客户端凭据、订阅链接和流量状态。': 'Manage inbound protocols, client credentials, subscription links, and traffic status.',
+  新增入站: 'New inbound',
+  '搜索入站、协议、端口...': 'Search inbounds, protocols, ports...',
+  按创建顺序: 'Created order',
+  按端口: 'Port',
+  按协议: 'Protocol',
+  按客户端数: 'Client count',
+  '创建第一个入站后，可继续为它添加客户端并复制订阅链接。': 'Create the first inbound, then add clients and copy subscription links.',
+  统计源: 'Stats source',
+  新增客户端: 'New client',
+  暂无客户端: 'No clients',
+  订阅链接已复制: 'Subscription link copied',
+  客户端分享链接已复制: 'Client share link copied',
+  复制分享链接失败: 'Failed to copy share link',
+  重置客户端流量: 'Reset client traffic',
+  删除客户端: 'Delete client',
+  删除入站: 'Delete inbound',
+  '删除入站？': 'Delete inbound?',
+  '该入站下的客户端也会被删除。': 'Clients under this inbound will also be deleted.',
+  '重置客户端流量？': 'Reset client traffic?',
+  '删除客户端？': 'Delete client?',
+  入站状态已更新: 'Inbound status updated',
+  入站状态更新失败: 'Failed to update inbound status',
+  入站已删除: 'Inbound deleted',
+  删除入站失败: 'Failed to delete inbound',
+  客户端已删除: 'Client deleted',
+  删除客户端失败: 'Failed to delete client',
+  客户端状态已更新: 'Client status updated',
+  客户端状态更新失败: 'Failed to update client status',
+  流量已重置: 'Traffic reset',
+  重置流量失败: 'Failed to reset traffic',
+  入站已保存: 'Inbound saved',
+  保存入站失败: 'Failed to save inbound',
+  编辑入站: 'Edit inbound',
+  名称: 'Name',
+  端口: 'Port',
+  协议: 'Protocol',
+  传输: 'Transport',
+  安全: 'Security',
+  '密码 / 密钥': 'Password / key',
+  '请输入名称': 'Enter a name',
+  '客户端已保存': 'Client saved',
+  保存客户端失败: 'Failed to save client',
+  编辑客户端: 'Edit client',
+  客户端标识: 'Client ID',
+  凭据: 'Credential',
+  'UUID / 密码 / 密钥': 'UUID / password / key',
+  '流量限额（字节，0 不限制）': 'Traffic limit (bytes, 0 for unlimited)',
+  '过期时间戳（0 不限制）': 'Expiry timestamp (0 for unlimited)',
+  已启用: 'Enabled',
+  是: 'Yes',
+  否: 'No',
+  不限制: 'Unlimited',
+  过期: 'Expiry',
+  实时: 'Realtime',
+  上行: 'Upload',
+  下行: 'Download',
+  合计: 'Total',
+  不可用: 'Unavailable',
+  未测速: 'Not tested',
+  不可达: 'Unreachable',
+  出站管理: 'Outbounds',
+  默认出站: 'Default outbounds',
+  自定义出站: 'Custom outbounds',
+  '配置默认直连、阻断以及 SOCKS / HTTP 代理链路。': 'Configure default direct/blocked routes and SOCKS/HTTP proxy chains.',
+  导入SOCKS5地址池: 'Import SOCKS5 pool',
+  '导入 SOCKS5 地址池': 'Import SOCKS5 pool',
+  批量测速: 'Batch speed test',
+  新增出站: 'New outbound',
+  暂无出站: 'No outbounds',
+  默认: 'Default',
+  上移: 'Move up',
+  下移: 'Move down',
+  启停: 'Toggle',
+  出站状态已更新: 'Outbound status updated',
+  出站状态更新失败: 'Failed to update outbound status',
+  出站已删除: 'Outbound deleted',
+  删除出站失败: 'Failed to delete outbound',
+  测速失败: 'Ping failed',
+  批量测速完成: 'Batch speed test completed',
+  批量测速失败: 'Batch speed test failed',
+  出站顺序已保存: 'Outbound order saved',
+  保存顺序失败: 'Failed to save order',
+  出站已保存: 'Outbound saved',
+  保存出站失败: 'Failed to save outbound',
+  编辑出站: 'Edit outbound',
+  备注: 'Remark',
+  地址: 'Address',
+  国家地区: 'Country/Region',
+  '国家/地区': 'Country/Region',
+  全部地区: 'All regions',
+  缓存: 'Cache',
+  更新: 'Updated',
+  下次刷新: 'Next refresh',
+  暂无代理: 'No proxies',
+  导入选中代理: 'Import selected proxy',
+  导入失败: 'Import failed',
+  'SOCKS5 出站已导入': 'SOCKS5 outbound imported',
+  '删除出站？': 'Delete outbound?',
+  '按来源入站、域名或协议选择出站链路。': 'Choose outbound links by inbound source, domain, or protocol.',
+  新增路由: 'New rule',
+  暂无路由规则: 'No routing rules',
+  默认匹配: 'Default match',
+  全部: 'All',
+  路由规则已删除: 'Routing rule deleted',
+  删除路由规则失败: 'Failed to delete routing rule',
+  路由规则状态已更新: 'Routing rule status updated',
+  更新路由规则失败: 'Failed to update routing rule',
+  路由顺序已保存: 'Routing order saved',
+  路由规则已保存: 'Routing rule saved',
+  保存路由规则失败: 'Failed to save routing rule',
+  编辑路由规则: 'Edit routing rule',
+  新增路由规则: 'New routing rule',
+  来源入站Tag: 'Inbound tag',
+  '来源入站 Tag': 'Inbound tag',
+  留空表示所有入站: 'Leave empty for all inbounds',
+  '留空表示所有入站。': 'Leave empty for all inbounds.',
+  目标出站: 'Target outbound',
+  域名匹配: 'Domain match',
+  协议匹配: 'Protocol match',
+  'geosite:netflix 或 example.com': 'geosite:netflix or example.com',
+  '删除路由规则？': 'Delete routing rule?',
+  配置: 'Config',
+  'Xray 配置': 'Xray config',
+  'sing-box 配置': 'sing-box config',
+  '查看核心运行状态、配置预览、日志和系统级操作。': 'View core status, config preview, logs, and system actions.',
+  安装核心: 'Install core',
+  卸载核心: 'Uninstall core',
+  应用: 'Apply',
+  安装: 'Installed',
+  托管: 'Managed',
+  状态: 'Status',
+  版本: 'Version',
+  运行时长: 'Uptime',
+  连接: 'Connections',
+  配置路径: 'Config path',
+  最近命令: 'Recent commands',
+  配置预览: 'Config preview',
+  刷新配置: 'Refresh config',
+  日志: 'Logs',
+  加载日志: 'Load logs',
+  已安装: 'Installed',
+  未安装: 'Not installed',
+  已托管: 'Managed',
+  未托管: 'Unmanaged',
+  运行中: 'Running',
+  已停止: 'Stopped',
+  未知: 'Unknown',
+  '点击“加载日志”查看最近日志。': 'Click "Load logs" to view recent logs.',
+  '配置已应用': 'config applied',
+  'Xray 配置已应用': 'Xray config applied',
+  'sing-box 配置已应用': 'sing-box config applied',
+  '应用失败': 'apply failed',
+  '安装命令已执行': 'install command executed',
+  'Xray 安装命令已执行': 'Xray install command executed',
+  'sing-box 安装命令已执行': 'sing-box install command executed',
+  '安装失败': 'install failed',
+  '卸载命令已执行': 'uninstall command executed',
+  'Xray 卸载命令已执行': 'Xray uninstall command executed',
+  'sing-box 卸载命令已执行': 'sing-box uninstall command executed',
+  '卸载失败': 'uninstall failed',
+  '安装 Xray 核心？': 'Install Xray core?',
+  '卸载 Xray 核心？': 'Uninstall Xray core?',
+  '应用 Xray 配置？': 'Apply Xray config?',
+  '安装 sing-box 核心？': 'Install sing-box core?',
+  '卸载 sing-box 核心？': 'Uninstall sing-box core?',
+  '应用 sing-box 配置？': 'Apply sing-box config?',
+  '该操作会执行系统安装命令。': 'This runs system install commands.',
+  '该操作会删除或停用系统服务。': 'This removes or disables a system service.',
+  '该操作会重新生成并应用核心配置。': 'This regenerates and applies the core config.',
+  面板设置: 'Panel settings',
+  '管理面板端口、路径、凭据、证书、服务状态、更新与活动会话。': 'Manage panel port, path, credentials, certificates, service status, updates, and active sessions.',
+  当前仍在使用默认密码请尽快修改面板密码: 'You are still using the default password. Change it as soon as possible.',
+  '当前仍在使用默认密码，请尽快修改面板密码。': 'You are still using the default password. Change it as soon as possible.',
+  面板端口: 'Panel port',
+  新密码: 'New password',
+  '留空表示保留现有密码。': 'Leave empty to keep the current password.',
+  数据库路径: 'Database path',
+  Xray配置路径: 'Xray config path',
+  'Xray 配置路径': 'Xray config path',
+  证书域名: 'Certificate domain',
+  证书邮箱: 'Certificate email',
+  保存设置: 'Save settings',
+  重启服务: 'Restart service',
+  TLS证书: 'TLS certificate',
+  'TLS 证书': 'TLS certificate',
+  已获取: 'Issued',
+  未获取: 'Not issued',
+  未配置: 'Not configured',
+  域名: 'Domain',
+  证书: 'Certificate',
+  私钥: 'Private key',
+  获取证书: 'Issue certificate',
+  服务状态: 'Service status',
+  刷新状态: 'Refresh status',
+  检查更新: 'Check update',
+  立即更新: 'Update now',
+  当前: 'Current',
+  最新: 'Latest',
+  可更新: 'Update available',
+  消息: 'Message',
+  活动会话: 'Active sessions',
+  会话: 'Session',
+  最后使用: 'Last used',
+  创建: 'Created',
+  撤销: 'Revoke',
+  暂无会话数据: 'No session data',
+  设置已保存端口或路径变更需要重启服务后生效: 'Settings saved. Port or path changes require a service restart.',
+  '设置已保存，端口或路径变更需要重启服务后生效': 'Settings saved. Port or path changes require a service restart.',
+  保存设置失败: 'Failed to save settings',
+  重启命令已发送: 'Restart command sent',
+  重启失败: 'Restart failed',
+  证书已获取: 'Certificate issued',
+  获取证书失败: 'Failed to issue certificate',
+  更新命令已发送: 'Update command sent',
+  启动更新失败: 'Failed to start update',
+  会话已撤销: 'Session revoked',
+  撤销会话失败: 'Failed to revoke session',
+  '重启 MiGate 服务？': 'Restart MiGate service?',
+  '服务重启后当前连接可能短暂中断。': 'The current connection may be interrupted briefly.',
+  '获取 TLS 证书？': 'Issue TLS certificate?',
+  '该操作会调用 acme.sh 并可能占用 80 端口。': 'This calls acme.sh and may use port 80.',
+  '立即更新 MiGate？': 'Update MiGate now?',
+  '更新器将通过 systemd-run 在服务外执行。': 'The updater runs outside the service through systemd-run.',
+  '撤销该会话？': 'Revoke this session?',
+  面板登录: 'Panel login',
+  登录中: 'Signing in',
+  '登录中...': 'Signing in...',
+  登录失败请检查用户名或密码: 'Login failed. Check username or password.',
+  '登录失败，请检查用户名或密码': 'Login failed. Check username or password.',
+  主题切换: 'Toggle theme',
+  语言切换: 'Toggle language',
+};
+
+const textReplacements: Array<[RegExp, string]> = [
+  [/新增/g, 'Create'],
+  [/编辑/g, 'Edit'],
+  [/删除/g, 'Delete'],
+  [/启用/g, 'Enable'],
+  [/禁用/g, 'Disable'],
+  [/上行/g, 'Upload'],
+  [/下行/g, 'Download'],
+  [/合计/g, 'Total'],
+  [/统计源/g, 'Stats source'],
+  [/限额/g, 'Limit'],
+  [/过期/g, 'Expiry'],
+  [/实时/g, 'Realtime'],
+  [/客户端/g, 'clients'],
+  [/当前/g, 'Current'],
+  [/最新/g, 'Latest'],
+  [/状态/g, 'Status'],
+  [/版本/g, 'Version'],
+  [/缓存/g, 'Cache'],
+  [/更新/g, 'Updated'],
+  [/消息/g, 'Message'],
+];
+
+const originalTextNodes = new WeakMap<Text, string>();
+
+function compactText(value: string) {
+  return value.replace(/\s+/g, '').replace(/[：?？。]/g, '');
+}
+
+export function translateText(value: string, lang: Lang): string {
+  if (lang !== 'en' || !value) return value;
+  const exact = zhToEn[value] || zhToEn[value.trim()] || zhToEn[compactText(value)];
+  if (exact) return exact;
+  let translated = value;
+  for (const [pattern, replacement] of textReplacements) {
+    translated = translated.replace(pattern, replacement);
+  }
+  return translated;
+}
+
+export function translateElement(root: ParentNode, lang: Lang) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) {
+    textNodes.push(walker.currentNode as Text);
+  }
+  for (const node of textNodes) {
+    const current = node.nodeValue || '';
+    if (!originalTextNodes.has(node) && /[\u4e00-\u9fff]/.test(current)) {
+      originalTextNodes.set(node, current);
+    }
+    const original = originalTextNodes.get(node);
+    if (original) {
+      node.nodeValue = lang === 'en' ? translateText(original, lang) : original;
+    }
+  }
+  const elements = root.querySelectorAll<HTMLElement>('[title], [placeholder], [aria-label]');
+  for (const el of elements) {
+    for (const attr of ['title', 'placeholder', 'aria-label']) {
+      const value = el.getAttribute(attr);
+      if (!value) continue;
+      const key = `i18nOriginal${attr.replace(/(^|-)([a-z])/g, (_, __, c: string) => c.toUpperCase())}`;
+      const dataset = el.dataset as Record<string, string | undefined>;
+      const original = dataset[key] || value;
+      if (!dataset[key] && /[\u4e00-\u9fff]/.test(original)) {
+        dataset[key] = original;
+      }
+      if (dataset[key]) {
+        el.setAttribute(attr, lang === 'en' ? translateText(dataset[key]!, lang) : dataset[key]!);
+      }
+    }
+  }
+}
+
+const I18nContext = createContext<{
+  lang: Lang;
+  setLang: (lang: Lang) => void;
+  t: (key: keyof typeof dict.zh) => string;
+  text: (value: string) => string;
+} | null>(null);
+
+export function I18nProvider({ children }: { children: React.ReactNode }) {
+  const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem('migate-lang') as Lang) || 'zh');
+  useEffect(() => {
+    document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+    let scheduled = false;
+    const run = () => {
+      scheduled = false;
+      translateElement(document.body, lang);
+    };
+    run();
+    const observer = new MutationObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
+      window.requestAnimationFrame(run);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [lang]);
+  const value = useMemo(
+    () => ({
+      lang,
+      setLang(next: Lang) {
+        localStorage.setItem('migate-lang', next);
+        setLangState(next);
+      },
+      t(key: keyof typeof dict.zh) {
+        return dict[lang][key] || key;
+      },
+      text(input: string) {
+        return translateText(input, lang);
+      },
+    }),
+    [lang],
+  );
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+}
+
+export function useI18n() {
+  const ctx = useContext(I18nContext);
+  if (!ctx) throw new Error('useI18n must be used inside I18nProvider');
+  return ctx;
+}
