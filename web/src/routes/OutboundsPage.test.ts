@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Outbound } from '../api/types';
-import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds } from './OutboundsPage';
+import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundRemarkLabel } from './OutboundsPage';
 
 describe('outbound helpers', () => {
   const outbounds: Outbound[] = [
@@ -22,5 +22,13 @@ describe('outbound helpers', () => {
     expect(isFixedDefaultOutbound(outbounds[2])).toBe(false);
     expect(isFixedDefaultOutbound(outbounds[4])).toBe(false);
     expect(isReorderableOutbound(outbounds[4])).toBe(false);
+  });
+
+  it('localizes built-in outbound remarks only', () => {
+    const text = (value: string) => ({ 直接连接: 'Direct connection', 阻断: 'Blocked' })[value] || value;
+
+    expect(outboundRemarkLabel('直接连接', text)).toBe('Direct connection');
+    expect(outboundRemarkLabel('阻断', text)).toBe('Blocked');
+    expect(outboundRemarkLabel('HK proxy', text)).toBe('HK proxy');
   });
 });

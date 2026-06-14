@@ -6,6 +6,7 @@ import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Settings } from '../api/types';
 import { Card, Field, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
+import { serviceLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
 
@@ -94,7 +95,7 @@ export default function SettingsPage() {
           <Field label={text('面板端口')}><input type="number" {...form.register('panel_port', { valueAsNumber: true })} /></Field>
           <Field label={text('用户名')}><input {...form.register('panel_username')} /></Field>
           <Field label={text('新密码')} help={settings.data?.has_password ? text('留空表示保留现有密码。') : undefined}><input type="password" autoComplete="new-password" {...form.register('panel_password')} /></Field>
-          <Field label="Web base path"><input placeholder="/panel" {...form.register('web_base_path')} /></Field>
+          <Field label={text('Web 基础路径')}><input placeholder="/panel" {...form.register('web_base_path')} /></Field>
           <Field label={text('数据库路径')}><input {...form.register('database_path')} /></Field>
           <Field label={text('Xray 配置路径')}><input {...form.register('xray_config_path')} /></Field>
           <Field label={text('证书域名')}><input placeholder="example.com" {...form.register('cert_domain')} /></Field>
@@ -120,7 +121,7 @@ export default function SettingsPage() {
         <Card className="p-5">
           <h2 className="section-title mb-3">{text('服务状态')}</h2>
           <div className="grid gap-2 text-sm text-panel-muted">
-            <div>{service.data?.service || 'migate'} · {service.data?.status || 'unknown'}</div>
+            <div>{service.data?.service || 'migate'} · {text(serviceLabel(service.data?.status))}</div>
             {service.data?.detail ? <div>{service.data.detail}</div> : null}
             <button className="btn secondary mt-2 w-fit" onClick={() => service.refetch()}><RefreshCw className="h-4 w-4" /> {text('刷新状态')}</button>
           </div>
@@ -140,7 +141,7 @@ export default function SettingsPage() {
           <div>{text('可更新')}：{text(updateCheck.data?.update_available ? '是' : '否')}</div>
           <div>{text('状态')}：{updateStatus.data?.status || '-'}</div>
           {updateStatus.data?.message ? <div className="sm:col-span-2">{text('消息')}：{updateStatus.data.message}</div> : null}
-          {updateCheck.data?.release_url ? <a className="inline-flex items-center gap-1 text-teal-700" href={updateCheck.data.release_url} target="_blank" rel="noreferrer">Release notes <ExternalLink className="h-3 w-3" /></a> : null}
+          {updateCheck.data?.release_url ? <a className="inline-flex items-center gap-1 text-teal-700" href={updateCheck.data.release_url} target="_blank" rel="noreferrer">{text('发布说明')} <ExternalLink className="h-3 w-3" /></a> : null}
         </div>
       </Card>
       <Card className="p-5">

@@ -26,10 +26,20 @@ export function compactNumber(value: number | undefined | null): string {
 }
 
 export function serviceLabel(status?: string): string {
-  if (status === 'running' || status === 'active') return '运行中';
-  if (status === 'stopped' || status === 'inactive') return '已停止';
-  if (status === 'not_managed') return '未托管';
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'running' || normalized === 'active') return '运行中';
+  if (normalized === 'stopped' || normalized === 'inactive') return '已停止';
+  if (normalized === 'not_managed' || normalized === 'unmanaged') return '未托管';
+  if (normalized === 'not_installed') return '未安装';
+  if (normalized === 'unknown' || normalized === '') return '未知';
   return status || '未知';
+}
+
+export function versionLabel(version?: string): string {
+  const normalized = String(version || '').trim().toLowerCase();
+  if (normalized === 'not_installed') return '未安装';
+  if (normalized === 'unknown') return '未知';
+  return version || '-';
 }
 
 export function randomUUID(): string {

@@ -9,6 +9,7 @@ import { api } from '../api/endpoints';
 import type { Client, Inbound } from '../api/types';
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, useConfirm, useToast } from '../components/ui';
 import { formatBytes, randomUUID } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
 
 const advancedFields = [
@@ -98,6 +99,7 @@ export default function InboundsPage() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const { showToast } = useToast();
+  const { text } = useI18n();
   const [editingInbound, setEditingInbound] = useState<Inbound | null>(null);
   const [clientInbound, setClientInbound] = useState<Inbound | null>(null);
   const [editingClient, setEditingClient] = useState<{ inbound: Inbound; client: Client } | null>(null);
@@ -211,10 +213,10 @@ export default function InboundsPage() {
                 </div>
               </div>
               <div className="mt-3 grid gap-2 text-xs text-panel-muted sm:grid-cols-4">
-                <span>上行 {formatBytes(inbound.traffic_up)}</span>
-                <span>下行 {formatBytes(inbound.traffic_down)}</span>
-                <span>合计 {formatBytes(inbound.traffic_total)}</span>
-                <span>统计源 {sourceLabel(inbound.traffic_stats_source, inbound.realtime_stats_source)}</span>
+                <MetaItem label={text('上行')} value={formatBytes(inbound.traffic_up)} />
+                <MetaItem label={text('下行')} value={formatBytes(inbound.traffic_down)} />
+                <MetaItem label={text('合计')} value={formatBytes(inbound.traffic_total)} />
+                <MetaItem label={text('统计源')} value={sourceLabel(inbound.traffic_stats_source, inbound.realtime_stats_source, text)} />
               </div>
               <div className="mt-4 border-t border-panel-line pt-3">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -269,6 +271,7 @@ function ClientRow({
   onReset: () => void;
   onDelete: () => void;
 }) {
+  const { text } = useI18n();
   const used = Number(client.up || 0) + Number(client.down || 0);
   const limit = Number(client.traffic_limit || 0);
   return (
@@ -280,11 +283,11 @@ function ClientRow({
         </div>
         <div className="mt-1 break-all text-xs text-panel-muted">{client.uuid}</div>
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-          <span>上行 {formatBytes(client.up)}</span>
-          <span>下行 {formatBytes(client.down)}</span>
-          <span>限额 {limit > 0 ? `${formatBytes(used)} / ${formatBytes(limit)}` : '不限制'}</span>
-          <span>过期 {client.expiry_at ? new Date(client.expiry_at * 1000).toLocaleString() : '不限制'}</span>
-          <span>实时 {sourceLabel(client.traffic_stats_source, client.realtime_stats_source)}</span>
+          <MetaItem label={text('上行')} value={formatBytes(client.up)} />
+          <MetaItem label={text('下行')} value={formatBytes(client.down)} />
+          <MetaItem label={text('限额')} value={limit > 0 ? `${formatBytes(used)} / ${formatBytes(limit)}` : text('不限制')} />
+          <MetaItem label={text('过期')} value={client.expiry_at ? new Date(client.expiry_at * 1000).toLocaleString() : text('不限制')} />
+          <MetaItem label={text('实时')} value={sourceLabel(client.traffic_stats_source, client.realtime_stats_source, text)} />
         </div>
       </div>
       <div className="action-row">
@@ -299,8 +302,18 @@ function ClientRow({
   );
 }
 
+function MetaItem({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex gap-1">
+      <span>{label}</span>
+      <span>{value}</span>
+    </span>
+  );
+}
+
 function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; onClose: () => void; onSaved: () => void }) {
   const { showToast } = useToast();
+  const { text } = useI18n();
   const form = useForm<InboundInput, unknown, InboundValues>({
     resolver: zodResolver(inboundSchema),
     values: inbound ? inboundFormValues(inbound) : undefined,
@@ -311,96 +324,96 @@ function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; 
   const save = useMutation({
     mutationFn: (values: InboundValues) => (inbound?.id ? api.updateInbound(inbound.id, buildFullInboundPayload(inbound, values)) : api.createInbound(buildFullInboundPayload(inbound, values))),
     onSuccess: () => {
-      showToast('入站已保存', 'success');
+      showToast(text('入站已保存'), 'success');
       onSaved();
       onClose();
     },
-    onError: (error) => showToast(errorMessage(error, '保存入站失败'), 'error'),
+    onError: (error) => showToast(errorMessage(error, text('保存入站失败')), 'error'),
   });
   return (
     <Modal
       open={!!inbound}
-      title={inbound?.id ? '编辑入站' : '新增入站'}
+      title={text(inbound?.id ? '编辑入站' : '新增入站')}
       onClose={onClose}
       footer={
         <>
-          <button className="btn secondary" onClick={onClose}>取消</button>
-          <SpinnerButton className="btn primary" loading={save.isPending} onClick={form.handleSubmit((values) => save.mutate(values))}>保存</SpinnerButton>
+          <button className="btn secondary" onClick={onClose}>{text('取消')}</button>
+          <SpinnerButton className="btn primary" loading={save.isPending} onClick={form.handleSubmit((values) => save.mutate(values))}>{text('保存')}</SpinnerButton>
         </>
       }
     >
       <div className="form-grid">
-        <Field label="名称"><input {...form.register('remark')} /><FieldError message={form.formState.errors.remark?.message} /></Field>
-        <Field label="端口"><input type="number" {...form.register('port')} /><FieldError message={form.formState.errors.port?.message} /></Field>
-        <Field label="协议">
+        <Field label={text('名称')}><input {...form.register('remark')} /><FieldError message={form.formState.errors.remark?.message ? text(form.formState.errors.remark.message) : undefined} /></Field>
+        <Field label={text('端口')}><input type="number" {...form.register('port')} /><FieldError message={form.formState.errors.port?.message} /></Field>
+        <Field label={text('协议')}>
           <select {...form.register('protocol')}>
             {['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'shadowtls'].map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
-        <Field label="传输">
+        <Field label={text('传输')}>
           <select {...form.register('network')}>
             {['tcp', 'ws', 'grpc', 'h2', 'xhttp', 'quic', 'kcp'].map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
-        <Field label="安全">
+        <Field label={text('安全')}>
           <select {...form.register('security')}>
             {['none', 'tls', 'reality'].map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
-        <Field label={protocol === 'shadowsocks' || protocol === 'hysteria2' || protocol === 'tuic' || protocol === 'shadowtls' ? '密码 / 密钥' : 'UUID'}>
+        <Field label={text(protocol === 'shadowsocks' || protocol === 'hysteria2' || protocol === 'tuic' || protocol === 'shadowtls' ? '密码 / 密钥' : 'UUID')}>
           <input {...form.register('uuid')} />
         </Field>
         {(network === 'ws' || network === 'h2') ? (
           <>
-            <Field label="WS/H2 Path"><input {...form.register('ws_path')} /></Field>
-            <Field label="WS/H2 Host"><input {...form.register('ws_host')} /></Field>
+            <Field label={text('WS/H2 路径')}><input {...form.register('ws_path')} /></Field>
+            <Field label={text('WS/H2 主机')}><input {...form.register('ws_host')} /></Field>
           </>
         ) : null}
-        {network === 'grpc' ? <Field label="gRPC Service"><input {...form.register('grpc_service_name')} /></Field> : null}
+        {network === 'grpc' ? <Field label={text('gRPC 服务名')}><input {...form.register('grpc_service_name')} /></Field> : null}
         {network === 'xhttp' ? (
           <>
-            <Field label="XHTTP Path"><input {...form.register('xhttp_path')} /></Field>
-            <Field label="XHTTP Mode"><input {...form.register('xhttp_mode')} placeholder="stream-one" /></Field>
+            <Field label={text('XHTTP 路径')}><input {...form.register('xhttp_path')} /></Field>
+            <Field label={text('XHTTP 模式')}><input {...form.register('xhttp_mode')} placeholder="stream-one" /></Field>
           </>
         ) : null}
         {security === 'reality' ? (
           <>
-            <Field label="REALITY Dest"><input {...form.register('reality_dest')} placeholder="example.com:443" /></Field>
-            <Field label="REALITY Server Names"><input {...form.register('reality_server_names')} /></Field>
-            <Field label="REALITY Short ID"><input {...form.register('reality_short_id')} /></Field>
-            <Field label="REALITY Private Key"><input {...form.register('reality_private_key')} /></Field>
-            <Field label="REALITY Public Key"><input {...form.register('reality_public_key')} readOnly /></Field>
+            <Field label={text('REALITY 目标地址')}><input {...form.register('reality_dest')} placeholder="example.com:443" /></Field>
+            <Field label={text('REALITY 服务名')}><input {...form.register('reality_server_names')} /></Field>
+            <Field label={text('REALITY Short ID')}><input {...form.register('reality_short_id')} /></Field>
+            <Field label={text('REALITY 私钥')}><input {...form.register('reality_private_key')} /></Field>
+            <Field label={text('REALITY 公钥')}><input {...form.register('reality_public_key')} readOnly /></Field>
           </>
         ) : null}
         {security === 'tls' ? (
           <>
-            <Field label="TLS Cert File"><input {...form.register('tls_cert_file')} /></Field>
-            <Field label="TLS Key File"><input {...form.register('tls_key_file')} /></Field>
+            <Field label={text('TLS 证书文件')}><input {...form.register('tls_cert_file')} /></Field>
+            <Field label={text('TLS 私钥文件')}><input {...form.register('tls_key_file')} /></Field>
             <Field label="TLS SNI"><input {...form.register('tls_sni')} /></Field>
             <Field label="TLS Fingerprint"><input {...form.register('tls_fingerprint')} /></Field>
             <Field label="TLS ALPN"><input {...form.register('tls_alpn')} /></Field>
           </>
         ) : null}
-        {protocol === 'shadowsocks' ? <Field label="Shadowsocks Method"><input {...form.register('ss_method')} placeholder="2022-blake3-aes-128-gcm" /></Field> : null}
+        {protocol === 'shadowsocks' ? <Field label={text('Shadowsocks 加密方法')}><input {...form.register('ss_method')} placeholder="2022-blake3-aes-128-gcm" /></Field> : null}
         {protocol === 'hysteria2' ? (
           <>
-            <Field label="HY2 上行 Mbps"><input type="number" {...form.register('hy2_up_mbps')} /></Field>
-            <Field label="HY2 下行 Mbps"><input type="number" {...form.register('hy2_down_mbps')} /></Field>
-            <Field label="HY2 Obfs"><input {...form.register('hy2_obfs')} /></Field>
-            <Field label="HY2 Obfs Password"><input {...form.register('hy2_obfs_password')} /></Field>
-            <Field label="HY2 多端口"><input {...form.register('hy2_mport')} placeholder="40000-50000" /></Field>
+            <Field label={text('HY2 上行 Mbps')}><input type="number" {...form.register('hy2_up_mbps')} /></Field>
+            <Field label={text('HY2 下行 Mbps')}><input type="number" {...form.register('hy2_down_mbps')} /></Field>
+            <Field label={text('HY2 混淆')}><input {...form.register('hy2_obfs')} /></Field>
+            <Field label={text('HY2 混淆密码')}><input {...form.register('hy2_obfs_password')} /></Field>
+            <Field label={text('HY2 多端口')}><input {...form.register('hy2_mport')} placeholder="40000-50000" /></Field>
           </>
         ) : null}
         {protocol === 'tuic' ? (
           <>
-            <Field label="TUIC 拥塞控制"><input {...form.register('tuic_congestion_control')} placeholder="bbr" /></Field>
-            <label className="checkbox-field"><input type="checkbox" {...form.register('tuic_zero_rtt')} /> 启用 0-RTT</label>
+            <Field label={text('TUIC 拥塞控制')}><input {...form.register('tuic_congestion_control')} placeholder="bbr" /></Field>
+            <label className="checkbox-field"><input type="checkbox" {...form.register('tuic_zero_rtt')} /> {text('启用 0-RTT')}</label>
           </>
         ) : null}
         {protocol === 'shadowtls' ? (
           <>
-            <Field label="ShadowTLS Version"><input type="number" {...form.register('shadowtls_version')} /></Field>
-            <Field label="ShadowTLS Password"><input {...form.register('shadowtls_password')} /></Field>
+            <Field label={text('ShadowTLS 版本')}><input type="number" {...form.register('shadowtls_version')} /></Field>
+            <Field label={text('ShadowTLS 密码')}><input {...form.register('shadowtls_password')} /></Field>
           </>
         ) : null}
       </div>
@@ -410,6 +423,7 @@ function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; 
 
 function ClientModal({ inbound, client, onClose, onSaved }: { inbound: Inbound | null; client?: Client; onClose: () => void; onSaved: () => void }) {
   const { showToast } = useToast();
+  const { text } = useI18n();
   const values = useMemo(
     () => (inbound ? clientFormValues(inbound, client) : undefined),
     [client, inbound],
@@ -421,30 +435,30 @@ function ClientModal({ inbound, client, onClose, onSaved }: { inbound: Inbound |
   const save = useMutation({
     mutationFn: (values: ClientValues) => (client ? api.updateClient(inbound!.id, client.id, { ...client, ...values }) : api.createClient(inbound!.id, values)),
     onSuccess: () => {
-      showToast('客户端已保存', 'success');
+      showToast(text('客户端已保存'), 'success');
       onSaved();
       onClose();
     },
-    onError: (error) => showToast(errorMessage(error, '保存客户端失败'), 'error'),
+    onError: (error) => showToast(errorMessage(error, text('保存客户端失败')), 'error'),
   });
   return (
     <Modal
       open={!!inbound}
-      title={client ? '编辑客户端' : '新增客户端'}
+      title={text(client ? '编辑客户端' : '新增客户端')}
       onClose={onClose}
       footer={
         <>
-          <button className="btn secondary" onClick={onClose}>取消</button>
-          <SpinnerButton className="btn primary" loading={save.isPending} onClick={form.handleSubmit((values) => save.mutate(values))}>保存</SpinnerButton>
+          <button className="btn secondary" onClick={onClose}>{text('取消')}</button>
+          <SpinnerButton className="btn primary" loading={save.isPending} onClick={form.handleSubmit((values) => save.mutate(values))}>{text('保存')}</SpinnerButton>
         </>
       }
     >
       <div className="form-grid">
-        <Field label="客户端标识"><input {...form.register('email')} /><FieldError message={form.formState.errors.email?.message} /></Field>
-        <Field label="UUID / 密码 / 密钥"><input {...form.register('uuid')} /><FieldError message={form.formState.errors.uuid?.message} /></Field>
-        <Field label="流量限额（字节，0 不限制）"><input type="number" {...form.register('traffic_limit')} /></Field>
-        <Field label="过期时间戳（0 不限制）"><input type="number" {...form.register('expiry_at')} /></Field>
-        <label className="checkbox-field"><input type="checkbox" {...form.register('enabled')} /> 已启用</label>
+        <Field label={text('客户端标识')}><input {...form.register('email')} /><FieldError message={form.formState.errors.email?.message ? text(form.formState.errors.email.message) : undefined} /></Field>
+        <Field label={text('UUID / 密码 / 密钥')}><input {...form.register('uuid')} /><FieldError message={form.formState.errors.uuid?.message ? text(form.formState.errors.uuid.message) : undefined} /></Field>
+        <Field label={text('流量限额（字节，0 不限制）')}><input type="number" {...form.register('traffic_limit')} /></Field>
+        <Field label={text('过期时间戳（0 不限制）')}><input type="number" {...form.register('expiry_at')} /></Field>
+        <label className="checkbox-field"><input type="checkbox" {...form.register('enabled')} /> {text('已启用')}</label>
       </div>
     </Modal>
   );
@@ -544,9 +558,9 @@ export function clientFormValues(inbound: Inbound, client?: Client): ClientValue
   };
 }
 
-function sourceLabel(source?: string, realtime?: string) {
-  if (realtime === 'xray') return 'Xray 实时';
-  if (source === 'unavailable') return '不可用';
+function sourceLabel(source: string | undefined, realtime: string | undefined, text: (value: string) => string) {
+  if (realtime === 'xray') return `Xray ${text('实时')}`;
+  if (source === 'unavailable') return text('不可用');
   return source || 'db';
 }
 

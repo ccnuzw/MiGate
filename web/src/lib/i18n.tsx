@@ -27,6 +27,11 @@ const dict = {
     logoutFailed: '登出失败',
     singleBinaryPanel: '单二进制面板',
     notLoggedIn: '未登录',
+    collapseMenu: '折叠菜单',
+    expandMenu: '展开菜单',
+    closeMenu: '关闭菜单',
+    toggleTheme: '主题切换',
+    toggleLanguage: '语言切换',
   },
   en: {
     overview: 'Overview',
@@ -52,6 +57,11 @@ const dict = {
     logoutFailed: 'Logout failed',
     singleBinaryPanel: 'Single-binary panel',
     notLoggedIn: 'Not signed in',
+    collapseMenu: 'Collapse menu',
+    expandMenu: 'Expand menu',
+    closeMenu: 'Close menu',
+    toggleTheme: 'Toggle theme',
+    toggleLanguage: 'Toggle language',
   },
 } as const;
 
@@ -84,6 +94,15 @@ const zhToEn: Record<string, string> = {
   路由规则: 'Routing rules',
   流量走势: 'Traffic trend',
   服务器资源: 'Server resources',
+  最近生成状态: 'Recent generation status',
+  暂无流量数据: 'No traffic data',
+  概览摘要加载失败: 'Failed to load overview summary',
+  资源加载失败: 'Failed to load resources',
+  状态加载失败: 'Failed to load status',
+  生成校验失败: 'Generated config validation failed',
+  未知错误: 'Unknown error',
+  活跃: 'Active',
+  受限: 'Limited',
   内存: 'Memory',
   磁盘: 'Disk',
   运行时间: 'Uptime',
@@ -99,11 +118,15 @@ const zhToEn: Record<string, string> = {
   按客户端数: 'Client count',
   '创建第一个入站后，可继续为它添加客户端并复制订阅链接。': 'Create the first inbound, then add clients and copy subscription links.',
   统计源: 'Stats source',
+  限额: 'Limit',
   新增客户端: 'New client',
   暂无客户端: 'No clients',
   订阅链接已复制: 'Subscription link copied',
   客户端分享链接已复制: 'Client share link copied',
   复制分享链接失败: 'Failed to copy share link',
+  复制订阅链接: 'Copy subscription link',
+  复制客户端分享链接: 'Copy client share link',
+  重置流量: 'Reset traffic',
   重置客户端流量: 'Reset client traffic',
   删除客户端: 'Delete client',
   删除入站: 'Delete inbound',
@@ -124,6 +147,7 @@ const zhToEn: Record<string, string> = {
   入站已保存: 'Inbound saved',
   保存入站失败: 'Failed to save inbound',
   编辑入站: 'Edit inbound',
+  标签: 'Tag',
   名称: 'Name',
   端口: 'Port',
   协议: 'Protocol',
@@ -131,6 +155,31 @@ const zhToEn: Record<string, string> = {
   安全: 'Security',
   '密码 / 密钥': 'Password / key',
   '请输入名称': 'Enter a name',
+  'WS/H2 路径': 'WS/H2 path',
+  'WS/H2 主机': 'WS/H2 host',
+  'gRPC 服务名': 'gRPC service',
+  'XHTTP 路径': 'XHTTP path',
+  'XHTTP 模式': 'XHTTP mode',
+  'REALITY 目标地址': 'REALITY destination',
+  'REALITY 服务名': 'REALITY server names',
+  'REALITY Short ID': 'REALITY short ID',
+  'REALITY 私钥': 'REALITY private key',
+  'REALITY 公钥': 'REALITY public key',
+  'TLS 证书文件': 'TLS cert file',
+  'TLS 私钥文件': 'TLS key file',
+  'TLS SNI': 'TLS SNI',
+  'TLS Fingerprint': 'TLS fingerprint',
+  'TLS ALPN': 'TLS ALPN',
+  'Shadowsocks 加密方法': 'Shadowsocks method',
+  'HY2 上行 Mbps': 'HY2 upload Mbps',
+  'HY2 下行 Mbps': 'HY2 download Mbps',
+  'HY2 混淆': 'HY2 obfs',
+  'HY2 混淆密码': 'HY2 obfs password',
+  'HY2 多端口': 'HY2 multi-port',
+  'TUIC 拥塞控制': 'TUIC congestion control',
+  '启用 0-RTT': 'Enable 0-RTT',
+  'ShadowTLS 版本': 'ShadowTLS version',
+  'ShadowTLS 密码': 'ShadowTLS password',
   '客户端已保存': 'Client saved',
   保存客户端失败: 'Failed to save client',
   编辑客户端: 'Edit client',
@@ -154,6 +203,8 @@ const zhToEn: Record<string, string> = {
   出站管理: 'Outbounds',
   默认出站: 'Default outbounds',
   自定义出站: 'Custom outbounds',
+  直接连接: 'Direct connection',
+  阻断: 'Blocked',
   '配置默认直连、阻断以及 SOCKS / HTTP 代理链路。': 'Configure default direct/blocked routes and SOCKS/HTTP proxy chains.',
   导入SOCKS5地址池: 'Import SOCKS5 pool',
   '导入 SOCKS5 地址池': 'Import SOCKS5 pool',
@@ -189,7 +240,9 @@ const zhToEn: Record<string, string> = {
   导入失败: 'Import failed',
   'SOCKS5 出站已导入': 'SOCKS5 outbound imported',
   '删除出站？': 'Delete outbound?',
+  Ping: 'Ping',
   '按来源入站、域名或协议选择出站链路。': 'Choose outbound links by inbound source, domain, or protocol.',
+  '按来源入站、域名、IP、规则集或协议选择出站链路。': 'Choose outbound links by inbound source, domain, IP, rule set, or protocol.',
   新增路由: 'New rule',
   暂无路由规则: 'No routing rules',
   默认匹配: 'Default match',
@@ -209,6 +262,11 @@ const zhToEn: Record<string, string> = {
   '留空表示所有入站。': 'Leave empty for all inbounds.',
   目标出站: 'Target outbound',
   域名匹配: 'Domain match',
+  'IP 匹配': 'IP match',
+  规则集: 'Rule set',
+  '支持逗号或换行分隔多个值。': 'Supports comma or newline separated values.',
+  '支持 geoip:cn、CIDR、单 IP，逗号或换行分隔。': 'Supports geoip:cn, CIDR, or single IP values separated by commas or newlines.',
+  '预留字段，当前会保存但不会写入 Xray 配置。': 'Reserved field; currently saved but not written into Xray config.',
   协议匹配: 'Protocol match',
   'geosite:netflix 或 example.com': 'geosite:netflix or example.com',
   '删除路由规则？': 'Delete routing rule?',
@@ -229,6 +287,7 @@ const zhToEn: Record<string, string> = {
   最近命令: 'Recent commands',
   配置预览: 'Config preview',
   刷新配置: 'Refresh config',
+  生成校验: 'Validate generated config',
   日志: 'Logs',
   加载日志: 'Load logs',
   已安装: 'Installed',
@@ -267,6 +326,7 @@ const zhToEn: Record<string, string> = {
   面板端口: 'Panel port',
   新密码: 'New password',
   '留空表示保留现有密码。': 'Leave empty to keep the current password.',
+  'Web 基础路径': 'Web base path',
   数据库路径: 'Database path',
   Xray配置路径: 'Xray config path',
   'Xray 配置路径': 'Xray config path',
@@ -283,6 +343,7 @@ const zhToEn: Record<string, string> = {
   证书: 'Certificate',
   私钥: 'Private key',
   获取证书: 'Issue certificate',
+  发布说明: 'Release notes',
   服务状态: 'Service status',
   刷新状态: 'Refresh status',
   检查更新: 'Check update',
@@ -316,15 +377,24 @@ const zhToEn: Record<string, string> = {
   '更新器将通过 systemd-run 在服务外执行。': 'The updater runs outside the service through systemd-run.',
   '撤销该会话？': 'Revoke this session?',
   面板登录: 'Panel login',
+  '会话检查失败，请直接登录或刷新页面。': 'Session check failed. Sign in directly or refresh the page.',
   登录中: 'Signing in',
   '登录中...': 'Signing in...',
   登录失败请检查用户名或密码: 'Login failed. Check username or password.',
   '登录失败，请检查用户名或密码': 'Login failed. Check username or password.',
   主题切换: 'Toggle theme',
   语言切换: 'Toggle language',
+  折叠菜单: 'Collapse menu',
+  展开菜单: 'Expand menu',
+  关闭菜单: 'Close menu',
+  规则: 'Rules',
+  警告: 'Warnings',
 };
 
 const textReplacements: Array<[RegExp, string]> = [
+  [/已启用/g, 'Enabled'],
+  [/活跃/g, 'Active'],
+  [/受限/g, 'Limited'],
   [/新增/g, 'Create'],
   [/编辑/g, 'Edit'],
   [/删除/g, 'Delete'],
@@ -372,12 +442,19 @@ export function translateElement(root: ParentNode, lang: Lang) {
   }
   for (const node of textNodes) {
     const current = node.nodeValue || '';
-    if (!originalTextNodes.has(node) && /[\u4e00-\u9fff]/.test(current)) {
-      originalTextNodes.set(node, current);
-    }
     const original = originalTextNodes.get(node);
-    if (original) {
-      node.nodeValue = lang === 'en' ? translateText(original, lang) : original;
+    const hasChinese = /[\u4e00-\u9fff]/.test(current);
+    if (lang === 'en') {
+      if (hasChinese) {
+        originalTextNodes.set(node, current);
+        node.nodeValue = translateText(current, lang);
+      }
+      continue;
+    }
+    if (hasChinese) {
+      originalTextNodes.set(node, current);
+    } else if (original) {
+      node.nodeValue = original;
     }
   }
   const elements = root.querySelectorAll<HTMLElement>('[title], [placeholder], [aria-label]');

@@ -65,14 +65,11 @@ export default function AppLayout() {
       </div>
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="sidebar-brand-text">
-            <div className="text-lg font-semibold tracking-normal">MiGate</div>
-            <div className="text-xs text-panel-muted">{t('singleBinaryPanel')}</div>
+          <div className="sidebar-brand">
+            <MiGateMark />
+            <div className="sidebar-brand-text text-lg font-semibold tracking-normal">MiGate</div>
           </div>
-          <button className="icon-button desktop-sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)} title={sidebarCollapsed ? '展开菜单' : '折叠菜单'}>
-            {sidebarCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-5 w-5" />}
-          </button>
-          <button className="icon-button mobile-sidebar-close" onClick={() => setSidebarOpen(false)} title="关闭菜单">
+          <button className="icon-button mobile-sidebar-close" onClick={() => setSidebarOpen(false)} title={t('closeMenu')}>
             <ChevronLeft className="h-5 w-5" />
           </button>
         </div>
@@ -94,22 +91,25 @@ export default function AppLayout() {
           })}
         </nav>
         <div className="mt-auto border-t border-panel-line p-3">
-          <div className="sidebar-footer-card rounded-lg bg-panel-soft p-3">
-            <div className="flex items-center gap-2 text-sm font-medium">
+          <div className="sidebar-footer-card">
+            <div className="sidebar-version-button">
               <GitBranch className="h-4 w-4" />
               <span className="sidebar-footer-text truncate">{version.data?.version || 'dev'}</span>
             </div>
             <div className="sidebar-footer-text mt-2 truncate text-xs text-panel-muted">{session.data?.username || t('notLoggedIn')}</div>
           </div>
-          <div className="sidebar-actions mt-3 grid grid-cols-3 gap-2">
-            <button className="icon-button h-9" onClick={toggleTheme} title="主题切换">
+          <div className="sidebar-actions mt-3 grid grid-cols-4 gap-2">
+            <button className="icon-button h-9" onClick={toggleTheme} title={t('toggleTheme')}>
               {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
-            <button className="icon-button h-9" onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')} title="语言切换">
+            <button className="icon-button h-9" onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')} title={t('toggleLanguage')}>
               <Languages className="h-4 w-4" />
             </button>
-            <button className="icon-button h-9" onClick={() => logout.mutate()} title="登出">
+            <button className="icon-button h-9" onClick={() => logout.mutate()} title={t('logout')}>
               <LogOut className="h-4 w-4" />
+            </button>
+            <button className="icon-button h-9 desktop-sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)} title={t(sidebarCollapsed ? 'expandMenu' : 'collapseMenu')}>
+              {sidebarCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-5 w-5" />}
             </button>
           </div>
         </div>
@@ -119,5 +119,26 @@ export default function AppLayout() {
         <Outlet />
       </main>
     </div>
+  );
+}
+
+function MiGateMark() {
+  return (
+    <svg className="sidebar-brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+      <defs>
+        <linearGradient id="migate-mark-bg" x1="10" x2="54" y1="8" y2="56" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#10b981" />
+          <stop offset="0.55" stopColor="#0f766e" />
+          <stop offset="1" stopColor="#2563eb" />
+        </linearGradient>
+        <linearGradient id="migate-mark-shine" x1="18" x2="46" y1="13" y2="39" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#ecfeff" stopOpacity="0.72" />
+          <stop offset="1" stopColor="#ecfeff" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="16" fill="url(#migate-mark-bg)" />
+      <path d="M15 45V19h9l8 13 8-13h9v26h-8V32.8l-6.4 10.6h-5.2L23 32.8V45z" fill="#f8fafc" />
+      <path d="M13 17c8-7 24-8 36-2v7c-13-5-26-4-36 4z" fill="url(#migate-mark-shine)" />
+    </svg>
   );
 }
