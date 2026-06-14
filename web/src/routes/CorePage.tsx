@@ -71,12 +71,12 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   if (statusQuery.isLoading) return <LoadingBlock />;
   const status = statusQuery.data;
   return (
-    <div className="page-stack">
+    <div className={`page-stack core-page core-page-${core}`}>
       <PageTitle
         title={text(`${label} 配置`)}
         description={text('查看核心运行状态、配置预览、日志和系统级操作。')}
         action={
-          <div className="flex flex-wrap gap-2">
+          <div className="core-action-row">
             <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
             <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
             <SpinnerButton className="btn secondary" loading={install.isPending} onClick={async () => (await confirm({ title: text(`安装 ${label} 核心？`), description: text('该操作会执行系统安装命令。') })) && install.mutate()}><Download className="h-4 w-4" /> {text('安装核心')}</SpinnerButton>
@@ -85,7 +85,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
           </div>
         }
       />
-      <div className="metric-grid">
+      <div className="metric-grid core-metric-grid">
         <CoreMetric label={text('安装')} value={text(status?.installed === false ? '未安装' : '已安装')} />
         <CoreMetric label={text('托管')} value={text(status?.managed ? '已托管' : '未托管')} />
         <CoreMetric label={text('状态')} value={text(serviceLabel(status?.status))} />
@@ -96,7 +96,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
         <CoreMetric label={text('配置路径')} value={status?.config_path || '-'} />
       </div>
       {lastResult ? (
-        <Card className={`p-4 ${lastResult.ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
+        <Card className={`core-card p-4 ${lastResult.ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
           <div className={`flex items-start gap-3 text-sm ${lastResult.ok ? 'text-emerald-800' : 'text-red-700'}`}>
             {lastResult.ok ? <CheckCircle2 className="mt-0.5 h-4 w-4" /> : <XCircle className="mt-0.5 h-4 w-4" />}
             <div className="min-w-0">
@@ -107,24 +107,24 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
         </Card>
       ) : null}
       {status?.commands_executed?.length ? (
-        <Card className="p-5">
+        <Card className="core-card p-5">
           <h2 className="section-title mb-3">{text('最近命令')}</h2>
-          <pre className="code-block">{status.commands_executed.join('\n')}</pre>
+          <pre className="code-block core-code-block">{status.commands_executed.join('\n')}</pre>
         </Card>
       ) : null}
-      <Card className="p-5">
-        <div className="mb-3 flex items-center justify-between gap-3">
+      <Card className="core-card p-5">
+        <div className="core-card-header mb-3 flex items-center justify-between gap-3">
           <h2 className="section-title">{text('配置预览')}</h2>
           <button className="btn secondary h-8" onClick={() => configQuery.refetch()}>{text('刷新配置')}</button>
         </div>
-        <pre className="code-block">{JSON.stringify(configQuery.data || {}, null, 2)}</pre>
+        <pre className="code-block core-code-block">{JSON.stringify(configQuery.data || {}, null, 2)}</pre>
       </Card>
-      <Card className="p-5">
-        <div className="mb-3 flex items-center justify-between gap-3">
+      <Card className="core-card p-5">
+        <div className="core-card-header mb-3 flex items-center justify-between gap-3">
           <h2 className="section-title">{text('日志')}</h2>
           <button className="btn secondary h-8" onClick={() => logsQuery.refetch()}>{text('加载日志')}</button>
         </div>
-        <pre className="code-block">{formatLogs(logsQuery.data, text('点击“加载日志”查看最近日志。'))}</pre>
+        <pre className="code-block core-code-block">{formatLogs(logsQuery.data, text('点击“加载日志”查看最近日志。'))}</pre>
       </Card>
     </div>
   );
@@ -132,7 +132,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
 
 function CoreMetric({ label, value }: { label: string; value: string }) {
   return (
-    <Card className="p-4">
+    <Card className="core-metric-card p-4">
       <div className="text-sm text-panel-muted">{label}</div>
       <div className="mt-2 truncate text-xl font-semibold" title={value}>{value}</div>
     </Card>

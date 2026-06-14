@@ -21,6 +21,9 @@ INSTALL_XRAY=0
 INSTALL_SINGBOX=0
 SKIP_CORE_PROMPTS=0
 EXTRA_ARGS_COUNT=0
+XRAY_FOUND=0
+SINGBOX_FOUND=0
+CORE_PROMPTS_CONFIRMED=0
 
 OS_NAME="unknown"
 ARCH="unknown"
@@ -33,11 +36,63 @@ WEB_BASE_PATH="/panel"
 PANEL_BIND_HOST="${MIGATE_PANEL_BIND_HOST:-127.0.0.1}"
 GENERATED_PASSWORD=0
 
-log_info() { printf '[INFO] %s\n' "$*"; }
-log_ok() { printf '[OK] %s\n' "$*"; }
-log_warn() { printf '[WARN] %s\n' "$*"; }
-log_error() { printf '[ERROR] %s\n' "$*" >&2; }
-section() { printf '\n== %s ==\n' "$*"; }
+on_error() {
+  local code="$?"
+  section "安装未完成"
+  log_error "脚本在执行过程中失败，退出码：${code}"
+  log_info "如 MiGate 服务启动失败，请查看：journalctl -u migate -n 80 --no-pager"
+  log_info "如下载失败，请检查服务器网络、DNS 和 GitHub 访问。"
+  log_info "可以使用 --dry-run 预览安装步骤。"
+  exit "$code"
+}
+trap on_error ERR
+
+line() { printf '%s\n' '----------------------------------------------------------------'; }
+log_info() { printf '  [INFO] %s\n' "$*"; }
+log_ok() { printf '  [ OK ] %s\n' "$*"; }
+log_warn() { printf '  [WARN] %s\n' "$*"; }
+log_error() { printf '  [ERR ] %s\n' "$*" >&2; }
+section() {
+  printf '\n'
+  line
+  printf '%s\n' "$*"
+  line
+}
+kv() {
+  printf '  %-22s %s\n' "$1:" "$2"
+}
+prompt_line() {
+  printf '  ? %s' "$1"
+}
+confirm_yes() {
+  local prompt="$1"
+  local answer
+  prompt_line "${prompt} [Y/n]: "
+  read -r answer
+  case "$answer" in n|N|no|NO) return 1 ;; *) return 0 ;; esac
+}
+confirm_no() {
+  local prompt="$1"
+  local answer
+  prompt_line "${prompt} [y/N]: "
+  read -r answer
+  case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+is_valid_port() {
+  local port="$1"
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+print_banner() {
+  section "MiGate 一键安装器"
+  kv "仓库" "$REPO"
+  kv "版本" "$VERSION"
+  kv "安装目录" "$INSTALL_DIR"
+  kv "配置文件" "$CONFIG_PATH"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log_warn "当前为 dry-run 模式，只打印计划执行的操作。"
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -142,27 +197,27 @@ dependency_status() {
   local missing=0
   for dep in curl tar openssl; do
     if command_exists "$dep"; then
-      log_ok "dependency ${dep}: found ($(command -v "$dep"))"
+      log_ok "依赖 ${dep}: 已找到 ($(command -v "$dep"))"
     else
-      log_warn "dependency ${dep}: missing"
+      log_warn "依赖 ${dep}: 未找到"
       missing=1
     fi
   done
   if command_exists sha256sum || command_exists shasum; then
-    log_ok "dependency checksum: found"
+    log_ok "依赖 checksum: 已找到"
   else
-    log_warn "dependency checksum: missing sha256sum/shasum"
+    log_warn "依赖 checksum: 未找到 sha256sum/shasum"
     missing=1
   fi
   if command_exists wget; then
-    log_ok "dependency wget: found ($(command -v wget))"
+    log_ok "可选依赖 wget: 已找到 ($(command -v wget))"
   else
-    log_info "dependency wget: optional missing"
+    log_info "可选依赖 wget: 未找到"
   fi
   if command_exists unzip; then
-    log_ok "dependency unzip: found ($(command -v unzip))"
+    log_ok "可选依赖 unzip: 已找到 ($(command -v unzip))"
   else
-    log_info "dependency unzip: optional missing"
+    log_info "可选依赖 unzip: 未找到"
   fi
   return "$missing"
 }
@@ -270,53 +325,53 @@ detect_existing_install() {
   section "已安装检测"
   if [ -x "$MIGATE_BIN" ]; then
     found=1
-    log_ok "MiGate binary: $MIGATE_BIN ($(binary_version "$MIGATE_BIN"))"
+    log_ok "MiGate 二进制：$MIGATE_BIN ($(binary_version "$MIGATE_BIN"))"
   else
-    log_info "MiGate binary: not found at $MIGATE_BIN"
+    log_info "MiGate 二进制：未找到 ($MIGATE_BIN)"
   fi
   if [ -L "$MIGATE_LINK" ] || [ -e "$MIGATE_LINK" ]; then
     found=1
-    log_ok "MiGate CLI link: $MIGATE_LINK"
+    log_ok "MiGate CLI 链接：$MIGATE_LINK"
   else
-    log_info "MiGate CLI link: not found"
+    log_info "MiGate CLI 链接：未找到"
   fi
   if service_exists; then
     found=1
-    log_ok "systemd service: migate.service ($(service_status))"
+    log_ok "systemd 服务：migate.service ($(service_status))"
   else
-    log_info "systemd service: not found"
+    log_info "systemd 服务：未找到"
   fi
   if [ -d "$CONFIG_DIR" ]; then
     found=1
-    log_ok "config dir: $CONFIG_DIR"
+    log_ok "配置目录：$CONFIG_DIR"
   else
-    log_info "config dir: not found"
+    log_info "配置目录：未找到"
   fi
   if [ -f "$CONFIG_PATH" ]; then
     found=1
     read_existing_config_defaults
-    log_ok "panel config: $CONFIG_PATH"
+    log_ok "面板配置：$CONFIG_PATH"
   else
-    log_info "panel config: not found"
+    log_info "面板配置：未找到"
   fi
   if [ -f "${INSTALL_DIR}/migate.db" ]; then
     found=1
-    log_ok "database: ${INSTALL_DIR}/migate.db"
+    log_ok "数据库：${INSTALL_DIR}/migate.db"
   else
-    log_info "database: not found at ${INSTALL_DIR}/migate.db"
+    log_info "数据库：未找到 (${INSTALL_DIR}/migate.db)"
   fi
   if pgrep -x migate >/dev/null 2>&1; then
     found=1
-    log_ok "process: migate is running"
+    log_ok "进程：migate 正在运行"
   else
-    log_info "process: migate not running"
+    log_info "进程：migate 未运行"
   fi
   if [ -n "${PANEL_PORT:-}" ] && port_in_use "$PANEL_PORT"; then
-    log_warn "port ${PANEL_PORT}: already listening"
+    log_warn "端口 ${PANEL_PORT}: 已被监听"
   else
-    log_info "port ${PANEL_PORT:-9999}: not detected as listening"
+    log_info "端口 ${PANEL_PORT:-9999}: 未检测到监听"
   fi
-  log_info "WebUI embed: release binary embeds internal/web/static/dist; local binary check is not required by installer"
+  log_info "WebUI：Release 二进制已内嵌前端静态资源，无需在服务器上安装 Node。"
   [ "$found" -eq 1 ]
 }
 
@@ -328,6 +383,17 @@ core_version() {
     xray) "$core" version 2>/dev/null | head -1 || true ;;
     sing-box) "$core" version 2>/dev/null | head -1 || true ;;
   esac
+}
+
+core_binary_path() {
+  local command_name="$1"
+  for path in "/usr/local/bin/${command_name}" "/usr/bin/${command_name}"; do
+    if [ -x "$path" ]; then
+      printf '%s' "$path"
+      return 0
+    fi
+  done
+  command -v "$command_name" 2>/dev/null || true
 }
 
 core_service_status() {
@@ -371,10 +437,10 @@ environment_report() {
   detect_arch
   detect_root
   detect_systemd
-  log_info "OS: ${OS_NAME}"
-  log_info "Arch: ${ARCH}"
-  if [ "$IS_ROOT" -eq 1 ]; then log_ok "root: yes"; else log_warn "root: no"; fi
-  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then log_ok "systemd: available"; else log_warn "systemd: unavailable"; fi
+  kv "系统" "${OS_NAME}"
+  kv "架构" "${ARCH}"
+  if [ "$IS_ROOT" -eq 1 ]; then log_ok "权限：root"; else log_warn "权限：非 root，实际安装需要 sudo/root。"; fi
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then log_ok "systemd：可用"; else log_warn "systemd：不可用，将跳过服务写入。"; fi
   dependency_status || true
 }
 
@@ -450,8 +516,9 @@ download_release_asset() {
   URL="${BASE_URL}/${ARTIFACT}"
   CHECKSUM_URL="${BASE_URL}/checksums.txt"
 
-  log_info "Downloading ${URL}"
+  log_info "下载 Release 包：${URL}"
   download_file "$URL" "$TMP/${ARTIFACT}"
+  log_info "下载校验文件：${CHECKSUM_URL}"
   download_file "$CHECKSUM_URL" "$TMP/checksums.txt"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] grep "migate-linux-${ARCH}.tar.gz" %q > %q\n' "$TMP/checksums.txt" "$TMP/${ARTIFACT}.sha256"
@@ -459,7 +526,9 @@ download_release_asset() {
     return 0
   fi
   grep "migate-linux-${ARCH}.tar.gz" "$TMP/checksums.txt" > "$TMP/${ARTIFACT}.sha256"
+  log_info "校验 Release 包 sha256"
   verify_sha256 "${ARTIFACT}.sha256" "$TMP"
+  log_info "解压 Release 包"
   tar -xzf "$TMP/migate-linux-${ARCH}.tar.gz" -C "$TMP"
 }
 
@@ -477,12 +546,15 @@ install_migate_binary_from_tmp() {
   chmod +x "$migate_tmp"
   mv -f "$migate_tmp" "$MIGATE_BIN"
   ln -sf "$MIGATE_BIN" "$MIGATE_LINK"
+  log_ok "MiGate 二进制已安装：$MIGATE_BIN"
+  log_ok "CLI 快捷命令已安装：$MIGATE_LINK"
   if [ -f "$TMP/packaging/install.sh" ]; then
     local installer_tmp
     installer_tmp="$(mktemp /usr/local/bin/.migate-install.XXXXXX)"
     cat "$TMP/packaging/install.sh" > "$installer_tmp"
     chmod +x "$installer_tmp"
     mv -f "$installer_tmp" "$INSTALLER_BIN"
+    log_ok "安装器已安装：$INSTALLER_BIN"
   fi
   if [ -f "$TMP/packaging/uninstall.sh" ]; then
     local uninstaller_tmp
@@ -490,6 +562,7 @@ install_migate_binary_from_tmp() {
     cat "$TMP/packaging/uninstall.sh" > "$uninstaller_tmp"
     chmod +x "$uninstaller_tmp"
     mv -f "$uninstaller_tmp" "$UNINSTALLER_BIN"
+    log_ok "卸载器已安装：$UNINSTALLER_BIN"
   fi
 }
 
@@ -506,6 +579,23 @@ check_update() {
   else
     echo "Update available: no"
   fi
+}
+
+print_config_summary() {
+  section "安装配置摘要"
+  kv "面板监听" "${PANEL_BIND_HOST}:${PANEL_PORT}"
+  kv "Web base path" "${WEB_BASE_PATH:-/}"
+  kv "管理员用户" "${PANEL_USERNAME}"
+  if [ -f "$CONFIG_PATH" ] && [ "$REGENERATE_CONFIG" -ne 1 ]; then
+    kv "管理员密码" "保留已有配置"
+  elif [ "$GENERATED_PASSWORD" -eq 1 ]; then
+    kv "管理员密码" "随机生成，完成后仅显示一次"
+  else
+    kv "管理员密码" "使用刚才输入的密码"
+  fi
+  kv "配置文件" "$CONFIG_PATH"
+  kv "数据库" "${INSTALL_DIR}/migate.db"
+  kv "Xray 配置" "${INSTALL_DIR}/xray.json"
 }
 
 write_config() {
@@ -540,6 +630,7 @@ prompt_config() {
   if [ -f "$CONFIG_PATH" ] && [ "$REGENERATE_CONFIG" -ne 1 ]; then
     read_existing_config_defaults
     log_ok "使用已有配置，不重新生成 panel.json"
+    print_config_summary
     return 0
   fi
   if [ "$ASSUME_YES" -eq 1 ]; then
@@ -548,22 +639,45 @@ prompt_config() {
     WEB_BASE_PATH="$(normalize_web_base_path "${WEB_BASE_PATH:-/panel}")"
     PANEL_PASSWORD="$(generate_password)"
     GENERATED_PASSWORD=1
+    print_config_summary
     return 0
   fi
-  read -r -p "Panel port [${PANEL_PORT:-9999}]: " input_panel_port
-  PANEL_PORT="${input_panel_port:-${PANEL_PORT:-9999}}"
-  read -r -p "Panel username [${PANEL_USERNAME:-admin}]: " input_panel_username
+
+  section "面板配置"
+  log_info "直接回车会使用方括号中的默认值。"
+  while true; do
+    prompt_line "面板端口 [${PANEL_PORT:-9999}]: "
+    read -r input_panel_port
+    PANEL_PORT="${input_panel_port:-${PANEL_PORT:-9999}}"
+    if is_valid_port "$PANEL_PORT"; then
+      break
+    fi
+    log_warn "端口必须是 1-65535 之间的数字，请重新输入。"
+  done
+
+  prompt_line "管理员用户名 [${PANEL_USERNAME:-admin}]: "
+  read -r input_panel_username
   PANEL_USERNAME="${input_panel_username:-${PANEL_USERNAME:-admin}}"
-  read -r -s -p "Panel password [leave blank to generate]: " PANEL_PASSWORD
+
+  prompt_line "管理员密码 [留空则随机生成]: "
+  read -r -s PANEL_PASSWORD
   printf '\n'
   if [ -z "$PANEL_PASSWORD" ]; then
     PANEL_PASSWORD="$(generate_password)"
     GENERATED_PASSWORD=1
-    log_warn "No password entered; generated a random panel password. It is shown once at completion."
+    log_warn "未输入密码，已生成随机密码。安装完成时只显示一次，请保存。"
   fi
-  read -r -p "Web base path [${WEB_BASE_PATH:-/panel}]: " input_web_base_path
+
+  prompt_line "Web base path [${WEB_BASE_PATH:-/panel}]: "
+  read -r input_web_base_path
   WEB_BASE_PATH="${input_web_base_path:-${WEB_BASE_PATH:-/panel}}"
   WEB_BASE_PATH="$(normalize_web_base_path "$WEB_BASE_PATH")"
+
+  print_config_summary
+  if ! confirm_yes "确认使用以上配置继续安装？"; then
+    log_error "用户取消安装。"
+    exit 1
+  fi
 }
 
 write_systemd_service() {
@@ -616,7 +730,8 @@ restart_migate_service() {
 
 install_xray() {
   section "安装/修复 Xray"
-  log_warn "Xray 安装将下载并执行官方 Xray-install 脚本。请确认你信任该来源。"
+  log_warn "将下载并执行官方 Xray-install 脚本：https://github.com/XTLS/Xray-install"
+  log_warn "如服务器已有自定义 Xray 安装，请先确认是否允许修复/覆盖。"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] xray_tmp="$(mktemp -d)"\n'
     printf '[DRY-RUN] curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"\n'
@@ -626,13 +741,17 @@ install_xray() {
     printf '[DRY-RUN] systemctl enable xray && systemctl restart xray\n'
     return 0
   fi
-  if [ "$ASSUME_YES" -ne 1 ]; then
-    read -r -p "确认安装/修复 Xray？[y/N]: " answer
-    case "$answer" in y|Y|yes|YES) ;; *) log_warn "跳过 Xray 安装。"; return 0 ;; esac
+  if [ "$ASSUME_YES" -ne 1 ] && [ "$CORE_PROMPTS_CONFIRMED" -ne 1 ]; then
+    if ! confirm_no "确认安装/修复 Xray？"; then
+      log_warn "跳过 Xray 安装。"
+      return 0
+    fi
   fi
   local xray_tmp
   xray_tmp="$(mktemp -d)"
+  log_info "下载 Xray 官方安装脚本"
   curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"
+  log_info "执行 Xray 官方安装脚本"
   bash "$xray_tmp/install-release.sh"
   rm -rf "$xray_tmp"
   mkdir -p /usr/local/etc/xray
@@ -670,16 +789,22 @@ install_singbox() {
     fi
     return 0
   fi
-  if [ "$ASSUME_YES" -ne 1 ]; then
-    read -r -p "确认安装/修复 sing-box ${sb_version}？[y/N]: " answer
-    case "$answer" in y|Y|yes|YES) ;; *) log_warn "跳过 sing-box 安装。"; return 0 ;; esac
+  if [ "$ASSUME_YES" -ne 1 ] && [ "$CORE_PROMPTS_CONFIRMED" -ne 1 ]; then
+    if ! confirm_no "确认安装/修复 sing-box ${sb_version}？"; then
+      log_warn "跳过 sing-box 安装。"
+      return 0
+    fi
   fi
+  log_info "下载 sing-box ${sb_version}: ${sb_url}"
   local tmp_sb
   tmp_sb="$(mktemp -d)"
   curl -fL "$sb_url" -o "$tmp_sb/$sb_artifact"
+  log_info "下载 sing-box 校验文件"
   curl -fL "$sb_checksums_url" -o "$tmp_sb/checksums.txt"
   grep "$sb_artifact" "$tmp_sb/checksums.txt" > "$tmp_sb/$sb_artifact.sha256"
+  log_info "校验 sing-box sha256"
   verify_sha256 "$sb_artifact.sha256" "$tmp_sb"
+  log_info "解压并安装 sing-box"
   tar -xzf "$tmp_sb/$sb_artifact" -C "$tmp_sb"
   cp "$tmp_sb"/sing-box-*/sing-box /usr/local/bin/sing-box
   chmod +x /usr/local/bin/sing-box
@@ -722,13 +847,36 @@ prompt_core_installs() {
     if [ "$INSTALL_SINGBOX" -ne 1 ]; then log_warn "未指定 --install-singbox，跳过 sing-box 安装。"; fi
     return 0
   fi
+  CORE_PROMPTS_CONFIRMED=1
   if [ "$INSTALL_XRAY" -ne 1 ]; then
-    read -r -p "是否安装/修复 Xray？[y/N]: " answer
-    case "$answer" in y|Y|yes|YES) INSTALL_XRAY=1 ;; *) log_warn "跳过 Xray。核心代理功能可能不可用。" ;; esac
+    if [ "$XRAY_FOUND" -eq 1 ]; then
+      if confirm_no "检测到 Xray 已安装，是否重新安装/修复 Xray？"; then
+        INSTALL_XRAY=1
+      else
+        log_info "保留现有 Xray 安装。"
+      fi
+    else
+      if confirm_yes "未检测到 Xray，是否安装 Xray？"; then
+        INSTALL_XRAY=1
+      else
+        log_warn "跳过 Xray。核心代理功能可能不可用。"
+      fi
+    fi
   fi
   if [ "$INSTALL_SINGBOX" -ne 1 ]; then
-    read -r -p "是否安装/修复 sing-box？[y/N]: " answer
-    case "$answer" in y|Y|yes|YES) INSTALL_SINGBOX=1 ;; *) log_warn "跳过 sing-box。Hysteria2/TUIC/ShadowTLS 可能不可用。" ;; esac
+    if [ "$SINGBOX_FOUND" -eq 1 ]; then
+      if confirm_no "检测到 sing-box 已安装，是否重新安装/修复 sing-box？"; then
+        INSTALL_SINGBOX=1
+      else
+        log_info "保留现有 sing-box 安装。"
+      fi
+    else
+      if confirm_yes "未检测到 sing-box，是否安装 sing-box？"; then
+        INSTALL_SINGBOX=1
+      else
+        log_warn "跳过 sing-box。Hysteria2/TUIC/ShadowTLS 可能不可用。"
+      fi
+    fi
   fi
 }
 
@@ -750,6 +898,16 @@ install_release_flow() {
   if [ -n "${PANEL_PORT:-}" ] && port_in_use "$PANEL_PORT" && ! pgrep -x migate >/dev/null 2>&1; then
     log_warn "端口 ${PANEL_PORT} 已被占用，服务启动可能失败。"
   fi
+  section "安装计划"
+  kv "动作" "$mode"
+  kv "Release 资产" "$ARTIFACT"
+  kv "安装 MiGate" "$MIGATE_BIN"
+  kv "写入配置" "$CONFIG_PATH"
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    kv "写入服务" "$SERVICE_PATH"
+  else
+    kv "写入服务" "跳过，systemd 不可用"
+  fi
 
   section "安装 MiGate"
   download_release_asset
@@ -761,8 +919,8 @@ install_release_flow() {
   write_systemd_service
 
   section "核心检测"
-  detect_core "Xray" "xray" "xray" || true
-  detect_core "sing-box" "sing-box" "migate-singbox" || true
+  if detect_core "Xray" "xray" "xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
+  if detect_core "sing-box" "sing-box" "migate-singbox"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
   prompt_core_installs
   [ "$INSTALL_XRAY" -eq 1 ] && install_xray
   [ "$INSTALL_SINGBOX" -eq 1 ] && install_singbox
@@ -821,16 +979,17 @@ interactive_menu() {
   fi
   section "操作选择"
   cat <<'EOF'
-1) 升级并保留配置
-2) 重装并保留配置
-3) 重装并重新生成配置
-4) 只修复 systemd 服务
-5) 只安装/修复 Xray
-6) 只安装/修复 sing-box
-7) 卸载
-8) 退出
+  1) 升级 MiGate，并保留现有配置
+  2) 重装 MiGate，并保留现有配置
+  3) 重装 MiGate，并重新生成面板配置
+  4) 只修复 migate systemd 服务
+  5) 只安装/修复 Xray
+  6) 只安装/修复 sing-box
+  7) 卸载 MiGate
+  8) 退出
 EOF
-  read -r -p "请选择 [1-8]: " choice
+  prompt_line "请选择操作 [1-8]: "
+  read -r choice
   case "$choice" in
     1) ACTION="upgrade" ;;
     2) ACTION="reinstall" ;;
@@ -846,36 +1005,64 @@ EOF
 
 finish_message() {
   local host_ip
+  local xray_bin
+  local singbox_bin
   host_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
   [ -n "$host_ip" ] || host_ip="SERVER_IP"
-  section "完成"
-  log_ok "MiGate binary: $MIGATE_BIN"
-  log_ok "CLI: mg"
-  log_info "WebUI: http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}"
+  xray_bin="$(core_binary_path xray)"
+  singbox_bin="$(core_binary_path sing-box)"
+  section "安装完成，请保存以下信息"
+  kv "MiGate 二进制" "$MIGATE_BIN"
+  kv "CLI 命令" "mg"
+  kv "安装目录" "${INSTALL_DIR}"
+  kv "面板监听" "${PANEL_BIND_HOST}:${PANEL_PORT}"
+  kv "Web base path" "${WEB_BASE_PATH:-/}"
+  kv "WebUI 地址" "http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}"
   log_warn "默认仅监听 ${PANEL_BIND_HOST}。公网访问请通过 Nginx/Caddy 等反向代理并启用 HTTPS。"
-  log_info "Username: ${PANEL_USERNAME}"
+  kv "管理员用户" "${PANEL_USERNAME}"
   if [ "$GENERATED_PASSWORD" -eq 1 ] || [ -n "$PANEL_PASSWORD" ]; then
-    log_warn "Password: ${PANEL_PASSWORD}"
-    log_warn "随机密码仅在终端显示一次，请立即保存。"
+    kv "管理员密码" "${PANEL_PASSWORD}"
+    log_warn "密码仅在终端显示一次，请立即保存。"
   else
-    log_info "Password: 保留已有配置中的密码"
+    kv "管理员密码" "保留已有配置中的密码"
   fi
-  log_info "Config: ${CONFIG_PATH}"
-  log_info "Database: ${INSTALL_DIR}/migate.db"
-  log_info "Xray config: ${INSTALL_DIR}/xray.json"
+  kv "面板配置" "${CONFIG_PATH}"
+  kv "数据库" "${INSTALL_DIR}/migate.db"
+  kv "Xray 配置" "${INSTALL_DIR}/xray.json"
+  if [ -n "$xray_bin" ]; then
+    kv "Xray 二进制" "${xray_bin} ($(core_version "$xray_bin"))"
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "Xray 服务" "systemctl status xray"; fi
+  else
+    log_warn "Xray 二进制：未找到"
+  fi
+  kv "sing-box 配置" "/etc/sing-box/config.json"
+  if [ -n "$singbox_bin" ]; then
+    kv "sing-box 二进制" "${singbox_bin} ($(core_version "$singbox_bin"))"
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "sing-box 服务" "systemctl status migate-singbox"; fi
+  else
+    log_warn "sing-box 二进制：未找到"
+  fi
+  kv "安装器" "${INSTALLER_BIN}"
+  kv "卸载器" "${UNINSTALLER_BIN}"
   if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-    log_info "Service status: systemctl status migate"
-    log_info "Logs: journalctl -u migate -f"
+    kv "MiGate 服务文件" "${SERVICE_PATH}"
+    kv "MiGate 服务状态" "systemctl status migate"
+    kv "MiGate 实时日志" "journalctl -u migate -f"
   else
-    log_info "Manual run: ${MIGATE_BIN} serve --config ${CONFIG_PATH}"
+    kv "手动启动" "${MIGATE_BIN} serve --config ${CONFIG_PATH}"
   fi
-  log_info "Common commands: mg status | mg doctor | mg logs -f | mg restart | mg update | mg uninstall"
+  kv "常用命令" "mg status | mg doctor | mg logs -f | mg restart | mg update | mg uninstall"
+  section "下一步"
+  log_info "如果你需要公网访问面板，请用 Nginx/Caddy 反向代理到 ${PANEL_BIND_HOST}:${PANEL_PORT}${WEB_BASE_PATH}，并启用 HTTPS。"
+  log_info "如果服务启动失败，请运行：journalctl -u migate -n 80 --no-pager"
+  log_info "如果核心不可用，请运行：mg doctor"
 }
 
 main() {
   EXTRA_ARGS=()
   EXTRA_ARGS_COUNT=0
   parse_args "$@"
+  print_banner
   environment_report
   if [ "$ACTION" = "check" ]; then
     check_update
