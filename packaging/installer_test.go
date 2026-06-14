@@ -496,7 +496,16 @@ func TestReleaseWorkflowBuildsAndUploadsReleaseAssets(t *testing.T) {
 		"actions/checkout",
 		"actions/setup-go",
 		"go-version-file: go.mod",
+		"actions/setup-node",
+		"node-version: 22",
+		"cache: npm",
+		"cache-dependency-path: web/package-lock.json",
+		"npm ci --prefer-offline --no-audit",
+		"npm test",
+		"go test ./...",
+		"go vet ./...",
 		"packaging/build-release.sh",
+		"sha256sum -c checksums.txt",
 		"softprops/action-gh-release",
 		"dist/migate-linux-amd64.tar.gz",
 		"dist/migate-linux-arm64.tar.gz",
@@ -507,7 +516,7 @@ func TestReleaseWorkflowBuildsAndUploadsReleaseAssets(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"npm", "node_modules", "pip", "uv ", "python", join("open", "vpn"), "rollout", "leak", "egress"}
+	forbidden := []string{"node_modules", "pip", "uv ", "python", join("open", "vpn"), "rollout", "leak", "egress"}
 	lower := strings.ToLower(workflow)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
