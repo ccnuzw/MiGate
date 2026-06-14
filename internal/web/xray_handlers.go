@@ -104,6 +104,14 @@ func validateXrayConfig(ctx context.Context, store Store) configValidationResult
 		result.Error = "list_routing_rules_failed"
 		return result
 	}
+	return validateXrayConfigSnapshot(validationSnapshot{inbounds: inbounds, outbounds: outbounds, rules: rules})
+}
+
+func validateXrayConfigSnapshot(snapshot validationSnapshot) configValidationResult {
+	result := configValidationResult{Target: "xray", Valid: true, Warnings: []string{}}
+	inbounds := snapshot.inbounds
+	outbounds := snapshot.outbounds
+	rules := snapshot.rules
 	cfg, err := xray.BuildConfigWithOutbounds(inbounds, outbounds, rules)
 	if err != nil {
 		result.Valid = false

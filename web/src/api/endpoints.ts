@@ -33,6 +33,10 @@ export const api = {
     const response = await get<Inbound[] | { inbounds?: Inbound[] }>('/api/inbounds');
     return Array.isArray(response) ? response : response.inbounds || [];
   },
+  inboundTraffic: async () => {
+    const response = await get<Inbound[] | { inbounds?: Inbound[] }>('/api/inbounds?refresh=traffic');
+    return Array.isArray(response) ? response : response.inbounds || [];
+  },
   createInbound: (body: Record<string, unknown>) => post<Inbound | { inbound: Inbound }>('/api/inbounds', body),
   updateInbound: (id: number, body: Record<string, unknown>) => put<Inbound>(`/api/inbounds/${id}`, body),
   deleteInbound: (id: number) => del<{ status: string }>(`/api/inbounds/${id}`),

@@ -41,19 +41,17 @@ func coreInstallHandler(core string) http.HandlerFunc {
 		var commands []string
 		switch core {
 		case "xray":
-			commands = []string{"download Xray-install script", "run installed script", "mkdir -p /usr/local/etc/xray", "ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json", "systemctl enable --now xray"}
+			commands = []string{"refuse unverified remote Xray installer"}
 			script = `set -euo pipefail
-if ! command -v curl >/dev/null 2>&1; then echo 'curl is required' >&2; exit 1; fi
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$tmp/install-release.sh"
-bash "$tmp/install-release.sh"
-mkdir -p /usr/local/etc/xray
-ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json
-ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
-systemctl enable xray
-systemctl restart xray || true
-xray --version | head -1`
+cat >&2 <<'MSG'
+Automatic Xray installation is disabled because the upstream installer script does not provide a pinned checksum or signature in MiGate.
+Install a pinned Xray release manually, verify it, then run:
+  mkdir -p /usr/local/etc/xray
+  ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json
+  ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
+  systemctl enable --now xray
+MSG
+exit 1`
 		case "singbox":
 			commands = []string{"download sing-box release", "install /usr/local/bin/sing-box", "write /etc/systemd/system/migate-singbox.service", "systemctl enable --now migate-singbox"}
 			script = `set -euo pipefail
@@ -140,16 +138,11 @@ func coreUninstallHandler(core string) http.HandlerFunc {
 		var commands []string
 		switch core {
 		case "xray":
-			commands = []string{"systemctl disable --now xray", "download Xray-install script from official XTLS repository", "bash installed script remove", "remove MiGate xray symlinks"}
+			commands = []string{"systemctl disable --now xray", "remove MiGate xray symlinks"}
 			script = `set -euo pipefail
-if ! command -v curl >/dev/null 2>&1; then echo 'curl is required' >&2; exit 1; fi
 systemctl disable --now xray 2>/dev/null || true
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$tmp/install-release.sh"
-bash "$tmp/install-release.sh" remove --purge 2>&1 || true
 rm -f /usr/local/etc/xray/xray.json /usr/local/etc/xray/config.json
-printf 'Xray removed or disabled\n'`
+printf 'Xray service disabled and MiGate symlinks removed. Remove the Xray binary/package manually if it was installed outside MiGate.\n'`
 		case "singbox":
 			commands = []string{"systemctl disable --now migate-singbox", "remove sing-box binary and service"}
 			script = `set -euo pipefail

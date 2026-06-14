@@ -65,16 +65,17 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"WebUI",
 		"xray.json",
 		"/usr/local/etc/xray/xray.json",
-		"ln -sf \"${INSTALL_DIR}/xray.json\" /usr/local/etc/xray/xray.json",
+		"ln -sf ${INSTALL_DIR}/xray.json /usr/local/etc/xray/xray.json",
 		"install_xray",
-		"Xray-install",
+		"未提供 MiGate 可固定校验",
+		"hash-password",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer missing %q", want)
 		}
 	}
 
-	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", "go build", join("open", "vpn"), "migate-proxy", "rollout", "leak", "egress", "armv7"}
+	forbidden := []string{"git clone", "pip install", "uv ", "python3 -m", "npm install", "go build", "Xray-install/raw/main/install-release.sh", join("open", "vpn"), "migate-proxy", "rollout", "leak", "egress", "armv7"}
 	lower := strings.ToLower(script)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
@@ -507,8 +508,15 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 		"ExecStart=/usr/local/bin/migate serve",
 		"--host 0.0.0.0",
 		"--config /etc/migate/panel.json",
-		"User=root",
 		"Restart=on-failure",
+		"NoNewPrivileges=true",
+		"PrivateTmp=true",
+		"ProtectSystem=strict",
+		"ProtectHome=true",
+		"ReadWritePaths=/etc/migate /usr/local/migate /var/log",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
+		"SystemCallFilter=@system-service",
 	} {
 		if !strings.Contains(service, want) {
 			t.Fatalf("service missing %q: %s", want, service)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,23 @@ import (
 )
 
 func join(parts ...string) string { return strings.Join(parts, "") }
+
+func localLoginRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1")
+	req.Host = "127.0.0.1"
+	req.RemoteAddr = "127.0.0.1:12345"
+	return req
+}
+
+func localWriteRequest(method, target string) *http.Request {
+	req := httptest.NewRequest(method, target, nil)
+	req.Header.Set("Origin", "http://127.0.0.1")
+	req.Host = "127.0.0.1"
+	req.RemoteAddr = "127.0.0.1:12345"
+	return req
+}
 
 func TestAuthIsDisabledByDefault(t *testing.T) {
 	router := NewRouter()
@@ -42,7 +60,7 @@ func TestAuthShowsLoginPageForUnauthenticatedPanelRoot(t *testing.T) {
 
 func TestAuthAPIEndpointsRequireSession(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
-	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status", "/api/singbox/config"} {
+	for _, path := range []string{"/api/inbounds", "/api/clients", "/api/xray/config", "/api/xray/apply", "/api/xray/status", "/api/singbox/config", "/api/singbox/status", "/api/singbox/version"} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		router.ServeHTTP(response, req)
@@ -79,8 +97,7 @@ func TestAuthLoginRejectsWrongCredentials(t *testing.T) {
 
 	body := `{"username":"admin","password":"wrong"}`
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(body)))
-	req.Header.Set("Content-Type", "application/json")
+	req := localLoginRequest(body)
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for wrong password, got %d: %s", response.Code, response.Body.String())
@@ -92,8 +109,7 @@ func TestAuthLoginSucceedsWithValidCredentials(t *testing.T) {
 
 	body := `{"username":"admin","password":"secret"}`
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(body)))
-	req.Header.Set("Content-Type", "application/json")
+	req := localLoginRequest(body)
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200 for valid login, got %d: %s", response.Code, response.Body.String())
@@ -131,11 +147,52 @@ func TestAuthLoginSucceedsWithValidCredentials(t *testing.T) {
 	}
 }
 
+func TestAuthLoginAcceptsHashedPassword(t *testing.T) {
+	hashed, err := HashPanelPassword("secret")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	router := NewRouter(WithAuth("admin", hashed))
+	response := httptest.NewRecorder()
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 for hashed password login, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAuthLoginMigratesPlaintextPasswordToHash(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/panel.json"
+	if err := os.WriteFile(configPath, []byte(`{"panel_username":"admin","panel_password":"secret"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	router := NewRouter(WithAuth("admin", "secret"), WithConfigDir(dir))
+	response := httptest.NewRecorder()
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var saved map[string]string
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if !IsPanelPasswordHash(saved["panel_password"]) || !VerifyPanelPassword(saved["panel_password"], "secret") {
+		t.Fatalf("expected migrated password hash, got %q", saved["panel_password"])
+	}
+}
+
 func TestAuthLoginSetsSecureCookieForHTTPS(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"), WithTrustedProxyHeaders(true))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://127.0.0.1")
 	req.Header.Set("X-Forwarded-Proto", "https")
 	router.ServeHTTP(response, req)
 
@@ -160,8 +217,9 @@ func TestAuthLoginSetsSecureCookieForHTTPS(t *testing.T) {
 func TestAuthLoginSetsSecureCookieForDirectTLS(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://127.0.0.1")
 	req.TLS = &tls.ConnectionState{}
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
@@ -179,8 +237,7 @@ func TestAuthLoginSetsSecureCookieForDirectTLS(t *testing.T) {
 func TestAuthLoginDoesNotTrustForwardedProtoByDefault(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
-	req.Header.Set("Content-Type", "application/json")
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	router.ServeHTTP(response, req)
 
@@ -196,33 +253,163 @@ func TestAuthLoginDoesNotTrustForwardedProtoByDefault(t *testing.T) {
 	}
 }
 
+func TestAuthLoginAllowsSameOriginPublicHTTP(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+	response := httptest.NewRecorder()
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://panel.example.com")
+	req.Host = "panel.example.com"
+	req.RemoteAddr = "203.0.113.10:44321"
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected same-origin public HTTP login to be allowed, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAuthLoginAllowsSameOriginLoopbackHostFromPublicPeer(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+	response := httptest.NewRecorder()
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:9999")
+	req.Host = "127.0.0.1:9999"
+	req.RemoteAddr = "203.0.113.10:44321"
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected same-origin loopback host login to be allowed, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAuthLoginAllowsTrustedProxyHTTPS(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithTrustedProxyHeaders(true))
+	response := httptest.NewRecorder()
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Host = "panel.example.com"
+	req.RemoteAddr = "203.0.113.10:44321"
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected trusted proxy HTTPS login to succeed, got %d: %s", response.Code, response.Body.String())
+	}
+	if cookie := findSessionCookie(response.Result().Cookies()); cookie == nil || !cookie.Secure {
+		t.Fatalf("expected Secure cookie through trusted proxy, got %+v", cookie)
+	}
+}
+
+func TestAuthCSRFAllowsPublicHostOrigin(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithPublicHost("https://panel.example.com/app"), WithTrustedProxyHeaders(true))
+	response := httptest.NewRecorder()
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Host = "127.0.0.1:9999"
+	req.RemoteAddr = "203.0.113.10:44321"
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected public_host origin to be accepted, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAuthCSRFAllowsTrustedForwardedHostOrigin(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithTrustedProxyHeaders(true))
+	response := httptest.NewRecorder()
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "panel.example.com")
+	req.Host = "127.0.0.1:9999"
+	req.RemoteAddr = "203.0.113.10:44321"
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected trusted forwarded host origin to be accepted, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAuthCSRFOriginPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin string
+		want   int
+	}{
+		{name: "same origin", origin: "http://127.0.0.1:9999", want: http.StatusOK},
+		{name: "same host implicit default port", origin: "http://127.0.0.1", want: http.StatusForbidden},
+		{name: "same host different port", origin: "http://127.0.0.1:4444", want: http.StatusForbidden},
+		{name: "cross origin", origin: "http://evil.example", want: http.StatusForbidden},
+		{name: "missing origin", origin: "", want: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := NewRouter(WithAuth("admin", "secret"))
+			resp := httptest.NewRecorder()
+			req := localLoginRequest(`{"username":"admin","password":"secret"}`)
+			req.Header.Set("Content-Type", "application/json")
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			} else {
+				req.Header.Del("Origin")
+			}
+			req.Host = "127.0.0.1:9999"
+			req.RemoteAddr = "127.0.0.1:54321"
+			router.ServeHTTP(resp, req)
+			if resp.Code != tc.want {
+				t.Fatalf("expected %d, got %d: %s", tc.want, resp.Code, resp.Body.String())
+			}
+		})
+	}
+}
+
+func TestAuthCSRFRejectionDoesNotConsumeLoginRateLimit(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithTrustedProxyHeaders(true), WithLoginRateLimit(1, time.Minute))
+	insecure := localLoginRequest(`{"username":"admin","password":"wrong"}`)
+	insecure.Header.Set("Origin", "http://evil.example")
+	insecure.Host = "panel.example.com"
+	insecure.RemoteAddr = "203.0.113.10:44321"
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, insecure)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected cross-origin login to be rejected before rate limit, got %d: %s", resp.Code, resp.Body.String())
+	}
+
+	valid := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	valid.Header.Set("Origin", "https://panel.example.com")
+	valid.Header.Set("X-Forwarded-Proto", "https")
+	valid.Host = "panel.example.com"
+	valid.RemoteAddr = "203.0.113.10:44321"
+	ok := httptest.NewRecorder()
+	router.ServeHTTP(ok, valid)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("cross-origin request should not consume rate limit, got %d: %s", ok.Code, ok.Body.String())
+	}
+}
+
 func TestAuthLoginRateLimitAndSuccessfulLoginClearsFailures(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"), WithLoginRateLimit(2, 20*time.Millisecond))
 	for i := 0; i < 2; i++ {
 		resp := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong"}`)))
-		req.Header.Set("Content-Type", "application/json")
-		req.RemoteAddr = "198.51.100.10:12345"
+		req := localLoginRequest(`{"username":"admin","password":"wrong"}`)
+		req.RemoteAddr = "127.0.0.1:12345"
 		router.ServeHTTP(resp, req)
 		if resp.Code != http.StatusUnauthorized {
 			t.Fatalf("expected failed login %d to return 401, got %d", i+1, resp.Code)
 		}
 	}
 	limited := httptest.NewRecorder()
-	limitedReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
-	limitedReq.Header.Set("Content-Type", "application/json")
-	limitedReq.RemoteAddr = "198.51.100.10:12345"
+	limitedReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
+	limitedReq.RemoteAddr = "127.0.0.1:12345"
 	router.ServeHTTP(limited, limitedReq)
 	if limited.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected login to be rate limited, got %d: %s", limited.Code, limited.Body.String())
 	}
 
-	waitForLoginStatus(t, router, "198.51.100.10:12345", http.StatusOK, 200*time.Millisecond)
+	waitForLoginStatus(t, router, "127.0.0.1:12345", http.StatusOK, 200*time.Millisecond)
 
 	afterReset := httptest.NewRecorder()
-	afterResetReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong"}`)))
-	afterResetReq.Header.Set("Content-Type", "application/json")
-	afterResetReq.RemoteAddr = "198.51.100.10:12345"
+	afterResetReq := localLoginRequest(`{"username":"admin","password":"wrong"}`)
+	afterResetReq.RemoteAddr = "127.0.0.1:12345"
 	router.ServeHTTP(afterReset, afterResetReq)
 	if afterReset.Code != http.StatusUnauthorized {
 		t.Fatalf("successful login should clear failure state, got %d", afterReset.Code)
@@ -245,8 +432,7 @@ func waitForLoginStatus(t *testing.T, router http.Handler, remoteAddr string, wa
 	var lastBody string
 	for time.Now().Before(deadline) {
 		resp := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
-		req.Header.Set("Content-Type", "application/json")
+		req := localLoginRequest(`{"username":"admin","password":"secret"}`)
 		req.RemoteAddr = remoteAddr
 		router.ServeHTTP(resp, req)
 		lastCode = resp.Code
@@ -263,20 +449,18 @@ func TestAuthLoginRateLimitDoesNotTrustForwardedForByDefault(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"), WithLoginRateLimit(2, time.Minute))
 	for i := 0; i < 2; i++ {
 		resp := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong"}`)))
-		req.Header.Set("Content-Type", "application/json")
+		req := localLoginRequest(`{"username":"admin","password":"wrong"}`)
 		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", i+1))
-		req.RemoteAddr = "198.51.100.20:12345"
+		req.RemoteAddr = "127.0.0.1:22345"
 		router.ServeHTTP(resp, req)
 		if resp.Code != http.StatusUnauthorized {
 			t.Fatalf("expected failed login %d to return 401, got %d", i+1, resp.Code)
 		}
 	}
 	limited := httptest.NewRecorder()
-	limitedReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
-	limitedReq.Header.Set("Content-Type", "application/json")
+	limitedReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	limitedReq.Header.Set("X-Forwarded-For", "203.0.113.99")
-	limitedReq.RemoteAddr = "198.51.100.20:12345"
+	limitedReq.RemoteAddr = "127.0.0.1:22345"
 	router.ServeHTTP(limited, limitedReq)
 	if limited.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected spoofed X-Forwarded-For to remain rate limited, got %d", limited.Code)
@@ -302,8 +486,7 @@ func TestAuthLogoutClearsSession(t *testing.T) {
 	// First login
 	loginBody := `{"username":"admin","password":"secret"}`
 	loginResp := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(loginBody)))
-	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq := localLoginRequest(loginBody)
 	router.ServeHTTP(loginResp, loginReq)
 
 	cookies := loginResp.Result().Cookies()
@@ -320,7 +503,7 @@ func TestAuthLogoutClearsSession(t *testing.T) {
 
 	// Then logout
 	logoutResp := httptest.NewRecorder()
-	logoutReq := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	logoutReq := localWriteRequest(http.MethodPost, "/api/logout")
 	logoutReq.AddCookie(sessionCookie)
 	router.ServeHTTP(logoutResp, logoutReq)
 	if logoutResp.Code != http.StatusOK {
@@ -346,6 +529,9 @@ func TestAuthLogoutClearsSessionAtBasePath(t *testing.T) {
 	loginResp := httptest.NewRecorder()
 	loginReq := httptest.NewRequest(http.MethodPost, "/migate/api/login", bytes.NewReader([]byte(loginBody)))
 	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
 	router.ServeHTTP(loginResp, loginReq)
 
 	var sessionCookie *http.Cookie
@@ -360,7 +546,7 @@ func TestAuthLogoutClearsSessionAtBasePath(t *testing.T) {
 	}
 
 	logoutResp := httptest.NewRecorder()
-	logoutReq := httptest.NewRequest(http.MethodPost, "/migate/api/logout", nil)
+	logoutReq := localWriteRequest(http.MethodPost, "/migate/api/logout")
 	logoutReq.AddCookie(sessionCookie)
 	router.ServeHTTP(logoutResp, logoutReq)
 
@@ -397,7 +583,7 @@ func TestAuthSubscriptionEndpointIsPublic(t *testing.T) {
 func TestAuthAPILoginIsPublic(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, req)
 	if response.Code == http.StatusUnauthorized {
@@ -422,7 +608,7 @@ func TestAuthSessionRevocation(t *testing.T) {
 
 	// Login and get session cookie
 	loginResp := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	loginReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(loginResp, loginReq)
 
@@ -448,7 +634,7 @@ func TestAuthSessionRevocation(t *testing.T) {
 
 	// Logout (this revokes the session)
 	logoutResp := httptest.NewRecorder()
-	logoutReq := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	logoutReq := localWriteRequest(http.MethodPost, "/api/logout")
 	logoutReq.AddCookie(sessionCookie)
 	router.ServeHTTP(logoutResp, logoutReq)
 	if logoutResp.Code != http.StatusOK {
@@ -486,7 +672,7 @@ func TestAuthSessionsEndpoint(t *testing.T) {
 	// Login twice to create two sessions
 	login := func() *http.Cookie {
 		loginResp := httptest.NewRecorder()
-		loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+		loginReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 		loginReq.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(loginResp, loginReq)
 		for _, c := range loginResp.Result().Cookies() {
@@ -542,7 +728,7 @@ func TestAuthLoginPrunesOldActiveSessions(t *testing.T) {
 
 	for i := 0; i < maxActiveSessions+2; i++ {
 		loginResp := httptest.NewRecorder()
-		loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+		loginReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 		loginReq.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(loginResp, loginReq)
 		if loginResp.Code != http.StatusOK {
@@ -569,7 +755,7 @@ func TestAuthRevokeOtherSessions(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"), WithStore(store))
 	login := func() *http.Cookie {
 		loginResp := httptest.NewRecorder()
-		loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+		loginReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 		loginReq.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(loginResp, loginReq)
 		if loginResp.Code != http.StatusOK {
@@ -588,7 +774,7 @@ func TestAuthRevokeOtherSessions(t *testing.T) {
 	currentCookie := login()
 
 	revokeResp := httptest.NewRecorder()
-	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/others", nil)
+	revokeReq := localWriteRequest(http.MethodDelete, "/api/sessions/others")
 	revokeReq.AddCookie(currentCookie)
 	router.ServeHTTP(revokeResp, revokeReq)
 	if revokeResp.Code != http.StatusOK {
@@ -631,7 +817,7 @@ func TestAuthSessionRevokeByID(t *testing.T) {
 
 	// Login
 	loginResp := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	loginReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(loginResp, loginReq)
 
@@ -664,7 +850,7 @@ func TestAuthSessionRevokeByID(t *testing.T) {
 
 	// Revoke the session by ID
 	revokeResp := httptest.NewRecorder()
-	revokeReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/sessions/%.0f", firstID), nil)
+	revokeReq := localWriteRequest(http.MethodDelete, fmt.Sprintf("/api/sessions/%.0f", firstID))
 	revokeReq.AddCookie(sessionCookie)
 	router.ServeHTTP(revokeResp, revokeReq)
 	if revokeResp.Code != http.StatusOK {
@@ -693,7 +879,7 @@ func TestAuthSessionRevokeByIDNotFound(t *testing.T) {
 
 	// Login
 	loginResp := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	loginReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(loginResp, loginReq)
 
@@ -710,7 +896,7 @@ func TestAuthSessionRevokeByIDNotFound(t *testing.T) {
 
 	// Revoke non-existent session
 	revokeResp := httptest.NewRecorder()
-	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/99999", nil)
+	revokeReq := localWriteRequest(http.MethodDelete, "/api/sessions/99999")
 	revokeReq.AddCookie(sessionCookie)
 	router.ServeHTTP(revokeResp, revokeReq)
 	if revokeResp.Code != http.StatusNotFound {
@@ -731,7 +917,7 @@ func TestAuthSessionHandlerDetectsRevokedSession(t *testing.T) {
 
 	// Login
 	loginResp := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq := localLoginRequest(`{"username":"admin","password":"secret"}`)
 	loginReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(loginResp, loginReq)
 
@@ -765,7 +951,7 @@ func TestAuthSessionHandlerDetectsRevokedSession(t *testing.T) {
 
 	// Logout (revokes the session)
 	logoutResp := httptest.NewRecorder()
-	logoutReq := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	logoutReq := localWriteRequest(http.MethodPost, "/api/logout")
 	logoutReq.AddCookie(sessionCookie)
 	router.ServeHTTP(logoutResp, logoutReq)
 

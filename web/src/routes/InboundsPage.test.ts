@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Inbound } from '../api/types';
-import { buildFullInboundPayload, createDefaultInbound, hasAttachableSettingCert, inboundFormValues } from './InboundsPage';
+import { buildFullInboundPayload, createDefaultInbound, hasAttachableSettingCert, inboundFormValues, mergeInboundTraffic } from './InboundsPage';
 
 describe('inbound payload helpers', () => {
   const existing: Inbound = {
@@ -117,5 +117,43 @@ describe('inbound payload helpers', () => {
     expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/xray/certs/example.com.pem', key_path: '' })).toBe(false);
     expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '   ', key_path: '/etc/xray/certs/example.com.key' })).toBe(false);
     expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/xray/certs/example.com.pem', key_path: '/etc/xray/certs/example.com.key' })).toBe(true);
+  });
+
+  it('merges lightweight traffic refresh without replacing full config fields', () => {
+    const current: Inbound[] = [{
+      id: 1,
+      remark: 'edge',
+      protocol: 'vless',
+      port: 443,
+      network: 'tcp',
+      security: 'reality',
+      enabled: true,
+      uuid: '11111111-1111-4111-8111-111111111111',
+      reality_private_key: 'private-key',
+      clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', uuid: 'client-uuid', enabled: true, traffic_limit: 1000, expiry_at: 0 }],
+    }];
+    const traffic: Inbound[] = [{
+      id: 1,
+      remark: 'edge',
+      protocol: 'vless',
+      port: 443,
+      network: 'tcp',
+      security: 'reality',
+      enabled: false,
+      clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', uuid: 'client-uuid', enabled: false, up: 12, down: 34, traffic_limit: 2000, expiry_at: 99 }],
+      traffic_up: 12,
+      traffic_down: 34,
+      traffic_total: 46,
+      traffic_stats_source: 'xray',
+      realtime_stats_source: 'xray',
+      client_traffic: { '10': { up: 12, down: 34, source: 'xray', realtime_source: 'xray' } },
+    }];
+
+    const [merged] = mergeInboundTraffic(current, traffic);
+
+    expect(merged.enabled).toBe(false);
+    expect(merged.reality_private_key).toBe('private-key');
+    expect(merged.traffic_total).toBe(46);
+    expect(merged.clients?.[0]).toMatchObject({ email: 'sam@example.com', enabled: false, up: 12, down: 34, traffic_limit: 2000, expiry_at: 99 });
   });
 });

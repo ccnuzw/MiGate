@@ -1,8 +1,10 @@
 import { defineConfig } from 'vite';
+import type { OutputAsset, OutputChunk } from 'rollup';
 import react from '@vitejs/plugin-react';
+import { brotliCompressSync, gzipSync } from 'node:zlib';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), precompressAssets()],
   base: './',
   build: {
     outDir: '../internal/web/static/dist',
@@ -11,17 +13,15 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (!id.includes('node_modules')) {
+          const normalized = id.replace(/\\/g, '/');
+          if (!normalized.includes('node_modules')) {
             return;
           }
-          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/react-router-dom/')) {
+          if (normalized.includes('node_modules/react/') || normalized.includes('node_modules/react-dom/') || normalized.includes('node_modules/react-router-dom/')) {
             return 'react';
           }
-          if (id.includes('/@tanstack/react-query/')) {
+          if (normalized.includes('node_modules/@tanstack/react-query/')) {
             return 'query';
-          }
-          if (id.includes('/react-hook-form/') || id.includes('/@hookform/resolvers/') || id.includes('/zod/')) {
-            return 'forms';
           }
         },
       },
@@ -37,3 +37,24 @@ export default defineConfig({
     },
   },
 });
+
+function precompressAssets() {
+  return {
+    name: 'migate-precompress-assets',
+    apply: 'build' as const,
+    generateBundle(_options: unknown, bundle: Record<string, OutputAsset | OutputChunk>) {
+      for (const [fileName, asset] of Object.entries(bundle)) {
+        if (!shouldPrecompress(fileName)) continue;
+        const source = asset.type === 'asset' ? asset.source : asset.code;
+        if (source == null) continue;
+        const input = typeof source === 'string' ? Buffer.from(source) : Buffer.from(source);
+        this.emitFile({ type: 'asset', fileName: `${fileName}.gz`, source: gzipSync(input, { level: 9 }) });
+        this.emitFile({ type: 'asset', fileName: `${fileName}.br`, source: brotliCompressSync(input) });
+      }
+    },
+  };
+}
+
+function shouldPrecompress(fileName: string) {
+  return /\.(js|css|html|svg|json)$/.test(fileName);
+}

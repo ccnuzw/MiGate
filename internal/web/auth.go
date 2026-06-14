@@ -7,7 +7,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -50,7 +52,7 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 		}
 		path := r.URL.Path
 		// Public paths that do not need auth
-		if path == "/login" || path == "/" || path == "/api/health" || path == "/api/login" || path == "/api/session" || path == "/api/singbox/status" || path == "/api/singbox/version" || strings.HasPrefix(path, "/sub/") || strings.HasPrefix(path, "/assets/") {
+		if path == "/login" || path == "/" || path == "/api/health" || path == "/api/login" || path == "/api/session" || strings.HasPrefix(path, "/sub/") || strings.HasPrefix(path, "/assets/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -85,6 +87,16 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 					}
 				}
 			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func csrfMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg.authEnabled && isAPIWriteRequest(r) && !validSameOriginRequest(r, cfg) {
+			writeJSONError(w, http.StatusForbidden, "csrf_origin_mismatch")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -188,13 +200,14 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusTooManyRequests, "login_rate_limited")
 			return
 		}
-		if !constantTimeStringEqual(req.Username, cfg.authUsername) || !constantTimeStringEqual(req.Password, cfg.authPassword) {
+		if !constantTimeStringEqual(req.Username, cfg.authUsername) || !cfg.verifyPanelPassword(req.Password) {
 			if cfg.loginLimiter != nil {
 				cfg.loginLimiter.recordFailure(keys...)
 			}
 			writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")
 			return
 		}
+		migratePanelPasswordHash(r, cfg, req.Password)
 		if cfg.loginLimiter != nil {
 			cfg.loginLimiter.reset(keys...)
 		}
@@ -290,12 +303,184 @@ func sessionHandler(cfg *routerConfig) http.HandlerFunc {
 			if !revoked {
 				resp["authenticated"] = true
 				resp["username"] = cfg.authUsername
-				resp["default_password"] = cfg.authPassword == "admin"
+				resp["default_password"] = cfg.panelPasswordUsesDefault()
 			}
 			resp["revoked"] = revoked
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func migratePanelPasswordHash(r *http.Request, cfg *routerConfig, password string) {
+	if cfg == nil || cfg.configDir == "" || cfg.panelPasswordIsHash() {
+		return
+	}
+	hashed, err := HashPanelPassword(password)
+	if err != nil {
+		return
+	}
+	if writePanelPasswordToConfig(cfg.configDir+"/panel.json", hashed) == nil {
+		cfg.setPanelPassword(hashed)
+	}
+}
+
+func (cfg *routerConfig) currentPanelPassword() string {
+	if cfg == nil {
+		return ""
+	}
+	cfg.authMu.RLock()
+	defer cfg.authMu.RUnlock()
+	return cfg.authPassword
+}
+
+func (cfg *routerConfig) setPanelPassword(password string) {
+	if cfg == nil {
+		return
+	}
+	cfg.authMu.Lock()
+	defer cfg.authMu.Unlock()
+	cfg.authPassword = password
+}
+
+func (cfg *routerConfig) verifyPanelPassword(password string) bool {
+	return VerifyPanelPassword(cfg.currentPanelPassword(), password)
+}
+
+func (cfg *routerConfig) panelPasswordUsesDefault() bool {
+	return PanelPasswordUsesDefault(cfg.currentPanelPassword())
+}
+
+func (cfg *routerConfig) panelPasswordIsHash() bool {
+	return IsPanelPasswordHash(cfg.currentPanelPassword())
+}
+
+func isAPIWriteRequest(r *http.Request) bool {
+	if r == nil || !strings.HasPrefix(r.URL.Path, "/api/") {
+		return false
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
+	}
+}
+
+func validSameOriginRequest(r *http.Request, cfg *routerConfig) bool {
+	source := r.Header.Get("Origin")
+	if source == "" {
+		source = r.Header.Get("Referer")
+	}
+	if source == "" {
+		return false
+	}
+	u, err := url.Parse(source)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	expectedScheme := "http"
+	if requestIsHTTPS(r, cfg) {
+		expectedScheme = "https"
+	}
+	if u.Scheme != expectedScheme {
+		return false
+	}
+	sourceHost := canonicalOriginHostPort(u)
+	if sourceHost == "" {
+		return false
+	}
+	for _, allowedHost := range sameOriginAllowedHosts(r, cfg) {
+		if strings.EqualFold(sourceHost, canonicalAllowedOriginHostPort(u.Scheme, allowedHost)) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameOriginAllowedHosts(r *http.Request, cfg *routerConfig) []string {
+	hosts := []string{r.Host}
+	if cfg != nil {
+		if cfg.trustProxy {
+			if forwardedHost := firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+				hosts = append(hosts, forwardedHost)
+			}
+		}
+		if publicHost := originHost(cfg.publicHost); publicHost != "" {
+			hosts = append(hosts, publicHost)
+		}
+	}
+	return hosts
+}
+
+func hostWithoutPort(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.Trim(strings.ToLower(host), "[]")
+}
+
+func canonicalOriginHostPort(u *url.URL) string {
+	return canonicalHostPort(u.Scheme, u.Host)
+}
+
+func canonicalAllowedOriginHostPort(scheme, host string) string {
+	return canonicalHostPort(scheme, host)
+}
+
+func canonicalHostPort(scheme, host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	hostname, port, err := net.SplitHostPort(host)
+	if err != nil {
+		hostname = host
+		port = ""
+	}
+	hostname = strings.Trim(strings.ToLower(hostname), "[]")
+	if hostname == "" {
+		return ""
+	}
+	if port == "" {
+		port = defaultPortForScheme(scheme)
+	}
+	if port == "" {
+		return hostname
+	}
+	return hostname + ":" + port
+}
+
+func defaultPortForScheme(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+func originHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if u, err := url.Parse(host); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return host
+}
+
+func firstForwardedHeaderValue(value string) string {
+	if i := strings.Index(value, ","); i >= 0 {
+		value = value[:i]
+	}
+	return strings.TrimSpace(value)
 }
 
 // sessionsListHandler returns a list of active sessions (GET /api/sessions).

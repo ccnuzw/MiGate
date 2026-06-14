@@ -129,6 +129,12 @@ func validateSingboxConfig(ctx context.Context, store Store) configValidationRes
 		result.Error = "list_inbounds_failed"
 		return result
 	}
+	return validateSingboxConfigSnapshot(validationSnapshot{inbounds: inbounds})
+}
+
+func validateSingboxConfigSnapshot(snapshot validationSnapshot) configValidationResult {
+	result := configValidationResult{Target: "singbox", Valid: true, Warnings: []string{}}
+	inbounds := snapshot.inbounds
 	cfg := singbox.BuildConfig(inbounds)
 	result.Inbounds = len(cfg.Inbounds)
 	if result.Inbounds == 0 {

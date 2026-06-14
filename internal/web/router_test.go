@@ -141,6 +141,19 @@ func TestRouterSetsSecurityHeaders(t *testing.T) {
 		if resp.Header().Get("X-Frame-Options") != "DENY" {
 			t.Fatalf("%s response should deny framing, got %q", tc.path, resp.Header().Get("X-Frame-Options"))
 		}
+		csp := resp.Header().Get("Content-Security-Policy")
+		if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") {
+			t.Fatalf("%s response should not allow inline scripts in CSP: %s", tc.path, csp)
+		}
+		if tc.path == "/" {
+			nonce := firstCSPNonce(csp)
+			if nonce == "" {
+				t.Fatalf("%s response CSP should include a script nonce: %s", tc.path, csp)
+			}
+			if !strings.Contains(resp.Body.String(), `script nonce="`+nonce+`"`) {
+				t.Fatalf("%s response should apply CSP nonce to inline scripts", tc.path)
+			}
+		}
 		if tc.https && resp.Header().Get("Strict-Transport-Security") != "" {
 			t.Fatalf("%s response should not trust X-Forwarded-Proto by default", tc.path)
 		}
@@ -163,6 +176,14 @@ func TestRouterSetsSecurityHeaders(t *testing.T) {
 	if tlsResp.Header().Get("Strict-Transport-Security") == "" {
 		t.Fatal("direct TLS response missing HSTS")
 	}
+}
+
+func firstCSPNonce(csp string) string {
+	match := regexp.MustCompile(`'nonce-([^']+)'`).FindStringSubmatch(csp)
+	if len(match) != 2 {
+		return ""
+	}
+	return match[1]
 }
 
 func TestRouterServesViteAssets(t *testing.T) {
@@ -251,6 +272,9 @@ func TestRouterBasePathLoginPathAcceptsPostForCompatibility(t *testing.T) {
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/panel/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1")
+	req.Host = "127.0.0.1"
+	req.RemoteAddr = "127.0.0.1:12345"
 	router.ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected POST /panel/login to login, got %d: %s", resp.Code, resp.Body.String())
@@ -391,6 +415,9 @@ func TestSessionAPIReportsAuthUser(t *testing.T) {
 	login := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"sam","password":"secret"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1")
+	req.Host = "127.0.0.1"
+	req.RemoteAddr = "127.0.0.1:12345"
 	router.ServeHTTP(login, req)
 	if login.Code != http.StatusOK {
 		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
@@ -525,5 +552,26 @@ func TestCoreSingboxInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) 
 	}
 	if strings.Index(script, `sha256sum -c "sing-box.tar.gz.sha256"`) > strings.Index(script, `tar -xzf "$tmp/$asset_name"`) {
 		t.Fatalf("sing-box WebUI install script must verify checksum before extracting archive")
+	}
+}
+
+func TestCoreInstallersDoNotExecuteUnverifiedRemoteScripts(t *testing.T) {
+	script := webPackageSource(t)
+	for _, forbidden := range []string{
+		"get.acme.sh",
+		"Xray-install/raw/main/install-release.sh",
+		`bash "$tmp/install-release.sh"`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("web package must not download and execute unverified remote installer %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		"refusing to download and execute unverified acme.sh installer",
+		"refuse unverified remote Xray installer",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("web package missing explicit refusal for unverified installer %q", want)
+		}
 	}
 }

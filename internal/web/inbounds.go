@@ -67,16 +67,57 @@ func deriveRealityPublicKeys(inbounds []db.Inbound) {
 
 func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClient xray.StatsClient) {
 	inbounds := []db.Inbound{}
+	refreshTraffic := r.URL.Query().Get("refresh") == "traffic"
 	if store != nil {
-		loaded, err := store.ListInbounds(r.Context())
+		var loaded []db.Inbound
+		var err error
+		if refreshTraffic {
+			loaded, err = store.ListInboundTraffic(r.Context())
+		} else {
+			loaded, err = store.ListInbounds(r.Context())
+			if err == nil {
+				deriveRealityPublicKeys(loaded)
+			}
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 			return
 		}
-		deriveRealityPublicKeys(loaded)
 		inbounds = loaded
 	}
 	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), inbounds, statsClient)
+	if refreshTraffic {
+		views := make([]inboundTrafficView, 0, len(inbounds))
+		for _, inbound := range inbounds {
+			summary := trafficByInbound[inbound.ID]
+			view := inboundTrafficView{
+				ID:             inbound.ID,
+				UUID:           inbound.UUID,
+				Remark:         inbound.Remark,
+				Protocol:       inbound.Protocol,
+				Port:           inbound.Port,
+				Network:        inbound.Network,
+				Security:       inbound.Security,
+				Enabled:        inbound.Enabled,
+				Clients:        inbound.Clients,
+				TrafficUp:      summary.Up,
+				TrafficDown:    summary.Down,
+				TrafficTotal:   summary.Total,
+				TrafficSource:  summary.Source,
+				RealtimeSource: summary.RealtimeSource,
+				ClientTraffic:  map[int64]clientTrafficSummary{},
+			}
+			for _, client := range inbound.Clients {
+				if clientTraffic, ok := trafficByClient[client.ID]; ok {
+					view.ClientTraffic[client.ID] = clientTraffic
+				}
+			}
+			views = append(views, view)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": views})
+		return
+	}
 	views := make([]inboundView, 0, len(inbounds))
 	for _, inbound := range inbounds {
 		summary := trafficByInbound[inbound.ID]
@@ -119,14 +160,16 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) bool {
 	}
 	// Port conflict check
 	if payload.Port > 0 {
-		existing, _ := store.ListInbounds(r.Context())
-		for _, ib := range existing {
-			if ib.Port == payload.Port {
-				writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
-					"message": "端口 " + strconv.FormatInt(int64(ib.Port), 10) + " 已被入站 " + strconv.FormatInt(ib.ID, 10) + " 使用",
-				})
-				return false
-			}
+		conflict, ok, err := store.FindInboundByPort(r.Context(), payload.Port, 0)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "port_check_failed")
+			return false
+		}
+		if ok {
+			writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
+				"message": "端口 " + strconv.FormatInt(int64(conflict.Port), 10) + " 已被入站 " + strconv.FormatInt(conflict.ID, 10) + " 使用",
+			})
+			return false
 		}
 	}
 	created, err := store.CreateInbound(r.Context(), payload)
@@ -352,16 +395,11 @@ func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, inb
 }
 
 func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
-	inbounds, err := store.ListInbounds(ctx)
+	exists, err := store.InboundExists(ctx, inboundID)
 	if err != nil {
 		return false
 	}
-	for _, inbound := range inbounds {
-		if inbound.ID == inboundID {
-			return true
-		}
-	}
-	return false
+	return exists
 }
 
 func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) bool {
@@ -382,14 +420,16 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 	}
 	// Port conflict check (excluding current inbound)
 	if payload.Port > 0 {
-		existing, _ := store.ListInbounds(r.Context())
-		for _, ib := range existing {
-			if ib.ID != inboundID && ib.Port == payload.Port {
-				writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
-					"message": "端口 " + strconv.FormatInt(int64(ib.Port), 10) + " 已被入站 " + strconv.FormatInt(ib.ID, 10) + " 使用",
-				})
-				return false
-			}
+		conflict, ok, err := store.FindInboundByPort(r.Context(), payload.Port, inboundID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "port_check_failed")
+			return false
+		}
+		if ok {
+			writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
+				"message": "端口 " + strconv.FormatInt(int64(conflict.Port), 10) + " 已被入站 " + strconv.FormatInt(conflict.ID, 10) + " 使用",
+			})
+			return false
 		}
 	}
 	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)

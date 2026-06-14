@@ -27,6 +27,28 @@ func (s *countingSummaryStore) ListInbounds(ctx context.Context) ([]db.Inbound, 
 	return s.inbounds, nil
 }
 
+func (s *countingSummaryStore) ListInboundTraffic(ctx context.Context) ([]db.Inbound, error) {
+	return s.ListInbounds(ctx)
+}
+
+func (s *countingSummaryStore) InboundExists(ctx context.Context, id int64) (bool, error) {
+	for _, inbound := range s.inbounds {
+		if inbound.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *countingSummaryStore) FindInboundByPort(ctx context.Context, port int, excludeID int64) (db.Inbound, bool, error) {
+	for _, inbound := range s.inbounds {
+		if inbound.Port == port && inbound.ID != excludeID {
+			return inbound, true, nil
+		}
+	}
+	return db.Inbound{}, false, nil
+}
+
 func (s *countingSummaryStore) ListOutbounds(ctx context.Context) ([]db.Outbound, error) {
 	if s.listOutboundsErr != nil {
 		return nil, s.listOutboundsErr
@@ -174,8 +196,8 @@ func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cached summary: %v", err)
 	}
-	if store.listInboundsCalls != 3 {
-		t.Fatalf("expected first build only before expiry; validation calls included, got %d ListInbounds calls", store.listInboundsCalls)
+	if store.listInboundsCalls != 1 {
+		t.Fatalf("expected first build only before expiry, got %d ListInbounds calls", store.listInboundsCalls)
 	}
 	if first["generated_at"] != second["generated_at"] {
 		t.Fatalf("expected cached generated_at to be reused: first=%v second=%v", first["generated_at"], second["generated_at"])
@@ -185,7 +207,7 @@ func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {
 	if _, err := cache.get(context.Background(), store, nil); err != nil {
 		t.Fatalf("expired summary: %v", err)
 	}
-	if store.listInboundsCalls != 6 {
+	if store.listInboundsCalls != 2 {
 		t.Fatalf("expected cache expiry to rebuild summary, got %d ListInbounds calls", store.listInboundsCalls)
 	}
 

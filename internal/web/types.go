@@ -47,8 +47,29 @@ type inboundView struct {
 	ClientTraffic  map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
 }
 
+type inboundTrafficView struct {
+	ID             int64                          `json:"id"`
+	UUID           string                         `json:"uuid"`
+	Remark         string                         `json:"remark"`
+	Protocol       string                         `json:"protocol"`
+	Port           int                            `json:"port"`
+	Network        string                         `json:"network"`
+	Security       string                         `json:"security"`
+	Enabled        bool                           `json:"enabled"`
+	Clients        []db.Client                    `json:"clients"`
+	TrafficUp      int64                          `json:"traffic_up"`
+	TrafficDown    int64                          `json:"traffic_down"`
+	TrafficTotal   int64                          `json:"traffic_total"`
+	TrafficSource  string                         `json:"traffic_stats_source"`
+	RealtimeSource string                         `json:"realtime_stats_source,omitempty"`
+	ClientTraffic  map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
+}
+
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
+	ListInboundTraffic(ctx context.Context) ([]db.Inbound, error)
+	InboundExists(ctx context.Context, id int64) (bool, error)
+	FindInboundByPort(ctx context.Context, port int, excludeID int64) (db.Inbound, bool, error)
 	GetSubscriptionByClientUUID(ctx context.Context, uuid string) (db.Inbound, db.Client, bool, error)
 	GetSubscriptionByToken(ctx context.Context, token string) (db.Inbound, db.Client, bool, error)
 	CreateInbound(ctx context.Context, params db.CreateInboundParams) (db.Inbound, error)
@@ -128,6 +149,7 @@ type routerConfig struct {
 	authEnabled    bool
 	authUsername   string
 	authPassword   string
+	authMu         sync.RWMutex
 	sessionSecret  []byte
 	configDir      string
 	version        string

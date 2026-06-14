@@ -34,9 +34,6 @@ func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		inbound, client, found, err := store.GetSubscriptionByToken(r.Context(), token)
-		if err == nil && !found {
-			inbound, client, found, err = store.GetSubscriptionByClientUUID(r.Context(), token)
-		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "get_subscription_failed")
 			return

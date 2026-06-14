@@ -649,6 +649,7 @@ write_config() {
   local panel_username="$2"
   local panel_password="$3"
   local web_base_path="$4"
+  local panel_password_hash
   if [ -f "$CONFIG_PATH" ] && [ "$REGENERATE_CONFIG" -ne 1 ]; then
     log_ok "保留已有配置：$CONFIG_PATH"
     return 0
@@ -658,11 +659,12 @@ write_config() {
     printf '[DRY-RUN] write panel config %q with mode 600\n' "$CONFIG_PATH"
     return 0
   fi
+  panel_password_hash="$("$MIGATE_BIN" hash-password "$panel_password")"
   cat > "$CONFIG_PATH" <<JSON
 {
   "panel_port": ${panel_port},
   "panel_username": "$(json_escape "$panel_username")",
-  "panel_password": "$(json_escape "$panel_password")",
+  "panel_password": "$(json_escape "$panel_password_hash")",
   "web_base_path": "$(json_escape "$web_base_path")",
   "database_path": "$(json_escape "$INSTALL_DIR")/migate.db",
   "xray_config_path": "$(json_escape "$INSTALL_DIR")"
@@ -749,6 +751,14 @@ ExecStart=${MIGATE_BIN} serve --host ${PANEL_BIND_HOST} --config ${CONFIG_PATH}
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
 StandardOutput=journal
 StandardError=journal
 LogRateLimitIntervalSec=30s
@@ -780,38 +790,16 @@ restart_migate_service() {
 
 install_xray() {
   section "安装/修复 Xray"
-  log_warn "将下载并执行官方 Xray-install 脚本：https://github.com/XTLS/Xray-install"
-  log_warn "如服务器已有自定义 Xray 安装，请先确认是否允许修复/覆盖。"
+  log_error "已禁用自动 Xray 安装：上游安装脚本未提供 MiGate 可固定校验的 checksum/signature。"
+  log_info "请手动安装并校验固定版本的 Xray 后执行："
+  log_info "  mkdir -p /usr/local/etc/xray"
+  log_info "  ln -sf ${INSTALL_DIR}/xray.json /usr/local/etc/xray/xray.json"
+  log_info "  ln -sf ${INSTALL_DIR}/xray.json /usr/local/etc/xray/config.json"
+  log_info "  systemctl enable --now xray"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[DRY-RUN] xray_tmp="$(mktemp -d)"\n'
-    printf '[DRY-RUN] curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"\n'
-    printf '[DRY-RUN] bash "$xray_tmp/install-release.sh"\n'
-    printf '[DRY-RUN] ln -sf %q /usr/local/etc/xray/xray.json\n' "${INSTALL_DIR}/xray.json"
-    printf '[DRY-RUN] ln -sf %q /usr/local/etc/xray/config.json\n' "${INSTALL_DIR}/xray.json"
-    printf '[DRY-RUN] systemctl enable xray && systemctl restart xray\n'
     return 0
   fi
-  if [ "$ASSUME_YES" -ne 1 ] && [ "$CORE_PROMPTS_CONFIRMED" -ne 1 ]; then
-    if ! confirm_no "确认安装/修复 Xray？"; then
-      log_warn "跳过 Xray 安装。"
-      return 0
-    fi
-  fi
-  local xray_tmp
-  xray_tmp="$(mktemp -d)"
-  log_info "下载 Xray 官方安装脚本"
-  curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"
-  log_info "执行 Xray 官方安装脚本"
-  bash "$xray_tmp/install-release.sh"
-  rm -rf "$xray_tmp"
-  mkdir -p /usr/local/etc/xray
-  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/xray.json
-  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/config.json
-  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-    systemctl enable xray 2>/dev/null || true
-    systemctl restart xray 2>/dev/null || true
-  fi
-  log_ok "Xray 安装/修复完成"
+  return 1
 }
 
 install_singbox() {
