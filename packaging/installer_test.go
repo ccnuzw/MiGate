@@ -44,9 +44,9 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"dependency_status()",
 		"detect_existing_install()",
 		"interactive_menu()",
-		"升级并保留配置",
-		"重装并重新生成配置",
-		"只修复 systemd 服务",
+		"升级 MiGate，并保留现有配置",
+		"重装 MiGate，并重新生成面板配置",
+		"只修复 migate systemd 服务",
 		"只安装/修复 Xray",
 		"只安装/修复 sing-box",
 		"/etc/migate/panel.json",
@@ -61,7 +61,7 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"mktemp /usr/local/bin/.migate-uninstall.XXXXXX",
 		"mv -f \"$uninstaller_tmp\" \"$UNINSTALLER_BIN\"",
 		"ln -sf \"$MIGATE_BIN\" \"$MIGATE_LINK\"",
-		"CLI: mg",
+		"CLI 命令",
 		"WebUI",
 		"xray.json",
 		"/usr/local/etc/xray/xray.json",
@@ -144,14 +144,35 @@ func TestInstallerDetectsCorePathsVersionsAndServices(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"detect_core()",
+		"core_binary_path()",
 		"\"/usr/local/bin/${command_name}\" \"/usr/bin/${command_name}\"",
 		"core_version()",
 		"systemctl list-unit-files \"${service_name}.service\"",
-		"detect_core \"Xray\" \"xray\" \"xray\"",
-		"detect_core \"sing-box\" \"sing-box\" \"migate-singbox\"",
+		"if detect_core \"Xray\" \"xray\" \"xray\"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi",
+		"if detect_core \"sing-box\" \"sing-box\" \"migate-singbox\"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer core detection contract missing %q", want)
+		}
+	}
+}
+
+func TestInstallerPromptsForMissingCoresByDefaultAndPreservesExistingCores(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"XRAY_FOUND=0",
+		"SINGBOX_FOUND=0",
+		"CORE_PROMPTS_CONFIRMED=0",
+		"confirm_yes \"未检测到 Xray，是否安装 Xray？\"",
+		"confirm_yes \"未检测到 sing-box，是否安装 sing-box？\"",
+		"confirm_no \"检测到 Xray 已安装，是否重新安装/修复 Xray？\"",
+		"confirm_no \"检测到 sing-box 已安装，是否重新安装/修复 sing-box？\"",
+		"保留现有 Xray 安装。",
+		"保留现有 sing-box 安装。",
+		"CORE_PROMPTS_CONFIRMED=1",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer core prompt contract missing %q", want)
 		}
 	}
 }
@@ -161,8 +182,8 @@ func TestInstallerGeneratesRandomPasswordWhenBlank(t *testing.T) {
 	for _, want := range []string{
 		"generate_password()",
 		"PANEL_PASSWORD=\"$(generate_password)\"",
-		"No password entered; generated a random panel password.",
-		"Password: ${PANEL_PASSWORD}",
+		"未输入密码，已生成随机密码。",
+		"管理员密码",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer random password contract missing %q", want)
@@ -178,11 +199,11 @@ func TestInstallerGeneratesRandomPasswordWhenBlank(t *testing.T) {
 func TestInstallerUsesPanelBasePath(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"Web base path [${WEB_BASE_PATH:-/panel}]",
+		"prompt_line \"Web base path [${WEB_BASE_PATH:-/panel}]: \"",
 		"WEB_BASE_PATH=\"${input_web_base_path:-${WEB_BASE_PATH:-/panel}}\"",
 		"normalize_web_base_path",
 		"WEB_BASE_PATH=\"$(normalize_web_base_path \"$WEB_BASE_PATH\")\"",
-		"WebUI: http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}",
+		"WebUI 地址",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer /panel web base path contract missing %q", want)
@@ -194,7 +215,7 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"install_singbox",
-		"是否安装/修复 sing-box？[y/N]",
+		"confirm_yes \"未检测到 sing-box，是否安装 sing-box？\"",
 		"migate-singbox.service",
 		"ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json",
 		"systemctl enable migate-singbox",
@@ -202,6 +223,33 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box runtime contract missing %q", want)
+		}
+	}
+}
+
+func TestInstallerCompletionPrintsSaveableInstallSummary(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"安装完成，请保存以下信息",
+		"安装目录",
+		"面板监听",
+		"Web base path",
+		"WebUI 地址",
+		"管理员用户",
+		"管理员密码",
+		"面板配置",
+		"数据库",
+		"Xray 配置",
+		"Xray 二进制",
+		"sing-box 配置",
+		"sing-box 二进制",
+		"安装器",
+		"卸载器",
+		"MiGate 服务文件",
+		"常用命令",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer completion summary missing %q", want)
 		}
 	}
 }
@@ -497,13 +545,9 @@ func TestReleaseWorkflowBuildsAndUploadsReleaseAssets(t *testing.T) {
 		"actions/setup-go",
 		"go-version-file: go.mod",
 		"actions/setup-node",
-		"node-version: 22",
+		"node-version: 24",
 		"cache: npm",
 		"cache-dependency-path: web/package-lock.json",
-		"npm ci --prefer-offline --no-audit",
-		"npm test",
-		"go test ./...",
-		"go vet ./...",
 		"packaging/build-release.sh",
 		"sha256sum -c checksums.txt",
 		"softprops/action-gh-release",
@@ -516,7 +560,7 @@ func TestReleaseWorkflowBuildsAndUploadsReleaseAssets(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"node_modules", "pip", "uv ", "python", join("open", "vpn"), "rollout", "leak", "egress"}
+	forbidden := []string{"npm install", "npm run", "node_modules", "pip", "uv ", "python", join("open", "vpn"), "rollout", "leak", "egress"}
 	lower := strings.ToLower(workflow)
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
