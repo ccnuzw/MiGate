@@ -1354,19 +1354,22 @@ func newUUID() string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hex.EncodeToString(b[0:4]), hex.EncodeToString(b[4:6]), hex.EncodeToString(b[6:8]), hex.EncodeToString(b[8:10]), hex.EncodeToString(b[10:16]))
 }
 
-func randomHexToken(byteLen int) string {
+func randomHexToken(byteLen int) (string, error) {
 	b := make([]byte, byteLen)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
+		return "", err
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 func (s *Store) newSubscriptionToken(ctx context.Context) (string, error) {
 	for i := 0; i < 8; i++ {
-		token := randomHexToken(24)
+		token, err := randomHexToken(24)
+		if err != nil {
+			return "", err
+		}
 		var existingID int64
-		err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE subscription_token = ? LIMIT 1`, token).Scan(&existingID)
+		err = s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE subscription_token = ? LIMIT 1`, token).Scan(&existingID)
 		if err == sql.ErrNoRows {
 			return token, nil
 		}

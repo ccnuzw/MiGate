@@ -193,6 +193,45 @@ func TestRouterFromPanelConfigCanTrustProxyHeaders(t *testing.T) {
 	t.Fatalf("trusted proxy HTTPS login should set Secure session cookie: %+v", response.Result().Cookies())
 }
 
+func TestRouterFromPanelConfigWithoutDatabaseKeepsPanelOptions(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel_no_db.json")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/panel","trust_proxy":true}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config: %v", err)
+	}
+	defer cleanup()
+
+	wrongBase := httptest.NewRecorder()
+	router.ServeHTTP(wrongBase, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if wrongBase.Code != http.StatusNotFound {
+		t.Fatalf("expected base path to apply without database, got %d", wrongBase.Code)
+	}
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/panel/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("expected login 200, got %d: %s", loginResp.Code, loginResp.Body.String())
+	}
+	if loginResp.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("trust_proxy should apply without database")
+	}
+	for _, cookie := range loginResp.Result().Cookies() {
+		if cookie.Name == "migate_session" && cookie.Path == "/panel" && cookie.Secure {
+			return
+		}
+	}
+	t.Fatalf("expected secure /panel session cookie without database: %+v", loginResp.Result().Cookies())
+}
+
 func TestRouterFromPanelConfigRejectsMissingCredentials(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "panel_noauth.json")

@@ -470,7 +470,11 @@ func cliResetPassword(stdout, stderr io.Writer, runner commandRunner, m messages
 	if len(args) == 1 {
 		password = args[0]
 	} else {
-		password = generatedPassword()
+		password, err = generatedPassword()
+		if err != nil {
+			fmt.Fprintf(stderr, "generate password: %v\n", err)
+			return 1
+		}
 	}
 	cfg.PanelPassword = password
 	if err := writePanelConfig(defaultPanelConfigPath, cfg); err != nil {
@@ -665,12 +669,12 @@ func listeningStatus(ssOutput string, port int) string {
 	return "not listening"
 }
 
-func generatedPassword() string {
+func generatedPassword() (string, error) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("migate-%d", time.Now().UnixNano())
+		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(b)
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func defaultBackupPath() string {
@@ -708,8 +712,9 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	if strings.TrimSpace(cfg.PanelUsername) == "" || strings.TrimSpace(cfg.PanelPassword) == "" {
 		return nil, nil, fmt.Errorf("panel_username and panel_password are required")
 	}
+	opts := routerOptionsFromConfig(cfg, path)
 	if cfg.DatabasePath == "" {
-		return web.NewRouter(web.WithAuth(cfg.PanelUsername, cfg.PanelPassword), web.WithVersion(Version), web.WithConfigDir(filepath.Dir(path))), func() {}, nil
+		return web.NewRouter(opts...), func() {}, nil
 	}
 	store, err := db.Open(context.Background(), cfg.DatabasePath)
 	if err != nil {
@@ -717,20 +722,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	}
 	closeStore := func() { _ = store.Close() }
 
-	opts := []web.Option{web.WithStore(store), web.WithVersion(Version)}
-	if cfg.WebPath != "" {
-		opts = append(opts, web.WithBasePath(cfg.WebPath))
-	}
-	if cfg.PublicHost != "" {
-		opts = append(opts, web.WithPublicHost(cfg.PublicHost))
-	}
-	if cfg.TrustProxy {
-		opts = append(opts, web.WithTrustedProxyHeaders(true))
-	}
-	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
-		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
-	}
-	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
+	opts = append(opts, web.WithStore(store))
 
 	// Build Xray controller for shared use
 	var xrayCtrl web.XrayController
@@ -776,6 +768,24 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	}
 
 	return router, cleanup, nil
+}
+
+func routerOptionsFromConfig(cfg panelConfig, path string) []web.Option {
+	opts := []web.Option{web.WithVersion(Version)}
+	if cfg.WebPath != "" {
+		opts = append(opts, web.WithBasePath(cfg.WebPath))
+	}
+	if cfg.PublicHost != "" {
+		opts = append(opts, web.WithPublicHost(cfg.PublicHost))
+	}
+	if cfg.TrustProxy {
+		opts = append(opts, web.WithTrustedProxyHeaders(true))
+	}
+	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
+		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
+	}
+	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
+	return opts
 }
 
 func readPanelConfig(path string) (panelConfig, error) {
