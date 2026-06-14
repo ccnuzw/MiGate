@@ -3,23 +3,183 @@ set -euo pipefail
 
 REPO="${MIGATE_REPO:-imzyb/MiGate}"
 VERSION="${MIGATE_VERSION:-latest}"
-UPDATE_ONLY=0
-CHECK_ONLY=0
 INSTALL_DIR="${MIGATE_INSTALL_DIR:-/usr/local/migate}"
 CONFIG_DIR="${MIGATE_CONFIG_DIR:-/etc/migate}"
 CONFIG_PATH="${MIGATE_CONFIG_PATH:-/etc/migate/panel.json}"
-SERVICE_PATH="/etc/systemd/system/migate.service"
+SERVICE_PATH="${MIGATE_SERVICE_PATH:-/etc/systemd/system/migate.service}"
+MIGATE_BIN="${MIGATE_BIN:-/usr/local/bin/migate}"
+MIGATE_LINK="${MIGATE_LINK:-/usr/local/bin/mg}"
+INSTALLER_BIN="${INSTALLER_BIN:-/usr/local/bin/migate-install}"
+UNINSTALLER_BIN="${UNINSTALLER_BIN:-/usr/local/bin/migate-uninstall}"
+SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-singbox.service}"
 
-arch() {
-  case "$(uname -m)" in
-    x86_64|amd64) printf 'amd64' ;;
-    aarch64|arm64) printf 'arm64' ;;
-    *) echo "unsupported architecture: $(uname -m). MiGate release assets support linux/amd64 and linux/arm64." >&2; exit 1 ;;
+ACTION="auto"
+ASSUME_YES=0
+DRY_RUN=0
+REGENERATE_CONFIG=0
+INSTALL_XRAY=0
+INSTALL_SINGBOX=0
+SKIP_CORE_PROMPTS=0
+EXTRA_ARGS_COUNT=0
+
+OS_NAME="unknown"
+ARCH="unknown"
+SYSTEMD_AVAILABLE=0
+IS_ROOT=0
+PANEL_PORT=9999
+PANEL_USERNAME="admin"
+PANEL_PASSWORD=""
+WEB_BASE_PATH="/panel"
+GENERATED_PASSWORD=0
+
+log_info() { printf '[INFO] %s\n' "$*"; }
+log_ok() { printf '[OK] %s\n' "$*"; }
+log_warn() { printf '[WARN] %s\n' "$*"; }
+log_error() { printf '[ERROR] %s\n' "$*" >&2; }
+section() { printf '\n== %s ==\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+MiGate installer
+
+Usage:
+  install.sh [--install|--upgrade|--uninstall|--repair-service|--install-xray|--install-singbox] [options]
+
+Options:
+  --yes, -y             Run non-interactively for MiGate operations.
+  --install            Install MiGate. If already installed, upgrade/reinstall binary and keep config.
+  --upgrade, --update   Upgrade MiGate and keep existing config.
+  --reinstall          Reinstall MiGate binary and keep existing config.
+  --fresh-config       Regenerate panel.json during install/reinstall.
+  --uninstall          Run MiGate uninstaller. Keeps config/data unless --purge is passed after --.
+  --repair-service     Rewrite/repair migate.service only.
+  --install-xray       Install/repair Xray only, or include Xray when used with --install.
+  --install-singbox    Install/repair sing-box only, or include sing-box when used with --install.
+  --dry-run            Print planned commands without changing the system.
+  --check              Check latest MiGate release only.
+  --version vX.Y.Z     Install or upgrade to a specific release tag.
+  -h, --help           Show this help.
+
+Environment:
+  MIGATE_VERSION=vX.Y.Z
+  MIGATE_REPO=owner/repo
+  SINGBOX_VERSION=1.13.13
+EOF
+}
+
+run_cmd() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] %s\n' "$*"
+    return 0
+  fi
+  "$@"
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+detect_os() {
+  case "$(uname -s 2>/dev/null || true)" in
+    Linux) OS_NAME="linux" ;;
+    Darwin) OS_NAME="macos" ;;
+    *) OS_NAME="other" ;;
   esac
 }
 
+detect_arch() {
+  case "$(uname -m 2>/dev/null || true)" in
+    x86_64|amd64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *) ARCH="unsupported" ;;
+  esac
+}
+
+arch() {
+  detect_arch
+  if [ "$ARCH" = "unsupported" ]; then
+    log_error "unsupported architecture: $(uname -m). MiGate release assets support linux/amd64 and linux/arm64."
+    exit 1
+  fi
+  printf '%s' "$ARCH"
+}
+
+detect_systemd() {
+  if command_exists systemctl && [ -d /run/systemd/system ]; then
+    SYSTEMD_AVAILABLE=1
+  else
+    SYSTEMD_AVAILABLE=0
+  fi
+}
+
+detect_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    IS_ROOT=1
+  else
+    IS_ROOT=0
+  fi
+}
+
 require_root() {
-  [ "$(id -u)" -eq 0 ] || { echo "MiGate installer must run as root" >&2; exit 1; }
+  detect_root
+  if [ "$IS_ROOT" -ne 1 ] && [ "$DRY_RUN" -ne 1 ]; then
+    log_error "MiGate installer must run as root. Re-run with sudo or root."
+    exit 1
+  fi
+}
+
+require_linux_for_release() {
+  detect_os
+  if [ "$OS_NAME" != "linux" ] && [ "$DRY_RUN" -ne 1 ]; then
+    log_error "One-click release install supports Linux VPS only. macOS can run MiGate manually with a local build."
+    exit 1
+  fi
+}
+
+dependency_status() {
+  local missing=0
+  for dep in curl tar openssl; do
+    if command_exists "$dep"; then
+      log_ok "dependency ${dep}: found ($(command -v "$dep"))"
+    else
+      log_warn "dependency ${dep}: missing"
+      missing=1
+    fi
+  done
+  if command_exists sha256sum || command_exists shasum; then
+    log_ok "dependency checksum: found"
+  else
+    log_warn "dependency checksum: missing sha256sum/shasum"
+    missing=1
+  fi
+  if command_exists wget; then
+    log_ok "dependency wget: found ($(command -v wget))"
+  else
+    log_info "dependency wget: optional missing"
+  fi
+  if command_exists unzip; then
+    log_ok "dependency unzip: found ($(command -v unzip))"
+  else
+    log_info "dependency unzip: optional missing"
+  fi
+  return "$missing"
+}
+
+require_dependencies() {
+  local missing=0
+  for dep in curl tar; do
+    if ! command_exists "$dep"; then
+      log_error "required dependency missing: ${dep}"
+      missing=1
+    fi
+  done
+  if ! command_exists sha256sum && ! command_exists shasum; then
+    log_error "required dependency missing: sha256sum or shasum"
+    missing=1
+  fi
+  if [ "$missing" -ne 0 ] && [ "$DRY_RUN" -ne 1 ]; then
+    exit 1
+  fi
 }
 
 json_escape() {
@@ -27,7 +187,7 @@ json_escape() {
 }
 
 generate_password() {
-  if command -v openssl >/dev/null 2>&1; then
+  if command_exists openssl; then
     openssl rand -base64 24 | tr -d '\n'
   else
     LC_ALL=C tr -dc 'A-Za-z0-9_@%+=:,.-' < /dev/urandom | head -c 32
@@ -45,28 +205,206 @@ normalize_web_base_path() {
   printf '%s' "$path"
 }
 
+json_number_value() {
+  local key="$1"
+  local file="$2"
+  sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*([0-9]+).*/\\1/p" "$file" 2>/dev/null | head -1
+}
+
+json_string_value() {
+  local key="$1"
+  local file="$2"
+  sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\\1/p" "$file" 2>/dev/null | head -1
+}
+
+read_existing_config_defaults() {
+  if [ ! -f "$CONFIG_PATH" ]; then
+    return
+  fi
+  PANEL_PORT="$(json_number_value panel_port "$CONFIG_PATH")"
+  PANEL_PORT="${PANEL_PORT:-9999}"
+  PANEL_USERNAME="$(json_string_value panel_username "$CONFIG_PATH")"
+  PANEL_USERNAME="${PANEL_USERNAME:-admin}"
+  WEB_BASE_PATH="$(json_string_value web_base_path "$CONFIG_PATH")"
+  WEB_BASE_PATH="${WEB_BASE_PATH:-/panel}"
+}
+
+port_in_use() {
+  local port="$1"
+  if command_exists ss; then
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+  elif command_exists lsof; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+  elif command_exists netstat; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+  else
+    return 1
+  fi
+}
+
+service_exists() {
+  [ -f "$SERVICE_PATH" ] || { [ "$SYSTEMD_AVAILABLE" -eq 1 ] && systemctl list-unit-files migate.service >/dev/null 2>&1; }
+}
+
+service_status() {
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    systemctl is-active migate 2>/dev/null || printf 'unknown'
+  else
+    printf 'systemd_unavailable'
+  fi
+}
+
+binary_version() {
+  local bin="$1"
+  if [ -x "$bin" ]; then
+    "$bin" version 2>/dev/null | head -1 || true
+  elif command_exists "$bin"; then
+    "$bin" version 2>/dev/null | head -1 || true
+  fi
+}
+
+detect_existing_install() {
+  local found=0
+  section "已安装检测"
+  if [ -x "$MIGATE_BIN" ]; then
+    found=1
+    log_ok "MiGate binary: $MIGATE_BIN ($(binary_version "$MIGATE_BIN"))"
+  else
+    log_info "MiGate binary: not found at $MIGATE_BIN"
+  fi
+  if [ -L "$MIGATE_LINK" ] || [ -e "$MIGATE_LINK" ]; then
+    found=1
+    log_ok "MiGate CLI link: $MIGATE_LINK"
+  else
+    log_info "MiGate CLI link: not found"
+  fi
+  if service_exists; then
+    found=1
+    log_ok "systemd service: migate.service ($(service_status))"
+  else
+    log_info "systemd service: not found"
+  fi
+  if [ -d "$CONFIG_DIR" ]; then
+    found=1
+    log_ok "config dir: $CONFIG_DIR"
+  else
+    log_info "config dir: not found"
+  fi
+  if [ -f "$CONFIG_PATH" ]; then
+    found=1
+    read_existing_config_defaults
+    log_ok "panel config: $CONFIG_PATH"
+  else
+    log_info "panel config: not found"
+  fi
+  if [ -f "${INSTALL_DIR}/migate.db" ]; then
+    found=1
+    log_ok "database: ${INSTALL_DIR}/migate.db"
+  else
+    log_info "database: not found at ${INSTALL_DIR}/migate.db"
+  fi
+  if pgrep -x migate >/dev/null 2>&1; then
+    found=1
+    log_ok "process: migate is running"
+  else
+    log_info "process: migate not running"
+  fi
+  if [ -n "${PANEL_PORT:-}" ] && port_in_use "$PANEL_PORT"; then
+    log_warn "port ${PANEL_PORT}: already listening"
+  else
+    log_info "port ${PANEL_PORT:-9999}: not detected as listening"
+  fi
+  log_info "WebUI embed: release binary embeds internal/web/static/dist; local binary check is not required by installer"
+  [ "$found" -eq 1 ]
+}
+
+core_version() {
+  local core="$1"
+  local name
+  name="$(basename "$core")"
+  case "$name" in
+    xray) "$core" version 2>/dev/null | head -1 || true ;;
+    sing-box) "$core" version 2>/dev/null | head -1 || true ;;
+  esac
+}
+
+core_service_status() {
+  local svc="$1"
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    systemctl is-active "$svc" 2>/dev/null || printf 'unknown'
+  else
+    printf 'systemd_unavailable'
+  fi
+}
+
+detect_core() {
+  local label="$1"
+  local command_name="$2"
+  local service_name="$3"
+  local found=0
+  log_info "${label}: 检测二进制路径"
+  for path in "/usr/local/bin/${command_name}" "/usr/bin/${command_name}"; do
+    if [ -x "$path" ]; then
+      found=1
+      log_ok "${label} binary: ${path} ($(core_version "$path"))"
+    else
+      log_info "${label} binary: not found at ${path}"
+    fi
+  done
+  if command_exists "$command_name"; then
+    found=1
+    log_ok "${label} command: $(command -v "$command_name") ($(core_version "$command_name"))"
+  fi
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ] && systemctl list-unit-files "${service_name}.service" >/dev/null 2>&1; then
+    log_ok "${label} service: ${service_name}.service ($(core_service_status "$service_name"))"
+  else
+    log_info "${label} service: ${service_name}.service not found"
+  fi
+  [ "$found" -eq 1 ]
+}
+
+environment_report() {
+  section "环境检测"
+  detect_os
+  detect_arch
+  detect_root
+  detect_systemd
+  log_info "OS: ${OS_NAME}"
+  log_info "Arch: ${ARCH}"
+  if [ "$IS_ROOT" -eq 1 ]; then log_ok "root: yes"; else log_warn "root: no"; fi
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then log_ok "systemd: available"; else log_warn "systemd: unavailable"; fi
+  dependency_status || true
+}
+
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --update)
-        UPDATE_ONLY=1
-        shift
-        ;;
-      --check)
-        CHECK_ONLY=1
-        shift
-        ;;
+      --install) ACTION="install"; shift ;;
+      --upgrade|--update) ACTION="upgrade"; shift ;;
+      --reinstall) ACTION="reinstall"; shift ;;
+      --fresh-config) REGENERATE_CONFIG=1; shift ;;
+      --uninstall) ACTION="uninstall"; shift ;;
+      --repair-service) ACTION="repair-service"; shift ;;
+      --install-xray) INSTALL_XRAY=1; ACTION="${ACTION:-auto}"; shift ;;
+      --install-singbox) INSTALL_SINGBOX=1; ACTION="${ACTION:-auto}"; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --yes|-y) ASSUME_YES=1; SKIP_CORE_PROMPTS=1; shift ;;
+      --check) ACTION="check"; shift ;;
       --version)
-        [ "$#" -ge 2 ] || { echo "--version requires a value" >&2; exit 2; }
+        [ "$#" -ge 2 ] || { log_error "--version requires a value"; exit 2; }
         VERSION="$2"
         shift 2
         ;;
-      -h|--help)
-        echo "Usage: install.sh [--update] [--check] [--version vX.Y.Z]"
-        exit 0
+      -h|--help) usage; exit 0 ;;
+      --)
+        shift
+        EXTRA_ARGS=("$@")
+        EXTRA_ARGS_COUNT="$#"
+        break
         ;;
       *)
-        echo "unknown argument: $1" >&2
+        log_error "unknown argument: $1"
+        usage >&2
         exit 2
         ;;
     esac
@@ -81,46 +419,81 @@ release_base_url() {
   fi
 }
 
+download_file() {
+  local url="$1"
+  local dest="$2"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] curl -fL %q -o %q\n' "$url" "$dest"
+    return 0
+  fi
+  curl -fL "$url" -o "$dest"
+}
+
+verify_sha256() {
+  local sha_file="$1"
+  local work_dir="$2"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] verify sha256 with %s in %s\n' "$sha_file" "$work_dir"
+    return 0
+  fi
+  if command_exists sha256sum; then
+    (cd "$work_dir" && sha256sum -c "$sha_file")
+  else
+    (cd "$work_dir" && shasum -a 256 -c "$sha_file")
+  fi
+}
+
 download_release_asset() {
   BASE_URL="$(release_base_url)"
   URL="${BASE_URL}/${ARTIFACT}"
   CHECKSUM_URL="${BASE_URL}/checksums.txt"
 
-  echo "Downloading ${URL}"
-  curl -fL "$URL" -o "$TMP/${ARTIFACT}"
-  curl -fL "$CHECKSUM_URL" -o "$TMP/checksums.txt"
+  log_info "Downloading ${URL}"
+  download_file "$URL" "$TMP/${ARTIFACT}"
+  download_file "$CHECKSUM_URL" "$TMP/checksums.txt"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] grep "migate-linux-${ARCH}.tar.gz" %q > %q\n' "$TMP/checksums.txt" "$TMP/${ARTIFACT}.sha256"
+    printf '[DRY-RUN] tar -xzf %q -C %q\n' "$TMP/migate-linux-${ARCH}.tar.gz" "$TMP"
+    return 0
+  fi
   grep "migate-linux-${ARCH}.tar.gz" "$TMP/checksums.txt" > "$TMP/${ARTIFACT}.sha256"
-  (cd "$TMP" && sha256sum -c "${ARTIFACT}.sha256")
+  verify_sha256 "${ARTIFACT}.sha256" "$TMP"
   tar -xzf "$TMP/migate-linux-${ARCH}.tar.gz" -C "$TMP"
 }
 
 install_migate_binary_from_tmp() {
-  mkdir -p "$INSTALL_DIR"
+  run_cmd mkdir -p "$INSTALL_DIR"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] install %q to %q using atomic temp file\n' "$TMP/migate" "$MIGATE_BIN"
+    printf '[DRY-RUN] ln -sf %q %q\n' "$MIGATE_BIN" "$MIGATE_LINK"
+    printf '[DRY-RUN] install packaged installer/uninstaller when present\n'
+    return 0
+  fi
   local migate_tmp
   migate_tmp="$(mktemp /usr/local/bin/.migate.XXXXXX)"
   cat "$TMP/migate" > "$migate_tmp"
   chmod +x "$migate_tmp"
-  mv -f "$migate_tmp" /usr/local/bin/migate
-  ln -sf /usr/local/bin/migate /usr/local/bin/mg
+  mv -f "$migate_tmp" "$MIGATE_BIN"
+  ln -sf "$MIGATE_BIN" "$MIGATE_LINK"
   if [ -f "$TMP/packaging/install.sh" ]; then
     local installer_tmp
     installer_tmp="$(mktemp /usr/local/bin/.migate-install.XXXXXX)"
     cat "$TMP/packaging/install.sh" > "$installer_tmp"
     chmod +x "$installer_tmp"
-    mv -f "$installer_tmp" /usr/local/bin/migate-install
+    mv -f "$installer_tmp" "$INSTALLER_BIN"
   fi
   if [ -f "$TMP/packaging/uninstall.sh" ]; then
     local uninstaller_tmp
     uninstaller_tmp="$(mktemp /usr/local/bin/.migate-uninstall.XXXXXX)"
     cat "$TMP/packaging/uninstall.sh" > "$uninstaller_tmp"
     chmod +x "$uninstaller_tmp"
-    mv -f "$uninstaller_tmp" /usr/local/bin/migate-uninstall
+    mv -f "$uninstaller_tmp" "$UNINSTALLER_BIN"
   fi
 }
 
 check_update() {
-  latest="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')"
-  current="$(/usr/local/bin/migate version 2>/dev/null | awk '{print $NF}')"
+  latest="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": "([^"]+)".*/\1/' || true)"
+  current="$("$MIGATE_BIN" version 2>/dev/null | awk '{print $NF}' || true)"
   [ -n "$current" ] || current="unknown"
   [ -n "$latest" ] || latest="unknown"
   echo "Current version: ${current}"
@@ -133,122 +506,193 @@ check_update() {
   fi
 }
 
-update_migate() {
-  require_root
-  ARCH="$(arch)"
-  ARTIFACT="migate-linux-${ARCH}.tar.gz"
-  TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
-
-  echo "MiGate updater"
-  download_release_asset
-  systemctl stop migate 2>/dev/null || true
-  install_migate_binary_from_tmp
-  systemctl daemon-reload 2>/dev/null || true
-  systemctl restart migate
-  echo "MiGate updated"
-}
-
 write_config() {
   local panel_port="$1"
   local panel_username="$2"
   local panel_password="$3"
   local web_base_path="$4"
-  mkdir -p "$CONFIG_DIR"
+  if [ -f "$CONFIG_PATH" ] && [ "$REGENERATE_CONFIG" -ne 1 ]; then
+    log_ok "保留已有配置：$CONFIG_PATH"
+    return 0
+  fi
+  run_cmd mkdir -p "$CONFIG_DIR"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] write panel config %q with mode 600\n' "$CONFIG_PATH"
+    return 0
+  fi
   cat > "$CONFIG_PATH" <<JSON
 {
   "panel_port": ${panel_port},
   "panel_username": "$(json_escape "$panel_username")",
   "panel_password": "$(json_escape "$panel_password")",
   "web_base_path": "$(json_escape "$web_base_path")",
-  "database_path": "/usr/local/migate/migate.db",
-  "xray_config_path": "/usr/local/migate"
+  "database_path": "$(json_escape "$INSTALL_DIR")/migate.db",
+  "xray_config_path": "$(json_escape "$INSTALL_DIR")"
 }
 JSON
   chmod 600 "$CONFIG_PATH"
+  log_ok "配置已写入：$CONFIG_PATH"
+}
+
+prompt_config() {
+  if [ -f "$CONFIG_PATH" ] && [ "$REGENERATE_CONFIG" -ne 1 ]; then
+    read_existing_config_defaults
+    log_ok "使用已有配置，不重新生成 panel.json"
+    return 0
+  fi
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    PANEL_PORT="${PANEL_PORT:-9999}"
+    PANEL_USERNAME="${PANEL_USERNAME:-admin}"
+    WEB_BASE_PATH="$(normalize_web_base_path "${WEB_BASE_PATH:-/panel}")"
+    PANEL_PASSWORD="$(generate_password)"
+    GENERATED_PASSWORD=1
+    return 0
+  fi
+  read -r -p "Panel port [${PANEL_PORT:-9999}]: " input_panel_port
+  PANEL_PORT="${input_panel_port:-${PANEL_PORT:-9999}}"
+  read -r -p "Panel username [${PANEL_USERNAME:-admin}]: " input_panel_username
+  PANEL_USERNAME="${input_panel_username:-${PANEL_USERNAME:-admin}}"
+  read -r -s -p "Panel password [leave blank to generate]: " PANEL_PASSWORD
+  printf '\n'
+  if [ -z "$PANEL_PASSWORD" ]; then
+    PANEL_PASSWORD="$(generate_password)"
+    GENERATED_PASSWORD=1
+    log_warn "No password entered; generated a random panel password. It is shown once at completion."
+  fi
+  read -r -p "Web base path [${WEB_BASE_PATH:-/panel}]: " input_web_base_path
+  WEB_BASE_PATH="${input_web_base_path:-${WEB_BASE_PATH:-/panel}}"
+  WEB_BASE_PATH="$(normalize_web_base_path "$WEB_BASE_PATH")"
+}
+
+write_systemd_service() {
+  if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
+    log_warn "systemd 不可用，跳过 migate.service 写入。"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] write %q\n' "$SERVICE_PATH"
+    return 0
+  fi
+  cat > "$SERVICE_PATH" <<UNIT
+[Unit]
+Description=MiGate Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${MIGATE_BIN} serve --config ${CONFIG_PATH}
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  log_ok "systemd service written: $SERVICE_PATH"
+}
+
+restart_migate_service() {
+  if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
+    log_warn "systemd 不可用，手动运行：${MIGATE_BIN} serve --config ${CONFIG_PATH}"
+    return 0
+  fi
+  run_cmd systemctl daemon-reload
+  run_cmd systemctl enable migate
+  run_cmd systemctl restart migate
+  if [ "$DRY_RUN" -eq 0 ]; then
+    if systemctl is-active migate >/dev/null 2>&1; then
+      log_ok "MiGate service: running"
+    else
+      log_error "MiGate service failed to start. Run: journalctl -u migate -n 80 --no-pager"
+      return 1
+    fi
+  fi
 }
 
 install_xray() {
-  echo ""
-  echo "Xray 是 MiGate 代理协议（VLESS / VMess / Trojan / Shadowsocks）的运行时引擎。"
-  echo "未安装 Xray 时，面板仍可管理入站和客户端，但无法实际提供代理服务。"
-  read -r -p "是否安装 Xray？[Y/n]: " install_xray_choice
-  install_xray_choice="${install_xray_choice:-Y}"
-  if [ "$install_xray_choice" != "Y" ] && [ "$install_xray_choice" != "y" ] && [ "$install_xray_choice" != "" ]; then
-    echo "跳过 Xray 安装。可通过后续手动安装："
-    echo "  mg tools xray"
-    return
+  section "安装/修复 Xray"
+  log_warn "Xray 安装将下载并执行官方 Xray-install 脚本。请确认你信任该来源。"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] xray_tmp="$(mktemp -d)"\n'
+    printf '[DRY-RUN] curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"\n'
+    printf '[DRY-RUN] bash "$xray_tmp/install-release.sh"\n'
+    printf '[DRY-RUN] ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json\n'
+    printf '[DRY-RUN] ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json\n'
+    printf '[DRY-RUN] systemctl enable xray && systemctl restart xray\n'
+    return 0
   fi
-
-  if command -v xray &>/dev/null; then
-    echo "Xray 已安装 ($(xray --version 2>/dev/null | head -1))"
-  else
-    echo "正在安装 Xray..."
-    local xray_tmp
-    xray_tmp="$(mktemp -d)"
-    curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"
-    bash "$xray_tmp/install-release.sh" 2>&1
-    rm -rf "$xray_tmp"
-    echo "Xray 安装完成"
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    read -r -p "确认安装/修复 Xray？[y/N]: " answer
+    case "$answer" in y|Y|yes|YES) ;; *) log_warn "跳过 Xray 安装。"; return 0 ;; esac
   fi
-
-  # Symlink MiGate's xray.json to Xray's default config path.
-  # MiGate Apply() writes to /usr/local/migate/xray.json.
-  # Xray's official installer starts with /usr/local/etc/xray/xray.json.
-  # Keep config.json too for compatibility with older MiGate installs and docs.
+  local xray_tmp
+  xray_tmp="$(mktemp -d)"
+  curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"
+  bash "$xray_tmp/install-release.sh"
+  rm -rf "$xray_tmp"
   mkdir -p /usr/local/etc/xray
   ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json
   ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
-  echo "Xray 配置已关联到 MiGate: /usr/local/etc/xray/xray.json → /usr/local/migate/xray.json"
-
-  systemctl enable xray 2>/dev/null || true
-  systemctl restart xray 2>/dev/null || true
-  echo "Xray 服务已启动"
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    systemctl enable xray 2>/dev/null || true
+    systemctl restart xray 2>/dev/null || true
+  fi
+  log_ok "Xray 安装/修复完成"
 }
 
 install_singbox() {
-  echo ""
-  echo "sing-box 是 MiGate Hysteria2 / TUIC / ShadowTLS 等协议的运行时引擎。"
-  echo "未安装 sing-box 时，这些协议可创建但不会实际监听。"
-  read -r -p "是否安装 sing-box？[Y/n]: " install_singbox_choice
-  install_singbox_choice="${install_singbox_choice:-Y}"
-  if [ "$install_singbox_choice" != "Y" ] && [ "$install_singbox_choice" != "y" ] && [ "$install_singbox_choice" != "" ]; then
-    echo "跳过 sing-box 安装。"
-    return
+  section "安装/修复 sing-box"
+  local sb_version="${SINGBOX_VERSION:-1.13.13}"
+  local sb_asset_arch
+  case "$(arch)" in
+    amd64) sb_asset_arch="amd64" ;;
+    arm64) sb_asset_arch="arm64" ;;
+    *) log_error "unsupported sing-box architecture"; return 1 ;;
+  esac
+  local sb_artifact="sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz"
+  local sb_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz"
+  local sb_checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-checksums.txt"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] curl -fL %q -o "$tmp_sb/%s"\n' "$sb_url" "$sb_artifact"
+    printf '[DRY-RUN] curl -fL %q -o "$tmp_sb/checksums.txt"\n' "$sb_checksums_url"
+    printf '[DRY-RUN] grep %q "$tmp_sb/checksums.txt" > "$tmp_sb/%s.sha256"\n' "$sb_artifact" "$sb_artifact"
+    printf '[DRY-RUN] sha256sum -c "%s.sha256"\n' "$sb_artifact"
+    printf '[DRY-RUN] install /usr/local/bin/sing-box\n'
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+      printf '[DRY-RUN] write %q and restart migate-singbox\n' "$SINGBOX_SERVICE_PATH"
+    else
+      printf '[DRY-RUN] skip %q because systemd is unavailable\n' "$SINGBOX_SERVICE_PATH"
+    fi
+    return 0
   fi
-
-  if command -v sing-box >/dev/null 2>&1; then
-    echo "sing-box 已安装 ($(sing-box version 2>/dev/null | head -1))"
-  else
-    echo "正在安装 sing-box..."
-    tmp_sb="$(mktemp -d)"
-    sb_arch="$(arch)"
-    case "$sb_arch" in
-      amd64) sb_asset_arch="amd64" ;;
-      arm64) sb_asset_arch="arm64" ;;
-      *) echo "unsupported sing-box architecture: $sb_arch" >&2; return 1 ;;
-    esac
-    sb_version="${SINGBOX_VERSION:-1.13.13}"
-    sb_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz"
-    sb_checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-checksums.txt"
-    curl -fL "$sb_url" -o "$tmp_sb/sing-box.tar.gz"
-    curl -fL "$sb_checksums_url" -o "$tmp_sb/checksums.txt"
-    grep "sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz" "$tmp_sb/checksums.txt" > "$tmp_sb/sing-box.tar.gz.sha256"
-    (cd "$tmp_sb" && sha256sum -c "sing-box.tar.gz.sha256")
-    tar -xzf "$tmp_sb/sing-box.tar.gz" -C "$tmp_sb"
-    cp "$tmp_sb"/sing-box-*/sing-box /usr/local/bin/sing-box
-    chmod +x /usr/local/bin/sing-box
-    rm -rf "$tmp_sb"
-    echo "sing-box 安装完成"
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    read -r -p "确认安装/修复 sing-box ${sb_version}？[y/N]: " answer
+    case "$answer" in y|Y|yes|YES) ;; *) log_warn "跳过 sing-box 安装。"; return 0 ;; esac
   fi
-
+  local tmp_sb
+  tmp_sb="$(mktemp -d)"
+  curl -fL "$sb_url" -o "$tmp_sb/$sb_artifact"
+  curl -fL "$sb_checksums_url" -o "$tmp_sb/checksums.txt"
+  grep "$sb_artifact" "$tmp_sb/checksums.txt" > "$tmp_sb/$sb_artifact.sha256"
+  verify_sha256 "$sb_artifact.sha256" "$tmp_sb"
+  tar -xzf "$tmp_sb/$sb_artifact" -C "$tmp_sb"
+  cp "$tmp_sb"/sing-box-*/sing-box /usr/local/bin/sing-box
+  chmod +x /usr/local/bin/sing-box
+  rm -rf "$tmp_sb"
   mkdir -p /etc/sing-box
   if [ ! -f /etc/sing-box/config.json ]; then
-    cat > /etc/sing-box/config.json <<'JSON'
-{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}
-JSON
+    printf '%s\n' '{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}' > /etc/sing-box/config.json
   fi
-  cat > /etc/systemd/system/migate-singbox.service <<'UNIT'
+  if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
+    log_warn "systemd 不可用，跳过 migate-singbox.service 写入。"
+    log_info "Manual run: /usr/local/bin/sing-box run -c /etc/sing-box/config.json"
+    log_ok "sing-box 安装/修复完成"
+    return 0
+  fi
+  cat > "$SINGBOX_SERVICE_PATH" <<'UNIT'
 [Unit]
 Description=MiGate managed sing-box service
 After=network-online.target
@@ -267,72 +711,227 @@ UNIT
   systemctl daemon-reload
   systemctl enable migate-singbox
   systemctl restart migate-singbox 2>/dev/null || true
-  echo "sing-box 服务已配置：migate-singbox.service"
+  log_ok "sing-box 安装/修复完成"
 }
 
-main() {
-  parse_args "$@"
-  if [ "$CHECK_ONLY" = "1" ]; then
-    check_update
-    return
+prompt_core_installs() {
+  if [ "$SKIP_CORE_PROMPTS" -eq 1 ]; then
+    if [ "$INSTALL_XRAY" -ne 1 ]; then log_warn "未指定 --install-xray，跳过 Xray 安装。"; fi
+    if [ "$INSTALL_SINGBOX" -ne 1 ]; then log_warn "未指定 --install-singbox，跳过 sing-box 安装。"; fi
+    return 0
   fi
-  if [ "$UPDATE_ONLY" = "1" ]; then
-    update_migate
-    return
+  if [ "$INSTALL_XRAY" -ne 1 ]; then
+    read -r -p "是否安装/修复 Xray？[y/N]: " answer
+    case "$answer" in y|Y|yes|YES) INSTALL_XRAY=1 ;; *) log_warn "跳过 Xray。核心代理功能可能不可用。" ;; esac
   fi
+  if [ "$INSTALL_SINGBOX" -ne 1 ]; then
+    read -r -p "是否安装/修复 sing-box？[y/N]: " answer
+    case "$answer" in y|Y|yes|YES) INSTALL_SINGBOX=1 ;; *) log_warn "跳过 sing-box。Hysteria2/TUIC/ShadowTLS 可能不可用。" ;; esac
+  fi
+}
 
+install_release_flow() {
+  local mode="$1"
+  require_linux_for_release
   require_root
+  require_dependencies
   ARCH="$(arch)"
   ARTIFACT="migate-linux-${ARCH}.tar.gz"
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
 
-  echo "MiGate installer"
-  read -r -p "Panel port [9999]: " panel_port
-  panel_port="${panel_port:-9999}"
-  read -r -p "Panel username [admin]: " panel_username
-  panel_username="${panel_username:-admin}"
-  read -r -s -p "Panel password [leave blank to generate]: " panel_password
-  printf '\n'
-  if [ -z "$panel_password" ]; then
-    panel_password="$(generate_password)"
-    echo "No password entered; generated a random panel password."
+  section "配置确认"
+  if [ "$mode" = "fresh" ]; then
+    REGENERATE_CONFIG=1
   fi
-  read -r -p "Web base path [/panel]: " web_base_path
-  web_base_path="${web_base_path:-/panel}"
-  web_base_path="$(normalize_web_base_path "$web_base_path")"
+  prompt_config
+  if [ -n "${PANEL_PORT:-}" ] && port_in_use "$PANEL_PORT" && ! pgrep -x migate >/dev/null 2>&1; then
+    log_warn "端口 ${PANEL_PORT} 已被占用，服务启动可能失败。"
+  fi
 
+  section "安装 MiGate"
   download_release_asset
-
-  systemctl stop migate 2>/dev/null || true
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    run_cmd systemctl stop migate 2>/dev/null || true
+  fi
   install_migate_binary_from_tmp
-  write_config "$panel_port" "$panel_username" "$panel_password" "$web_base_path"
+  write_config "$PANEL_PORT" "$PANEL_USERNAME" "$PANEL_PASSWORD" "$WEB_BASE_PATH"
+  write_systemd_service
 
-  cp "$TMP/packaging/migate.service" "$SERVICE_PATH"
-  systemctl daemon-reload
-  systemctl enable migate
-  systemctl start migate
+  section "核心检测"
+  detect_core "Xray" "xray" "xray" || true
+  detect_core "sing-box" "sing-box" "migate-singbox" || true
+  prompt_core_installs
+  [ "$INSTALL_XRAY" -eq 1 ] && install_xray
+  [ "$INSTALL_SINGBOX" -eq 1 ] && install_singbox
 
-  install_xray
-  install_singbox
+  section "服务启动"
+  restart_migate_service
+  finish_message
+}
 
-  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [ -z "$host_ip" ]; then
-    host_ip="SERVER_IP"
+repair_service_flow() {
+  require_root
+  detect_systemd
+  section "修复 systemd 服务"
+  write_systemd_service
+  restart_migate_service
+  log_ok "服务修复完成"
+}
+
+uninstall_flow() {
+  require_root
+  local args=()
+  local args_count=0
+  if [ "${EXTRA_ARGS_COUNT:-0}" -gt 0 ]; then
+    args=("${EXTRA_ARGS[@]}")
+    args_count="${EXTRA_ARGS_COUNT:-0}"
   fi
-  echo ""
-  echo "MiGate installed: /usr/local/bin/migate"
-  echo "CLI: mg"
-  echo "Useful commands: mg status | mg logs | mg restart | mg uninstall"
-  echo "WebUI: http://${host_ip}:${panel_port}${web_base_path}"
-  echo "Username: ${panel_username}"
-  echo "Password: ${panel_password}"
-  if command -v xray &>/dev/null; then
-    echo "Xray: $(xray --version 2>/dev/null | head -1)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    args[args_count]="--dry-run"
+    args_count=$((args_count + 1))
   fi
-  if command -v sing-box &>/dev/null; then
-    echo "Sing-box: $(sing-box version 2>/dev/null | head -1)"
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    args[args_count]="--yes"
+    args_count=$((args_count + 1))
   fi
+  if [ -x "$UNINSTALLER_BIN" ]; then
+    if [ "$args_count" -gt 0 ]; then
+      "$UNINSTALLER_BIN" "${args[@]}"
+    else
+      "$UNINSTALLER_BIN"
+    fi
+  else
+    if [ "$args_count" -gt 0 ]; then
+      bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/uninstall.sh" "${args[@]}"
+    else
+      bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/uninstall.sh"
+    fi
+  fi
+}
+
+interactive_menu() {
+  local installed=0
+  detect_existing_install && installed=1 || installed=0
+  if [ "$installed" -eq 0 ]; then
+    ACTION="install"
+    return
+  fi
+  section "操作选择"
+  cat <<'EOF'
+1) 升级并保留配置
+2) 重装并保留配置
+3) 重装并重新生成配置
+4) 只修复 systemd 服务
+5) 只安装/修复 Xray
+6) 只安装/修复 sing-box
+7) 卸载
+8) 退出
+EOF
+  read -r -p "请选择 [1-8]: " choice
+  case "$choice" in
+    1) ACTION="upgrade" ;;
+    2) ACTION="reinstall" ;;
+    3) ACTION="reinstall"; REGENERATE_CONFIG=1 ;;
+    4) ACTION="repair-service" ;;
+    5) ACTION="install-xray-only"; INSTALL_XRAY=1 ;;
+    6) ACTION="install-singbox-only"; INSTALL_SINGBOX=1 ;;
+    7) ACTION="uninstall" ;;
+    8) ACTION="exit" ;;
+    *) log_error "无效选择"; exit 2 ;;
+  esac
+}
+
+finish_message() {
+  local host_ip
+  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  [ -n "$host_ip" ] || host_ip="SERVER_IP"
+  section "完成"
+  log_ok "MiGate binary: $MIGATE_BIN"
+  log_ok "CLI: mg"
+  log_info "WebUI: http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}"
+  log_info "Username: ${PANEL_USERNAME}"
+  if [ "$GENERATED_PASSWORD" -eq 1 ] || [ -n "$PANEL_PASSWORD" ]; then
+    log_warn "Password: ${PANEL_PASSWORD}"
+    log_warn "随机密码仅在终端显示一次，请立即保存。"
+  else
+    log_info "Password: 保留已有配置中的密码"
+  fi
+  log_info "Config: ${CONFIG_PATH}"
+  log_info "Database: ${INSTALL_DIR}/migate.db"
+  log_info "Xray config: ${INSTALL_DIR}/xray.json"
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    log_info "Service status: systemctl status migate"
+    log_info "Logs: journalctl -u migate -f"
+  else
+    log_info "Manual run: ${MIGATE_BIN} serve --config ${CONFIG_PATH}"
+  fi
+  log_info "Common commands: mg status | mg doctor | mg logs -f | mg restart | mg update | mg uninstall"
+}
+
+main() {
+  EXTRA_ARGS=()
+  EXTRA_ARGS_COUNT=0
+  parse_args "$@"
+  environment_report
+  if [ "$ACTION" = "check" ]; then
+    check_update
+    return
+  fi
+  if [ "$ACTION" = "auto" ] && [ "$ASSUME_YES" -eq 0 ] && [ "$INSTALL_XRAY" -eq 0 ] && [ "$INSTALL_SINGBOX" -eq 0 ]; then
+    interactive_menu
+  else
+    detect_existing_install || true
+    if [ "$ACTION" = "auto" ]; then
+      if [ "$INSTALL_XRAY" -eq 1 ] && [ "$INSTALL_SINGBOX" -eq 0 ]; then
+        ACTION="install-xray-only"
+      elif [ "$INSTALL_SINGBOX" -eq 1 ] && [ "$INSTALL_XRAY" -eq 0 ]; then
+        ACTION="install-singbox-only"
+      elif [ "$INSTALL_XRAY" -eq 1 ] && [ "$INSTALL_SINGBOX" -eq 1 ]; then
+        ACTION="install-cores-only"
+      else
+        ACTION="install"
+      fi
+    fi
+  fi
+
+  case "$ACTION" in
+    install|upgrade|reinstall)
+      install_release_flow "$([ "$REGENERATE_CONFIG" -eq 1 ] && printf 'fresh' || printf 'preserve')"
+      ;;
+    repair-service)
+      repair_service_flow
+      ;;
+    install-xray-only)
+      require_linux_for_release
+      require_root
+      detect_systemd
+      install_xray
+      ;;
+    install-singbox-only)
+      require_linux_for_release
+      require_root
+      detect_systemd
+      install_singbox
+      ;;
+    install-cores-only)
+      require_linux_for_release
+      require_root
+      detect_systemd
+      install_xray
+      install_singbox
+      ;;
+    uninstall)
+      uninstall_flow
+      ;;
+    exit)
+      log_info "退出。"
+      ;;
+    *)
+      log_error "unknown action: ${ACTION}"
+      exit 2
+      ;;
+  esac
 }
 
 main "$@"

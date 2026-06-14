@@ -27,13 +27,41 @@ Install specific version:
 MIGATE_VERSION=v1.0.21 bash <(curl -Ls https://raw.githubusercontent.com/imzyb/MiGate/main/packaging/install.sh)
 ```
 
-During installation, you will be prompted for:
+The installer runs an environment check, detects existing MiGate installs, keeps
+`/etc/migate/panel.json` by default, checks Xray and sing-box, and then asks what
+to do. On an existing host it can upgrade, reinstall, regenerate config, repair
+systemd, install/repair cores, uninstall, or exit.
+
+Common non-interactive commands:
+
+```bash
+# Install or upgrade while keeping existing config.
+bash <(curl -Ls https://raw.githubusercontent.com/imzyb/MiGate/main/packaging/install.sh) --install --yes
+
+# Preview install actions without changing the system.
+bash <(curl -Ls https://raw.githubusercontent.com/imzyb/MiGate/main/packaging/install.sh) --install --yes --dry-run
+
+# Upgrade to latest release and keep config.
+migate-install --upgrade --yes
+
+# Repair the systemd unit only.
+migate-install --repair-service --yes
+
+# Install or repair runtime cores only. This does not install MiGate itself.
+migate-install --install-xray --yes
+migate-install --install-singbox --yes
+
+# Uninstall service and binaries while keeping config/data.
+migate-install --uninstall --yes
+```
+
+During first installation, you will be prompted for:
 
 - Panel port, default `9999`
 - Username, default `admin`
 - Password, leave empty for auto-generated random password
 - Web path, default `/panel`
-- Whether to install Xray
+- Whether to install/repair Xray and sing-box
 
 After installation, access:
 
@@ -78,6 +106,8 @@ Xray config:
 ```text
 /usr/local/migate/xray.json
 ```
+
+More details: `docs/install.md`.
 
 ## Development
 

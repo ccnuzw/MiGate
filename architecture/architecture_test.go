@@ -57,7 +57,16 @@ func TestServiceRunsSinglePrebuiltBinary(t *testing.T) {
 
 func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
-	for _, want := range []string{"migate-linux-${ARCH}.tar.gz", "/usr/local/migate", "systemctl enable migate", "systemctl start migate"} {
+	for _, want := range []string{
+		"migate-linux-${ARCH}.tar.gz",
+		"/usr/local/migate",
+		"systemctl enable migate",
+		"systemctl restart migate",
+		"detect_existing_install()",
+		"read_existing_config_defaults()",
+		"REGENERATE_CONFIG",
+		"--dry-run",
+	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer missing %q:\n%s", want, script)
 		}
