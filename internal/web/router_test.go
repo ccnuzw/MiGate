@@ -16,14 +16,40 @@ import (
 
 func join(parts ...string) string { return strings.Join(parts, "") }
 
-func TestRouterBackendSecurityContracts(t *testing.T) {
-	source, err := os.ReadFile("router.go")
+func webPackageSource(t *testing.T) string {
+	t.Helper()
+	var body strings.Builder
+	err := fs.WalkDir(os.DirFS("."), ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path == "static" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		body.Write(source)
+		body.WriteByte('\n')
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("read router.go: %v", err)
+		t.Fatalf("read web package source: %v", err)
 	}
-	body := string(source)
+	return body.String()
+}
+
+func TestRouterBackendSecurityContracts(t *testing.T) {
+	body := webPackageSource(t)
 	if strings.Contains(body, `exec.Command("bash", "-c"`) || strings.Contains(body, `exec.Command("sh", "-c"`) {
-		t.Fatalf("router must not execute shell strings via bash/sh -c")
+		t.Fatalf("web package must not execute shell strings via bash/sh -c")
 	}
 	if regexp.MustCompile(`tail",\s*"-n",\s*lines`).FindString(body) != "" && !strings.Contains(body, "maxXrayLogLines") {
 		t.Fatalf("xray log line count must be clamped before passing to journalctl/tail")
@@ -257,11 +283,7 @@ func TestUpdateStatusAPIReportsState(t *testing.T) {
 }
 
 func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
-	source, err := os.ReadFile("router.go")
-	if err != nil {
-		t.Fatalf("read router.go: %v", err)
-	}
-	body := string(source)
+	body := webPackageSource(t)
 	for _, want := range []string{
 		`exec.Command("systemd-run", "--wait", "--unit=migate-update", "--replace", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=180", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update")`,
 		`/var/log/migate-update.log`,
@@ -427,11 +449,7 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 }
 
 func TestCoreSingboxInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
-	source, err := os.ReadFile("router.go")
-	if err != nil {
-		t.Fatalf("read router.go: %v", err)
-	}
-	script := string(source)
+	script := webPackageSource(t)
 	for _, want := range []string{
 		`checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-checksums.txt"`,
 		`curl -fL "$checksums_url" -o "$tmp/checksums.txt"`,
