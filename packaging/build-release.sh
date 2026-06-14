@@ -28,6 +28,7 @@ build_one() {
 
 main() {
   cd "$ROOT_DIR"
+  bash "$ROOT_DIR/scripts/build-web.sh"
   build_one amd64
   build_one arm64
   (

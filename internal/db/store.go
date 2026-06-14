@@ -34,6 +34,8 @@ type RoutingRule struct {
 	InboundTag  string `json:"inbound_tag"`
 	OutboundTag string `json:"outbound_tag"`
 	Domain      string `json:"domain"`
+	IP          string `json:"ip"`
+	RuleSet     string `json:"rule_set"`
 	Protocol    string `json:"protocol"`
 	Enabled     bool   `json:"enabled"`
 	Sort        int    `json:"sort"`
@@ -43,6 +45,8 @@ type CreateRoutingRuleParams struct {
 	InboundTag  string `json:"inbound_tag"`
 	OutboundTag string `json:"outbound_tag"`
 	Domain      string `json:"domain"`
+	IP          string `json:"ip"`
+	RuleSet     string `json:"rule_set"`
 	Protocol    string `json:"protocol"`
 	Enabled     bool   `json:"enabled"`
 }
@@ -51,6 +55,8 @@ type UpdateRoutingRuleParams struct {
 	InboundTag  string `json:"inbound_tag"`
 	OutboundTag string `json:"outbound_tag"`
 	Domain      string `json:"domain"`
+	IP          string `json:"ip"`
+	RuleSet     string `json:"rule_set"`
 	Protocol    string `json:"protocol"`
 	Enabled     bool   `json:"enabled"`
 }
@@ -138,15 +144,21 @@ type UpdateOutboundParams struct {
 }
 
 type Client struct {
-	ID           int64  `json:"id"`
-	InboundID    int64  `json:"inbound_id"`
-	UUID         string `json:"uuid"`
-	Email        string `json:"email"`
-	Enabled      bool   `json:"enabled"`
-	Up           int64  `json:"up"`
-	Down         int64  `json:"down"`
-	TrafficLimit int64  `json:"traffic_limit"`
-	ExpiryAt     int64  `json:"expiry_at"`
+	ID                int64  `json:"id"`
+	InboundID         int64  `json:"inbound_id"`
+	UUID              string `json:"uuid"`
+	SubscriptionToken string `json:"subscription_token,omitempty"`
+	Email             string `json:"email"`
+	Enabled           bool   `json:"enabled"`
+	Up                int64  `json:"up"`
+	Down              int64  `json:"down"`
+	TrafficLimit      int64  `json:"traffic_limit"`
+	ExpiryAt          int64  `json:"expiry_at"`
+}
+
+type ClientTrafficUpdate struct {
+	Up   int64
+	Down int64
 }
 
 type CreateInboundParams struct {
@@ -295,6 +307,7 @@ CREATE TABLE IF NOT EXISTS clients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   inbound_id INTEGER NOT NULL REFERENCES inbounds(id) ON DELETE CASCADE,
   uuid TEXT NOT NULL UNIQUE,
+  subscription_token TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
@@ -318,6 +331,8 @@ CREATE TABLE IF NOT EXISTS routing_rules (
   inbound_tag TEXT NOT NULL DEFAULT '',
   outbound_tag TEXT NOT NULL,
   domain TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  rule_set TEXT NOT NULL DEFAULT '',
   protocol TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   sort INTEGER NOT NULL DEFAULT 0
@@ -330,6 +345,11 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
   expires_at TEXT NOT NULL,
   revoked INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
+CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
+CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
+CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at);
+CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked, expires_at, id);
 `)
 	if err != nil {
 		return err
@@ -339,12 +359,16 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
 	}
 	// Migration: add traffic/expiry columns (ignore errors if already exist)
 	for _, col := range []struct{ name, typ string }{
+		{"subscription_token", "TEXT NOT NULL DEFAULT ''"},
 		{"up", "INTEGER NOT NULL DEFAULT 0"},
 		{"down", "INTEGER NOT NULL DEFAULT 0"},
 		{"traffic_limit", "INTEGER NOT NULL DEFAULT 0"},
 		{"expiry_at", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE clients ADD COLUMN %s %s", col.name, col.typ))
+	}
+	if err := s.ensureClientSubscriptionTokens(ctx); err != nil {
+		return err
 	}
 	// Migration: add transport columns to inbounds (ignore errors if already exist)
 	for _, col := range []struct{ name, typ, def string }{
@@ -382,6 +406,44 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
 		{"shadowtls_password", "TEXT", "DEFAULT ''"},
 	} {
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE inbounds ADD COLUMN %s %s %s", col.name, col.typ, col.def))
+	}
+	for _, col := range []struct{ name, typ string }{
+		{"ip", "TEXT NOT NULL DEFAULT ''"},
+		{"rule_set", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE routing_rules ADD COLUMN %s %s", col.name, col.typ))
+	}
+	return nil
+}
+
+func (s *Store) ensureClientSubscriptionTokens(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_subscription_token ON clients(subscription_token) WHERE subscription_token <> ''`); err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM clients WHERE subscription_token = '' OR subscription_token IS NULL ORDER BY id ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		token, err := s.newSubscriptionToken(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE clients SET subscription_token=? WHERE id=?`, token, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -558,7 +620,7 @@ func (s *Store) ReorderOutbounds(ctx context.Context, ids []int64) error {
 }
 
 func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, protocol, enabled, sort FROM routing_rules ORDER BY sort ASC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, ip, rule_set, protocol, enabled, sort FROM routing_rules ORDER BY sort ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -567,7 +629,7 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 	for rows.Next() {
 		var r RoutingRule
 		var dbEnabled int
-		if err := rows.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
+		if err := rows.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.IP, &r.RuleSet, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
 			return nil, err
 		}
 		r.Enabled = dbEnabled != 0
@@ -609,8 +671,8 @@ func (s *Store) CreateRoutingRule(ctx context.Context, params CreateRoutingRuleP
 	if params.Enabled {
 		enabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO routing_rules (inbound_tag, outbound_tag, domain, protocol, enabled, sort) VALUES (?, ?, ?, ?, ?, ?)`,
-		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.Protocol), enabled, sort)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO routing_rules (inbound_tag, outbound_tag, domain, ip, rule_set, protocol, enabled, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.IP), strings.TrimSpace(params.RuleSet), strings.TrimSpace(params.Protocol), enabled, sort)
 	if err != nil {
 		return RoutingRule{}, err
 	}
@@ -618,7 +680,7 @@ func (s *Store) CreateRoutingRule(ctx context.Context, params CreateRoutingRuleP
 	if err != nil {
 		return RoutingRule{}, err
 	}
-	return RoutingRule{ID: id, InboundTag: strings.TrimSpace(params.InboundTag), OutboundTag: ob, Domain: strings.TrimSpace(params.Domain), Protocol: strings.TrimSpace(params.Protocol), Enabled: params.Enabled, Sort: sort}, nil
+	return RoutingRule{ID: id, InboundTag: strings.TrimSpace(params.InboundTag), OutboundTag: ob, Domain: strings.TrimSpace(params.Domain), IP: strings.TrimSpace(params.IP), RuleSet: strings.TrimSpace(params.RuleSet), Protocol: strings.TrimSpace(params.Protocol), Enabled: params.Enabled, Sort: sort}, nil
 }
 
 func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRoutingRuleParams) (RoutingRule, error) {
@@ -639,8 +701,8 @@ func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRo
 	if params.Enabled {
 		enabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=?, outbound_tag=?, domain=?, protocol=?, enabled=? WHERE id=?`,
-		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.Protocol), enabled, id)
+	result, err := s.db.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=?, outbound_tag=?, domain=?, ip=?, rule_set=?, protocol=?, enabled=? WHERE id=?`,
+		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.IP), strings.TrimSpace(params.RuleSet), strings.TrimSpace(params.Protocol), enabled, id)
 	if err != nil {
 		return RoutingRule{}, err
 	}
@@ -651,10 +713,10 @@ func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRo
 	if n == 0 {
 		return RoutingRule{}, fmt.Errorf("routing rule not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, protocol, enabled, sort FROM routing_rules WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, ip, rule_set, protocol, enabled, sort FROM routing_rules WHERE id=?`, id)
 	var r RoutingRule
 	var dbEnabled int
-	if err := row.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
+	if err := row.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.IP, &r.RuleSet, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
 		return RoutingRule{}, err
 	}
 	r.Enabled = dbEnabled != 0
@@ -819,10 +881,14 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 	} else if err != sql.ErrNoRows {
 		return Client{}, err
 	}
+	subscriptionToken, err := s.newSubscriptionToken(ctx)
+	if err != nil {
+		return Client{}, err
+	}
 	result, err := s.db.ExecContext(ctx, `
-INSERT INTO clients (inbound_id, uuid, email, enabled, created_at, traffic_limit, expiry_at)
-VALUES (?, ?, ?, 1, ?, ?, ?)
-`, params.InboundID, uuid, email, time.Now().UTC().Format(time.RFC3339), params.TrafficLimit, params.ExpiryAt)
+INSERT INTO clients (inbound_id, uuid, subscription_token, email, enabled, created_at, traffic_limit, expiry_at)
+VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+`, params.InboundID, uuid, subscriptionToken, email, time.Now().UTC().Format(time.RFC3339), params.TrafficLimit, params.ExpiryAt)
 	if err != nil {
 		return Client{}, err
 	}
@@ -830,7 +896,7 @@ VALUES (?, ?, ?, 1, ?, ?, ?)
 	if err != nil {
 		return Client{}, err
 	}
-	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, Email: email, Enabled: true, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
+	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, SubscriptionToken: subscriptionToken, Email: email, Enabled: true, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
 }
 
 func (s *Store) DeleteClient(ctx context.Context, id int64) error {
@@ -889,7 +955,7 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 		var existingUUID string
 		err := s.db.QueryRowContext(ctx, `SELECT uuid FROM inbounds WHERE id=?`, id).Scan(&existingUUID)
 		if err == nil {
-		uuid = existingUUID
+			uuid = existingUUID
 		}
 	}
 	enabled := 0
@@ -979,10 +1045,10 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
@@ -1069,9 +1135,9 @@ func (s *Store) SetClientEnabled(ctx context.Context, inboundID int64, id int64,
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE inbound_id=? AND id=?`, inboundID, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE inbound_id=? AND id=?`, inboundID, id)
 	var client Client
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
@@ -1119,7 +1185,7 @@ ORDER BY id ASC
 	}
 
 	clientRows, err := s.db.QueryContext(ctx, `
-SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at
+SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at
 FROM clients
 ORDER BY id ASC
 `)
@@ -1130,7 +1196,7 @@ ORDER BY id ASC
 	for clientRows.Next() {
 		var client Client
 		var enabled int
-		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 			return nil, err
 		}
 		client.Enabled = enabled != 0
@@ -1142,6 +1208,69 @@ ORDER BY id ASC
 		return nil, err
 	}
 	return inbounds, nil
+}
+
+func (s *Store) GetSubscriptionByClientUUID(ctx context.Context, uuid string) (Inbound, Client, bool, error) {
+	uuid = strings.TrimSpace(uuid)
+	if uuid == "" {
+		return Inbound{}, Client{}, false, nil
+	}
+	return s.getSubscriptionByClientRow(s.db.QueryRowContext(ctx, subscriptionLookupSQLByUUID, uuid))
+}
+
+func (s *Store) GetSubscriptionByToken(ctx context.Context, token string) (Inbound, Client, bool, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return Inbound{}, Client{}, false, nil
+	}
+	return s.getSubscriptionByClientRow(s.db.QueryRowContext(ctx, subscriptionLookupSQLByToken, token))
+}
+
+const subscriptionLookupSelect = `
+SELECT i.id, i.uuid, i.remark, i.protocol, i.port, i.network, i.security, i.enabled,
+  i.ws_path, i.ws_host, i.grpc_service_name, i.reality_dest, i.reality_server_names, i.reality_short_id, i.reality_private_key, i.reality_public_key, i.ss_method,
+  i.tls_cert_file, i.tls_key_file, i.tls_sni, i.tls_fingerprint, i.tls_alpn, i.xhttp_path, i.xhttp_mode,
+  i.hy2_up_mbps, i.hy2_down_mbps, i.hy2_obfs, i.hy2_obfs_password, i.hy2_mport,
+  i.tuic_congestion_control, i.tuic_zero_rtt,
+  i.wg_private_key, i.wg_address, i.wg_peer_public_key, i.wg_allowed_ips, i.wg_endpoint, i.wg_preshared_key, i.wg_mtu,
+  i.shadowtls_version, i.shadowtls_password,
+  c.id, c.inbound_id, c.uuid, c.subscription_token, c.email, c.enabled, c.up, c.down, c.traffic_limit, c.expiry_at
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+`
+
+const subscriptionLookupSQLByUUID = subscriptionLookupSelect + `
+WHERE c.uuid = ?
+LIMIT 1
+`
+
+const subscriptionLookupSQLByToken = subscriptionLookupSelect + `
+WHERE c.subscription_token = ?
+LIMIT 1
+`
+
+func (s *Store) getSubscriptionByClientRow(row *sql.Row) (Inbound, Client, bool, error) {
+	var inbound Inbound
+	var client Client
+	var inboundEnabled int
+	var clientEnabled int
+	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &inboundEnabled,
+		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
+		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword, &inbound.Hy2MPort,
+		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
+		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
+		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword,
+		&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &clientEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		if err == sql.ErrNoRows {
+			return Inbound{}, Client{}, false, nil
+		}
+		return Inbound{}, Client{}, false, err
+	}
+	inbound.Enabled = inboundEnabled != 0
+	client.Enabled = clientEnabled != 0
+	inbound.Clients = []Client{client}
+	return inbound, client, true, nil
 }
 
 func (s *Store) ResetClientTraffic(ctx context.Context, id int64) (Client, error) {
@@ -1156,18 +1285,20 @@ func (s *Store) ResetClientTraffic(ctx context.Context, id int64) (Client, error
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
 	return client, nil
 }
 
-// UpdateClientTraffic updates the traffic counters for a client by email.
-// This is used by the traffic sync scheduler to update DB with Xray stats.
+// UpdateClientTraffic updates traffic counters for all clients matching an
+// Xray stats email. MiGate permits the same email in different inbounds, and
+// Xray's legacy stat key does not include inbound_id here, so callers must not
+// assume this identifies one row globally.
 func (s *Store) UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE clients SET up=?, down=? WHERE email=?`, uplink, downlink, email)
 	if err != nil {
@@ -1184,6 +1315,35 @@ func (s *Store) UpdateClientTraffic(ctx context.Context, email string, uplink, d
 	return nil
 }
 
+// UpdateClientTrafficBatch updates all provided traffic counters in one write
+// transaction by Xray stats email. Unknown client emails are ignored, matching
+// UpdateClientTraffic. Duplicate emails across inbounds intentionally receive
+// the same counter until the scheduler has a stable per-inbound stats key.
+func (s *Store) UpdateClientTrafficBatch(ctx context.Context, stats map[string]ClientTrafficUpdate) error {
+	if len(stats) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `UPDATE clients SET up=?, down=? WHERE email=?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for email, traffic := range stats {
+		if strings.TrimSpace(email) == "" {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, traffic.Up, traffic.Down, email); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -1192,6 +1352,32 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hex.EncodeToString(b[0:4]), hex.EncodeToString(b[4:6]), hex.EncodeToString(b[6:8]), hex.EncodeToString(b[8:10]), hex.EncodeToString(b[10:16]))
+}
+
+func randomHexToken(byteLen int) (string, error) {
+	b := make([]byte, byteLen)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func (s *Store) newSubscriptionToken(ctx context.Context) (string, error) {
+	for i := 0; i < 8; i++ {
+		token, err := randomHexToken(24)
+		if err != nil {
+			return "", err
+		}
+		var existingID int64
+		err = s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE subscription_token = ? LIMIT 1`, token).Scan(&existingID)
+		if err == sql.ErrNoRows {
+			return token, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("could not generate unique subscription token")
 }
 
 // AddToBlacklist inserts a token hash into the token_blacklist table or
@@ -1210,11 +1396,7 @@ ON CONFLICT(token_hash) DO UPDATE SET revoked=excluded.revoked, last_used=exclud
 }
 
 // IsBlacklisted checks if a token hash exists in the blacklist and is marked as revoked.
-// Also auto-cleans expired entries during the scan.
 func (s *Store) IsBlacklisted(ctx context.Context, tokenHash string) (bool, error) {
-	// Clean expired blacklist entries first
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
-
 	var revoked int
 	err := s.db.QueryRowContext(ctx, `SELECT revoked FROM token_blacklist WHERE token_hash=? AND expires_at > ?`,
 		tokenHash, time.Now().UTC().Format(time.RFC3339)).Scan(&revoked)
@@ -1234,10 +1416,26 @@ func (s *Store) RecordSessionTouch(ctx context.Context, tokenHash string) error 
 	return err
 }
 
+// RecordSessionTouchAfter updates last_used only when it is older than minAge.
+// This keeps revocation checks current without turning every API request into a
+// write transaction.
+func (s *Store) RecordSessionTouchAfter(ctx context.Context, tokenHash string, minAge time.Duration) error {
+	cutoff := time.Now().UTC().Add(-minAge).Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET last_used=? WHERE token_hash=? AND last_used < ?`,
+		time.Now().UTC().Format(time.RFC3339), tokenHash, cutoff)
+	return err
+}
+
+func (s *Store) CleanupExpiredSessions(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
 // ListActiveSessions returns non-revoked, non-expired sessions.
 func (s *Store) ListActiveSessions(ctx context.Context) ([]BlacklistedSession, error) {
-	// Clean expired entries first
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
+	if err := s.CleanupExpiredSessions(ctx); err != nil {
+		return nil, err
+	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT id, token_hash, created_at, last_used, expires_at, revoked FROM token_blacklist WHERE revoked=0 AND expires_at > ? ORDER BY id DESC`,
 		time.Now().UTC().Format(time.RFC3339))

@@ -1,0 +1,444 @@
+package web
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/xray"
+)
+
+func inboundsHandler(store Store, ctrl XrayController, statsClient xray.StatsClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listInbounds(w, r, store, statsClient)
+		case http.MethodPost:
+			if createInbound(w, r, store) {
+				applyCoreAsync(ctrl, store)
+			}
+		default:
+			methodNotAllowed(w)
+		}
+	}
+}
+
+func applyCoreAsync(ctrl XrayController, store Store) {
+	applyXrayAsync(ctrl)
+	applySingboxAsync(store)
+}
+
+func applyXrayAsync(ctrl XrayController) {
+	if ctrl == nil {
+		ctrl = defaultXrayController{}
+	}
+	go func() {
+		result := ctrl.Apply(context.Background())
+		if strings.HasPrefix(result.Status, "failed") {
+			log.Printf("xray apply failed: status=%s service=%s commands=%v error=%s", result.Status, result.Service, result.CommandsExecuted, result.ErrorOutput)
+		}
+	}()
+}
+
+func applySingboxAsync(store Store) {
+	if store == nil {
+		return
+	}
+	go func() {
+		if err := tryApplySingbox(context.Background(), store); err != nil {
+			log.Printf("sing-box auto apply: %v", err)
+		}
+	}()
+}
+
+func deriveRealityPublicKeys(inbounds []db.Inbound) {
+	for i := range inbounds {
+		if inbounds[i].Security == "reality" && inbounds[i].RealityPublicKey == "" && inbounds[i].RealityPrivateKey != "" {
+			if pubKey, err := xray.DeriveRealityPublicKey(inbounds[i].RealityPrivateKey); err == nil {
+				inbounds[i].RealityPublicKey = pubKey
+			}
+		}
+	}
+}
+
+func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClient xray.StatsClient) {
+	inbounds := []db.Inbound{}
+	if store != nil {
+		loaded, err := store.ListInbounds(r.Context())
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+			return
+		}
+		deriveRealityPublicKeys(loaded)
+		inbounds = loaded
+	}
+	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), inbounds, statsClient)
+	views := make([]inboundView, 0, len(inbounds))
+	for _, inbound := range inbounds {
+		summary := trafficByInbound[inbound.ID]
+		view := inboundView{
+			Inbound:        inbound,
+			TrafficUp:      summary.Up,
+			TrafficDown:    summary.Down,
+			TrafficTotal:   summary.Total,
+			TrafficSource:  summary.Source,
+			RealtimeSource: summary.RealtimeSource,
+			ClientTraffic:  map[int64]clientTrafficSummary{},
+		}
+		for _, client := range inbound.Clients {
+			if clientTraffic, ok := trafficByClient[client.ID]; ok {
+				view.ClientTraffic[client.ID] = clientTraffic
+			}
+		}
+		views = append(views, view)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": views})
+}
+
+func createInbound(w http.ResponseWriter, r *http.Request, store Store) bool {
+	if store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return false
+	}
+	var payload db.CreateInboundParams
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	// Auto-generate REALITY private key if missing
+	if payload.Security == "reality" && payload.RealityPrivateKey == "" {
+		if privKey, pubKey, err := xray.GenerateRealityKey(); err == nil {
+			payload.RealityPrivateKey = privKey
+			payload.RealityPublicKey = pubKey
+		}
+	}
+	// Port conflict check
+	if payload.Port > 0 {
+		existing, _ := store.ListInbounds(r.Context())
+		for _, ib := range existing {
+			if ib.Port == payload.Port {
+				writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
+					"message": "端口 " + strconv.FormatInt(int64(ib.Port), 10) + " 已被入站 " + strconv.FormatInt(ib.ID, 10) + " 使用",
+				})
+				return false
+			}
+		}
+	}
+	created, err := store.CreateInbound(r.Context(), payload)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "unsupported_protocol")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(created)
+	return true
+}
+
+func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/inbounds/")
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+
+		switch r.Method {
+		case http.MethodPost:
+			if len(parts) == 4 && parts[1] == "clients" && parts[3] == "reset-traffic" {
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if resetClientTraffic(w, r, store, inboundID, clientID) {
+					applyCoreAsync(ctrl, store)
+				}
+			} else if len(parts) != 2 || parts[1] != "clients" {
+				http.NotFound(w, r)
+				return
+			} else {
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if createClient(w, r, store, inboundID) {
+					applyCoreAsync(ctrl, store)
+				}
+			}
+		case http.MethodPatch:
+			if len(parts) == 2 && parts[1] == "enabled" {
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if patchInboundEnabled(w, r, store, inboundID) {
+					applyCoreAsync(ctrl, store)
+				}
+			} else if len(parts) == 4 && parts[1] == "clients" && parts[3] == "enabled" {
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if patchClientEnabled(w, r, store, inboundID, clientID) {
+					applyCoreAsync(ctrl, store)
+				}
+			} else {
+				http.NotFound(w, r)
+			}
+		case http.MethodPut:
+			if len(parts) == 1 {
+				// PUT /api/inbounds/{id}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if updateInbound(w, r, store, inboundID) {
+					applyCoreAsync(ctrl, store)
+				}
+			} else if len(parts) == 3 && parts[1] == "clients" {
+				// PUT /api/inbounds/{id}/clients/{clientId}
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if updateClient(w, r, store, clientID) {
+					applyCoreAsync(ctrl, store)
+				}
+			} else {
+				http.NotFound(w, r)
+			}
+		case http.MethodDelete:
+			if len(parts) == 1 {
+				// DELETE /api/inbounds/{id}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if store == nil {
+					writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+					return
+				}
+				if err := store.DeleteInbound(r.Context(), inboundID); err != nil {
+					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+				applyCoreAsync(ctrl, store)
+			} else if len(parts) == 3 && parts[1] == "clients" {
+				// DELETE /api/inbounds/{id}/clients/{clientId}
+				clientID, err := strconv.ParseInt(parts[2], 10, 64)
+				if err != nil || clientID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
+				if store == nil {
+					writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+					return
+				}
+				if err := store.DeleteClient(r.Context(), clientID); err != nil {
+					writeJSONError(w, http.StatusNotFound, "client_not_found")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+				applyCoreAsync(ctrl, store)
+			} else {
+				http.NotFound(w, r)
+			}
+		default:
+			methodNotAllowed(w)
+		}
+	}
+}
+
+func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) bool {
+	if store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return false
+	}
+	if !inboundExists(r.Context(), store, inboundID) {
+		writeJSONError(w, http.StatusNotFound, "inbound_not_found")
+		return false
+	}
+	var payload struct {
+		Email        string `json:"email"`
+		UUID         string `json:"uuid"`
+		TrafficLimit int64  `json:"traffic_limit"`
+		ExpiryAt     int64  `json:"expiry_at"`
+	}
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate client") {
+			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{
+				"message": "同一入站下客户端邮箱或凭据已存在，请更换后重试",
+			})
+			return false
+		}
+		writeJSONError(w, http.StatusBadRequest, "create_client_failed")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(created)
+	return true
+}
+
+func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) bool {
+	if store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return false
+	}
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	updated, err := store.SetInboundEnabled(r.Context(), inboundID, payload.Enabled)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "inbound_not_found")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+	return true
+}
+
+func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64, clientID int64) bool {
+	if store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return false
+	}
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	updated, err := store.SetClientEnabled(r.Context(), inboundID, clientID, payload.Enabled)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "client_not_found")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+	return true
+}
+
+func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return false
+	}
+	for _, inbound := range inbounds {
+		if inbound.ID == inboundID {
+			return true
+		}
+	}
+	return false
+}
+
+func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) bool {
+	if store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return false
+	}
+	var payload db.UpdateInboundParams
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	// Auto-generate REALITY private key if switching to reality without one
+	if payload.Security == "reality" && payload.RealityPrivateKey == "" {
+		if key, _, err := xray.GenerateRealityKey(); err == nil {
+			payload.RealityPrivateKey = key
+		}
+	}
+	// Port conflict check (excluding current inbound)
+	if payload.Port > 0 {
+		existing, _ := store.ListInbounds(r.Context())
+		for _, ib := range existing {
+			if ib.ID != inboundID && ib.Port == payload.Port {
+				writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
+					"message": "端口 " + strconv.FormatInt(int64(ib.Port), 10) + " 已被入站 " + strconv.FormatInt(ib.ID, 10) + " 使用",
+				})
+				return false
+			}
+		}
+	}
+	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "update_inbound_failed")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+	return true
+}
+
+func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, inboundID, clientID int64) bool {
+	if store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return false
+	}
+	updated, err := store.ResetClientTraffic(r.Context(), clientID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "reset_traffic_failed")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+	return true
+}
+
+func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID int64) bool {
+	if store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+		return false
+	}
+	var payload db.UpdateClientParams
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	updated, err := store.UpdateClient(r.Context(), clientID, payload)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate client") {
+			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{
+				"message": "同一入站下客户端邮箱已存在，请更换后重试",
+			})
+			return false
+		}
+		writeJSONError(w, http.StatusNotFound, "update_client_failed")
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
+	return true
+}

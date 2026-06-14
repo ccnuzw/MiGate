@@ -76,15 +76,20 @@ func TestRouterFromPanelConfigEnablesAuthWhenCredentialsPresent(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Without cookie -> login page
+	// Without cookie -> SPA shell; the React app performs session routing.
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200 login page without auth, got %d", response.Code)
+		t.Fatalf("expected 200 SPA shell without auth, got %d", response.Code)
 	}
-	if !strings.Contains(response.Body.String(), "面板登录") {
-		t.Fatalf("expected login page without auth, got: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), `id="root"`) {
+		t.Fatalf("expected SPA shell without auth, got: %s", response.Body.String())
+	}
+	unauthAPI := httptest.NewRecorder()
+	router.ServeHTTP(unauthAPI, httptest.NewRequest(http.MethodGet, "/api/inbounds", nil))
+	if unauthAPI.Code != http.StatusUnauthorized {
+		t.Fatalf("expected protected API 401 without auth, got %d", unauthAPI.Code)
 	}
 
 	// Login -> 200 with cookie
@@ -138,7 +143,7 @@ func TestRouterFromPanelConfigMountsConfiguredWebBasePath(t *testing.T) {
 	}{
 		{path: "/migate/login", want: http.StatusOK},
 		{path: "/migate/api/health", want: http.StatusOK},
-		{path: "/migate", want: http.StatusOK},
+		{path: "/migate", want: http.StatusPermanentRedirect},
 		{path: "/migate/", want: http.StatusOK},
 	} {
 		resp := httptest.NewRecorder()
@@ -147,12 +152,84 @@ func TestRouterFromPanelConfigMountsConfiguredWebBasePath(t *testing.T) {
 		if resp.Code != tc.want {
 			t.Fatalf("%s: expected %d, got %d: %s", tc.path, tc.want, resp.Code, resp.Body.String())
 		}
-		if tc.path == "/migate" || tc.path == "/migate/" {
-			if !strings.Contains(resp.Body.String(), "面板登录") {
-				t.Fatalf("%s: expected login page for unauthenticated panel root, got: %s", tc.path, resp.Body.String())
+		if tc.path == "/migate/" {
+			if !strings.Contains(resp.Body.String(), `id="root"`) {
+				t.Fatalf("%s: expected SPA shell for unauthenticated panel root, got: %s", tc.path, resp.Body.String())
 			}
 		}
 	}
+}
+
+func TestRouterFromPanelConfigCanTrustProxyHeaders(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel_trust_proxy.json")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","trust_proxy":true,"database_path":"` + filepath.Join(tmp, "migate.db") + `"}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config: %v", err)
+	}
+	defer cleanup()
+
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 login, got %d: %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("trusted proxy HTTPS response should set HSTS")
+	}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == "migate_session" && cookie.Secure {
+			return
+		}
+	}
+	t.Fatalf("trusted proxy HTTPS login should set Secure session cookie: %+v", response.Result().Cookies())
+}
+
+func TestRouterFromPanelConfigWithoutDatabaseKeepsPanelOptions(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel_no_db.json")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/panel","trust_proxy":true}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config: %v", err)
+	}
+	defer cleanup()
+
+	wrongBase := httptest.NewRecorder()
+	router.ServeHTTP(wrongBase, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if wrongBase.Code != http.StatusNotFound {
+		t.Fatalf("expected base path to apply without database, got %d", wrongBase.Code)
+	}
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/panel/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("expected login 200, got %d: %s", loginResp.Code, loginResp.Body.String())
+	}
+	if loginResp.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("trust_proxy should apply without database")
+	}
+	for _, cookie := range loginResp.Result().Cookies() {
+		if cookie.Name == "migate_session" && cookie.Path == "/panel" && cookie.Secure {
+			return
+		}
+	}
+	t.Fatalf("expected secure /panel session cookie without database: %+v", loginResp.Result().Cookies())
 }
 
 func TestRouterFromPanelConfigRejectsMissingCredentials(t *testing.T) {
@@ -217,6 +294,16 @@ func TestRunServerRejectsMissingConfig(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "serve mode requires --config") {
 		t.Fatalf("expected missing config error, got %q", stderr.String())
+	}
+}
+
+func TestServeDefaultBindHostIsLoopback(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if !strings.Contains(string(source), `fs.StringVar(&host, "host", "127.0.0.1", "bind host")`) {
+		t.Fatalf("serve --host default must remain loopback")
 	}
 }
 
@@ -560,21 +647,6 @@ func TestCommandModeKeepsLegacyConfigArgsServingButBareCommandIsCLI(t *testing.T
 		if got := detectCommandMode(tc.args); got != tc.want {
 			t.Fatalf("%v: got %v want %v", tc.args, got, tc.want)
 		}
-	}
-}
-
-func TestUsableStatsClientFallsBackToStubWhenProbeFails(t *testing.T) {
-	client := usableStatsClient(context.Background(), &fakeStatsClient{err: errors.New("stats unavailable")})
-	if !xray.StatsClientIsStub(client) {
-		t.Fatalf("expected stub stats client when probe fails, got %T", client)
-	}
-}
-
-func TestUsableStatsClientKeepsRealClientWhenProbeSucceeds(t *testing.T) {
-	real := &fakeStatsClient{stats: map[string]*xray.ClientStats{}}
-	client := usableStatsClient(context.Background(), real)
-	if client != real {
-		t.Fatalf("expected real stats client to be kept, got %T", client)
 	}
 }
 

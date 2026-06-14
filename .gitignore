@@ -5,8 +5,13 @@ __pycache__/
 venv/
 .env
 *.egg-info/
-build/
-dist/
-migate
-migate_amd64
+/build/
+/dist/
+web/node_modules/
+web/.vite/
+web/*.tsbuildinfo
+.dev/
+/migate
+/migate_amd64
+/migate-dev
 test_*.py

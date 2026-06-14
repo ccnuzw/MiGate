@@ -16,6 +16,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/web"
+	"github.com/imzyb/MiGate/internal/xray"
 )
 
 func TestRemovedLegacyAPIRoutesReturnNotFound(t *testing.T) {
@@ -326,7 +327,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// POST: create rule
-	payload := `{"inbound_tag":"","outbound_tag":"blocked","domain":"geosite:malware"}`
+	payload := `{"inbound_tag":"","outbound_tag":"blocked","domain":"geosite:malware","ip":"geoip:private","rule_set":"geosite-category-ads-all","protocol":"bittorrent"}`
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(payload)))
 	if createResp.Code != 201 {
@@ -337,7 +338,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 		t.Fatalf("parse create response: %v", err)
 	}
 	rule := createResult["rule"].(map[string]interface{})
-	if rule["outbound_tag"] != "blocked" || rule["domain"] != "geosite:malware" {
+	if rule["outbound_tag"] != "blocked" || rule["domain"] != "geosite:malware" || rule["ip"] != "geoip:private" || rule["rule_set"] != "geosite-category-ads-all" || rule["protocol"] != "bittorrent" {
 		t.Fatalf("unexpected created rule: %+v", rule)
 	}
 	id := int(rule["id"].(float64))
@@ -354,11 +355,16 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// PUT: update rule
-	updatePayload := `{"inbound_tag":"socks-in","outbound_tag":"direct","domain":"geosite:netflix","enabled":false}`
+	updatePayload := `{"inbound_tag":"socks-in","outbound_tag":"direct","domain":"geosite:netflix","ip":"8.8.8.8","rule_set":"geoip-cn","protocol":"dns","enabled":false}`
 	updateResp := httptest.NewRecorder()
 	router.ServeHTTP(updateResp, httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/routing-rules/%d", id), strings.NewReader(updatePayload)))
 	if updateResp.Code != 200 {
 		t.Fatalf("expected 200 updating rule, got %d: %s", updateResp.Code, updateResp.Body.String())
+	}
+	for _, want := range []string{`"ip":"8.8.8.8"`, `"rule_set":"geoip-cn"`, `"protocol":"dns"`, `"enabled":false`} {
+		if !strings.Contains(updateResp.Body.String(), want) {
+			t.Fatalf("update response missing %q: %s", want, updateResp.Body.String())
+		}
 	}
 
 	// DELETE
@@ -541,7 +547,7 @@ func TestCreateInboundAPIRejectsUnsupportedProtocol(t *testing.T) {
 	defer store.Close()
 
 	router := web.NewRouter(web.WithStore(store))
-	payload := []byte(`{"remark":"legacy","protocol":"` + join("open", "vpn") + `","port":1194,"network":"udp"}`)
+	payload := []byte(`{"remark":"unsupported","protocol":"` + join("open", "vpn") + `","port":1194,"network":"udp"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -653,6 +659,115 @@ func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
 	}
 }
 
+func TestXrayConfigAPIRendersAdvancedRoutingFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "edge", Protocol: "vless", Port: 443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "client@example.com"}); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag: "edge", OutboundTag: "blocked", Domain: "geosite:ads,example.com", IP: "geoip:private\n8.8.8.8", RuleSet: "geosite-category-ads-all", Protocol: "bittorrent,dns", Enabled: true,
+	}); err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"domain":["geosite:ads","example.com"]`, `"ip":["geoip:private","8.8.8.8"]`, `"protocol":["bittorrent","dns"]`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("xray config response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"ruleSet"`) {
+		t.Fatalf("xray config must not emit unsupported ruleSet field: %s", body)
+	}
+}
+
+func TestSingboxConfigAPIProducesPreviewWhenConfigFileMissing(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/config", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"log"`, `"inbounds"`, `"type":"hysteria2"`, `"listen_port":21001`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("singbox config preview missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestConfigValidateAPIsReturnStructuredResults(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+
+	xrayResp := httptest.NewRecorder()
+	router.ServeHTTP(xrayResp, httptest.NewRequest(http.MethodPost, "/api/xray/validate", nil))
+	if xrayResp.Code != http.StatusOK {
+		t.Fatalf("expected xray validate 200, got %d: %s", xrayResp.Code, xrayResp.Body.String())
+	}
+	for _, want := range []string{`"target":"xray"`, `"valid":true`, `"hysteria2 is handled by sing-box"`} {
+		if !strings.Contains(xrayResp.Body.String(), want) {
+			t.Fatalf("xray validate response missing %q: %s", want, xrayResp.Body.String())
+		}
+	}
+
+	singboxResp := httptest.NewRecorder()
+	router.ServeHTTP(singboxResp, httptest.NewRequest(http.MethodPost, "/api/singbox/validate", nil))
+	if singboxResp.Code != http.StatusOK {
+		t.Fatalf("expected singbox validate 200, got %d: %s", singboxResp.Code, singboxResp.Body.String())
+	}
+	for _, want := range []string{`"target":"singbox"`, `"valid":true`, `"inbounds":1`} {
+		if !strings.Contains(singboxResp.Body.String(), want) {
+			t.Fatalf("singbox validate response missing %q: %s", want, singboxResp.Body.String())
+		}
+	}
+}
+
+func TestConfigValidateAPIReturnsStructuredInvalidResult(t *testing.T) {
+	router := web.NewRouter()
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/validate", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected validate API to return structured 200 response, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"target":"xray"`, `"valid":false`, `"error":"store_unavailable"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("validate response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
 func TestSubscriptionEndpointReturnsClientShareLink(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -670,7 +785,10 @@ func TestSubscriptionEndpointReturnsClientShareLink(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	if client.SubscriptionToken == "" {
+		t.Fatal("created client should have independent subscription token")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
 	router.ServeHTTP(response, req)
 
@@ -682,6 +800,158 @@ func TestSubscriptionEndpointReturnsClientShareLink(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("subscription missing %q: %s", want, body)
 		}
+	}
+}
+
+func TestSubscriptionEndpointKeepsLegacyUUIDLinkCompatible(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "legacy", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "legacy@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req.Host = "panel.example.com"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected legacy UUID link to keep working, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "legacy%40example.com") {
+		t.Fatalf("legacy subscription missing client share link: %s", response.Body.String())
+	}
+}
+
+func TestSubscriptionEndpointUsesConfiguredPublicHostOverRequestHost(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "host", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "host@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithPublicHost("public.example.com"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
+	req.Host = "evil.example.net"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "@public.example.com:443") {
+		t.Fatalf("subscription should use configured public host, got %s", body)
+	}
+	if strings.Contains(body, "evil.example.net") {
+		t.Fatalf("malicious Host header leaked into subscription: %s", body)
+	}
+}
+
+func TestSubscriptionEndpointNormalizesPublicHostURL(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "public-url", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "public-url@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithPublicHost("https://public.example.com/panel"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
+	req.Host = "evil.example.net"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "@public.example.com:443") || strings.Contains(body, "SERVER_IP") {
+		t.Fatalf("public_host URL should normalize to hostname, got %s", body)
+	}
+}
+
+func TestSubscriptionEndpointStripsPublicHostPort(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "public-port", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "public-port@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithPublicHost("public.example.com:8443"))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
+	req.Host = "evil.example.net"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "@public.example.com:443") || strings.Contains(body, "SERVER_IP") || strings.Contains(body, ":8443:443") {
+		t.Fatalf("public_host domain:port should normalize to hostname before appending inbound port, got %s", body)
+	}
+}
+
+func TestSubscriptionEndpointSanitizesHostFallback(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "host-fallback", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "fallback@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
+	req.Host = "evil.example.com/path"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "evil.example.com") || !strings.Contains(body, "@SERVER_IP:443") {
+		t.Fatalf("invalid Host fallback should not leak into subscription: %s", body)
 	}
 }
 
@@ -716,6 +986,74 @@ func TestSubscriptionEndpointStripsPanelPortBeforeAppendingInboundPort(t *testin
 	}
 	if strings.Contains(body, "127.0.0.1:9999:8443") {
 		t.Fatalf("subscription contains double port: %s", body)
+	}
+}
+
+func TestSubscriptionEndpointStripsDomainPanelPortBeforeAppendingInboundPort(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "主入口", Protocol: "vless", Port: 8443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
+	req.Host = "panel.example.com:9999"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	want := "vless://" + client.UUID + "@panel.example.com:8443"
+	if !strings.Contains(body, want) {
+		t.Fatalf("subscription should strip domain panel port before appending inbound port, want %q got %s", want, body)
+	}
+	if strings.Contains(body, "SERVER_IP") || strings.Contains(body, "panel.example.com:9999:8443") {
+		t.Fatalf("subscription contains invalid host fallback or double port: %s", body)
+	}
+}
+
+func TestSubscriptionEndpointBracketsIPv6Host(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "ipv6", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "ipv6@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
+	req.Host = "[2001:db8::1]:9999"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	want := "vless://" + client.UUID + "@[2001:db8::1]:443"
+	if !strings.Contains(body, want) {
+		t.Fatalf("IPv6 subscription host should be bracketed, want %q got %s", want, body)
+	}
+	if strings.Contains(body, "@2001:db8::1:443") {
+		t.Fatalf("IPv6 subscription host is not bracketed: %s", body)
 	}
 }
 
@@ -787,6 +1125,142 @@ func TestStatsMarksSingBoxClientTrafficAsUnavailable(t *testing.T) {
 	for _, want := range []string{`"protocol":"hysteria2"`, `"traffic_stats_source":"unavailable"`, `"traffic_stats_note":"sing-box realtime traffic stats are not yet wired"`, fmt.Sprintf(`"id":%d`, client.ID)} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sing-box stats response missing %q: %s", want, body)
+		}
+	}
+}
+
+type fixedStatsClient struct {
+	stats map[string]*xray.ClientStats
+	calls *int
+}
+
+func (c fixedStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.ClientStats, error) {
+	if c.calls != nil {
+		(*c.calls)++
+	}
+	return c.stats, nil
+}
+
+func (c fixedStatsClient) Close() error { return nil }
+
+func TestStatsAPIReportsStoredAndRealtimeTrafficSeparately(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"sam@example.com": {Email: "sam@example.com", Uplink: 1234, Downlink: 5678},
+	}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"xray_up":1234`, `"xray_down":5678`, `"traffic_stats_source":"db"`, `"realtime_stats_source":"xray"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stats response missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	now := time.Now().Unix()
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "active@example.com"}); err != nil {
+		t.Fatalf("create active client: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "expired@example.com", ExpiryAt: now - 60}); err != nil {
+		t.Fatalf("create expired client: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 1}); err != nil {
+		t.Fatalf("create limited client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(context.Background(), "limited@example.com", 1, 0); err != nil {
+		t.Fatalf("update limited client traffic: %v", err)
+	}
+	if _, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080}); err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundTag: "proxy", Enabled: true}); err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"active@example.com": {Email: "active@example.com", Uplink: 10, Downlink: 20},
+	}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"counts"`,
+		`"clients":3`,
+		`"clients_active":1`,
+		`"clients_expired":1`,
+		`"clients_limited":1`,
+		`"outbounds":3`,
+		`"routing_rules":1`,
+		`"xray_realtime":30`,
+		`"protocols":{"vless":1}`,
+		`"traffic_series":[{"name":"xray","up":1,"down":0}]`,
+		`"validation"`,
+		`"target":"xray"`,
+		`"target":"singbox"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestInboundsAPIAnnotatesLiveTrafficPerInboundAndClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray-live", Protocol: "vless", Port: 8443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "live@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"live@example.com": {Email: "live@example.com", Uplink: 222, Downlink: 333},
+	}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/inbounds", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"traffic_stats_source":"db"`, `"realtime_stats_source":"xray"`, fmt.Sprintf(`"%d":{"up":0,"down":0,"xray_up":222,"xray_down":333`, client.ID), `"source":"db"`, `"realtime_source":"xray"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("inbounds response missing %q: %s", want, body)
 		}
 	}
 }
@@ -1730,11 +2204,11 @@ func TestSubscriptionSkipsExpiredClient(t *testing.T) {
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200 for expired client, got %d", response.Code)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for expired client, got %d", response.Code)
 	}
-	if !strings.Contains(response.Body.String(), "Subscription expired") {
-		t.Fatalf("expected 'Subscription expired' message, got: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), "Subscription unavailable") {
+		t.Fatalf("expected generic unavailable message, got: %s", response.Body.String())
 	}
 }
 
@@ -1760,11 +2234,11 @@ func TestSubscriptionSkipsDisabledClient(t *testing.T) {
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200 for disabled client, got %d", response.Code)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for disabled client, got %d", response.Code)
 	}
-	if !strings.Contains(response.Body.String(), "Subscription disabled") {
-		t.Fatalf("expected 'Subscription disabled' message, got: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), "Subscription unavailable") {
+		t.Fatalf("expected generic unavailable message, got: %s", response.Body.String())
 	}
 }
 
@@ -1855,7 +2329,7 @@ func TestCertIssueValidatesRequiredFields(t *testing.T) {
 	router := web.NewRouter()
 	// Missing domain
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"","email":"admin@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"","email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusBadRequest {
@@ -1863,7 +2337,7 @@ func TestCertIssueValidatesRequiredFields(t *testing.T) {
 	}
 	// Missing email
 	response2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"example.com","email":""}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"example.com","email":"","confirm":true,"allow_system_changes":true}`))
 	req2.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response2, req2)
 	if response2.Code != http.StatusBadRequest {
@@ -1871,7 +2345,7 @@ func TestCertIssueValidatesRequiredFields(t *testing.T) {
 	}
 	// Not available (no configDir)
 	response3 := httptest.NewRecorder()
-	req3 := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"example.com","email":"admin@example.com"}`))
+	req3 := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"example.com","email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
 	req3.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response3, req3)
 	if response3.Code != http.StatusNotFound {
@@ -1992,7 +2466,8 @@ func TestSettingsPutPreservesPasswordWhenEmpty(t *testing.T) {
 func TestRestartReturnsRestarting(t *testing.T) {
 	router := web.NewRouter()
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/restart", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/restart", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())

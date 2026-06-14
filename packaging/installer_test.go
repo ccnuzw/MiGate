@@ -33,13 +33,22 @@ func read(t *testing.T, parts ...string) string {
 	return string(b)
 }
 
-func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
+func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"read -r -p \"Panel port",
-		"read -r -p \"Panel username",
-		"read -r -s -p \"Panel password",
-		"read -r -p \"Web base path",
+		"log_info()",
+		"section()",
+		"detect_os()",
+		"detect_arch()",
+		"detect_systemd()",
+		"dependency_status()",
+		"detect_existing_install()",
+		"interactive_menu()",
+		"升级并保留配置",
+		"重装并重新生成配置",
+		"只修复 systemd 服务",
+		"只安装/修复 Xray",
+		"只安装/修复 sing-box",
 		"/etc/migate/panel.json",
 		"panel_port",
 		"panel_username",
@@ -47,15 +56,16 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 		"web_base_path",
 		"migate-linux-${ARCH}.tar.gz",
 		"systemctl enable migate",
-		"systemctl start migate",
+		"systemctl restart migate",
+		"MIGATE_PANEL_BIND_HOST=127.0.0.1",
 		"mktemp /usr/local/bin/.migate-uninstall.XXXXXX",
-		"mv -f \"$uninstaller_tmp\" /usr/local/bin/migate-uninstall",
-		"ln -sf /usr/local/bin/migate /usr/local/bin/mg",
+		"mv -f \"$uninstaller_tmp\" \"$UNINSTALLER_BIN\"",
+		"ln -sf \"$MIGATE_BIN\" \"$MIGATE_LINK\"",
 		"CLI: mg",
 		"WebUI",
 		"xray.json",
 		"/usr/local/etc/xray/xray.json",
-		"ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json",
+		"ln -sf \"${INSTALL_DIR}/xray.json\" /usr/local/etc/xray/xray.json",
 		"install_xray",
 		"Xray-install",
 	} {
@@ -78,13 +88,81 @@ func TestInstallerIsLightweightInteractiveReleaseInstaller(t *testing.T) {
 	}
 }
 
+func TestInstallerSupportsNonInteractiveActionsAndDryRun(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"--yes, -y",
+		"--install",
+		"--upgrade, --update",
+		"--uninstall",
+		"--repair-service",
+		"--install-xray",
+		"--install-singbox",
+		"--dry-run",
+		"DRY_RUN=0",
+		"run_cmd()",
+		"[DRY-RUN]",
+		"install_release_flow",
+		"repair_service_flow",
+		"uninstall_flow",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer non-interactive/dry-run contract missing %q", want)
+		}
+	}
+}
+
+func TestInstallerPreservesExistingConfigByDefault(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"read_existing_config_defaults()",
+		"if [ -f \"$CONFIG_PATH\" ] && [ \"$REGENERATE_CONFIG\" -ne 1 ]; then",
+		"保留已有配置",
+		"使用已有配置，不重新生成 panel.json",
+		"--fresh-config",
+		"REGENERATE_CONFIG=1",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer config preservation contract missing %q", want)
+		}
+	}
+}
+
+func TestInstallerConfigPathsFollowInstallDir(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"\"database_path\": \"$(json_escape \"$INSTALL_DIR\")/migate.db\"",
+		"\"xray_config_path\": \"$(json_escape \"$INSTALL_DIR\")\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer config path contract missing %q", want)
+		}
+	}
+}
+
+func TestInstallerDetectsCorePathsVersionsAndServices(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"detect_core()",
+		"\"/usr/local/bin/${command_name}\" \"/usr/bin/${command_name}\"",
+		"core_version()",
+		"systemctl list-unit-files \"${service_name}.service\"",
+		"detect_core \"Xray\" \"xray\" \"xray\"",
+		"detect_core \"sing-box\" \"sing-box\" \"migate-singbox\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer core detection contract missing %q", want)
+		}
+	}
+}
+
 func TestInstallerGeneratesRandomPasswordWhenBlank(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"generate_password()",
-		"panel_password=\"$(generate_password)\"",
+		"PANEL_PASSWORD=\"$(generate_password)\"",
 		"No password entered; generated a random panel password.",
-		"Password: ${panel_password}",
+		"Password: ${PANEL_PASSWORD}",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer random password contract missing %q", want)
@@ -100,11 +178,11 @@ func TestInstallerGeneratesRandomPasswordWhenBlank(t *testing.T) {
 func TestInstallerUsesPanelBasePath(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"Web base path [/panel]",
-		"web_base_path=\"${web_base_path:-/panel}\"",
+		"Web base path [${WEB_BASE_PATH:-/panel}]",
+		"WEB_BASE_PATH=\"${input_web_base_path:-${WEB_BASE_PATH:-/panel}}\"",
 		"normalize_web_base_path",
-		"web_base_path=\"$(normalize_web_base_path \"$web_base_path\")\"",
-		"WebUI: http://${host_ip}:${panel_port}${web_base_path}",
+		"WEB_BASE_PATH=\"$(normalize_web_base_path \"$WEB_BASE_PATH\")\"",
+		"WebUI: http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer /panel web base path contract missing %q", want)
@@ -116,11 +194,11 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"install_singbox",
-		"是否安装 sing-box？[Y/n]",
+		"是否安装/修复 sing-box？[y/N]",
 		"migate-singbox.service",
 		"ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json",
 		"systemctl enable migate-singbox",
-		"Sing-box:",
+		"sing-box 安装/修复完成",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box runtime contract missing %q", want)
@@ -156,16 +234,16 @@ func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 		"releases/download/%s",
 		"CHECKSUM_URL",
 		"checksums.txt",
-		"curl -fL \"$CHECKSUM_URL\"",
+		"download_file \"$CHECKSUM_URL\"",
 		"grep \"migate-linux-${ARCH}.tar.gz\"",
-		"sha256sum -c",
+		"verify_sha256 \"${ARTIFACT}.sha256\" \"$TMP\"",
 		"tar -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer release checksum contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "sha256sum -c") > strings.Index(script, "tar -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"") {
+	if strings.Index(script, "verify_sha256 \"${ARTIFACT}.sha256\" \"$TMP\"") > strings.Index(script, "tar -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"") {
 		t.Fatalf("installer must verify checksum before extracting MiGate release archive")
 	}
 }
@@ -173,42 +251,54 @@ func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 func TestInstallerVerifiesSingBoxArchiveChecksumBeforeExtracting(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
+		"sb_artifact=\"sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz\"",
 		"sb_checksums_url=\"https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-checksums.txt\"",
-		"curl -fL \"$sb_checksums_url\" -o \"$tmp_sb/checksums.txt\"",
-		"grep \"sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz\" \"$tmp_sb/checksums.txt\" > \"$tmp_sb/sing-box.tar.gz.sha256\"",
-		"sha256sum -c \"sing-box.tar.gz.sha256\"",
-		"tar -xzf \"$tmp_sb/sing-box.tar.gz\" -C \"$tmp_sb\"",
+		"curl -fL \"$sb_url\" -o \"$tmp_sb/$sb_artifact\"",
+		"grep \"$sb_artifact\" \"$tmp_sb/checksums.txt\" > \"$tmp_sb/$sb_artifact.sha256\"",
+		"verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"",
+		"tar -xzf \"$tmp_sb/$sb_artifact\" -C \"$tmp_sb\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box checksum contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "sha256sum -c \"sing-box.tar.gz.sha256\"") > strings.Index(script, "tar -xzf \"$tmp_sb/sing-box.tar.gz\"") {
+	if strings.Index(script, "verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"") > strings.Index(script, "tar -xzf \"$tmp_sb/$sb_artifact\"") {
 		t.Fatalf("installer must verify sing-box checksum before extracting archive")
+	}
+}
+
+func TestInstallerSkipsSingBoxSystemdUnitWhenSystemdUnavailable(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"if [ \"$SYSTEMD_AVAILABLE\" -ne 1 ]; then",
+		"systemd 不可用，跳过 migate-singbox.service 写入。",
+		"Manual run: /usr/local/bin/sing-box run -c /etc/sing-box/config.json",
+		"cat > \"$SINGBOX_SERVICE_PATH\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer sing-box non-systemd contract missing %q", want)
+		}
+	}
+	if strings.Index(script, "systemd 不可用，跳过 migate-singbox.service 写入。") > strings.Index(script, "cat > \"$SINGBOX_SERVICE_PATH\"") {
+		t.Fatalf("installer must skip sing-box unit before writing service file when systemd is unavailable")
 	}
 }
 
 func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"UPDATE_ONLY=0",
-		"CHECK_ONLY=0",
-		"--update)",
+		"--upgrade|--update)",
 		"--check)",
 		"--version)",
 		"check_update()",
-		"update_migate()",
+		"install_release_flow",
 		"download_release_asset",
 		"install_migate_binary_from_tmp",
 		"systemctl restart migate",
-		"MiGate updated",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer update contract missing %q", want)
 		}
-	}
-	if strings.Index(script, "update_migate()") > strings.Index(script, "main()") {
-		t.Fatalf("update_migate must be defined before main dispatch")
 	}
 }
 
@@ -219,8 +309,8 @@ func TestInstallerReplacesRunningBinaryAtomicallyDuringUpdate(t *testing.T) {
 		"mktemp /usr/local/bin/.migate.XXXXXX",
 		"cat \"$TMP/migate\" > \"$migate_tmp\"",
 		"chmod +x \"$migate_tmp\"",
-		"mv -f \"$migate_tmp\" /usr/local/bin/migate",
-		"ln -sf /usr/local/bin/migate /usr/local/bin/mg",
+		"mv -f \"$migate_tmp\" \"$MIGATE_BIN\"",
+		"ln -sf \"$MIGATE_BIN\" \"$MIGATE_LINK\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer atomic binary replacement contract missing %q", want)
@@ -234,6 +324,10 @@ func TestInstallerReplacesRunningBinaryAtomicallyDuringUpdate(t *testing.T) {
 func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) {
 	script := read(t, "packaging", "uninstall.sh")
 	for _, want := range []string{
+		"DRY_RUN=0",
+		"--dry-run",
+		"run_cmd()",
+		"[DRY-RUN]",
 		"systemctl stop migate",
 		"systemctl disable migate",
 		"rm -f /etc/systemd/system/migate.service",
@@ -261,6 +355,48 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 	}
 }
 
+func TestUninstallDryRunPrintsPlannedCommands(t *testing.T) {
+	root := repoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "uninstall.sh"), "--dry-run", "--yes")
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("uninstall dry-run failed: %v\n%s", err, output)
+	}
+	for _, want := range []string{
+		"[DRY-RUN] systemctl stop migate",
+		"[DRY-RUN] rm -f /usr/local/bin/migate",
+		"Keeping MiGate config/data",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("uninstall dry-run missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestInstallerUninstallDryRunDelegatesWithoutEmptyArgument(t *testing.T) {
+	root := repoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "install.sh"), "--uninstall", "--dry-run", "--yes")
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("installer uninstall dry-run failed: %v\n%s", err, output)
+	}
+	out := string(output)
+	for _, want := range []string{
+		"[DRY-RUN] systemctl stop migate",
+		"[DRY-RUN] rm -f /usr/local/bin/migate",
+		"MiGate uninstalled.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("installer uninstall dry-run missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Unknown option") {
+		t.Fatalf("installer passed an empty or invalid option to uninstaller:\n%s", out)
+	}
+}
+
 func TestReleaseArchivesIncludeUninstallScript(t *testing.T) {
 	root := repoRoot(t)
 	distDir := t.TempDir()
@@ -283,6 +419,7 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 	service := read(t, "packaging", "migate.service")
 	for _, want := range []string{
 		"ExecStart=/usr/local/bin/migate serve",
+		"--host 127.0.0.1",
 		"--config /etc/migate/panel.json",
 		"User=root",
 		"Restart=on-failure",

@@ -28,6 +28,19 @@ func read(t *testing.T, parts ...string) string {
 	return string(b)
 }
 
+func readIfExists(t *testing.T, parts ...string) (string, bool) {
+	t.Helper()
+	path := filepath.Join(append([]string{repoRoot(t)}, parts...)...)
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", false
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b), true
+}
+
 func TestServiceRunsSinglePrebuiltBinary(t *testing.T) {
 	service := read(t, "packaging", "migate.service")
 	if !strings.Contains(service, "ExecStart=/usr/local/bin/migate") {
@@ -44,7 +57,16 @@ func TestServiceRunsSinglePrebuiltBinary(t *testing.T) {
 
 func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
-	for _, want := range []string{"migate-linux-${ARCH}.tar.gz", "/usr/local/migate", "systemctl enable migate", "systemctl start migate"} {
+	for _, want := range []string{
+		"migate-linux-${ARCH}.tar.gz",
+		"/usr/local/migate",
+		"systemctl enable migate",
+		"systemctl restart migate",
+		"detect_existing_install()",
+		"read_existing_config_defaults()",
+		"REGENERATE_CONFIG",
+		"--dry-run",
+	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer missing %q:\n%s", want, script)
 		}
@@ -68,14 +90,18 @@ func TestRemovedLegacyRuntimeCodeIsFullyRemoved(t *testing.T) {
 		}
 	}
 
+	if _, exists := readIfExists(t, "internal", "web", "static", "app.js"); exists {
+		t.Fatal("removed internal/web/static/app.js must stay absent after frontend split")
+	}
+
 	for _, file := range []string{
 		filepath.Join("internal", "db", "store.go"),
 		filepath.Join("internal", "web", "router.go"),
 		filepath.Join("internal", "web", "auth.go"),
-		filepath.Join("internal", "web", "static", "app.js"),
 		filepath.Join("internal", "xray", "config.go"),
 		filepath.Join("cmd", "migate", "main.go"),
 		filepath.Join("packaging", "install.sh"),
+		filepath.Join("web", "src", "App.tsx"),
 	} {
 		content := strings.ToLower(read(t, file))
 		for _, forbidden := range []string{join("vpn", "gate"), join("vpn", " gate"), join("soft", "ether"), join("micro", "socks"), join("vpn", "cmd"), join("vpn", "client")} {
@@ -91,7 +117,9 @@ func TestReadmeIncludesSimpleInstallAndUsage(t *testing.T) {
 	for _, want := range []string{
 		"bash <(curl -Ls https://raw.githubusercontent.com/imzyb/MiGate/main/packaging/install.sh)",
 		"MIGATE_VERSION=",
-		"http://SERVER_IP:9999/panel",
+		"http://127.0.0.1:9999/panel",
+		"reverse proxy",
+		"public_host",
 		"Web path, default `/panel`",
 		"systemctl status migate",
 		"systemctl restart migate",

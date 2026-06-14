@@ -201,13 +201,15 @@ func TestStoreCreatesAndListsRoutingRules(t *testing.T) {
 		InboundTag:  "",
 		OutboundTag: "blocked",
 		Domain:      "geosite:malware",
-		Protocol:    "",
+		IP:          "geoip:private",
+		RuleSet:     "geosite-category-ads-all",
+		Protocol:    "bittorrent",
 		Enabled:     true,
 	})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
-	if rule.OutboundTag != "blocked" || rule.Domain != "geosite:malware" || !rule.Enabled {
+	if rule.OutboundTag != "blocked" || rule.Domain != "geosite:malware" || rule.IP != "geoip:private" || rule.RuleSet != "geosite-category-ads-all" || rule.Protocol != "bittorrent" || !rule.Enabled {
 		t.Fatalf("unexpected rule: %+v", rule)
 	}
 
@@ -241,13 +243,15 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 		InboundTag:  "socks-in",
 		OutboundTag: "direct",
 		Domain:      "geosite:netflix",
-		Protocol:    "",
+		IP:          "8.8.8.8",
+		RuleSet:     "geoip-cn",
+		Protocol:    "dns",
 		Enabled:     false,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.InboundTag != "socks-in" || updated.OutboundTag != "direct" || updated.Domain != "geosite:netflix" || updated.Enabled {
+	if updated.InboundTag != "socks-in" || updated.OutboundTag != "direct" || updated.Domain != "geosite:netflix" || updated.IP != "8.8.8.8" || updated.RuleSet != "geoip-cn" || updated.Protocol != "dns" || updated.Enabled {
 		t.Fatalf("unexpected updated rule: %+v", updated)
 	}
 
@@ -255,7 +259,7 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(rules) != 1 || rules[0].Domain != "geosite:netflix" {
+	if len(rules) != 1 || rules[0].Domain != "geosite:netflix" || rules[0].IP != "8.8.8.8" || rules[0].RuleSet != "geoip-cn" || rules[0].Protocol != "dns" {
 		t.Fatalf("update not persisted: %+v", rules)
 	}
 }
@@ -1178,5 +1182,164 @@ func TestStoreRevokeSessionByID(t *testing.T) {
 	// Revoking again should fail (already revoked)
 	if err := store.RevokeSession(ctx, sessions[0].ID); err == nil {
 		t.Fatal("expected error when revoking already-revoked session")
+	}
+}
+
+func TestStoreUpdateClientTrafficBatch(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "batch", Protocol: "vless", Port: 28080, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "a@example.com"}); err != nil {
+		t.Fatalf("create client a: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "b@example.com"}); err != nil {
+		t.Fatalf("create client b: %v", err)
+	}
+
+	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
+		"a@example.com":       {Up: 11, Down: 22},
+		"b@example.com":       {Up: 33, Down: 44},
+		"missing@example.com": {Up: 55, Down: 66},
+	})
+	if err != nil {
+		t.Fatalf("batch update traffic: %v", err)
+	}
+
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	traffic := map[string][2]int64{}
+	for _, client := range inbounds[0].Clients {
+		traffic[client.Email] = [2]int64{client.Up, client.Down}
+	}
+	if traffic["a@example.com"] != [2]int64{11, 22} || traffic["b@example.com"] != [2]int64{33, 44} {
+		t.Fatalf("unexpected traffic after batch update: %+v", traffic)
+	}
+}
+
+func TestStoreGetSubscriptionByClientUUIDLoadsOnlyMatchedClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "sub", Protocol: "vless", Port: 443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	target, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "target@example.com"})
+	if err != nil {
+		t.Fatalf("create target client: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "other@example.com"}); err != nil {
+		t.Fatalf("create other client: %v", err)
+	}
+
+	loadedInbound, loadedClient, found, err := store.GetSubscriptionByClientUUID(ctx, target.UUID)
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if !found {
+		t.Fatal("expected subscription client to be found")
+	}
+	if loadedInbound.ID != inbound.ID || loadedClient.ID != target.ID || loadedClient.Email != "target@example.com" {
+		t.Fatalf("unexpected subscription row: inbound=%+v client=%+v", loadedInbound, loadedClient)
+	}
+	if len(loadedInbound.Clients) != 1 || loadedInbound.Clients[0].ID != target.ID {
+		t.Fatalf("subscription query should attach only the matched client, got %+v", loadedInbound.Clients)
+	}
+
+	_, _, found, err = store.GetSubscriptionByClientUUID(ctx, "missing")
+	if err != nil {
+		t.Fatalf("get missing subscription: %v", err)
+	}
+	if found {
+		t.Fatal("expected missing subscription to return found=false")
+	}
+}
+
+func TestStoreCreatesAndLooksUpIndependentSubscriptionToken(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "sub-token", Protocol: "vless", Port: 9443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "token@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if client.SubscriptionToken == "" || client.SubscriptionToken == client.UUID {
+		t.Fatalf("expected independent subscription token, got client=%+v", client)
+	}
+
+	loadedInbound, loadedClient, found, err := store.GetSubscriptionByToken(ctx, client.SubscriptionToken)
+	if err != nil {
+		t.Fatalf("lookup by token: %v", err)
+	}
+	if !found || loadedInbound.ID != inbound.ID || loadedClient.ID != client.ID {
+		t.Fatalf("unexpected token lookup result: found=%v inbound=%+v client=%+v", found, loadedInbound, loadedClient)
+	}
+}
+
+func TestStoreUpdateClientTrafficByEmailUpdatesDuplicateEmailsAcrossInbounds(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	first, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "first", Protocol: "vless", Port: 28081, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create first inbound: %v", err)
+	}
+	second, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "second", Protocol: "vless", Port: 28082, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create second inbound: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: first.ID, Email: "shared@example.com"}); err != nil {
+		t.Fatalf("create first shared client: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: second.ID, Email: "shared@example.com"}); err != nil {
+		t.Fatalf("create second shared client: %v", err)
+	}
+
+	if err := store.UpdateClientTraffic(ctx, "shared@example.com", 7, 9); err != nil {
+		t.Fatalf("update duplicate email traffic: %v", err)
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	var matched int
+	for _, inbound := range inbounds {
+		for _, client := range inbound.Clients {
+			if client.Email == "shared@example.com" {
+				matched++
+				if client.Up != 7 || client.Down != 9 {
+					t.Fatalf("duplicate email client was not updated consistently: %+v", client)
+				}
+			}
+		}
+	}
+	if matched != 2 {
+		t.Fatalf("expected two duplicate-email clients, got %d", matched)
 	}
 }

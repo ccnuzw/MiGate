@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -174,6 +176,8 @@ type panelConfig struct {
 	PanelUsername  string `json:"panel_username"`
 	PanelPassword  string `json:"panel_password"`
 	WebPath        string `json:"web_base_path"`
+	PublicHost     string `json:"public_host"`
+	TrustProxy     bool   `json:"trust_proxy"`
 	DatabasePath   string `json:"database_path"`
 	XrayConfigPath string `json:"xray_config_path"`
 }
@@ -211,7 +215,7 @@ func runServer(args []string) int {
 	var port int
 	var configPath string
 	fs := flag.NewFlagSet("migate serve", flag.ExitOnError)
-	fs.StringVar(&host, "host", "0.0.0.0", "bind host")
+	fs.StringVar(&host, "host", "127.0.0.1", "bind host")
 	fs.IntVar(&port, "port", 9999, "bind port")
 	fs.StringVar(&configPath, "config", "", "panel config path")
 	if err := fs.Parse(args); err != nil {
@@ -466,7 +470,11 @@ func cliResetPassword(stdout, stderr io.Writer, runner commandRunner, m messages
 	if len(args) == 1 {
 		password = args[0]
 	} else {
-		password = generatedPassword()
+		password, err = generatedPassword()
+		if err != nil {
+			fmt.Fprintf(stderr, "generate password: %v\n", err)
+			return 1
+		}
 	}
 	cfg.PanelPassword = password
 	if err := writePanelConfig(defaultPanelConfigPath, cfg); err != nil {
@@ -661,8 +669,12 @@ func listeningStatus(ssOutput string, port int) string {
 	return "not listening"
 }
 
-func generatedPassword() string {
-	return fmt.Sprintf("migate-%d", time.Now().Unix())
+func generatedPassword() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func defaultBackupPath() string {
@@ -700,8 +712,9 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	if strings.TrimSpace(cfg.PanelUsername) == "" || strings.TrimSpace(cfg.PanelPassword) == "" {
 		return nil, nil, fmt.Errorf("panel_username and panel_password are required")
 	}
+	opts := routerOptionsFromConfig(cfg, path)
 	if cfg.DatabasePath == "" {
-		return web.NewRouter(web.WithAuth(cfg.PanelUsername, cfg.PanelPassword), web.WithVersion(Version), web.WithConfigDir(filepath.Dir(path))), func() {}, nil
+		return web.NewRouter(opts...), func() {}, nil
 	}
 	store, err := db.Open(context.Background(), cfg.DatabasePath)
 	if err != nil {
@@ -709,14 +722,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	}
 	closeStore := func() { _ = store.Close() }
 
-	opts := []web.Option{web.WithStore(store), web.WithVersion(Version)}
-	if cfg.WebPath != "" {
-		opts = append(opts, web.WithBasePath(cfg.WebPath))
-	}
-	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
-		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
-	}
-	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
+	opts = append(opts, web.WithStore(store))
 
 	// Build Xray controller for shared use
 	var xrayCtrl web.XrayController
@@ -724,19 +730,16 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		xrayCtrl = web.NewRealController(store, cfg.XrayConfigPath, execCmd)
 		opts = append(opts, web.WithXrayController(xrayCtrl))
 	}
-	// Query real Xray traffic stats through the lightweight xray CLI API when
-	// the local Xray StatsService is actually reachable. Local preview/release
-	// audit runs often have an xray binary but no StatsService, so fall back to
-	// the lightweight stub instead of logging a scheduler error every minute.
-	statsClient := usableStatsClient(context.Background(), xray.NewCommandStatsClient("/usr/local/bin/xray", "127.0.0.1:10085"))
+	statsClient := xray.NewResilientStatsClient(
+		xray.NewCommandStatsClient("/usr/local/bin/xray", "127.0.0.1:10085"),
+		xray.NewStubStatsClient(),
+	)
 	opts = append(opts, web.WithStatsClient(statsClient))
 
 	// Create schedulers before building router (needed for options and cleanup wiring)
-	// Traffic sync scheduler — syncs client traffic stats from Xray API when a real stats client is configured.
-	var trafficSched *scheduler.TrafficSyncScheduler
-	if !xray.StatsClientIsStub(statsClient) {
-		trafficSched = scheduler.NewTrafficSyncScheduler(store, statsClient, 1*time.Minute)
-	}
+	// Traffic sync scheduler keeps retrying Xray StatsService because Xray may
+	// become available only after the panel starts and applies generated config.
+	trafficSched := scheduler.NewTrafficSyncScheduler(store, statsClient, 1*time.Minute)
 
 	router := web.NewRouter(opts...)
 
@@ -745,26 +748,20 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	// Start schedulers in background and wait for them during cleanup.
 	var schedWG sync.WaitGroup
 	trafficStarted := make(chan struct{})
-	if trafficSched != nil {
-		schedWG.Add(1)
-		go func() {
-			defer schedWG.Done()
-			log.Println("traffic sync scheduler started")
-			close(trafficStarted)
-			trafficSched.Start()
-		}()
-	} else {
+	schedWG.Add(1)
+	go func() {
+		defer schedWG.Done()
+		log.Println("traffic sync scheduler started")
 		close(trafficStarted)
-	}
+		trafficSched.Start()
+	}()
 	<-trafficStarted
 
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			stopSocks5Cache()
-			if trafficSched != nil {
-				trafficSched.Stop()
-			}
+			trafficSched.Stop()
 			schedWG.Wait()
 			closeStore()
 		})
@@ -773,15 +770,22 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	return router, cleanup, nil
 }
 
-func usableStatsClient(ctx context.Context, client xray.StatsClient) xray.StatsClient {
-	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if _, err := client.QueryAllStats(probeCtx); err != nil {
-		log.Printf("traffic sync: xray stats unavailable, realtime Xray traffic sync disabled: %v", err)
-		_ = client.Close()
-		return xray.NewStubStatsClient()
+func routerOptionsFromConfig(cfg panelConfig, path string) []web.Option {
+	opts := []web.Option{web.WithVersion(Version)}
+	if cfg.WebPath != "" {
+		opts = append(opts, web.WithBasePath(cfg.WebPath))
 	}
-	return client
+	if cfg.PublicHost != "" {
+		opts = append(opts, web.WithPublicHost(cfg.PublicHost))
+	}
+	if cfg.TrustProxy {
+		opts = append(opts, web.WithTrustedProxyHeaders(true))
+	}
+	if cfg.PanelUsername != "" && cfg.PanelPassword != "" {
+		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
+	}
+	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
+	return opts
 }
 
 func readPanelConfig(path string) (panelConfig, error) {
