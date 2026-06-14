@@ -619,8 +619,8 @@ install_xray() {
     printf '[DRY-RUN] xray_tmp="$(mktemp -d)"\n'
     printf '[DRY-RUN] curl -fL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$xray_tmp/install-release.sh"\n'
     printf '[DRY-RUN] bash "$xray_tmp/install-release.sh"\n'
-    printf '[DRY-RUN] ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json\n'
-    printf '[DRY-RUN] ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json\n'
+    printf '[DRY-RUN] ln -sf %q /usr/local/etc/xray/xray.json\n' "${INSTALL_DIR}/xray.json"
+    printf '[DRY-RUN] ln -sf %q /usr/local/etc/xray/config.json\n' "${INSTALL_DIR}/xray.json"
     printf '[DRY-RUN] systemctl enable xray && systemctl restart xray\n'
     return 0
   fi
@@ -634,8 +634,8 @@ install_xray() {
   bash "$xray_tmp/install-release.sh"
   rm -rf "$xray_tmp"
   mkdir -p /usr/local/etc/xray
-  ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json
-  ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
+  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/xray.json
+  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/config.json
   if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
     systemctl enable xray 2>/dev/null || true
     systemctl restart xray 2>/dev/null || true

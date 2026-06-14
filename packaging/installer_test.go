@@ -64,7 +64,7 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"WebUI",
 		"xray.json",
 		"/usr/local/etc/xray/xray.json",
-		"ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json",
+		"ln -sf \"${INSTALL_DIR}/xray.json\" /usr/local/etc/xray/xray.json",
 		"install_xray",
 		"Xray-install",
 	} {
