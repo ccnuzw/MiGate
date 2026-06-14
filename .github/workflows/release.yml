@@ -20,6 +20,24 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Run release quality gates
+        run: |
+          cd web
+          npm ci --prefer-offline --no-audit
+          npm test
+          cd ..
+          go test ./...
+          go vet ./...
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -31,6 +49,19 @@ jobs:
       - name: Build release archives
         run: |
           DIST_DIR=dist VERSION="${GITHUB_REF_NAME}" packaging/build-release.sh
+
+      - name: Verify release archives
+        run: |
+          test -s dist/migate-linux-amd64.tar.gz
+          test -s dist/migate-linux-arm64.tar.gz
+          test -s dist/checksums.txt
+          tar -tzf dist/migate-linux-amd64.tar.gz | grep -qx migate
+          tar -tzf dist/migate-linux-amd64.tar.gz | grep -qx packaging/install.sh
+          tar -tzf dist/migate-linux-amd64.tar.gz | grep -qx packaging/uninstall.sh
+          tar -tzf dist/migate-linux-arm64.tar.gz | grep -qx migate
+          tar -tzf dist/migate-linux-arm64.tar.gz | grep -qx packaging/install.sh
+          tar -tzf dist/migate-linux-arm64.tar.gz | grep -qx packaging/uninstall.sh
+          cd dist && sha256sum -c checksums.txt
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
