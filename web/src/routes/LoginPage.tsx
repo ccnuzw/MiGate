@@ -9,6 +9,7 @@ import { basePath } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Session } from '../api/types';
 import { Field, useToast } from '../components/ui';
+import { useI18n } from '../lib/i18n';
 
 const schema = z.object({
   username: z.string().min(1),
@@ -22,6 +23,7 @@ export default function LoginPage() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { text } = useI18n();
   const session = useQuery({ queryKey: ['session'], queryFn: api.session });
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { username: 'admin', password: '' } });
   const target = redirectTarget(location);
@@ -38,7 +40,7 @@ export default function LoginPage() {
       navigate(target, { replace: true });
       void queryClient.invalidateQueries({ queryKey: ['session'] });
     },
-    onError: () => showToast('登录失败，请检查用户名或密码', 'error'),
+    onError: () => showToast(text('登录失败，请检查用户名或密码'), 'error'),
   });
 
   useEffect(() => {
@@ -56,19 +58,19 @@ export default function LoginPage() {
           </div>
           <div>
             <h1 className="text-xl font-semibold">MiGate</h1>
-            <p className="text-sm text-panel-muted">面板登录</p>
+            <p className="text-sm text-panel-muted">{text('面板登录')}</p>
           </div>
         </div>
-        {session.isError ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">会话检查失败，请直接登录或刷新页面。</div> : null}
+        {session.isError ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{text('会话检查失败，请直接登录或刷新页面。')}</div> : null}
         <div className="grid gap-4">
-          <Field label="用户名">
+          <Field label={text('用户名')}>
             <input {...form.register('username')} autoComplete="username" />
           </Field>
-          <Field label="密码">
+          <Field label={text('密码')}>
             <input {...form.register('password')} type="password" autoComplete="current-password" />
           </Field>
           <button className="btn primary h-10" disabled={login.isPending}>
-            {login.isPending ? '登录中...' : '登录'}
+            {login.isPending ? text('登录中...') : text('登录')}
           </button>
         </div>
       </form>

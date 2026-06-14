@@ -4,11 +4,13 @@ import { useMemo } from 'react';
 import { api } from '../api/endpoints';
 import type { DashboardSummary } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
-import { formatBytes, formatDuration, formatPercent, serviceLabel } from '../lib/format';
+import { formatBytes, formatDuration, formatPercent, serviceLabel, versionLabel } from '../lib/format';
+import { useI18n } from '../lib/i18n';
 import { usePageVisible } from '../lib/visibility';
 
 export default function OverviewPage() {
   const visible = usePageVisible();
+  const { text } = useI18n();
   const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false, staleTime: 5_000 });
   const [xray, singbox] = useQueries({
@@ -29,32 +31,32 @@ export default function OverviewPage() {
   return (
     <div className="page-stack">
       <PageTitle
-        title="运行概览"
-        description="VPS 面板、核心服务和流量资源的实时摘要。"
-        action={<button className="btn secondary" onClick={() => refreshOverview([summary, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> 刷新</button>}
+        title={text('运行概览')}
+        description={text('VPS 面板、核心服务和流量资源的实时摘要。')}
+        action={<button className="btn secondary" onClick={() => refreshOverview([summary, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
       />
       <OverviewAlerts
           errors={[
-            summary.error ? `概览摘要加载失败：${errorText(summary.error)}` : '',
-            resources.error ? `资源加载失败：${errorText(resources.error)}` : '',
-          xray.error ? `Xray 状态加载失败：${errorText(xray.error)}` : '',
-          singbox.error ? `sing-box 状态加载失败：${errorText(singbox.error)}` : '',
-          data?.validation.xray && !data.validation.xray.valid ? `Xray 生成校验失败：${data.validation.xray.error || '未知错误'}` : '',
-          data?.validation.singbox && !data.validation.singbox.valid ? `sing-box 生成校验失败：${data.validation.singbox.error || '未知错误'}` : '',
+            summary.error ? `${text('概览摘要加载失败')}：${errorText(summary.error)}` : '',
+            resources.error ? `${text('资源加载失败')}：${errorText(resources.error)}` : '',
+          xray.error ? `Xray ${text('状态加载失败')}：${errorText(xray.error)}` : '',
+          singbox.error ? `sing-box ${text('状态加载失败')}：${errorText(singbox.error)}` : '',
+          data?.validation.xray && !data.validation.xray.valid ? `Xray ${text('生成校验失败')}：${data.validation.xray.error || text('未知错误')}` : '',
+          data?.validation.singbox && !data.validation.singbox.valid ? `sing-box ${text('生成校验失败')}：${data.validation.singbox.error || text('未知错误')}` : '',
         ].filter(Boolean)}
       />
       <div className="metric-grid">
-        <Metric icon={Network} label="总流量" value={formatBytes(traffic.total)} sub={`${formatBytes(traffic.up)} ↑ / ${formatBytes(traffic.down)} ↓`} />
-        <Metric icon={Users} label="客户端" value={String(counts.clients)} sub={`${counts.clients_active} active · ${counts.clients_expired} expired · ${counts.clients_limited} limited`} />
-        <Metric icon={Shield} label="入站" value={String(counts.inbounds)} sub={`${counts.inbounds_enabled} enabled`} />
-        <Metric icon={Activity} label="实时流量" value={formatBytes(traffic.xray_realtime)} sub={`${formatBytes(traffic.xray_up)} ↑ / ${formatBytes(traffic.xray_down)} ↓`} />
-        <Metric icon={Network} label="出站" value={String(counts.outbounds)} sub={`${counts.outbounds_enabled} enabled`} />
-        <Metric icon={Activity} label="路由规则" value={String(counts.routing_rules)} sub={`${counts.routing_enabled} enabled`} />
-        <Metric icon={Activity} label="Xray" value={serviceLabel(xray.data?.status)} sub={xray.data?.version || '-'} />
-        <Metric icon={Activity} label="sing-box" value={serviceLabel(singbox.data?.status)} sub={singbox.data?.version || '-'} />
+        <Metric icon={Network} tone="teal" label={text('总流量')} value={formatBytes(traffic.total)} sub={`${formatBytes(traffic.up)} ↑ / ${formatBytes(traffic.down)} ↓`} />
+        <Metric icon={Users} tone="blue" label={text('客户端')} value={String(counts.clients)} sub={`${counts.clients_active} ${text('活跃')} · ${counts.clients_expired} ${text('过期')} · ${counts.clients_limited} ${text('受限')}`} />
+        <Metric icon={Shield} tone="emerald" label={text('入站')} value={String(counts.inbounds)} sub={`${counts.inbounds_enabled} ${text('已启用')}`} />
+        <Metric icon={Activity} tone="violet" label={text('实时流量')} value={formatBytes(traffic.xray_realtime)} sub={`${formatBytes(traffic.xray_up)} ↑ / ${formatBytes(traffic.xray_down)} ↓`} />
+        <Metric icon={Network} tone="amber" label={text('出站')} value={String(counts.outbounds)} sub={`${counts.outbounds_enabled} ${text('已启用')}`} />
+        <Metric icon={Activity} tone="slate" label={text('路由规则')} value={String(counts.routing_rules)} sub={`${counts.routing_enabled} ${text('已启用')}`} />
+        <Metric icon={Activity} tone={xray.data?.status === 'running' ? 'emerald' : 'rose'} label="Xray" value={text(serviceLabel(xray.data?.status))} sub={text(versionLabel(xray.data?.version))} />
+        <Metric icon={Activity} tone={singbox.data?.status === 'running' ? 'emerald' : 'rose'} label="sing-box" value={text(serviceLabel(singbox.data?.status))} sub={text(versionLabel(singbox.data?.version))} />
       </div>
       <Card className="p-5">
-        <h2 className="section-title mb-4">最近生成状态</h2>
+        <h2 className="section-title mb-4">{text('最近生成状态')}</h2>
         <div className="grid gap-3 md:grid-cols-2">
           <ValidationSummary label="Xray" loading={summary.isLoading} valid={data?.validation.xray.valid} error={summary.error} detail={validationSummary(data?.validation.xray, summary.error)} />
           <ValidationSummary label="sing-box" loading={summary.isLoading} valid={data?.validation.singbox.valid} error={summary.error} detail={validationSummary(data?.validation.singbox, summary.error)} />
@@ -63,7 +65,7 @@ export default function OverviewPage() {
       <div className="grid gap-4 xl:grid-cols-[1.4fr_.9fr]">
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between gap-4">
-            <h2 className="section-title">流量走势</h2>
+            <h2 className="section-title">{text('流量走势')}</h2>
             <div className="flex gap-2 text-xs text-panel-muted">
               <span className="inline-flex items-center gap-1">
                 <ArrowUp className="h-3 w-3" /> {formatBytes(traffic.up)}
@@ -78,19 +80,19 @@ export default function OverviewPage() {
           </div>
         </Card>
         <Card className="p-5">
-          <h2 className="section-title mb-4">服务器资源</h2>
+          <h2 className="section-title mb-4">{text('服务器资源')}</h2>
           <div className="grid gap-3">
-            <Resource icon={Cpu} label="CPU" value={formatPercent(resources.data?.cpu_percent)} />
-            <Resource icon={Database} label="内存" value={`${formatBytes(resources.data?.memory_used)} / ${formatBytes(resources.data?.memory_total)}`} />
-            <Resource icon={HardDrive} label="磁盘" value={`${formatBytes(resources.data?.disk_used)} / ${formatBytes(resources.data?.disk_total)}`} />
-            <Resource icon={Activity} label="运行时间" value={formatDuration(resources.data?.uptime_seconds)} />
+            <Resource icon={Cpu} tone="blue" label="CPU" value={formatPercent(resources.data?.cpu_percent)} />
+            <Resource icon={Database} tone="violet" label={text('内存')} value={`${formatBytes(resources.data?.memory_used)} / ${formatBytes(resources.data?.memory_total)}`} />
+            <Resource icon={HardDrive} tone="amber" label={text('磁盘')} value={`${formatBytes(resources.data?.disk_used)} / ${formatBytes(resources.data?.disk_total)}`} />
+            <Resource icon={Activity} tone="teal" label={text('运行时间')} value={formatDuration(resources.data?.uptime_seconds)} />
           </div>
         </Card>
       </div>
       <Card className="p-5">
-        <h2 className="section-title mb-4">协议分布</h2>
+        <h2 className="section-title mb-4">{text('协议分布')}</h2>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {protocols.length ? protocols.map((item) => <div key={item.name} className="rounded-lg bg-panel-soft p-3 text-sm"><b>{item.name}</b><span className="ml-2 text-panel-muted">{item.value}</span></div>) : <span className="text-sm text-panel-muted">暂无入站</span>}
+          {protocols.length ? protocols.map((item) => <div key={item.name} className="rounded-lg bg-panel-soft p-3 text-sm"><b>{item.name}</b><span className="ml-2 text-panel-muted">{item.value}</span></div>) : <span className="text-sm text-panel-muted">{text('暂无入站')}</span>}
         </div>
       </Card>
     </div>
@@ -134,13 +136,14 @@ function OverviewAlerts({ errors }: { errors: string[] }) {
 }
 
 function TrafficChart({ data }: { data: DashboardSummary['traffic_series'] }) {
+  const { text } = useI18n();
   const chart = useMemo(() => buildChart(data), [data]);
   if (data.length === 0) {
-    return <div className="flex h-full items-center justify-center text-sm text-panel-muted">暂无流量数据</div>;
+    return <div className="flex h-full items-center justify-center text-sm text-panel-muted">{text('暂无流量数据')}</div>;
   }
   return (
     <div className="relative h-full w-full">
-      <svg className="h-full w-full overflow-visible" viewBox="0 0 640 220" role="img" aria-label="流量走势">
+      <svg className="h-full w-full overflow-visible" viewBox="0 0 640 220" role="img" aria-label={text('流量走势')}>
         <defs>
           <linearGradient id="traffic-up-fill" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="#0f766e" stopOpacity="0.32" />
@@ -240,28 +243,33 @@ export function PageTitle({ title, description, action }: { title: string; descr
   );
 }
 
-function Metric({ icon: Icon, label, value, sub }: { icon: React.ElementType; label: string; value: string; sub?: string }) {
+type MetricTone = 'teal' | 'blue' | 'emerald' | 'violet' | 'amber' | 'rose' | 'slate';
+
+function Metric({ icon: Icon, tone, label, value, sub }: { icon: React.ElementType; tone: MetricTone; label: string; value: string; sub?: string }) {
   return (
-    <Card className="p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-sm text-panel-muted">{label}</div>
-          <div className="mt-2 text-2xl font-semibold">{value}</div>
-          {sub ? <div className="mt-1 truncate text-xs text-panel-muted">{sub}</div> : null}
-        </div>
-        <Icon className="h-5 w-5 text-panel-muted" />
+    <Card className={`metric-card metric-${tone}`}>
+      <div className="metric-icon">
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0">
+        <div className="metric-label">{label}</div>
+        <div className="metric-value">{value}</div>
+        {sub ? <div className="metric-sub">{sub}</div> : null}
       </div>
     </Card>
   );
 }
 
-function Resource({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
+function Resource({ icon: Icon, tone, label, value }: { icon: React.ElementType; tone: MetricTone; label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg bg-panel-soft px-3 py-2 text-sm">
-      <span className="inline-flex items-center gap-2 text-panel-muted">
-        <Icon className="h-4 w-4" /> {label}
+    <div className={`resource-meter metric-${tone}`}>
+      <span className="resource-label">
+        <span className="resource-icon">
+          <Icon className="h-4 w-4" />
+        </span>
+        {label}
       </span>
-      <span className="min-w-0 break-words text-right font-medium">{value}</span>
+      <span className="resource-value">{value}</span>
     </div>
   );
 }

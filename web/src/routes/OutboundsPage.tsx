@@ -111,7 +111,7 @@ export default function OutboundsPage() {
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
                   <span>{item.protocol}</span>
                   {item.address ? <span>{item.address}:{item.port || ''}</span> : null}
-                  {item.remark ? <span>{item.remark}</span> : null}
+                  {item.remark ? <span>{outboundRemarkLabel(item.remark, text)}</span> : null}
                   <span>{formatLatency(latency[item.id], text)}</span>
                 </div>
               </div>
@@ -139,7 +139,7 @@ export default function OutboundsPage() {
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
                   <span>{item.protocol}</span>
                   {item.address ? <span>{item.address}:{item.port || ''}</span> : null}
-                  {item.remark ? <span>{item.remark}</span> : null}
+                  {item.remark ? <span>{outboundRemarkLabel(item.remark, text)}</span> : null}
                   <span>{formatLatency(latency[item.id], text)}</span>
                 </div>
               </div>
@@ -184,7 +184,7 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
   return (
     <Modal open={!!outbound} title={text(outbound?.id ? '编辑出站' : '新增出站')} onClose={onClose} footer={<><button className="btn secondary" onClick={onClose}>{text('取消')}</button><SpinnerButton className="btn primary" loading={save.isPending} onClick={form.handleSubmit((v) => save.mutate(v))}>{text('保存')}</SpinnerButton></>}>
       <div className="form-grid">
-        <Field label="Tag"><input {...form.register('tag')} /><FieldError message={form.formState.errors.tag?.message ? text(form.formState.errors.tag.message) : undefined} /></Field>
+        <Field label={text('标签')}><input {...form.register('tag')} /><FieldError message={form.formState.errors.tag?.message ? text(form.formState.errors.tag.message) : undefined} /></Field>
         <Field label={text('备注')}><input {...form.register('remark')} /></Field>
         <Field label={text('协议')}><select {...form.register('protocol')}><option value="socks">SOCKS5</option><option value="http">HTTP</option><option value="freedom">freedom</option><option value="blackhole">blackhole</option></select></Field>
         {protocol === 'socks' || protocol === 'http' ? (
@@ -305,6 +305,11 @@ function moveCustomOutbound(items: Outbound[], index: number, delta: number, sav
 
 function proxyKey(proxy: Pick<Socks5PoolProxy, 'address' | 'port'>) {
   return `${proxy.address}:${proxy.port}`;
+}
+
+export function outboundRemarkLabel(remark: string, text: (value: string) => string) {
+  if (remark === '直接连接' || remark === '阻断') return text(remark);
+  return remark;
 }
 
 function errorMessage(error: unknown, fallback: string) {

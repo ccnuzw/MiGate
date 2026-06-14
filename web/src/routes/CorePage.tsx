@@ -5,7 +5,7 @@ import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CoreActionResponse } from '../api/types';
 import { Card, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
-import { formatBytes, serviceLabel } from '../lib/format';
+import { formatBytes, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { usePageVisible } from '../lib/visibility';
 import { PageTitle } from './OverviewPage';
@@ -89,7 +89,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
         <CoreMetric label={text('安装')} value={text(status?.installed === false ? '未安装' : '已安装')} />
         <CoreMetric label={text('托管')} value={text(status?.managed ? '已托管' : '未托管')} />
         <CoreMetric label={text('状态')} value={text(serviceLabel(status?.status))} />
-        <CoreMetric label={text('版本')} value={status?.version || versionQuery.data?.version || '-'} />
+        <CoreMetric label={text('版本')} value={text(versionLabel(status?.version || versionQuery.data?.version))} />
         <CoreMetric label={text('内存')} value={formatBytes(status?.memory_rss_bytes)} />
         <CoreMetric label={text('运行时长')} value={status?.uptime || '-'} />
         <CoreMetric label={text('连接')} value={String(status?.active_connections || 0)} />
@@ -204,7 +204,7 @@ function withDetail<T extends { ok: boolean; message: string }>(result: T, detai
 }
 
 function validationDetail(data: { warnings?: string[]; inbounds?: number; outbounds?: number; rules?: number }) {
-  const summary = [data.inbounds != null ? `inbounds: ${data.inbounds}` : '', data.outbounds != null ? `outbounds: ${data.outbounds}` : '', data.rules != null ? `rules: ${data.rules}` : ''].filter(Boolean).join(' · ');
-  const warnings = data.warnings?.length ? `warnings:\n${data.warnings.join('\n')}` : '';
+  const summary = [data.inbounds != null ? `入站: ${data.inbounds}` : '', data.outbounds != null ? `出站: ${data.outbounds}` : '', data.rules != null ? `规则: ${data.rules}` : ''].filter(Boolean).join(' · ');
+  const warnings = data.warnings?.length ? `警告:\n${data.warnings.join('\n')}` : '';
   return [summary, warnings].filter(Boolean).join('\n\n') || undefined;
 }

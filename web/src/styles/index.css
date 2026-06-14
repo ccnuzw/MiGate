@@ -154,6 +154,21 @@ textarea:focus {
   padding: 16px;
 }
 
+.sidebar-brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar-brand-mark {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 10px;
+  box-shadow: 0 8px 18px rgba(15, 118, 110, 0.18);
+}
+
 .mobile-sidebar-close {
   display: none;
 }
@@ -168,6 +183,7 @@ textarea:focus {
 
 .nav-link {
   display: flex;
+  min-height: 40px;
   align-items: center;
   gap: 12px;
   border-radius: 8px;
@@ -196,37 +212,102 @@ textarea:focus {
 }
 
 .sidebar-collapsed .sidebar-header {
+  display: grid;
+  place-items: center;
   justify-content: center;
+  width: 100%;
   padding-right: 10px;
   padding-left: 10px;
+}
+
+.sidebar-collapsed .sidebar-brand {
+  justify-content: center;
+  width: 100%;
+  gap: 0;
 }
 
 .sidebar-collapsed .sidebar-brand-text,
 .sidebar-collapsed .nav-link-label,
 .sidebar-collapsed .sidebar-footer-text {
+  display: none;
   width: 0;
   opacity: 0;
   pointer-events: none;
 }
 
 .sidebar-collapsed .nav-link {
-  justify-content: center;
-  padding-right: 10px;
-  padding-left: 10px;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  min-height: 46px;
+  margin-right: auto;
+  margin-left: auto;
+  padding: 0;
+}
+
+.sidebar-collapsed .nav-link > svg {
+  width: 20px;
+  height: 20px;
 }
 
 .sidebar-collapsed .main-shell {
   padding-left: 104px;
 }
 
+.sidebar-footer-card {
+  border-radius: 8px;
+  background: rgb(var(--soft));
+  padding: 12px;
+}
+
+.sidebar-version-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(var(--text));
+  font-size: 14px;
+  font-weight: 500;
+}
+
 .sidebar-collapsed .sidebar-footer-card {
   display: grid;
   place-items: center;
-  padding: 10px;
+  width: 46px;
+  height: 46px;
+  min-height: 46px;
+  margin-right: auto;
+  margin-left: auto;
+  padding: 0;
+}
+
+.sidebar-collapsed .sidebar-version-button {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  gap: 0;
+}
+
+.sidebar-collapsed .sidebar-version-button svg {
+  width: 20px;
+  height: 20px;
 }
 
 .sidebar-collapsed .sidebar-actions {
   grid-template-columns: 1fr;
+  justify-items: center;
+}
+
+.sidebar-collapsed .sidebar-actions .icon-button {
+  width: 46px;
+  height: 46px;
+  padding: 0;
+}
+
+.sidebar-collapsed .sidebar-actions .icon-button svg {
+  width: 20px;
+  height: 20px;
 }
 
 .page-stack {
@@ -260,6 +341,91 @@ textarea:focus {
   gap: 14px;
 }
 
+.metric-card {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+}
+
+.metric-icon,
+.resource-icon {
+  display: grid;
+  place-items: center;
+  color: var(--metric-accent);
+  background: var(--metric-soft);
+}
+
+.metric-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+
+.metric-label {
+  color: rgb(var(--muted));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.metric-value {
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--metric-accent);
+  font-size: 24px;
+  font-weight: 750;
+  line-height: 1.08;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-sub {
+  margin-top: 6px;
+  overflow: hidden;
+  color: rgb(var(--muted));
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-teal {
+  --metric-accent: #0f766e;
+  --metric-soft: rgba(13, 148, 136, 0.12);
+}
+
+.metric-blue {
+  --metric-accent: #2563eb;
+  --metric-soft: rgba(37, 99, 235, 0.12);
+}
+
+.metric-emerald {
+  --metric-accent: #059669;
+  --metric-soft: rgba(5, 150, 105, 0.12);
+}
+
+.metric-violet {
+  --metric-accent: #7c3aed;
+  --metric-soft: rgba(124, 58, 237, 0.12);
+}
+
+.metric-amber {
+  --metric-accent: #b45309;
+  --metric-soft: rgba(245, 158, 11, 0.16);
+}
+
+.metric-rose {
+  --metric-accent: #e11d48;
+  --metric-soft: rgba(225, 29, 72, 0.12);
+}
+
+.metric-slate {
+  --metric-accent: #475569;
+  --metric-soft: rgba(100, 116, 139, 0.14);
+}
+
 .section-title {
   font-size: 15px;
   font-weight: 700;
@@ -286,6 +452,41 @@ textarea:focus {
   border-radius: 8px;
   background: rgb(var(--soft));
   padding: 10px 12px;
+}
+
+.resource-meter {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 8px;
+  background: rgb(var(--soft));
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.resource-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  color: rgb(var(--muted));
+}
+
+.resource-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+}
+
+.resource-value {
+  min-width: 0;
+  color: var(--metric-accent);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .action-row {
@@ -511,28 +712,74 @@ textarea:focus {
   .sidebar-collapsed .sidebar-brand-text,
   .sidebar-collapsed .nav-link-label,
   .sidebar-collapsed .sidebar-footer-text {
+    display: inline;
     width: auto;
     opacity: 1;
     pointer-events: auto;
   }
 
   .sidebar-collapsed .sidebar-header {
+    display: flex;
     justify-content: space-between;
     padding: 16px;
   }
 
+  .sidebar-collapsed .sidebar-brand {
+    justify-content: flex-start;
+    width: auto;
+  }
+
   .sidebar-collapsed .nav-link {
     justify-content: flex-start;
+    width: auto;
+    height: auto;
+    min-height: 40px;
+    margin-right: 0;
+    margin-left: 0;
     padding: 8px 12px;
+  }
+
+  .sidebar-collapsed .nav-link > svg {
+    width: 16px;
+    height: 16px;
   }
 
   .sidebar-collapsed .sidebar-footer-card {
     display: block;
+    width: auto;
+    height: auto;
+    min-height: auto;
+    margin-right: 0;
+    margin-left: 0;
     padding: 12px;
   }
 
+  .sidebar-collapsed .sidebar-version-button {
+    display: flex;
+    align-items: center;
+    width: auto;
+    height: auto;
+    gap: 8px;
+  }
+
+  .sidebar-collapsed .sidebar-version-button svg {
+    width: 16px;
+    height: 16px;
+  }
+
   .sidebar-collapsed .sidebar-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-items: stretch;
+  }
+
+  .sidebar-collapsed .sidebar-actions .icon-button {
+    width: 36px;
+    height: 36px;
+  }
+
+  .sidebar-collapsed .sidebar-actions .icon-button svg {
+    width: 16px;
+    height: 16px;
   }
 
   .sidebar-open .sidebar-overlay {
