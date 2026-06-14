@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, RefreshCw, RotateCcw, Save, ShieldX, UploadCloud } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
@@ -13,16 +14,27 @@ export default function SettingsPage() {
   const confirm = useConfirm();
   const { showToast } = useToast();
   const { text } = useI18n();
-  const session = useQuery({ queryKey: ['session'], queryFn: api.session });
-  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, retry: false });
-  const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, retry: false });
+  const [watchUpdateStatus, setWatchUpdateStatus] = useState(false);
+  const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, retry: false, staleTime: 60_000 });
+  const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, retry: false, staleTime: 60_000 });
   const updateCheck = useQuery({ queryKey: ['update-check'], queryFn: api.updateCheck, enabled: false });
-  const updateStatus = useQuery({ queryKey: ['update-status'], queryFn: api.updateStatus, refetchInterval: 5000 });
-  const sessions = useQuery({ queryKey: ['sessions'], queryFn: api.sessions, retry: false });
-  const service = useQuery({ queryKey: ['service-status'], queryFn: api.serviceStatus, retry: false });
+  const updateStatus = useQuery({
+    queryKey: ['update-status'],
+    queryFn: api.updateStatus,
+    refetchInterval: (query) => updateStatusRefetchInterval(query.state.data?.status, watchUpdateStatus),
+    staleTime: 30_000,
+  });
+  const sessions = useQuery({ queryKey: ['sessions'], queryFn: api.sessions, retry: false, staleTime: 60_000 });
+  const service = useQuery({ queryKey: ['service-status'], queryFn: api.serviceStatus, retry: false, staleTime: 30_000 });
   const form = useForm<Settings>({ values: settings.data || {} });
   const certDomain = form.watch('cert_domain') || cert.data?.domain || '';
   const certEmail = form.watch('cert_email') || cert.data?.email || '';
+  useEffect(() => {
+    if (watchUpdateStatus && isUpdateTerminal(updateStatus.data?.status)) {
+      setWatchUpdateStatus(false);
+    }
+  }, [updateStatus.data?.status, watchUpdateStatus]);
   const save = useMutation({
     mutationFn: (values: Settings) => api.saveSettings(settingsPayload(settings.data, values)),
     onSuccess: () => {
@@ -52,6 +64,7 @@ export default function SettingsPage() {
   const update = useMutation({
     mutationFn: api.update,
     onSuccess: () => {
+      setWatchUpdateStatus(true);
       showToast(text('更新命令已发送'), 'success');
       queryClient.invalidateQueries({ queryKey: ['update-status'] });
     },
@@ -118,7 +131,7 @@ export default function SettingsPage() {
           <h2 className="section-title">{text('更新')}</h2>
           <div className="flex flex-wrap gap-2">
             <button className="btn secondary" onClick={() => updateCheck.refetch()}><RefreshCw className="h-4 w-4" /> {text('检查更新')}</button>
-            <SpinnerButton className="btn primary" loading={update.isPending} disabled={updateStatus.data?.status === 'updating'} onClick={async () => (await confirm({ title: text('立即更新 MiGate？'), description: text('更新器将通过 systemd-run 在服务外执行。') })) && update.mutate()}><UploadCloud className="h-4 w-4" /> {text('立即更新')}</SpinnerButton>
+            <SpinnerButton className="btn primary" loading={update.isPending} disabled={isUpdateInProgress(updateStatus.data?.status)} onClick={async () => (await confirm({ title: text('立即更新 MiGate？'), description: text('更新器将通过 systemd-run 在服务外执行。') })) && update.mutate()}><UploadCloud className="h-4 w-4" /> {text('立即更新')}</SpinnerButton>
           </div>
         </div>
         <div className="grid gap-2 text-sm text-panel-muted sm:grid-cols-2">
@@ -168,4 +181,16 @@ export function certIssuePayload(values: Settings, current?: { domain?: string; 
     domain: values.cert_domain || current?.domain || '',
     email: values.cert_email || current?.email || '',
   };
+}
+
+export function updateStatusRefetchInterval(status?: string, watching = false) {
+  return watching || isUpdateInProgress(status) ? 5000 : false;
+}
+
+export function isUpdateInProgress(status?: string) {
+  return ['pending', 'running', 'updating', 'downloading', 'installing'].includes(String(status || '').toLowerCase());
+}
+
+export function isUpdateTerminal(status?: string) {
+  return ['started', 'restarting', 'failed', 'completed', 'idle'].includes(String(status || '').toLowerCase());
 }

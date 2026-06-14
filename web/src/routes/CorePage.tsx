@@ -7,9 +7,11 @@ import type { CoreActionResponse } from '../api/types';
 import { Card, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { formatBytes, serviceLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { usePageVisible } from '../lib/visibility';
 import { PageTitle } from './OverviewPage';
 
 export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
+  const visible = usePageVisible();
   const { showToast } = useToast();
   const { text } = useI18n();
   const confirm = useConfirm();
@@ -18,9 +20,9 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
     ? { status: api.xrayStatus, version: api.xrayVersion, config: api.xrayConfig, logs: api.xrayLogs, validate: api.xrayValidate, apply: api.xrayApply, install: api.xrayInstall, uninstall: api.xrayUninstall }
     : { status: api.singboxStatus, version: api.singboxVersion, config: api.singboxConfig, logs: api.singboxLogs, validate: api.singboxValidate, apply: api.singboxApply, install: api.singboxInstall, uninstall: api.singboxUninstall };
   const [lastResult, setLastResult] = useState<{ ok: boolean; message: string; detail?: string } | null>(null);
-  const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: 12000 });
-  const versionQuery = useQuery({ queryKey: [core, 'version'], queryFn: endpoints.version, retry: false });
-  const configQuery = useQuery({ queryKey: [core, 'config'], queryFn: endpoints.config });
+  const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: coreStatusRefetchInterval(visible), staleTime: 10_000 });
+  const versionQuery = useQuery({ queryKey: [core, 'version'], queryFn: endpoints.version, retry: false, staleTime: 10 * 60_000 });
+  const configQuery = useQuery({ queryKey: [core, 'config'], queryFn: endpoints.config, staleTime: 60_000 });
   const logsQuery = useQuery({ queryKey: [core, 'logs'], queryFn: endpoints.logs, enabled: false });
   const validate = useMutation({
     mutationFn: endpoints.validate,
@@ -166,6 +168,10 @@ export function coreActionResult(data: CoreActionResponse, fallback: string): { 
 
 function normalizeStatus(status?: string): string {
   return String(status || '').toLowerCase();
+}
+
+export function coreStatusRefetchInterval(visible: boolean) {
+  return visible ? 12000 : false;
 }
 
 function isFailureStatus(status: string): boolean {

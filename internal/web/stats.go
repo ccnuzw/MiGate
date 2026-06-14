@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -156,6 +157,7 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 }
 
 func dashboardSummaryHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
+	cache := newDashboardSummaryCache(7 * time.Second)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -165,13 +167,52 @@ func dashboardSummaryHandler(store Store, statsClient xray.StatsClient) http.Han
 			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 			return
 		}
-		summary, err := buildDashboardSummary(r.Context(), store, statsClient)
+		summary, err := cache.get(r.Context(), store, statsClient)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, summary)
 	}
+}
+
+type dashboardSummaryCache struct {
+	ttl       time.Duration
+	mu        sync.Mutex
+	expiresAt time.Time
+	value     map[string]interface{}
+	now       func() time.Time
+}
+
+func newDashboardSummaryCache(ttl time.Duration) *dashboardSummaryCache {
+	return &dashboardSummaryCache{ttl: ttl, now: time.Now}
+}
+
+func (c *dashboardSummaryCache) get(ctx context.Context, store Store, statsClient xray.StatsClient) (map[string]interface{}, error) {
+	if c == nil || c.ttl <= 0 {
+		return buildDashboardSummary(ctx, store, statsClient)
+	}
+	now := c.now()
+	c.mu.Lock()
+	if c.value != nil && now.Before(c.expiresAt) {
+		value := c.value
+		c.mu.Unlock()
+		return value, nil
+	}
+	c.mu.Unlock()
+
+	summary, err := buildDashboardSummary(ctx, store, statsClient)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.value != nil && c.now().Before(c.expiresAt) {
+		return c.value, nil
+	}
+	c.value = summary
+	c.expiresAt = c.now().Add(c.ttl)
+	return summary, nil
 }
 
 func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.StatsClient) (map[string]interface{}, error) {
@@ -284,6 +325,15 @@ type cpuSample struct {
 	Total uint64
 }
 
+type cpuPercentSampler struct {
+	mu      sync.Mutex
+	last    cpuSample
+	hasLast bool
+	read    func() (cpuSample, error)
+}
+
+var defaultCPUSampler = &cpuPercentSampler{read: readCPUSample}
+
 func systemResourcesHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -294,7 +344,7 @@ func systemResourcesHandler() http.HandlerFunc {
 		diskTotal, diskUsed, diskPercent := readDiskUsage("/")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"cpu_percent":    sampleCPUPercent(),
+			"cpu_percent":    defaultCPUSampler.Sample(),
 			"memory_total":   memTotal,
 			"memory_used":    memUsed,
 			"memory_percent": memPercent,
@@ -306,18 +356,36 @@ func systemResourcesHandler() http.HandlerFunc {
 	}
 }
 
-func sampleCPUPercent() float64 {
-	first, err := readCPUSample()
+func (s *cpuPercentSampler) Sample() float64 {
+	if s == nil {
+		return 0
+	}
+	read := s.read
+	if read == nil {
+		read = readCPUSample
+	}
+	current, err := read()
 	if err != nil {
 		return 0
 	}
-	time.Sleep(100 * time.Millisecond)
-	second, err := readCPUSample()
-	if err != nil || second.Total <= first.Total {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasLast {
+		s.last = current
+		s.hasLast = true
 		return 0
 	}
-	totalDelta := second.Total - first.Total
-	idleDelta := second.Idle - first.Idle
+	percent := calculateCPUPercent(s.last, current)
+	s.last = current
+	return percent
+}
+
+func calculateCPUPercent(previous, current cpuSample) float64 {
+	if current.Total <= previous.Total {
+		return 0
+	}
+	totalDelta := current.Total - previous.Total
+	idleDelta := current.Idle - previous.Idle
 	if totalDelta == 0 || idleDelta > totalDelta {
 		return 0
 	}

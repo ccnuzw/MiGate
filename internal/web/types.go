@@ -49,6 +49,7 @@ type inboundView struct {
 
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
+	GetSubscriptionByClientUUID(ctx context.Context, uuid string) (db.Inbound, db.Client, bool, error)
 	CreateInbound(ctx context.Context, params db.CreateInboundParams) (db.Inbound, error)
 	ListOutbounds(ctx context.Context) ([]db.Outbound, error)
 	CreateOutbound(ctx context.Context, params db.CreateOutboundParams) (db.Outbound, error)

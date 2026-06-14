@@ -1168,6 +1168,48 @@ ORDER BY id ASC
 	return inbounds, nil
 }
 
+func (s *Store) GetSubscriptionByClientUUID(ctx context.Context, uuid string) (Inbound, Client, bool, error) {
+	uuid = strings.TrimSpace(uuid)
+	if uuid == "" {
+		return Inbound{}, Client{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT i.id, i.uuid, i.remark, i.protocol, i.port, i.network, i.security, i.enabled,
+  i.ws_path, i.ws_host, i.grpc_service_name, i.reality_dest, i.reality_server_names, i.reality_short_id, i.reality_private_key, i.reality_public_key, i.ss_method,
+  i.tls_cert_file, i.tls_key_file, i.tls_sni, i.tls_fingerprint, i.tls_alpn, i.xhttp_path, i.xhttp_mode,
+  i.hy2_up_mbps, i.hy2_down_mbps, i.hy2_obfs, i.hy2_obfs_password, i.hy2_mport,
+  i.tuic_congestion_control, i.tuic_zero_rtt,
+  i.wg_private_key, i.wg_address, i.wg_peer_public_key, i.wg_allowed_ips, i.wg_endpoint, i.wg_preshared_key, i.wg_mtu,
+  i.shadowtls_version, i.shadowtls_password,
+  c.id, c.inbound_id, c.uuid, c.email, c.enabled, c.up, c.down, c.traffic_limit, c.expiry_at
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+WHERE c.uuid = ?
+LIMIT 1
+`, uuid)
+	var inbound Inbound
+	var client Client
+	var inboundEnabled int
+	var clientEnabled int
+	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &inboundEnabled,
+		&inbound.WsPath, &inbound.WsHost, &inbound.GrpcServiceName, &inbound.RealityDest, &inbound.RealityServerNames, &inbound.RealityShortID, &inbound.RealityPrivateKey, &inbound.RealityPublicKey, &inbound.SSMethod,
+		&inbound.TLSCertFile, &inbound.TLSKeyFile, &inbound.TLSSNI, &inbound.TLSFingerprint, &inbound.TLSALPN, &inbound.XHTTPPath, &inbound.XHTTPMode,
+		&inbound.Hy2UpMbps, &inbound.Hy2DownMbps, &inbound.Hy2Obfs, &inbound.Hy2ObfsPassword, &inbound.Hy2MPort,
+		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
+		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
+		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword,
+		&client.ID, &client.InboundID, &client.UUID, &client.Email, &clientEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		if err == sql.ErrNoRows {
+			return Inbound{}, Client{}, false, nil
+		}
+		return Inbound{}, Client{}, false, err
+	}
+	inbound.Enabled = inboundEnabled != 0
+	client.Enabled = clientEnabled != 0
+	inbound.Clients = []Client{client}
+	return inbound, client, true, nil
+}
+
 func (s *Store) ResetClientTraffic(ctx context.Context, id int64) (Client, error) {
 	result, err := s.db.ExecContext(ctx, `UPDATE clients SET up=0, down=0 WHERE id=?`, id)
 	if err != nil {
@@ -1190,8 +1232,10 @@ func (s *Store) ResetClientTraffic(ctx context.Context, id int64) (Client, error
 	return client, nil
 }
 
-// UpdateClientTraffic updates the traffic counters for a client by email.
-// This is used by the traffic sync scheduler to update DB with Xray stats.
+// UpdateClientTraffic updates traffic counters for all clients matching an
+// Xray stats email. MiGate permits the same email in different inbounds, and
+// Xray's legacy stat key does not include inbound_id here, so callers must not
+// assume this identifies one row globally.
 func (s *Store) UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE clients SET up=?, down=? WHERE email=?`, uplink, downlink, email)
 	if err != nil {
@@ -1209,7 +1253,9 @@ func (s *Store) UpdateClientTraffic(ctx context.Context, email string, uplink, d
 }
 
 // UpdateClientTrafficBatch updates all provided traffic counters in one write
-// transaction. Unknown client emails are ignored, matching UpdateClientTraffic.
+// transaction by Xray stats email. Unknown client emails are ignored, matching
+// UpdateClientTraffic. Duplicate emails across inbounds intentionally receive
+// the same counter until the scheduler has a stable per-inbound stats key.
 func (s *Store) UpdateClientTrafficBatch(ctx context.Context, stats map[string]ClientTrafficUpdate) error {
 	if len(stats) == 0 {
 		return nil

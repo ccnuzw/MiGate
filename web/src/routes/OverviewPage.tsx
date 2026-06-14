@@ -1,19 +1,20 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { api } from '../api/endpoints';
 import type { DashboardSummary } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
 import { formatBytes, formatDuration, formatPercent, serviceLabel } from '../lib/format';
+import { usePageVisible } from '../lib/visibility';
 
 export default function OverviewPage() {
   const visible = usePageVisible();
-  const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false });
-  const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false });
+  const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
+  const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false, staleTime: 5_000 });
   const [xray, singbox] = useQueries({
     queries: [
-      { queryKey: ['xray-status'], queryFn: api.xrayStatus, refetchInterval: visible ? 15000 : false },
-      { queryKey: ['singbox-status'], queryFn: api.singboxStatus, refetchInterval: visible ? 15000 : false },
+      { queryKey: ['xray-status'], queryFn: api.xrayStatus, refetchInterval: visible ? 15000 : false, staleTime: 10_000 },
+      { queryKey: ['singbox-status'], queryFn: api.singboxStatus, refetchInterval: visible ? 15000 : false, staleTime: 10_000 },
     ],
   });
 
@@ -191,17 +192,6 @@ function buildChart(data: DashboardSummary['traffic_series']) {
   const upLine = line('upY');
   const downLine = line('downY');
   return { points, upLine, downLine, upArea: area(upLine), downArea: area(downLine) };
-}
-
-function usePageVisible() {
-  const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden);
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
-    const update = () => setVisible(!document.hidden);
-    document.addEventListener('visibilitychange', update);
-    return () => document.removeEventListener('visibilitychange', update);
-  }, []);
-  return visible;
 }
 
 function ValidationSummary({ label, loading, valid, error, detail }: { label: string; loading: boolean; valid?: boolean; error: unknown; detail: string }) {

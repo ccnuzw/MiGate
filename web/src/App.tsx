@@ -44,7 +44,7 @@ export default function App() {
 
 function RequireSession() {
   const location = useLocation();
-  const session = useQuery({ queryKey: ['session'], queryFn: api.session });
+  const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
   if (session.isLoading) return <LoadingBlock />;
   if (session.data?.auth_enabled && !session.data.authenticated) {
     return <Navigate to="/login" replace state={{ from: location }} />;

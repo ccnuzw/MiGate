@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coreActionResult } from './CorePage';
+import { coreActionResult, coreStatusRefetchInterval } from './CorePage';
 
 describe('core action result', () => {
   it('treats xray apply validation failures as business errors', () => {
@@ -49,5 +49,10 @@ describe('core action result', () => {
       message: 'sing-box 配置已应用',
       detail: 'commands:\nsing-box reload\n\ndetail:\nok',
     });
+  });
+
+  it('pauses core status polling while the page is hidden', () => {
+    expect(coreStatusRefetchInterval(true)).toBe(12000);
+    expect(coreStatusRefetchInterval(false)).toBe(false);
   });
 });

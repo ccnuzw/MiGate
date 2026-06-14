@@ -28,43 +28,36 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		inbounds, err := store.ListInbounds(r.Context())
+		inbound, client, found, err := store.GetSubscriptionByClientUUID(r.Context(), token)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+			writeJSONError(w, http.StatusInternalServerError, "get_subscription_failed")
 			return
 		}
-		deriveRealityPublicKeys(inbounds)
-		for _, inbound := range inbounds {
-			if !inbound.Enabled {
-				continue
-			}
-			now := time.Now().Unix()
-			for _, client := range inbound.Clients {
-				if client.UUID != token {
-					continue
-				}
-				if !client.Enabled {
-					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-					_, _ = w.Write([]byte("// Subscription disabled"))
-					return
-				}
-				// Check expired or over-limit
-				if client.ExpiryAt > 0 && client.ExpiryAt <= now {
-					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-					_, _ = w.Write([]byte("// Subscription expired"))
-					return
-				}
-				if client.TrafficLimit > 0 && (client.Up+client.Down) >= client.TrafficLimit {
-					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-					_, _ = w.Write([]byte("// Traffic limit exceeded"))
-					return
-				}
-				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-				_, _ = w.Write([]byte(shareLink(r.Host, inbound, client)))
-				return
-			}
+		if !found || !inbound.Enabled {
+			http.NotFound(w, r)
+			return
 		}
-		http.NotFound(w, r)
+		inbounds := []db.Inbound{inbound}
+		deriveRealityPublicKeys(inbounds)
+		inbound = inbounds[0]
+		now := time.Now().Unix()
+		if !client.Enabled {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("// Subscription disabled"))
+			return
+		}
+		if client.ExpiryAt > 0 && client.ExpiryAt <= now {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("// Subscription expired"))
+			return
+		}
+		if client.TrafficLimit > 0 && (client.Up+client.Down) >= client.TrafficLimit {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("// Traffic limit exceeded"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(shareLink(r.Host, inbound, client)))
 	}
 }
 

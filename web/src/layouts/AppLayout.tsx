@@ -39,8 +39,8 @@ export default function AppLayout() {
   const { showToast } = useToast();
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'light');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const session = useQuery({ queryKey: ['session'], queryFn: api.session });
-  const version = useQuery({ queryKey: ['version'], queryFn: api.version });
+  const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
+  const version = useQuery({ queryKey: ['version'], queryFn: api.version, staleTime: 10 * 60_000 });
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => navigate('/login', { replace: true }),

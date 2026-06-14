@@ -1225,3 +1225,92 @@ func TestStoreUpdateClientTrafficBatch(t *testing.T) {
 		t.Fatalf("unexpected traffic after batch update: %+v", traffic)
 	}
 }
+
+func TestStoreGetSubscriptionByClientUUIDLoadsOnlyMatchedClient(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "sub", Protocol: "vless", Port: 443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	target, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "target@example.com"})
+	if err != nil {
+		t.Fatalf("create target client: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "other@example.com"}); err != nil {
+		t.Fatalf("create other client: %v", err)
+	}
+
+	loadedInbound, loadedClient, found, err := store.GetSubscriptionByClientUUID(ctx, target.UUID)
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if !found {
+		t.Fatal("expected subscription client to be found")
+	}
+	if loadedInbound.ID != inbound.ID || loadedClient.ID != target.ID || loadedClient.Email != "target@example.com" {
+		t.Fatalf("unexpected subscription row: inbound=%+v client=%+v", loadedInbound, loadedClient)
+	}
+	if len(loadedInbound.Clients) != 1 || loadedInbound.Clients[0].ID != target.ID {
+		t.Fatalf("subscription query should attach only the matched client, got %+v", loadedInbound.Clients)
+	}
+
+	_, _, found, err = store.GetSubscriptionByClientUUID(ctx, "missing")
+	if err != nil {
+		t.Fatalf("get missing subscription: %v", err)
+	}
+	if found {
+		t.Fatal("expected missing subscription to return found=false")
+	}
+}
+
+func TestStoreUpdateClientTrafficByEmailUpdatesDuplicateEmailsAcrossInbounds(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	first, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "first", Protocol: "vless", Port: 28081, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create first inbound: %v", err)
+	}
+	second, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "second", Protocol: "vless", Port: 28082, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create second inbound: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: first.ID, Email: "shared@example.com"}); err != nil {
+		t.Fatalf("create first shared client: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: second.ID, Email: "shared@example.com"}); err != nil {
+		t.Fatalf("create second shared client: %v", err)
+	}
+
+	if err := store.UpdateClientTraffic(ctx, "shared@example.com", 7, 9); err != nil {
+		t.Fatalf("update duplicate email traffic: %v", err)
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	var matched int
+	for _, inbound := range inbounds {
+		for _, client := range inbound.Clients {
+			if client.Email == "shared@example.com" {
+				matched++
+				if client.Up != 7 || client.Down != 9 {
+					t.Fatalf("duplicate email client was not updated consistently: %+v", client)
+				}
+			}
+		}
+	}
+	if matched != 2 {
+		t.Fatalf("expected two duplicate-email clients, got %d", matched)
+	}
+}
