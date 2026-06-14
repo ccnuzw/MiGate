@@ -8,6 +8,16 @@ export default defineConfig({
     outDir: '../internal/web/static/dist',
     emptyOutDir: true,
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          query: ['@tanstack/react-query'],
+          forms: ['react-hook-form', '@hookform/resolvers', 'zod'],
+          charts: ['recharts'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

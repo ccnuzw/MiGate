@@ -14,6 +14,8 @@ import { PageTitle } from './OverviewPage';
 const schema = z.object({
   inbound_tag: z.string().optional(),
   domain: z.string().optional(),
+  ip: z.string().optional(),
+  rule_set: z.string().optional(),
   protocol: z.string().optional(),
   outbound_tag: z.string().min(1, '请选择出站'),
   enabled: z.boolean().default(true),
@@ -58,7 +60,7 @@ export default function RoutingPage() {
   if (rules.isLoading) return <LoadingBlock />;
   return (
     <div className="page-stack">
-      <PageTitle title={text('路由规则')} description={text('按来源入站、域名或协议选择出站链路。')} action={<button className="btn primary" onClick={() => setEditing({ id: 0, outbound_tag: outbounds.data?.[0]?.tag || 'direct', enabled: true })}><Plus className="h-4 w-4" /> {text('新增路由')}</button>} />
+      <PageTitle title={text('路由规则')} description={text('按来源入站、域名、IP、规则集或协议选择出站链路。')} action={<button className="btn primary" onClick={() => setEditing({ id: 0, outbound_tag: outbounds.data?.[0]?.tag || 'direct', enabled: true })}><Plus className="h-4 w-4" /> {text('新增路由')}</button>} />
       {items.length === 0 ? <EmptyState title={text('暂无路由规则')} /> : null}
       <div className="grid gap-3">
         {items.map((item, index) => (
@@ -67,12 +69,14 @@ export default function RoutingPage() {
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs">#{index + 1}</span>
-                  <h2 className="truncate text-base font-semibold">{item.domain || item.protocol || text('默认匹配')}</h2>
+                  <h2 className="truncate text-base font-semibold">{ruleTitle(item, text)}</h2>
                   <StatusBadge enabled={item.enabled} />
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
                   <span>inbound: {item.inbound_tag || text('全部')}</span>
                   <span>domain: {item.domain || '-'}</span>
+                  <span>ip: {item.ip || '-'}</span>
+                  <span>rule_set: {item.rule_set || '-'}</span>
                   <span>protocol: {item.protocol || '-'}</span>
                   <span>outbound: {item.outbound_tag}</span>
                 </div>
@@ -108,6 +112,8 @@ function RoutingModal({ rule, outbounds, inbounds, onClose, onSaved }: { rule: R
       ? {
           inbound_tag: rule.inbound_tag || '',
           domain: rule.domain || '',
+          ip: rule.ip || '',
+          rule_set: rule.rule_set || '',
           protocol: rule.protocol || '',
           outbound_tag: rule.outbound_tag || outbounds[0] || 'direct',
           enabled: rule.enabled ?? true,
@@ -136,7 +142,15 @@ function RoutingModal({ rule, outbounds, inbounds, onClose, onSaved }: { rule: R
         <Field label={text('目标出站')}>
           <select {...form.register('outbound_tag')}>{Array.from(new Set(outbounds.length ? outbounds : ['direct', 'blocked'])).map((tag) => <option key={tag} value={tag}>{tag}</option>)}</select>
         </Field>
-        <Field label={text('域名匹配')}><textarea rows={3} placeholder={text('geosite:netflix 或 example.com')} {...form.register('domain')} /></Field>
+        <Field label={text('域名匹配')} help={text('支持逗号或换行分隔多个值。')}>
+          <textarea rows={3} placeholder={text('geosite:netflix 或 example.com')} {...form.register('domain')} />
+        </Field>
+        <Field label={text('IP 匹配')} help={text('支持 geoip:cn、CIDR、单 IP，逗号或换行分隔。')}>
+          <textarea rows={3} placeholder="geoip:private, 8.8.8.8/32" {...form.register('ip')} />
+        </Field>
+        <Field label={text('规则集')} help={text('预留字段，当前会保存但不会写入 Xray 配置。')}>
+          <textarea rows={2} placeholder="geosite-category-ads-all" {...form.register('rule_set')} />
+        </Field>
         <Field label={text('协议匹配')}><input placeholder="dns, bittorrent" {...form.register('protocol')} /></Field>
         <label className="checkbox-field"><input type="checkbox" {...form.register('enabled')} /> {text('已启用')}</label>
       </div>
@@ -148,10 +162,12 @@ function moveRule(items: RoutingRule[], index: number, delta: number, save: (ids
   save(movedRoutingRuleIds(items, index, delta));
 }
 
-export function routingPayload(values: Pick<RoutingRule, 'inbound_tag' | 'domain' | 'protocol' | 'outbound_tag' | 'enabled'>): Record<string, unknown> {
+export function routingPayload(values: Pick<RoutingRule, 'inbound_tag' | 'domain' | 'ip' | 'rule_set' | 'protocol' | 'outbound_tag' | 'enabled'>): Record<string, unknown> {
   return {
     inbound_tag: values.inbound_tag || '',
     domain: values.domain || '',
+    ip: values.ip || '',
+    rule_set: values.rule_set || '',
     protocol: values.protocol || '',
     outbound_tag: values.outbound_tag,
     enabled: values.enabled,
@@ -181,4 +197,8 @@ export function inboundTagOptions(inbounds: Inbound[]): string[] {
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof ApiError ? error.message : fallback;
+}
+
+function ruleTitle(rule: RoutingRule, text: (value: string) => string) {
+  return rule.domain || rule.ip || rule.rule_set || rule.protocol || text('默认匹配');
 }

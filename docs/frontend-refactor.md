@@ -19,11 +19,11 @@ Release builds run the frontend build first, then `go build` embeds `internal/we
 
 The React panel is aligned with the legacy embedded Go panel as the functional baseline:
 
-- Overview: server resources, inbound/client/outbound/routing counts, total traffic, realtime traffic when Xray stats are available, and Xray/sing-box status.
+- Overview: server resources, inbound/client/outbound/routing counts, active/expired/limited client summary, total traffic, realtime traffic when Xray stats are available, Xray/sing-box status, manual refresh, request error notices, and recent config generation status.
 - Inbounds: list, search, sort, create, edit, delete, enable/disable, client management, reset traffic, subscription copy, and advanced fields for VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, and ShadowTLS.
 - Outbounds: default `direct` and `blocked` display, SOCKS5/HTTP/freedom/blackhole CRUD, enable/disable, ping, batch speed test, reorder, and SOCKS5 pool import with cache metadata.
-- Routing: list, create, edit, delete, enable/disable via full PUT, reorder, and outbound options loaded from `/api/outbounds`.
-- Core pages: Xray and sing-box status, version, config preview, apply, install, uninstall, and logs. System-changing actions send `confirm` and `allow_system_changes`.
+- Routing: list, create, edit, delete, enable/disable via full PUT, reorder, inbound tag suggestions, `domain`, `ip`, `rule_set`, `protocol` match fields, and outbound options loaded from `/api/outbounds`.
+- Core pages: Xray and sing-box status, version, config preview, structured config generation validation, apply/install/uninstall result details, install, uninstall, and logs. System-changing actions send `confirm` and `allow_system_changes`.
 - Settings: panel port, username, password preservation when empty, base path, database path, Xray config path, service status, restart, TLS certificate status/issue, update check/status/update, and active session revoke.
 - UI basics: dark/light theme persistence, Chinese/English navigation persistence, responsive sidebar, non-blocking toast, and modal confirmation for destructive operations.
 
@@ -36,6 +36,12 @@ The backend preserves API and subscription behavior:
 - `/assets/*` serves Vite static assets from the embedded dist.
 - `/`, `/login`, and other non-API paths fall back to `index.html`.
 - `web_base_path` such as `/panel` is handled by Go before routing, so `/panel`, `/panel/login`, `/panel/assets/*`, `/panel/api/*`, and `/panel/sub/*` keep working.
+
+## Web API Additions
+
+- `GET /api/xray/validate` builds the current Xray config from stored inbounds, outbounds, and routing rules without writing files, running core test commands, or restarting services. It returns `{target, valid, error, warnings, inbounds, outbounds, rules}`.
+- `GET /api/singbox/validate` builds and marshals the current sing-box config without writing files, running core check commands, or restarting services. It returns the same structured validation shape.
+- Routing rules now persist and return `ip` and `rule_set` fields in addition to `inbound_tag`, `domain`, `protocol`, `outbound_tag`, and `enabled`. `rule_set` is currently stored as a reserved field and is not emitted into Xray config because the supported Xray rule fields are still `domain`, `ip`, `inboundTag`, `protocol`, and outbound routing targets.
 
 ## Development
 
@@ -73,6 +79,14 @@ Run all checks:
 
 ```bash
 make test
+```
+
+Focused checks used during WebUI development:
+
+```bash
+cd web && npm test -- --run
+cd web && npm run build
+go test ./...
 ```
 
 Equivalent scripts are available in `scripts/build-web.sh`, `scripts/dev-web.sh`, and `scripts/check.sh`.

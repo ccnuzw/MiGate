@@ -91,4 +91,17 @@ describe('api client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(6);
     vi.unstubAllGlobals();
   });
+
+  it('validates generated core configs with read-only requests', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.method).toBeUndefined();
+      expect(init?.body).toBeUndefined();
+      return new Response(JSON.stringify({ target: 'xray', valid: true, inbounds: 1 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await api.xrayValidate();
+    await api.singboxValidate();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.unstubAllGlobals();
+  });
 });

@@ -201,13 +201,15 @@ func TestStoreCreatesAndListsRoutingRules(t *testing.T) {
 		InboundTag:  "",
 		OutboundTag: "blocked",
 		Domain:      "geosite:malware",
-		Protocol:    "",
+		IP:          "geoip:private",
+		RuleSet:     "geosite-category-ads-all",
+		Protocol:    "bittorrent",
 		Enabled:     true,
 	})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
-	if rule.OutboundTag != "blocked" || rule.Domain != "geosite:malware" || !rule.Enabled {
+	if rule.OutboundTag != "blocked" || rule.Domain != "geosite:malware" || rule.IP != "geoip:private" || rule.RuleSet != "geosite-category-ads-all" || rule.Protocol != "bittorrent" || !rule.Enabled {
 		t.Fatalf("unexpected rule: %+v", rule)
 	}
 
@@ -241,13 +243,15 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 		InboundTag:  "socks-in",
 		OutboundTag: "direct",
 		Domain:      "geosite:netflix",
-		Protocol:    "",
+		IP:          "8.8.8.8",
+		RuleSet:     "geoip-cn",
+		Protocol:    "dns",
 		Enabled:     false,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.InboundTag != "socks-in" || updated.OutboundTag != "direct" || updated.Domain != "geosite:netflix" || updated.Enabled {
+	if updated.InboundTag != "socks-in" || updated.OutboundTag != "direct" || updated.Domain != "geosite:netflix" || updated.IP != "8.8.8.8" || updated.RuleSet != "geoip-cn" || updated.Protocol != "dns" || updated.Enabled {
 		t.Fatalf("unexpected updated rule: %+v", updated)
 	}
 
@@ -255,7 +259,7 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(rules) != 1 || rules[0].Domain != "geosite:netflix" {
+	if len(rules) != 1 || rules[0].Domain != "geosite:netflix" || rules[0].IP != "8.8.8.8" || rules[0].RuleSet != "geoip-cn" || rules[0].Protocol != "dns" {
 		t.Fatalf("update not persisted: %+v", rules)
 	}
 }

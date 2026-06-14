@@ -226,7 +226,7 @@ func NewRouter(options ...Option) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(static.Assets()))))
-	mux.HandleFunc("/login", spaHandler(cfg.basePath))
+	mux.HandleFunc("/login", loginPageHandler(&cfg))
 	mux.HandleFunc("/api/login", loginHandler(&cfg))
 	mux.HandleFunc("/api/logout", logoutHandler(&cfg))
 	mux.HandleFunc("/api/session", sessionHandler(&cfg))
@@ -242,6 +242,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/stats", statsHandler(cfg.store, cfg.statsClient))
 	mux.HandleFunc("/api/system/resources", systemResourcesHandler())
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
+	mux.HandleFunc("/api/xray/validate", xrayValidateHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController, cfg.store))
 	mux.HandleFunc("/api/xray/install", coreInstallHandler("xray"))
@@ -259,6 +260,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/update", updateHandler(cfg.version))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
 	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(cfg.store))
+	mux.HandleFunc("/api/singbox/validate", singboxValidateHandler(cfg.store))
 	mux.HandleFunc("/api/singbox/install", coreInstallHandler("singbox"))
 	mux.HandleFunc("/api/singbox/uninstall", coreUninstallHandler("singbox"))
 	mux.HandleFunc("/api/singbox/config", singboxConfigHandler())
@@ -306,6 +308,18 @@ func basePathMiddleware(next http.Handler, basePath string) http.Handler {
 		cloned.URL.RawPath = ""
 		next.ServeHTTP(w, cloned)
 	})
+}
+
+func loginPageHandler(cfg *routerConfig) http.HandlerFunc {
+	spa := spaHandler(cfg.basePath)
+	login := loginHandler(cfg)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			login(w, r)
+			return
+		}
+		spa(w, r)
+	}
 }
 
 func spaHandler(basePath string) http.HandlerFunc {
@@ -1760,6 +1774,79 @@ func xrayStatusHandler(controller XrayController) http.HandlerFunc {
 	}
 }
 
+type configValidationResult struct {
+	Target    string   `json:"target"`
+	Valid     bool     `json:"valid"`
+	Error     string   `json:"error,omitempty"`
+	Warnings  []string `json:"warnings,omitempty"`
+	Inbounds  int      `json:"inbounds"`
+	Outbounds int      `json:"outbounds,omitempty"`
+	Rules     int      `json:"rules,omitempty"`
+}
+
+func xrayValidateHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		result := validateXrayConfig(r.Context(), store)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(result)
+	}
+}
+
+func validateXrayConfig(ctx context.Context, store Store) configValidationResult {
+	result := configValidationResult{Target: "xray", Valid: true, Warnings: []string{}}
+	if store == nil {
+		result.Valid = false
+		result.Error = "store_unavailable"
+		return result
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		result.Valid = false
+		result.Error = "list_inbounds_failed"
+		return result
+	}
+	outbounds, err := store.ListOutbounds(ctx)
+	if err != nil {
+		result.Valid = false
+		result.Error = "list_outbounds_failed"
+		return result
+	}
+	rules, err := store.ListRoutingRules(ctx)
+	if err != nil {
+		result.Valid = false
+		result.Error = "list_routing_rules_failed"
+		return result
+	}
+	cfg, err := xray.BuildConfigWithOutbounds(inbounds, outbounds, rules)
+	if err != nil {
+		result.Valid = false
+		result.Error = err.Error()
+		return result
+	}
+	result.Inbounds = len(cfg.Inbounds)
+	result.Outbounds = len(cfg.Outbounds)
+	if cfg.Routing != nil {
+		result.Rules = len(cfg.Routing.Rules)
+	}
+	for _, inbound := range inbounds {
+		if inbound.Enabled && isSingBoxProtocol(inbound.Protocol) {
+			result.Warnings = append(result.Warnings, inbound.Protocol+" is handled by sing-box")
+		}
+	}
+	for _, rule := range rules {
+		if strings.TrimSpace(rule.RuleSet) != "" {
+			result.Warnings = append(result.Warnings, "rule_set is stored for future use but not emitted in Xray config")
+			break
+		}
+	}
+	return result
+}
+
 func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2827,6 +2914,44 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(result)
 	}
+}
+
+func singboxValidateHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		result := validateSingboxConfig(r.Context(), store)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(result)
+	}
+}
+
+func validateSingboxConfig(ctx context.Context, store Store) configValidationResult {
+	result := configValidationResult{Target: "singbox", Valid: true, Warnings: []string{}}
+	if store == nil {
+		result.Valid = false
+		result.Error = "store_unavailable"
+		return result
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		result.Valid = false
+		result.Error = "list_inbounds_failed"
+		return result
+	}
+	cfg := singbox.BuildConfig(inbounds)
+	result.Inbounds = len(cfg.Inbounds)
+	if result.Inbounds == 0 {
+		result.Warnings = append(result.Warnings, "no_enabled_singbox_inbounds")
+	}
+	if _, err := json.Marshal(cfg); err != nil {
+		result.Valid = false
+		result.Error = err.Error()
+	}
+	return result
 }
 
 // tryApplySingbox reads sing-box supported inbounds from the store, builds

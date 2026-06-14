@@ -1,6 +1,7 @@
 import { del, get, patch, post, put } from './client';
 import type {
   CoreStatus,
+  ConfigValidation,
   CoreActionResponse,
   Inbound,
   Outbound,
@@ -60,6 +61,7 @@ export const api = {
   xrayStatus: () => get<CoreStatus>('/api/xray/status'),
   xrayVersion: () => get<VersionResponse>('/api/xray/version'),
   xrayConfig: () => get<unknown>('/api/xray/config'),
+  xrayValidate: () => get<ConfigValidation>('/api/xray/validate'),
   xrayApply: () => post<CoreActionResponse>('/api/xray/apply', { confirm: true, allow_system_changes: true }),
   xrayInstall: () => post<CoreActionResponse>('/api/xray/install', { confirm: true, allow_system_changes: true }),
   xrayUninstall: () => post<CoreActionResponse>('/api/xray/uninstall', { confirm: true, allow_system_changes: true }),
@@ -67,6 +69,7 @@ export const api = {
   singboxStatus: () => get<CoreStatus>('/api/singbox/status'),
   singboxVersion: () => get<VersionResponse>('/api/singbox/version'),
   singboxConfig: () => get<unknown>('/api/singbox/config'),
+  singboxValidate: () => get<ConfigValidation>('/api/singbox/validate'),
   singboxApply: () => post<CoreActionResponse>('/api/singbox/apply', { confirm: true, allow_system_changes: true }),
   singboxInstall: () => post<CoreActionResponse>('/api/singbox/install', { confirm: true, allow_system_changes: true }),
   singboxUninstall: () => post<CoreActionResponse>('/api/singbox/uninstall', { confirm: true, allow_system_changes: true }),

@@ -4,9 +4,11 @@ import { generatedInboundTag, inboundTagOptions, movedRoutingRuleIds, routingPay
 
 describe('routing helpers', () => {
   it('builds create and edit payloads with backend field names only', () => {
-    expect(routingPayload({ inbound_tag: 'edge', domain: 'geosite:netflix', protocol: '', outbound_tag: 'proxy-a', enabled: true })).toEqual({
+    expect(routingPayload({ inbound_tag: 'edge', domain: 'geosite:netflix', ip: 'geoip:private', rule_set: 'geosite-category-ads-all', protocol: '', outbound_tag: 'proxy-a', enabled: true })).toEqual({
       inbound_tag: 'edge',
       domain: 'geosite:netflix',
+      ip: 'geoip:private',
+      rule_set: 'geosite-category-ads-all',
       protocol: '',
       outbound_tag: 'proxy-a',
       enabled: true,
@@ -15,6 +17,8 @@ describe('routing helpers', () => {
     expect(routingPayload({ inbound_tag: undefined, domain: undefined, protocol: 'bittorrent', outbound_tag: 'blocked', enabled: false })).toEqual({
       inbound_tag: '',
       domain: '',
+      ip: '',
+      rule_set: '',
       protocol: 'bittorrent',
       outbound_tag: 'blocked',
       enabled: false,
@@ -22,10 +26,12 @@ describe('routing helpers', () => {
   });
 
   it('preserves complete fields when toggling enabled state', () => {
-    const rule: RoutingRule = { id: 8, inbound_tag: 'edge', domain: 'example.com', protocol: 'dns', outbound_tag: 'direct', enabled: true };
+    const rule: RoutingRule = { id: 8, inbound_tag: 'edge', domain: 'example.com', ip: '8.8.8.8', rule_set: 'geoip-cn', protocol: 'dns', outbound_tag: 'direct', enabled: true };
     expect(routingPayload({ ...rule, enabled: !rule.enabled })).toEqual({
       inbound_tag: 'edge',
       domain: 'example.com',
+      ip: '8.8.8.8',
+      rule_set: 'geoip-cn',
       protocol: 'dns',
       outbound_tag: 'direct',
       enabled: false,

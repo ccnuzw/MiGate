@@ -62,6 +62,7 @@ export interface RoutingRule {
   inbound_tag?: string;
   domain?: string;
   ip?: string;
+  rule_set?: string;
   protocol?: string;
   outbound_tag: string;
   enabled: boolean;
@@ -108,12 +109,24 @@ export interface CoreActionResponse {
     applied?: boolean;
     reason?: string;
     error?: string;
+    output?: string;
+    commands_executed?: string[];
     inbounds?: number;
   };
   applied?: boolean;
   reason?: string;
   error?: string;
   inbounds?: number;
+}
+
+export interface ConfigValidation {
+  target: 'xray' | 'singbox';
+  valid: boolean;
+  error?: string;
+  warnings?: string[];
+  inbounds?: number;
+  outbounds?: number;
+  rules?: number;
 }
 
 export interface VersionResponse {

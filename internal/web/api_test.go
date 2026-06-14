@@ -327,7 +327,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// POST: create rule
-	payload := `{"inbound_tag":"","outbound_tag":"blocked","domain":"geosite:malware"}`
+	payload := `{"inbound_tag":"","outbound_tag":"blocked","domain":"geosite:malware","ip":"geoip:private","rule_set":"geosite-category-ads-all","protocol":"bittorrent"}`
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(payload)))
 	if createResp.Code != 201 {
@@ -338,7 +338,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 		t.Fatalf("parse create response: %v", err)
 	}
 	rule := createResult["rule"].(map[string]interface{})
-	if rule["outbound_tag"] != "blocked" || rule["domain"] != "geosite:malware" {
+	if rule["outbound_tag"] != "blocked" || rule["domain"] != "geosite:malware" || rule["ip"] != "geoip:private" || rule["rule_set"] != "geosite-category-ads-all" || rule["protocol"] != "bittorrent" {
 		t.Fatalf("unexpected created rule: %+v", rule)
 	}
 	id := int(rule["id"].(float64))
@@ -355,11 +355,16 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// PUT: update rule
-	updatePayload := `{"inbound_tag":"socks-in","outbound_tag":"direct","domain":"geosite:netflix","enabled":false}`
+	updatePayload := `{"inbound_tag":"socks-in","outbound_tag":"direct","domain":"geosite:netflix","ip":"8.8.8.8","rule_set":"geoip-cn","protocol":"dns","enabled":false}`
 	updateResp := httptest.NewRecorder()
 	router.ServeHTTP(updateResp, httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/routing-rules/%d", id), strings.NewReader(updatePayload)))
 	if updateResp.Code != 200 {
 		t.Fatalf("expected 200 updating rule, got %d: %s", updateResp.Code, updateResp.Body.String())
+	}
+	for _, want := range []string{`"ip":"8.8.8.8"`, `"rule_set":"geoip-cn"`, `"protocol":"dns"`, `"enabled":false`} {
+		if !strings.Contains(updateResp.Body.String(), want) {
+			t.Fatalf("update response missing %q: %s", want, updateResp.Body.String())
+		}
 	}
 
 	// DELETE
@@ -650,6 +655,90 @@ func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
 	for _, forbidden := range []string{"systemctl", "restart", "write", join("open", "vpn"), "egress"} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
 			t.Fatalf("xray config preview leaked side-effect/heavy marker %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestXrayConfigAPIRendersAdvancedRoutingFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "edge", Protocol: "vless", Port: 443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "client@example.com"}); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag: "edge", OutboundTag: "blocked", Domain: "geosite:ads,example.com", IP: "geoip:private\n8.8.8.8", RuleSet: "geosite-category-ads-all", Protocol: "bittorrent,dns", Enabled: true,
+	}); err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"domain":["geosite:ads","example.com"]`, `"ip":["geoip:private","8.8.8.8"]`, `"protocol":["bittorrent","dns"]`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("xray config response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"ruleSet"`) {
+		t.Fatalf("xray config must not emit unsupported ruleSet field: %s", body)
+	}
+}
+
+func TestConfigValidateAPIsReturnStructuredResults(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+
+	xrayResp := httptest.NewRecorder()
+	router.ServeHTTP(xrayResp, httptest.NewRequest(http.MethodPost, "/api/xray/validate", nil))
+	if xrayResp.Code != http.StatusOK {
+		t.Fatalf("expected xray validate 200, got %d: %s", xrayResp.Code, xrayResp.Body.String())
+	}
+	for _, want := range []string{`"target":"xray"`, `"valid":true`, `"hysteria2 is handled by sing-box"`} {
+		if !strings.Contains(xrayResp.Body.String(), want) {
+			t.Fatalf("xray validate response missing %q: %s", want, xrayResp.Body.String())
+		}
+	}
+
+	singboxResp := httptest.NewRecorder()
+	router.ServeHTTP(singboxResp, httptest.NewRequest(http.MethodPost, "/api/singbox/validate", nil))
+	if singboxResp.Code != http.StatusOK {
+		t.Fatalf("expected singbox validate 200, got %d: %s", singboxResp.Code, singboxResp.Body.String())
+	}
+	for _, want := range []string{`"target":"singbox"`, `"valid":true`, `"inbounds":1`} {
+		if !strings.Contains(singboxResp.Body.String(), want) {
+			t.Fatalf("singbox validate response missing %q: %s", want, singboxResp.Body.String())
+		}
+	}
+}
+
+func TestConfigValidateAPIReturnsStructuredInvalidResult(t *testing.T) {
+	router := web.NewRouter()
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/validate", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected validate API to return structured 200 response, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"target":"xray"`, `"valid":false`, `"error":"store_unavailable"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("validate response missing %q: %s", want, response.Body.String())
 		}
 	}
 }

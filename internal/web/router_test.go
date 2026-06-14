@@ -169,6 +169,27 @@ func TestRouterBasePathServesSPAAssetsAndAPI(t *testing.T) {
 	}
 }
 
+func TestRouterBasePathLoginPathAcceptsPostForCompatibility(t *testing.T) {
+	router := web.NewRouter(web.WithAuth("admin", "secret"), web.WithBasePath("/panel"))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/panel/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected POST /panel/login to login, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range resp.Result().Cookies() {
+		if cookie.Name == "migate_session" {
+			sessionCookie = cookie
+			break
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Path != "/panel" {
+		t.Fatalf("expected /panel session cookie, got %+v", sessionCookie)
+	}
+}
+
 func TestUpdateAPIStartsInstallerUpdateWithoutBlockingResponse(t *testing.T) {
 	router := web.NewRouter()
 

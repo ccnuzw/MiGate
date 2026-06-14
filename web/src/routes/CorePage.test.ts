@@ -3,10 +3,11 @@ import { coreActionResult } from './CorePage';
 
 describe('core action result', () => {
   it('treats xray apply validation failures as business errors', () => {
-    expect(coreActionResult({ status: 'failed', error: 'validation' }, 'Xray 配置已应用')).toEqual({
+    expect(coreActionResult({ status: 'failed', error: 'validation' }, 'Xray 配置已应用')).toMatchObject({
       ok: false,
       message: 'validation',
     });
+    expect(coreActionResult({ status: 'failed', error: 'validation' }, 'Xray 配置已应用')).not.toHaveProperty('detail');
     expect(coreActionResult({ xray: { status: 'failed: validation' } }, 'Xray 配置已应用')).toEqual({
       ok: false,
       message: 'failed: validation',
@@ -14,13 +15,39 @@ describe('core action result', () => {
   });
 
   it('detects nested xray and sing-box failures from HTTP 200 bodies', () => {
-    expect(coreActionResult({ xray: { status: 'not_managed', error_output: 'service is not managed' } }, 'Xray 配置已应用')).toEqual({
+    expect(coreActionResult({ xray: { status: 'not_managed', error_output: 'service is not managed' } }, 'Xray 配置已应用')).toMatchObject({
       ok: false,
       message: 'service is not managed',
     });
-    expect(coreActionResult({ singbox: { applied: false, reason: 'invalid config' } }, 'sing-box 配置已应用')).toEqual({
+    expect(coreActionResult({ singbox: { applied: false, reason: 'invalid config' } }, 'sing-box 配置已应用')).toMatchObject({
       ok: false,
       message: 'invalid config',
+    });
+  });
+
+  it('keeps command and error details for failed operations', () => {
+    expect(coreActionResult({ xray: { status: 'failed', error_output: 'invalid json', commands_executed: ['xray -test'] } }, 'Xray 配置已应用')).toEqual({
+      ok: false,
+      message: 'invalid json',
+      detail: 'commands:\nxray -test',
+    });
+  });
+
+  it('keeps command details for successful applied operations', () => {
+    expect(coreActionResult({ applied: true, commands_executed: ['sing-box check'], output: 'ok' }, 'sing-box 配置已应用')).toEqual({
+      ok: true,
+      message: 'sing-box 配置已应用',
+      detail: 'commands:\nsing-box check\n\ndetail:\nok',
+    });
+    expect(coreActionResult({ singbox: { applied: true, commands_executed: ['sing-box check -c /etc/sing-box/config.json'], output: 'ok' } }, 'sing-box 配置已应用')).toEqual({
+      ok: true,
+      message: 'sing-box 配置已应用',
+      detail: 'commands:\nsing-box check -c /etc/sing-box/config.json\n\ndetail:\nok',
+    });
+    expect(coreActionResult({ commands_executed: [], singbox: { applied: true, commands_executed: ['sing-box reload'], output: 'ok' } }, 'sing-box 配置已应用')).toEqual({
+      ok: true,
+      message: 'sing-box 配置已应用',
+      detail: 'commands:\nsing-box reload\n\ndetail:\nok',
     });
   });
 });

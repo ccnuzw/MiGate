@@ -49,6 +49,7 @@ type Balancer struct {
 type RoutingRule struct {
 	InboundTag  []string `json:"inboundTag,omitempty"`
 	Domain      []string `json:"domain,omitempty"`
+	IP          []string `json:"ip,omitempty"`
 	Protocol    []string `json:"protocol,omitempty"`
 	OutboundTag string   `json:"outboundTag,omitempty"`
 	BalancerTag string   `json:"balancerTag,omitempty"`
@@ -153,10 +154,13 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 				}
 			}
 			if rule.Domain != "" {
-				xr.Domain = []string{rule.Domain}
+				xr.Domain = splitRuleValues(rule.Domain)
+			}
+			if rule.IP != "" {
+				xr.IP = splitRuleValues(rule.IP)
 			}
 			if rule.Protocol != "" {
-				xr.Protocol = []string{rule.Protocol}
+				xr.Protocol = splitRuleValues(rule.Protocol)
 			}
 			r.Rules = append(r.Rules, xr)
 		}
@@ -165,6 +169,20 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 		}
 	}
 	return appendStatsAPIInbound(config), nil
+}
+
+func splitRuleValues(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t'
+	})
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
 
 // enableUserStats returns a PolicyConfig that enables per-client traffic stats
