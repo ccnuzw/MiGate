@@ -88,8 +88,10 @@ const clientSchema = z.object({
   expiry_at: z.coerce.number().min(0).optional(),
 });
 
-type InboundValues = z.infer<typeof inboundSchema>;
-type ClientValues = z.infer<typeof clientSchema>;
+type InboundInput = z.input<typeof inboundSchema>;
+type InboundValues = z.output<typeof inboundSchema>;
+type ClientInput = z.input<typeof clientSchema>;
+type ClientValues = z.output<typeof clientSchema>;
 type SortKey = 'id' | 'port' | 'protocol' | 'clients';
 
 export default function InboundsPage() {
@@ -299,7 +301,7 @@ function ClientRow({
 
 function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; onClose: () => void; onSaved: () => void }) {
   const { showToast } = useToast();
-  const form = useForm<InboundValues>({
+  const form = useForm<InboundInput, unknown, InboundValues>({
     resolver: zodResolver(inboundSchema),
     values: inbound ? inboundFormValues(inbound) : undefined,
   });
@@ -408,7 +410,7 @@ function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; 
 
 function ClientModal({ inbound, client, onClose, onSaved }: { inbound: Inbound | null; client?: Client; onClose: () => void; onSaved: () => void }) {
   const { showToast } = useToast();
-  const form = useForm<ClientValues>({
+  const form = useForm<ClientInput, unknown, ClientValues>({
     resolver: zodResolver(clientSchema),
     values: inbound
       ? { email: client?.email || '', uuid: client?.uuid || defaultClientCredential(inbound.protocol), enabled: client?.enabled ?? true, traffic_limit: client?.traffic_limit || 0, expiry_at: client?.expiry_at || 0 }

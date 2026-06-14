@@ -6,12 +6,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
 // Store is the subset of db.Store methods needed by the scheduler.
 type Store interface {
 	UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error
+}
+
+type batchTrafficStore interface {
+	UpdateClientTrafficBatch(ctx context.Context, stats map[string]db.ClientTrafficUpdate) error
 }
 
 // TrafficSyncScheduler periodically syncs traffic statistics from Xray to the database.
@@ -83,7 +88,21 @@ func (s *TrafficSyncScheduler) sync() {
 		return
 	}
 
-	// Update database for each client
+	if batchStore, ok := s.store.(batchTrafficStore); ok {
+		batch := make(map[string]db.ClientTrafficUpdate, len(stats))
+		for email, clientStats := range stats {
+			batch[email] = db.ClientTrafficUpdate{Up: clientStats.Uplink, Down: clientStats.Downlink}
+		}
+		if err := batchStore.UpdateClientTrafficBatch(ctx, batch); err != nil {
+			log.Printf("traffic sync: failed to batch update clients: %v", err)
+			return
+		}
+		if len(stats) > 0 {
+			log.Printf("traffic sync: updated %d clients", len(stats))
+		}
+		return
+	}
+
 	for email, clientStats := range stats {
 		err := s.store.UpdateClientTraffic(ctx, email, clientStats.Uplink, clientStats.Downlink)
 		if err != nil {

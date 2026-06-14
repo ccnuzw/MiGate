@@ -152,6 +152,11 @@ export interface DashboardSummary {
     xray_realtime: number;
   };
   protocols: Record<string, number>;
+  traffic_series: Array<{
+    name: string;
+    up: number;
+    down: number;
+  }>;
   validation: {
     xray: ConfigValidation;
     singbox: ConfigValidation;

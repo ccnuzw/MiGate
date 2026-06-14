@@ -155,6 +155,11 @@ type Client struct {
 	ExpiryAt     int64  `json:"expiry_at"`
 }
 
+type ClientTrafficUpdate struct {
+	Up   int64
+	Down int64
+}
+
 type CreateInboundParams struct {
 	UUID                  string              `json:"uuid,omitempty"`
 	Remark                string              `json:"remark"`
@@ -338,6 +343,11 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
   expires_at TEXT NOT NULL,
   revoked INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
+CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
+CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
+CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at);
+CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked, expires_at, id);
 `)
 	if err != nil {
 		return err
@@ -1198,6 +1208,33 @@ func (s *Store) UpdateClientTraffic(ctx context.Context, email string, uplink, d
 	return nil
 }
 
+// UpdateClientTrafficBatch updates all provided traffic counters in one write
+// transaction. Unknown client emails are ignored, matching UpdateClientTraffic.
+func (s *Store) UpdateClientTrafficBatch(ctx context.Context, stats map[string]ClientTrafficUpdate) error {
+	if len(stats) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `UPDATE clients SET up=?, down=? WHERE email=?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for email, traffic := range stats {
+		if strings.TrimSpace(email) == "" {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, traffic.Up, traffic.Down, email); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -1224,11 +1261,7 @@ ON CONFLICT(token_hash) DO UPDATE SET revoked=excluded.revoked, last_used=exclud
 }
 
 // IsBlacklisted checks if a token hash exists in the blacklist and is marked as revoked.
-// Also auto-cleans expired entries during the scan.
 func (s *Store) IsBlacklisted(ctx context.Context, tokenHash string) (bool, error) {
-	// Clean expired blacklist entries first
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
-
 	var revoked int
 	err := s.db.QueryRowContext(ctx, `SELECT revoked FROM token_blacklist WHERE token_hash=? AND expires_at > ?`,
 		tokenHash, time.Now().UTC().Format(time.RFC3339)).Scan(&revoked)
@@ -1248,10 +1281,26 @@ func (s *Store) RecordSessionTouch(ctx context.Context, tokenHash string) error 
 	return err
 }
 
+// RecordSessionTouchAfter updates last_used only when it is older than minAge.
+// This keeps revocation checks current without turning every API request into a
+// write transaction.
+func (s *Store) RecordSessionTouchAfter(ctx context.Context, tokenHash string, minAge time.Duration) error {
+	cutoff := time.Now().UTC().Add(-minAge).Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET last_used=? WHERE token_hash=? AND last_used < ?`,
+		time.Now().UTC().Format(time.RFC3339), tokenHash, cutoff)
+	return err
+}
+
+func (s *Store) CleanupExpiredSessions(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
 // ListActiveSessions returns non-revoked, non-expired sessions.
 func (s *Store) ListActiveSessions(ctx context.Context) ([]BlacklistedSession, error) {
-	// Clean expired entries first
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
+	if err := s.CleanupExpiredSessions(ctx); err != nil {
+		return nil, err
+	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT id, token_hash, created_at, last_used, expires_at, revoked FROM token_blacklist WHERE revoked=0 AND expires_at > ? ORDER BY id DESC`,
 		time.Now().UTC().Format(time.RFC3339))

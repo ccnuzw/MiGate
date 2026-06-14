@@ -975,6 +975,7 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"routing_rules":1`,
 		`"xray_realtime":30`,
 		`"protocols":{"vless":1}`,
+		`"traffic_series":[{"name":"xray","up":1,"down":0}]`,
 		`"validation"`,
 		`"target":"xray"`,
 		`"target":"singbox"`,

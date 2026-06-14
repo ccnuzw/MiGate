@@ -21,7 +21,8 @@ const schema = z.object({
   password: z.string().optional(),
   enabled: z.boolean().default(true),
 });
-type Values = z.infer<typeof schema>;
+type InputValues = z.input<typeof schema>;
+type Values = z.output<typeof schema>;
 
 export default function OutboundsPage() {
   const queryClient = useQueryClient();
@@ -163,7 +164,7 @@ export default function OutboundsPage() {
 function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | null; onClose: () => void; onSaved: () => void }) {
   const { showToast } = useToast();
   const { text } = useI18n();
-  const form = useForm<Values>({
+  const form = useForm<InputValues, unknown, Values>({
     resolver: zodResolver(schema),
     values: outbound ? { tag: outbound.tag || '', remark: outbound.remark || '', protocol: (outbound.protocol || 'socks') as Values['protocol'], address: outbound.address || '', port: Number(outbound.port || 0), username: outbound.username || '', password: outbound.password || '', enabled: outbound.enabled ?? true } : undefined,
   });

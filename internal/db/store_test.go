@@ -1184,3 +1184,44 @@ func TestStoreRevokeSessionByID(t *testing.T) {
 		t.Fatal("expected error when revoking already-revoked session")
 	}
 }
+
+func TestStoreUpdateClientTrafficBatch(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "batch", Protocol: "vless", Port: 28080, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "a@example.com"}); err != nil {
+		t.Fatalf("create client a: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "b@example.com"}); err != nil {
+		t.Fatalf("create client b: %v", err)
+	}
+
+	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
+		"a@example.com":       {Up: 11, Down: 22},
+		"b@example.com":       {Up: 33, Down: 44},
+		"missing@example.com": {Up: 55, Down: 66},
+	})
+	if err != nil {
+		t.Fatalf("batch update traffic: %v", err)
+	}
+
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	traffic := map[string][2]int64{}
+	for _, client := range inbounds[0].Clients {
+		traffic[client.Email] = [2]int64{client.Up, client.Down}
+	}
+	if traffic["a@example.com"] != [2]int64{11, 22} || traffic["b@example.com"] != [2]int64{33, 44} {
+		t.Fatalf("unexpected traffic after batch update: %+v", traffic)
+	}
+}

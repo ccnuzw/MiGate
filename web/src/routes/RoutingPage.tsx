@@ -20,7 +20,8 @@ const schema = z.object({
   outbound_tag: z.string().min(1, '请选择出站'),
   enabled: z.boolean().default(true),
 });
-type Values = z.infer<typeof schema>;
+type InputValues = z.input<typeof schema>;
+type Values = z.output<typeof schema>;
 
 export default function RoutingPage() {
   const queryClient = useQueryClient();
@@ -106,7 +107,7 @@ export default function RoutingPage() {
 function RoutingModal({ rule, outbounds, inbounds, onClose, onSaved }: { rule: RoutingRule | null; outbounds: string[]; inbounds: string[]; onClose: () => void; onSaved: () => void }) {
   const { showToast } = useToast();
   const { text } = useI18n();
-  const form = useForm<Values>({
+  const form = useForm<InputValues, unknown, Values>({
     resolver: zodResolver(schema),
     values: rule
       ? {

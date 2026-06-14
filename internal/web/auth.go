@@ -15,6 +15,10 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
+const sessionTouchMinAge = time.Minute
+const sessionTouchRetention = 7 * 24 * time.Hour
+const sessionTouchGCInterval = time.Hour
+
 // WithAuth enables panel login authentication. Requests to most routes must
 // carry a valid session cookie obtained via POST /api/login.
 func WithAuth(username, password string) Option {
@@ -61,18 +65,66 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 		}
 		// Check if session token has been revoked
 		if cfg.store != nil {
-			revoked, err := cfg.store.IsBlacklisted(r.Context(), hashToken(cookie.Value))
+			tokenHash := hashToken(cookie.Value)
+			revoked, err := cfg.store.IsBlacklisted(r.Context(), tokenHash)
 			if err == nil && revoked {
 				writeJSONError(w, http.StatusUnauthorized, "session_revoked")
 				return
 			}
-			// Update last_used timestamp
 			if err == nil {
-				_ = cfg.store.RecordSessionTouch(r.Context(), hashToken(cookie.Value))
+				if reservedAt, ok := reserveSessionTouch(cfg, tokenHash, sessionTouchMinAge); ok {
+					var touchErr error
+					if throttled, ok := cfg.store.(sessionTouchThrottler); ok {
+						touchErr = throttled.RecordSessionTouchAfter(r.Context(), tokenHash, sessionTouchMinAge)
+					} else {
+						touchErr = cfg.store.RecordSessionTouch(r.Context(), tokenHash)
+					}
+					if touchErr != nil {
+						rollbackSessionTouch(cfg, tokenHash, reservedAt)
+					}
+				}
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func reserveSessionTouch(cfg *routerConfig, tokenHash string, minAge time.Duration) (time.Time, bool) {
+	now := time.Now()
+	cfg.sessionTouchMu.Lock()
+	defer cfg.sessionTouchMu.Unlock()
+	if cfg.sessionTouches == nil {
+		cfg.sessionTouches = make(map[string]time.Time)
+	}
+	cleanupSessionTouches(cfg, now)
+	if last, ok := cfg.sessionTouches[tokenHash]; ok && now.Sub(last) < minAge {
+		return time.Time{}, false
+	}
+	cfg.sessionTouches[tokenHash] = now
+	return now, true
+}
+
+func rollbackSessionTouch(cfg *routerConfig, tokenHash string, reservedAt time.Time) {
+	cfg.sessionTouchMu.Lock()
+	defer cfg.sessionTouchMu.Unlock()
+	if cfg.sessionTouches != nil {
+		if current, ok := cfg.sessionTouches[tokenHash]; ok && current.Equal(reservedAt) {
+			delete(cfg.sessionTouches, tokenHash)
+		}
+	}
+}
+
+func cleanupSessionTouches(cfg *routerConfig, now time.Time) {
+	if !cfg.sessionTouchGC.IsZero() && now.Sub(cfg.sessionTouchGC) < sessionTouchGCInterval {
+		return
+	}
+	cfg.sessionTouchGC = now
+	cutoff := now.Add(-sessionTouchRetention)
+	for tokenHash, touchedAt := range cfg.sessionTouches {
+		if touchedAt.Before(cutoff) {
+			delete(cfg.sessionTouches, tokenHash)
+		}
+	}
 }
 
 func createSessionToken(username string, secret []byte) string {

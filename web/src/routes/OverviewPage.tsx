@@ -1,15 +1,14 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/endpoints';
 import type { DashboardSummary } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
 import { formatBytes, formatDuration, formatPercent, serviceLabel } from '../lib/format';
 
 export default function OverviewPage() {
-  const visible = typeof document === 'undefined' || !document.hidden;
+  const visible = usePageVisible();
   const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false });
-  const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, refetchInterval: visible ? 30000 : false });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false });
   const [xray, singbox] = useQueries({
     queries: [
@@ -18,26 +17,25 @@ export default function OverviewPage() {
     ],
   });
 
-  const list = inbounds.data || [];
   const data = summary.data;
-  const counts = data?.counts || fallbackCounts(list);
-  const traffic = data?.traffic || fallbackTraffic(list);
-  const protocols = Object.entries(data?.protocols || fallbackProtocols(list)).map(([name, value]) => ({ name, value }));
+  const counts = data?.counts || emptyCounts;
+  const traffic = data?.traffic || emptyTraffic;
+  const protocols = Object.entries(data?.protocols || {}).map(([name, value]) => ({ name, value }));
+  const trafficSeries = data?.traffic_series || [];
 
-  if (summary.isLoading && inbounds.isLoading) return <LoadingBlock />;
+  if (summary.isLoading) return <LoadingBlock />;
 
   return (
     <div className="page-stack">
       <PageTitle
         title="运行概览"
         description="VPS 面板、核心服务和流量资源的实时摘要。"
-        action={<button className="btn secondary" onClick={() => refreshOverview([summary, inbounds, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> 刷新</button>}
+        action={<button className="btn secondary" onClick={() => refreshOverview([summary, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> 刷新</button>}
       />
       <OverviewAlerts
-        errors={[
-          summary.error ? `概览摘要加载失败：${errorText(summary.error)}` : '',
-          inbounds.error ? `入站加载失败：${errorText(inbounds.error)}` : '',
-          resources.error ? `资源加载失败：${errorText(resources.error)}` : '',
+          errors={[
+            summary.error ? `概览摘要加载失败：${errorText(summary.error)}` : '',
+            resources.error ? `资源加载失败：${errorText(resources.error)}` : '',
           xray.error ? `Xray 状态加载失败：${errorText(xray.error)}` : '',
           singbox.error ? `sing-box 状态加载失败：${errorText(singbox.error)}` : '',
           data?.validation.xray && !data.validation.xray.valid ? `Xray 生成校验失败：${data.validation.xray.error || '未知错误'}` : '',
@@ -75,15 +73,7 @@ export default function OverviewPage() {
             </div>
           </div>
           <div className="h-64">
-            <ResponsiveContainer>
-              <AreaChart data={list.map((item) => ({ name: item.remark || `${item.protocol}:${item.port}`, up: item.traffic_up || 0, down: item.traffic_down || 0 }))}>
-                <XAxis dataKey="name" hide />
-                <YAxis hide />
-                <Tooltip formatter={(value) => formatBytes(Number(value))} />
-                <Area dataKey="up" stroke="#0f766e" fill="#0f766e33" />
-                <Area dataKey="down" stroke="#b45309" fill="#b4530933" />
-              </AreaChart>
-            </ResponsiveContainer>
+            <TrafficChart data={trafficSeries} />
           </div>
         </Card>
         <Card className="p-5">
@@ -106,48 +96,27 @@ export default function OverviewPage() {
   );
 }
 
-function fallbackCounts(list: Array<{ enabled?: boolean; clients?: Array<{ enabled?: boolean; up?: number; down?: number; traffic_limit?: number; expiry_at?: number }> }>): DashboardSummary['counts'] {
-  const now = Math.floor(Date.now() / 1000);
-  const clients = list.flatMap((item) => item.clients || []);
-  const clientsExpired = clients.filter((client) => client.expiry_at && client.expiry_at > 0 && client.expiry_at <= now).length;
-  const clientsLimited = clients.filter((client) => Number(client.traffic_limit || 0) > 0 && Number(client.up || 0) + Number(client.down || 0) >= Number(client.traffic_limit || 0)).length;
-  const clientsActive = clients.filter((client) => {
-    const used = Number(client.up || 0) + Number(client.down || 0);
-    const limit = Number(client.traffic_limit || 0);
-    if (!client.enabled) return false;
-    if (client.expiry_at && client.expiry_at > 0 && client.expiry_at <= now) return false;
-    if (limit > 0 && used >= limit) return false;
-    return true;
-  }).length;
-  return {
-    inbounds: list.length,
-    inbounds_enabled: list.filter((item) => item.enabled).length,
-    clients: clients.length,
-    clients_active: clientsActive,
-    clients_expired: clientsExpired,
-    clients_limited: clientsLimited,
-    outbounds: 0,
-    outbounds_enabled: 0,
-    routing_rules: 0,
-    routing_enabled: 0,
-  };
-}
+const emptyCounts: DashboardSummary['counts'] = {
+  inbounds: 0,
+  inbounds_enabled: 0,
+  clients: 0,
+  clients_active: 0,
+  clients_expired: 0,
+  clients_limited: 0,
+  outbounds: 0,
+  outbounds_enabled: 0,
+  routing_rules: 0,
+  routing_enabled: 0,
+};
 
-function fallbackTraffic(list: Array<{ traffic_up?: number; traffic_down?: number; clients?: Array<{ xray_up?: number; xray_down?: number }> }>): DashboardSummary['traffic'] {
-  const clients = list.flatMap((item) => item.clients || []);
-  const up = list.reduce((sum, item) => sum + Number(item.traffic_up || 0), 0);
-  const down = list.reduce((sum, item) => sum + Number(item.traffic_down || 0), 0);
-  const xrayUp = clients.reduce((sum, item) => sum + Number(item.xray_up || 0), 0);
-  const xrayDown = clients.reduce((sum, item) => sum + Number(item.xray_down || 0), 0);
-  return { up, down, total: up + down, xray_up: xrayUp, xray_down: xrayDown, xray_realtime: xrayUp + xrayDown };
-}
-
-function fallbackProtocols(list: Array<{ protocol?: string }>) {
-  return list.reduce<Record<string, number>>((acc, item) => {
-    if (item.protocol) acc[item.protocol] = (acc[item.protocol] || 0) + 1;
-    return acc;
-  }, {});
-}
+const emptyTraffic: DashboardSummary['traffic'] = {
+  up: 0,
+  down: 0,
+  total: 0,
+  xray_up: 0,
+  xray_down: 0,
+  xray_realtime: 0,
+};
 
 function OverviewAlerts({ errors }: { errors: string[] }) {
   if (errors.length === 0) return null;
@@ -161,6 +130,78 @@ function OverviewAlerts({ errors }: { errors: string[] }) {
       </div>
     </Card>
   );
+}
+
+function TrafficChart({ data }: { data: DashboardSummary['traffic_series'] }) {
+  const chart = useMemo(() => buildChart(data), [data]);
+  if (data.length === 0) {
+    return <div className="flex h-full items-center justify-center text-sm text-panel-muted">暂无流量数据</div>;
+  }
+  return (
+    <div className="relative h-full w-full">
+      <svg className="h-full w-full overflow-visible" viewBox="0 0 640 220" role="img" aria-label="流量走势">
+        <defs>
+          <linearGradient id="traffic-up-fill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#0f766e" stopOpacity="0.32" />
+            <stop offset="100%" stopColor="#0f766e" stopOpacity="0.04" />
+          </linearGradient>
+          <linearGradient id="traffic-down-fill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#b45309" stopOpacity="0.26" />
+            <stop offset="100%" stopColor="#b45309" stopOpacity="0.04" />
+          </linearGradient>
+        </defs>
+        <g stroke="#e5e7eb" strokeWidth="1">
+          {[0, 1, 2, 3].map((line) => <line key={line} x1="0" x2="640" y1={line * 55} y2={line * 55} />)}
+        </g>
+        <path d={chart.upArea} fill="url(#traffic-up-fill)" />
+        <path d={chart.downArea} fill="url(#traffic-down-fill)" />
+        <path d={chart.upLine} fill="none" stroke="#0f766e" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
+        <path d={chart.downLine} fill="none" stroke="#b45309" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
+        {chart.points.map((point) => (
+          <g key={point.name + point.x}>
+            <circle cx={point.x} cy={point.upY} fill="#0f766e" r="3.5" />
+            <circle cx={point.x} cy={point.downY} fill="#b45309" r="3.5" />
+            <title>{`${point.name}: ↑ ${formatBytes(point.up)} / ↓ ${formatBytes(point.down)}`}</title>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function buildChart(data: DashboardSummary['traffic_series']) {
+  const width = 640;
+  const bottom = 205;
+  if (data.length === 0) {
+    return { points: [], upLine: '', downLine: '', upArea: '', downArea: '' };
+  }
+  const max = Math.max(1, ...data.flatMap((item) => [Number(item.up || 0), Number(item.down || 0)]));
+  const xFor = (index: number) => data.length === 1 ? width / 2 : (index / (data.length - 1)) * width;
+  const yFor = (value: number) => bottom - (Number(value || 0) / max) * 180;
+  const points = data.map((item, index) => ({
+    name: item.name,
+    up: Number(item.up || 0),
+    down: Number(item.down || 0),
+    x: xFor(index),
+    upY: yFor(item.up),
+    downY: yFor(item.down),
+  }));
+  const line = (key: 'upY' | 'downY') => points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point[key].toFixed(1)}`).join(' ');
+  const area = (path: string) => `${path} L ${points[points.length - 1].x.toFixed(1)} ${bottom} L ${points[0].x.toFixed(1)} ${bottom} Z`;
+  const upLine = line('upY');
+  const downLine = line('downY');
+  return { points, upLine, downLine, upArea: area(upLine), downArea: area(downLine) };
+}
+
+function usePageVisible() {
+  const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden);
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const update = () => setVisible(!document.hidden);
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, []);
+  return visible;
 }
 
 function ValidationSummary({ label, loading, valid, error, detail }: { label: string; loading: boolean; valid?: boolean; error: unknown; detail: string }) {

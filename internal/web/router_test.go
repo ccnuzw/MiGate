@@ -112,6 +112,9 @@ func TestRouterServesViteAssets(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected asset 200, got %d: %s", resp.Code, resp.Body.String())
 	}
+	if cache := resp.Header().Get("Cache-Control"); cache != "public, max-age=31536000, immutable" {
+		t.Fatalf("unexpected asset cache header: %q", cache)
+	}
 }
 
 func TestRouterSPAFallbackAndAPISubIsolation(t *testing.T) {

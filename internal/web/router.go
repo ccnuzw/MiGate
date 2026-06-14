@@ -53,6 +53,12 @@ type inboundTrafficSummary struct {
 	RealtimeSource string `json:"realtime_source,omitempty"`
 }
 
+type trafficSeriesPoint struct {
+	Name string `json:"name"`
+	Up   int64  `json:"up"`
+	Down int64  `json:"down"`
+}
+
 type inboundView struct {
 	db.Inbound
 	TrafficUp      int64                          `json:"traffic_up"`
@@ -90,6 +96,10 @@ type Store interface {
 	RecordSessionTouch(ctx context.Context, tokenHash string) error
 	ListActiveSessions(ctx context.Context) ([]db.BlacklistedSession, error)
 	RevokeSession(ctx context.Context, id int64) error
+}
+
+type sessionTouchThrottler interface {
+	RecordSessionTouchAfter(ctx context.Context, tokenHash string, minAge time.Duration) error
 }
 
 type XrayController interface {
@@ -143,6 +153,9 @@ type routerConfig struct {
 	statsClient    xray.StatsClient
 	socks5PoolURL  string
 	updateCheckURL string
+	sessionTouches map[string]time.Time
+	sessionTouchGC time.Time
+	sessionTouchMu sync.Mutex
 }
 
 const defaultUpdateCheckURL = "https://api.github.com/repos/imzyb/MiGate/releases/latest"
@@ -225,7 +238,7 @@ func NewRouter(options ...Option) http.Handler {
 		option(&cfg)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(static.Assets()))))
+	mux.Handle("/assets/", cacheStaticAssets(http.StripPrefix("/assets/", http.FileServer(http.FS(static.Assets())))))
 	mux.HandleFunc("/login", loginPageHandler(&cfg))
 	mux.HandleFunc("/api/login", loginHandler(&cfg))
 	mux.HandleFunc("/api/logout", logoutHandler(&cfg))
@@ -341,8 +354,41 @@ func spaHandler(basePath string) http.HandlerFunc {
 		baseJSON, _ := json.Marshal(basePath)
 		injected := strings.Replace(string(index), "</head>", `<script>window.__MIGATE_BASE_PATH__=`+string(baseJSON)+`;</script></head>`, 1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write([]byte(injected))
 	}
+}
+
+func cacheStaticAssets(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cached := &cacheControlWriter{ResponseWriter: w}
+		next.ServeHTTP(cached, r)
+	})
+}
+
+type cacheControlWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *cacheControlWriter) WriteHeader(status int) {
+	if !w.wroteHeader && shouldCacheStaticStatus(status) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *cacheControlWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.wroteHeader = true
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func shouldCacheStaticStatus(status int) bool {
+	return status == http.StatusNotModified || (status >= 200 && status < 300)
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -1216,6 +1262,7 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 	limitedClients := 0
 	enabledInbounds := 0
 	protocols := map[string]int{}
+	trafficSeries := make([]trafficSeriesPoint, 0, len(inbounds))
 	trafficByInbound, trafficByClient := summarizeTraffic(ctx, inbounds, statsClient)
 	var totalUp int64
 	var totalDown int64
@@ -1231,6 +1278,11 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 		if traffic, ok := trafficByInbound[inbound.ID]; ok {
 			totalUp += traffic.Up
 			totalDown += traffic.Down
+			name := inbound.Remark
+			if strings.TrimSpace(name) == "" {
+				name = fmt.Sprintf("%s:%d", inbound.Protocol, inbound.Port)
+			}
+			trafficSeries = append(trafficSeries, trafficSeriesPoint{Name: name, Up: traffic.Up, Down: traffic.Down})
 		}
 		for _, client := range inbound.Clients {
 			clientCount++
@@ -1286,7 +1338,8 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 			"xray_down":     realtimeDown,
 			"xray_realtime": realtimeUp + realtimeDown,
 		},
-		"protocols": protocols,
+		"protocols":      protocols,
+		"traffic_series": trafficSeries,
 		"validation": map[string]configValidationResult{
 			"xray":    validateXrayConfig(ctx, store),
 			"singbox": validateSingboxConfig(ctx, store),
