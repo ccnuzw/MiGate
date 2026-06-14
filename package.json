@@ -1,0 +1,10 @@
+{
+  "name": "migate",
+  "private": true,
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "start": "npm run dev",
+    "check": "bash scripts/check.sh",
+    "build": "make go-build"
+  }
+}

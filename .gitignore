@@ -10,6 +10,7 @@ venv/
 web/node_modules/
 web/.vite/
 web/*.tsbuildinfo
+.dev/
 /migate
 /migate_amd64
 /migate-dev

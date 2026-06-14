@@ -695,6 +695,31 @@ func TestXrayConfigAPIRendersAdvancedRoutingFields(t *testing.T) {
 	}
 }
 
+func TestSingboxConfigAPIProducesPreviewWhenConfigFileMissing(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/config", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"log"`, `"inbounds"`, `"type":"hysteria2"`, `"listen_port":21001`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("singbox config preview missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestConfigValidateAPIsReturnStructuredResults(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

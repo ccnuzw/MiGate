@@ -226,6 +226,7 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
       open={open}
       title={text('导入 SOCKS5 地址池')}
       onClose={onClose}
+      panelClassName="socks5-pool-panel"
       footer={
         <>
           <button className="btn secondary" onClick={onClose}>{text('取消')}</button>
@@ -233,7 +234,7 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
         </>
       }
     >
-      <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
+      <div className="socks5-pool-layout">
         <div className="grid content-start gap-3">
           <Field label={text('国家/地区')}>
             <select value={country} onChange={(event) => { setCountry(event.target.value); setSelected(null); }}>
@@ -248,18 +249,18 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
           </div>
           {selected ? <div className="rounded-lg bg-panel-soft p-3 text-xs leading-6"><b>{selected.address}:{selected.port}</b><br />{selected.city || selected.country} {selected.asn} {selected.organization}</div> : null}
         </div>
-        <div className="max-h-[58vh] overflow-auto rounded-lg border border-panel-line">
+        <div className="socks5-pool-list">
           {pool.isLoading ? <LoadingBlock /> : null}
           {(pool.data?.proxies || []).map((proxy) => {
             const key = proxyKey(proxy);
             return (
               <button key={key} className={`pool-row ${selected === proxy ? 'pool-row-active' : ''}`} onClick={() => setSelected(proxy)} type="button">
-                <span className="min-w-0">
-                  <b>{proxy.address}:{proxy.port}</b>
-                  <span className="block truncate text-panel-muted">{proxy.country || proxy.country_code} · {proxy.city || '-'} · {proxy.asn || '-'} · {proxy.organization || '-'}</span>
+                <span className="pool-row-main">
+                  <b className="pool-row-address">{proxy.address}:{proxy.port}</b>
+                  <span className="pool-row-meta">{proxy.country || proxy.country_code} · {proxy.city || '-'} · {proxy.asn || '-'} · {proxy.organization || '-'}</span>
                 </span>
-                <span className="flex items-center gap-2">
-                  <span className="text-xs text-panel-muted">{formatLatency(latency[key], text)}</span>
+                <span className="pool-row-actions">
+                  <span className="pool-row-latency">{formatLatency(latency[key], text)}</span>
                   <span className="btn secondary h-8" onClick={(event) => { event.stopPropagation(); ping.mutate(proxy); }}>Ping</span>
                 </span>
               </button>

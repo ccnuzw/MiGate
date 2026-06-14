@@ -1,6 +1,15 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@source "../**/*.{ts,tsx}";
+
+@theme {
+  --color-panel-bg: rgb(var(--bg));
+  --color-panel-surface: rgb(var(--surface));
+  --color-panel-muted: rgb(var(--muted));
+  --color-panel-line: rgb(var(--line));
+  --color-panel-text: rgb(var(--text));
+  --color-panel-soft: rgb(var(--soft));
+  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.06), 0 0 0 1px rgb(var(--line) / 1);
+}
 
 :root {
   --bg: 248 250 252;
@@ -133,6 +142,28 @@ textarea:focus {
   flex-direction: column;
   border-right: 1px solid rgb(var(--line));
   background: rgb(var(--surface));
+  transition: transform 0.2s ease, width 0.2s ease;
+}
+
+.sidebar-header {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+}
+
+.mobile-sidebar-close {
+  display: none;
+}
+
+.sidebar-brand-text,
+.nav-link-label,
+.sidebar-footer-text {
+  overflow: hidden;
+  transition: opacity 0.16s ease;
+  white-space: nowrap;
 }
 
 .nav-link {
@@ -157,6 +188,45 @@ textarea:focus {
   min-height: 100vh;
   padding: 28px;
   padding-left: 276px;
+  transition: padding-left 0.2s ease;
+}
+
+.sidebar-collapsed .sidebar {
+  width: 76px;
+}
+
+.sidebar-collapsed .sidebar-header {
+  justify-content: center;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+.sidebar-collapsed .sidebar-brand-text,
+.sidebar-collapsed .nav-link-label,
+.sidebar-collapsed .sidebar-footer-text {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar-collapsed .nav-link {
+  justify-content: center;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+.sidebar-collapsed .main-shell {
+  padding-left: 104px;
+}
+
+.sidebar-collapsed .sidebar-footer-card {
+  display: grid;
+  place-items: center;
+  padding: 10px;
+}
+
+.sidebar-collapsed .sidebar-actions {
+  grid-template-columns: 1fr;
 }
 
 .page-stack {
@@ -247,10 +317,10 @@ textarea:focus {
 }
 
 .pool-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
   width: 100%;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   border: 0;
   border-bottom: 1px solid rgb(var(--line));
@@ -258,6 +328,39 @@ textarea:focus {
   color: rgb(var(--text));
   padding: 10px 12px;
   text-align: left;
+}
+
+.pool-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.pool-row-address,
+.pool-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pool-row-meta {
+  color: rgb(var(--muted));
+}
+
+.pool-row-actions {
+  display: grid;
+  grid-template-columns: 44px 72px;
+  align-items: center;
+  justify-content: end;
+  gap: 10px;
+}
+
+.pool-row-latency {
+  color: rgb(var(--muted));
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .pool-row:hover,
@@ -314,6 +417,23 @@ textarea:focus {
   background: rgb(var(--surface));
   padding: 18px;
   box-shadow: 0 24px 64px rgba(2, 6, 23, 0.24);
+}
+
+.socks5-pool-panel {
+  width: min(1120px, calc(100vw - 36px));
+}
+
+.socks5-pool-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 22px;
+}
+
+.socks5-pool-list {
+  max-height: 64vh;
+  overflow: auto;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
 }
 
 .code-block {
@@ -373,11 +493,46 @@ textarea:focus {
 
   .sidebar {
     transform: translateX(-100%);
-    transition: transform 0.2s ease;
+    width: 248px;
   }
 
   .sidebar-open .sidebar {
     transform: translateX(0);
+  }
+
+  .desktop-sidebar-collapse {
+    display: none;
+  }
+
+  .mobile-sidebar-close {
+    display: inline-grid;
+  }
+
+  .sidebar-collapsed .sidebar-brand-text,
+  .sidebar-collapsed .nav-link-label,
+  .sidebar-collapsed .sidebar-footer-text {
+    width: auto;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar-collapsed .sidebar-header {
+    justify-content: space-between;
+    padding: 16px;
+  }
+
+  .sidebar-collapsed .nav-link {
+    justify-content: flex-start;
+    padding: 8px 12px;
+  }
+
+  .sidebar-collapsed .sidebar-footer-card {
+    display: block;
+    padding: 12px;
+  }
+
+  .sidebar-collapsed .sidebar-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .sidebar-open .sidebar-overlay {
@@ -406,6 +561,30 @@ textarea:focus {
   .form-grid,
   .metric-grid {
     grid-template-columns: 1fr;
+  }
+
+  .socks5-pool-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .socks5-pool-panel {
+    width: min(100%, calc(100vw - 24px));
+  }
+
+  .socks5-pool-list {
+    max-height: 52vh;
+  }
+
+  .pool-row {
+    grid-template-columns: 1fr;
+  }
+
+  .pool-row-actions {
+    grid-template-columns: 1fr 72px;
+  }
+
+  .pool-row-latency {
+    text-align: left;
   }
 
   .span-2 {

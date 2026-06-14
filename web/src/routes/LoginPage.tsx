@@ -1,11 +1,13 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { LockKeyhole } from 'lucide-react';
 import { basePath } from '../api/client';
 import { api } from '../api/endpoints';
+import type { Session } from '../api/types';
 import { Field, useToast } from '../components/ui';
 
 const schema = z.object({
@@ -18,16 +20,32 @@ type FormValues = z.infer<typeof schema>;
 export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
   const { showToast } = useToast();
   const session = useQuery({ queryKey: ['session'], queryFn: api.session });
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { username: 'admin', password: '' } });
+  const target = redirectTarget(location);
   const login = useMutation({
     mutationFn: (values: FormValues) => api.login(values.username, values.password),
-    onSuccess: () => navigate(redirectTarget(location), { replace: true }),
+    onSuccess: (_data, values) => {
+      queryClient.setQueryData<Session>(['session'], {
+        auth_enabled: true,
+        authenticated: true,
+        username: values.username,
+        revoked: false,
+        default_password: false,
+      });
+      navigate(target, { replace: true });
+      void queryClient.invalidateQueries({ queryKey: ['session'] });
+    },
     onError: () => showToast('登录失败，请检查用户名或密码', 'error'),
   });
 
-  if (session.data?.authenticated || session.data?.auth_enabled === false) return <Navigate to="/" replace />;
+  useEffect(() => {
+    if (session.data?.authenticated || session.data?.auth_enabled === false) {
+      navigate(target, { replace: true });
+    }
+  }, [navigate, session.data?.auth_enabled, session.data?.authenticated, target]);
 
   return (
     <div className="login-screen">

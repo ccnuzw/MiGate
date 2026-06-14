@@ -39,6 +39,7 @@ export default function AppLayout() {
   const { showToast } = useToast();
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'light');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
   const version = useQuery({ queryKey: ['version'], queryFn: api.version, staleTime: 10 * 60_000 });
   const logout = useMutation({
@@ -55,7 +56,7 @@ export default function AppLayout() {
   };
 
   return (
-    <div className={clsx('min-h-screen bg-panel-bg text-panel-text', sidebarOpen && 'sidebar-open')}>
+    <div className={clsx('min-h-screen bg-panel-bg text-panel-text', sidebarOpen && 'sidebar-open', sidebarCollapsed && 'sidebar-collapsed')}>
       <div className="mobile-topbar">
         <button className="icon-button" onClick={() => setSidebarOpen(true)}>
           <ChevronRight className="h-5 w-5" />
@@ -63,12 +64,15 @@ export default function AppLayout() {
         <div className="font-semibold">MiGate</div>
       </div>
       <aside className="sidebar">
-        <div className="flex items-center justify-between px-4 py-4">
-          <div>
+        <div className="sidebar-header">
+          <div className="sidebar-brand-text">
             <div className="text-lg font-semibold tracking-normal">MiGate</div>
-          <div className="text-xs text-panel-muted">{t('singleBinaryPanel')}</div>
+            <div className="text-xs text-panel-muted">{t('singleBinaryPanel')}</div>
           </div>
-          <button className="icon-button md:hidden" onClick={() => setSidebarOpen(false)}>
+          <button className="icon-button desktop-sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)} title={sidebarCollapsed ? '展开菜单' : '折叠菜单'}>
+            {sidebarCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-5 w-5" />}
+          </button>
+          <button className="icon-button mobile-sidebar-close" onClick={() => setSidebarOpen(false)} title="关闭菜单">
             <ChevronLeft className="h-5 w-5" />
           </button>
         </div>
@@ -84,20 +88,20 @@ export default function AppLayout() {
                 onClick={() => setSidebarOpen(false)}
               >
                 <Icon className="h-4 w-4" />
-                <span>{t(item.key)}</span>
+                <span className="nav-link-label">{t(item.key)}</span>
               </NavLink>
             );
           })}
         </nav>
         <div className="mt-auto border-t border-panel-line p-3">
-          <div className="rounded-lg bg-panel-soft p-3">
+          <div className="sidebar-footer-card rounded-lg bg-panel-soft p-3">
             <div className="flex items-center gap-2 text-sm font-medium">
               <GitBranch className="h-4 w-4" />
-              <span className="truncate">{version.data?.version || 'dev'}</span>
+              <span className="sidebar-footer-text truncate">{version.data?.version || 'dev'}</span>
             </div>
-            <div className="mt-2 truncate text-xs text-panel-muted">{session.data?.username || t('notLoggedIn')}</div>
+            <div className="sidebar-footer-text mt-2 truncate text-xs text-panel-muted">{session.data?.username || t('notLoggedIn')}</div>
           </div>
-          <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="sidebar-actions mt-3 grid grid-cols-3 gap-2">
             <button className="icon-button h-9" onClick={toggleTheme} title="主题切换">
               {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>

@@ -122,12 +122,18 @@ More details: `docs/install.md`.
 The WebUI source lives in `web/` and builds into `internal/web/static/dist`, which is embedded into the Go binary.
 
 ```bash
+npm run dev        # start local Go API and Vite WebUI for manual testing
 make web-install   # install frontend dependencies
 make web-dev       # start Vite dev server
 make web-build     # build embedded frontend dist
 make go-build      # build final migate binary
 make test          # run frontend and Go tests
 ```
+
+`npm run dev` creates a local `.dev/panel.json` and `.dev/migate-dev.db`, starts
+the backend on `http://127.0.0.1:9999`, and starts the WebUI on
+`http://127.0.0.1:5173/panel/`. The default local login is
+`admin` / `admin123`.
 
 Node/npm are only build-time tools for contributors and release automation. The one-click installer and VPS runtime continue to use the Go single binary only.
 

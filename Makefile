@@ -1,4 +1,7 @@
-.PHONY: web-install web-dev web-build go-build test test-go test-web check
+.PHONY: dev web-install web-dev web-build go-build test test-go test-web check
+
+dev:
+	./scripts/dev.sh
 
 web-install:
 	cd web && npm install

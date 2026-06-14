@@ -55,7 +55,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/singbox/validate", singboxValidateHandler(cfg.store))
 	mux.HandleFunc("/api/singbox/install", coreInstallHandler("singbox"))
 	mux.HandleFunc("/api/singbox/uninstall", coreUninstallHandler("singbox"))
-	mux.HandleFunc("/api/singbox/config", singboxConfigHandler())
+	mux.HandleFunc("/api/singbox/config", singboxConfigHandler(cfg.store))
 	mux.HandleFunc("/api/singbox/version", singboxVersionHandler())
 	mux.HandleFunc("/api/singbox/logs", singboxLogsHandler())
 	mux.HandleFunc("/sub/", subscriptionHandler(&cfg))

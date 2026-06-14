@@ -7,12 +7,12 @@ export default {
     extend: {
       colors: {
         panel: {
-          bg: 'rgb(var(--bg) / <alpha-value>)',
-          surface: 'rgb(var(--surface) / <alpha-value>)',
-          muted: 'rgb(var(--muted) / <alpha-value>)',
-          line: 'rgb(var(--line) / <alpha-value>)',
-          text: 'rgb(var(--text) / <alpha-value>)',
-          soft: 'rgb(var(--soft) / <alpha-value>)',
+          bg: 'rgb(var(--bg))',
+          surface: 'rgb(var(--surface))',
+          muted: 'rgb(var(--muted))',
+          line: 'rgb(var(--line))',
+          text: 'rgb(var(--text))',
+          soft: 'rgb(var(--soft))',
         },
       },
       boxShadow: {

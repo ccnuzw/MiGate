@@ -169,7 +169,7 @@ func tryApplySingbox(ctx context.Context, store Store) error {
 }
 
 // singboxConfigHandler returns the current sing-box config JSON.
-func singboxConfigHandler() http.HandlerFunc {
+func singboxConfigHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -178,6 +178,15 @@ func singboxConfigHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		data, err := os.ReadFile(singbox.DefaultConfigPath)
 		if err != nil {
+			if os.IsNotExist(err) && store != nil {
+				inbounds, listErr := store.ListInbounds(r.Context())
+				if listErr != nil {
+					writeJSONError(w, http.StatusInternalServerError, "list_failed", map[string]interface{}{"detail": listErr.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, singbox.BuildConfig(inbounds))
+				return
+			}
 			writeJSONError(w, http.StatusNotFound, "read_failed", map[string]interface{}{"detail": err.Error()})
 			return
 		}

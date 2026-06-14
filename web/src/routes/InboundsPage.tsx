@@ -410,11 +410,13 @@ function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; 
 
 function ClientModal({ inbound, client, onClose, onSaved }: { inbound: Inbound | null; client?: Client; onClose: () => void; onSaved: () => void }) {
   const { showToast } = useToast();
+  const values = useMemo(
+    () => (inbound ? clientFormValues(inbound, client) : undefined),
+    [client, inbound],
+  );
   const form = useForm<ClientInput, unknown, ClientValues>({
     resolver: zodResolver(clientSchema),
-    values: inbound
-      ? { email: client?.email || '', uuid: client?.uuid || defaultClientCredential(inbound.protocol), enabled: client?.enabled ?? true, traffic_limit: client?.traffic_limit || 0, expiry_at: client?.expiry_at || 0 }
-      : undefined,
+    values,
   });
   const save = useMutation({
     mutationFn: (values: ClientValues) => (client ? api.updateClient(inbound!.id, client.id, { ...client, ...values }) : api.createClient(inbound!.id, values)),
@@ -529,6 +531,16 @@ function mergeClientTraffic(inbound: Inbound, client: Client): Client {
     xray_down: Number(live?.xray_down ?? client.xray_down ?? 0),
     traffic_stats_source: live?.source || client.traffic_stats_source || inbound.traffic_stats_source,
     realtime_stats_source: live?.realtime_source || client.realtime_stats_source || inbound.realtime_stats_source,
+  };
+}
+
+export function clientFormValues(inbound: Inbound, client?: Client): ClientValues {
+  return {
+    email: client?.email || '',
+    uuid: client?.uuid || defaultClientCredential(inbound.protocol),
+    enabled: client?.enabled ?? true,
+    traffic_limit: client?.traffic_limit || 0,
+    expiry_at: client?.expiry_at || 0,
   };
 }
 

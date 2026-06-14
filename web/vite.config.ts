@@ -32,6 +32,8 @@ export default defineConfig({
     proxy: {
       '/api': 'http://127.0.0.1:9999',
       '/sub': 'http://127.0.0.1:9999',
+      '/panel/api': 'http://127.0.0.1:9999',
+      '/panel/sub': 'http://127.0.0.1:9999',
     },
   },
 });

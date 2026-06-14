@@ -98,18 +98,20 @@ export function Modal({
   children,
   onClose,
   footer,
+  panelClassName,
 }: {
   open: boolean;
   title: string;
   children: React.ReactNode;
   onClose: () => void;
   footer?: React.ReactNode;
+  panelClassName?: string;
 }) {
   const { text } = useI18n();
   if (!open) return null;
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-panel">
+      <div className={clsx('modal-panel', panelClassName)}>
         <div className="flex items-center justify-between gap-4 border-b border-panel-line pb-3">
           <h2 className="text-base font-semibold text-panel-text">{text(title)}</h2>
           <button className="icon-button" onClick={onClose}>
