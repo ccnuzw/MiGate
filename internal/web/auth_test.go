@@ -56,7 +56,7 @@ func TestAuthRemovedLegacyRoutesAreNotPublicAllowlisted(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/"+join("vpn", "gate")+"/servers", nil)
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("removed legacy route should not remain public allowlisted, got %d", response.Code)
+		t.Fatalf("removed route should not remain public allowlisted, got %d", response.Code)
 	}
 }
 

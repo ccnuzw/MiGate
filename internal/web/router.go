@@ -240,6 +240,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/routing-rules", routingRulesHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/routing-rules/", routingRuleChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/stats", statsHandler(cfg.store, cfg.statsClient))
+	mux.HandleFunc("/api/dashboard/summary", dashboardSummaryHandler(cfg.store, cfg.statsClient))
 	mux.HandleFunc("/api/system/resources", systemResourcesHandler())
 	mux.HandleFunc("/api/xray/config", xrayConfigHandler(cfg.store))
 	mux.HandleFunc("/api/xray/validate", xrayValidateHandler(cfg.store))
@@ -329,12 +330,12 @@ func spaHandler(basePath string) http.HandlerFunc {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		index, err := static.ReadIndex()
 		if err != nil {
-			http.Error(w, "web assets are not built", http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "web_assets_not_built")
 			return
 		}
 		baseJSON, _ := json.Marshal(basePath)
@@ -346,7 +347,7 @@ func spaHandler(basePath string) http.HandlerFunc {
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -359,7 +360,7 @@ func outboundsHandler(store Store, ctrl XrayController) http.HandlerFunc {
 		case http.MethodGet:
 			outbounds, err := store.ListOutbounds(r.Context())
 			if err != nil {
-				http.Error(w, `{"error":"list_outbounds_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed")
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -367,12 +368,12 @@ func outboundsHandler(store Store, ctrl XrayController) http.HandlerFunc {
 		case http.MethodPost:
 			var params db.CreateOutboundParams
 			if err := decodeJSONBody(r, &params); err != nil {
-				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
 			outbound, err := store.CreateOutbound(r.Context(), params)
 			if err != nil {
-				http.Error(w, `{"error":"create_outbound_failed"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "create_outbound_failed")
 				return
 			}
 			applyResult := ctrl.Apply(r.Context())
@@ -381,7 +382,7 @@ func outboundsHandler(store Store, ctrl XrayController) http.HandlerFunc {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"outbound": outbound, "xray": applyResult})
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 	}
 }
@@ -683,7 +684,7 @@ func socks5PoolRegions(proxies []socks5PoolProxy) []socks5PoolRegion {
 
 func socks5PoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
 	proxies, updatedAt, cacheStatus, err := cachedSocks5Pool(r.Context(), cfg)
@@ -708,7 +709,7 @@ func socks5PoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Req
 
 func socks5PoolPingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
 	var req struct {
@@ -716,12 +717,12 @@ func socks5PoolPingHandler(w http.ResponseWriter, r *http.Request) {
 		Port    int    `json:"port"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	address := strings.TrimSpace(req.Address)
 	if address == "" || req.Port <= 0 || req.Port > 65535 {
-		http.Error(w, `{"error":"invalid_proxy"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_proxy")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -730,7 +731,7 @@ func socks5PoolPingHandler(w http.ResponseWriter, r *http.Request) {
 
 func socks5PoolImportHandler(store Store, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
 	var req struct {
@@ -743,12 +744,12 @@ func socks5PoolImportHandler(store Store, ctrl XrayController, w http.ResponseWr
 		Organization string `json:"organization"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	address := strings.TrimSpace(req.Address)
 	if address == "" || req.Port <= 0 || req.Port > 65535 {
-		http.Error(w, `{"error":"invalid_proxy"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_proxy")
 		return
 	}
 	remarkParts := []string{}
@@ -772,7 +773,7 @@ func socks5PoolImportHandler(store Store, ctrl XrayController, w http.ResponseWr
 		Password: req.Password,
 	})
 	if err != nil {
-		http.Error(w, `{"error":"create_outbound_failed"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "create_outbound_failed")
 		return
 	}
 	applyResult := ctrl.Apply(r.Context())
@@ -803,14 +804,14 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 		if path == "reorder" {
 			// ...existing reorder handler...
 			if r.Method != http.MethodPost {
-				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+				writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 				return
 			}
 			var req struct {
 				IDs []int64 `json:"ids"`
 			}
 			if err := decodeJSONBody(r, &req); err != nil || len(req.IDs) == 0 {
-				http.Error(w, `{"error":"invalid_payload"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_payload")
 				return
 			}
 			if err := store.ReorderOutbounds(r.Context(), req.IDs); err != nil {
@@ -825,12 +826,12 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 		// Handle /api/outbounds/speedtest-all
 		if path == "speedtest-all" {
 			if r.Method != http.MethodPost {
-				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+				writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 				return
 			}
 			obs, err := store.ListOutbounds(r.Context())
 			if err != nil {
-				http.Error(w, `{"error":"load_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "load_failed")
 				return
 			}
 			results := make(map[int64]map[string]interface{})
@@ -856,18 +857,18 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		if strings.HasSuffix(path, "/ping") {
 			if r.Method != http.MethodGet {
-				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+				writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 				return
 			}
 			idStr := strings.TrimSuffix(path, "/ping")
 			obID, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
 			if err != nil {
-				http.Error(w, `{"error":"invalid_id"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_id")
 				return
 			}
 			outbounds, err := store.ListOutbounds(r.Context())
 			if err != nil {
-				http.Error(w, `{"error":"list_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
 			var target *db.Outbound
@@ -890,22 +891,22 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 		idStr := strings.TrimSuffix(path, "/")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
-			http.Error(w, `{"error":"invalid_id"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid_id")
 			return
 		}
 		switch r.Method {
 		case http.MethodPut:
 			var params db.UpdateOutboundParams
 			if err := decodeJSONBody(r, &params); err != nil {
-				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
 			outbound, err := store.UpdateOutbound(r.Context(), id, params)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
-					http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+					writeJSONError(w, http.StatusNotFound, "not_found")
 				} else {
-					http.Error(w, `{"error":"update_failed"}`, http.StatusBadRequest)
+					writeJSONError(w, http.StatusBadRequest, "update_failed")
 				}
 				return
 			}
@@ -917,16 +918,16 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			err := store.DeleteOutbound(r.Context(), id)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
-					http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+					writeJSONError(w, http.StatusNotFound, "not_found")
 				} else {
-					http.Error(w, `{"error":"delete_failed"}`, http.StatusInternalServerError)
+					writeJSONError(w, http.StatusInternalServerError, "delete_failed")
 				}
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 	}
 }
@@ -937,7 +938,7 @@ func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
 		case http.MethodGet:
 			rules, err := store.ListRoutingRules(r.Context())
 			if err != nil {
-				http.Error(w, `{"error":"list_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -945,12 +946,12 @@ func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
 		case http.MethodPost:
 			var params db.CreateRoutingRuleParams
 			if err := decodeJSONBody(r, &params); err != nil {
-				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
 			rule, err := store.CreateRoutingRule(r.Context(), params)
 			if err != nil {
-				http.Error(w, `{"error":"create_failed"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "create_failed")
 				return
 			}
 			applyResult := ctrl.Apply(r.Context())
@@ -959,7 +960,7 @@ func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"rule": rule, "xray": applyResult})
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 	}
 }
@@ -969,14 +970,14 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 		path := strings.TrimPrefix(r.URL.Path, "/api/routing-rules/")
 		if path == "reorder" {
 			if r.Method != http.MethodPost {
-				http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+				writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 				return
 			}
 			var req struct {
 				IDs []int64 `json:"ids"`
 			}
 			if err := decodeJSONBody(r, &req); err != nil || len(req.IDs) == 0 {
-				http.Error(w, `{"error":"invalid_payload"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_payload")
 				return
 			}
 			if err := store.ReorderRoutingRules(r.Context(), req.IDs); err != nil {
@@ -991,22 +992,22 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 		idStr := strings.TrimSuffix(path, "/")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
-			http.Error(w, `{"error":"invalid_id"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid_id")
 			return
 		}
 		switch r.Method {
 		case http.MethodPut:
 			var params db.UpdateRoutingRuleParams
 			if err := decodeJSONBody(r, &params); err != nil {
-				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
 			rule, err := store.UpdateRoutingRule(r.Context(), id, params)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
-					http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+					writeJSONError(w, http.StatusNotFound, "not_found")
 				} else {
-					http.Error(w, `{"error":"update_failed"}`, http.StatusBadRequest)
+					writeJSONError(w, http.StatusBadRequest, "update_failed")
 				}
 				return
 			}
@@ -1018,9 +1019,9 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 			err := store.DeleteRoutingRule(r.Context(), id)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
-					http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+					writeJSONError(w, http.StatusNotFound, "not_found")
 				} else {
-					http.Error(w, `{"error":"delete_failed"}`, http.StatusInternalServerError)
+					writeJSONError(w, http.StatusInternalServerError, "delete_failed")
 				}
 				return
 			}
@@ -1029,9 +1030,9 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "deleted", "xray": applyResult})
 		case http.MethodGet:
-			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, "not_found")
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 	}
 }
@@ -1082,10 +1083,30 @@ func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xr
 
 func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		if store == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+			return
+		}
 		ctx := r.Context()
-		inb, _ := store.ListInbounds(ctx)
-		obs, _ := store.ListOutbounds(ctx)
-		rules, _ := store.ListRoutingRules(ctx)
+		inb, err := store.ListInbounds(ctx)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed", map[string]interface{}{"detail": err.Error()})
+			return
+		}
+		obs, err := store.ListOutbounds(ctx)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed", map[string]interface{}{"detail": err.Error()})
+			return
+		}
+		rules, err := store.ListRoutingRules(ctx)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "list_routing_rules_failed", map[string]interface{}{"detail": err.Error()})
+			return
+		}
 		var clientCount int
 		for _, in := range inb {
 			clientCount += len(in.Clients)
@@ -1156,6 +1177,123 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 	}
 }
 
+func dashboardSummaryHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		if store == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+			return
+		}
+		summary, err := buildDashboardSummary(r.Context(), store, statsClient)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+	}
+}
+
+func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.StatsClient) (map[string]interface{}, error) {
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list_inbounds_failed")
+	}
+	outbounds, err := store.ListOutbounds(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list_outbounds_failed")
+	}
+	rules, err := store.ListRoutingRules(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list_routing_rules_failed")
+	}
+	now := time.Now().Unix()
+	clientCount := 0
+	activeClients := 0
+	expiredClients := 0
+	limitedClients := 0
+	enabledInbounds := 0
+	protocols := map[string]int{}
+	trafficByInbound, trafficByClient := summarizeTraffic(ctx, inbounds, statsClient)
+	var totalUp int64
+	var totalDown int64
+	var realtimeUp int64
+	var realtimeDown int64
+	for _, inbound := range inbounds {
+		if inbound.Enabled {
+			enabledInbounds++
+		}
+		if inbound.Protocol != "" {
+			protocols[inbound.Protocol]++
+		}
+		if traffic, ok := trafficByInbound[inbound.ID]; ok {
+			totalUp += traffic.Up
+			totalDown += traffic.Down
+		}
+		for _, client := range inbound.Clients {
+			clientCount++
+			used := client.Up + client.Down
+			expired := client.ExpiryAt > 0 && client.ExpiryAt <= now
+			limited := client.TrafficLimit > 0 && used >= client.TrafficLimit
+			if expired {
+				expiredClients++
+			}
+			if limited {
+				limitedClients++
+			}
+			if client.Enabled && !expired && !limited {
+				activeClients++
+			}
+			if traffic, ok := trafficByClient[client.ID]; ok {
+				realtimeUp += traffic.XrayUp
+				realtimeDown += traffic.XrayDown
+			}
+		}
+	}
+	enabledOutbounds := 0
+	for _, outbound := range outbounds {
+		if outbound.Enabled {
+			enabledOutbounds++
+		}
+	}
+	enabledRules := 0
+	for _, rule := range rules {
+		if rule.Enabled {
+			enabledRules++
+		}
+	}
+	return map[string]interface{}{
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"counts": map[string]int{
+			"inbounds":          len(inbounds),
+			"inbounds_enabled":  enabledInbounds,
+			"clients":           clientCount,
+			"clients_active":    activeClients,
+			"clients_expired":   expiredClients,
+			"clients_limited":   limitedClients,
+			"outbounds":         len(outbounds),
+			"outbounds_enabled": enabledOutbounds,
+			"routing_rules":     len(rules),
+			"routing_enabled":   enabledRules,
+		},
+		"traffic": map[string]int64{
+			"up":            totalUp,
+			"down":          totalDown,
+			"total":         totalUp + totalDown,
+			"xray_up":       realtimeUp,
+			"xray_down":     realtimeDown,
+			"xray_realtime": realtimeUp + realtimeDown,
+		},
+		"protocols": protocols,
+		"validation": map[string]configValidationResult{
+			"xray":    validateXrayConfig(ctx, store),
+			"singbox": validateSingboxConfig(ctx, store),
+		},
+	}, nil
+}
+
 type cpuSample struct {
 	Idle  uint64
 	Total uint64
@@ -1164,7 +1302,7 @@ type cpuSample struct {
 func systemResourcesHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		memTotal, memUsed, memPercent := readMemoryUsage()
@@ -1306,7 +1444,7 @@ func inboundsHandler(store Store, ctrl XrayController, statsClient xray.StatsCli
 			applyXrayAsync(ctrl)
 			applySingboxAsync(store)
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 	}
 }
@@ -1329,15 +1467,25 @@ func applySingboxAsync(store Store) {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code string, fields ...map[string]interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
 	payload := map[string]interface{}{"error": code}
 	for _, extra := range fields {
 		for k, v := range extra {
 			payload[k] = v
 		}
 	}
+	writeJSON(w, status, payload)
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+	}
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func methodNotAllowed(w http.ResponseWriter) {
+	writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 }
 
 // decodeJSONBody wraps r.Body with a 512KB MaxBytesReader and decodes JSON
@@ -1362,7 +1510,7 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 	if store != nil {
 		loaded, err := store.ListInbounds(r.Context())
 		if err != nil {
-			http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 			return
 		}
 		deriveRealityPublicKeys(loaded)
@@ -1394,12 +1542,12 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 
 func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 	if store == nil {
-		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
 	}
 	var payload db.CreateInboundParams
 	if err := decodeJSONBody(r, &payload); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	// Auto-generate REALITY private key if missing
@@ -1423,7 +1571,7 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) {
 	}
 	created, err := store.CreateInbound(r.Context(), payload)
 	if err != nil {
-		http.Error(w, `{"error":"unsupported_protocol"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "unsupported_protocol")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1525,11 +1673,11 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				if store == nil {
-					http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+					writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 					return
 				}
 				if err := store.DeleteInbound(r.Context(), inboundID); err != nil {
-					http.Error(w, `{"error":"inbound_not_found"}`, http.StatusNotFound)
+					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -1544,11 +1692,11 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					return
 				}
 				if store == nil {
-					http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+					writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 					return
 				}
 				if err := store.DeleteClient(r.Context(), clientID); err != nil {
-					http.Error(w, `{"error":"client_not_found"}`, http.StatusNotFound)
+					writeJSONError(w, http.StatusNotFound, "client_not_found")
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -1559,18 +1707,18 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 				http.NotFound(w, r)
 			}
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 	}
 }
 
 func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) {
 	if store == nil {
-		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
 	}
 	if !inboundExists(r.Context(), store, inboundID) {
-		http.Error(w, `{"error":"inbound_not_found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 		return
 	}
 	var payload struct {
@@ -1580,7 +1728,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 		ExpiryAt     int64  `json:"expiry_at"`
 	}
 	if err := decodeJSONBody(r, &payload); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
@@ -1591,7 +1739,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 			})
 			return
 		}
-		http.Error(w, `{"error":"create_client_failed"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "create_client_failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1601,19 +1749,19 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 
 func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) {
 	if store == nil {
-		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
 	}
 	var payload struct {
 		Enabled bool `json:"enabled"`
 	}
 	if err := decodeJSONBody(r, &payload); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	updated, err := store.SetInboundEnabled(r.Context(), inboundID, payload.Enabled)
 	if err != nil {
-		http.Error(w, `{"error":"inbound_not_found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1622,19 +1770,19 @@ func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, in
 
 func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64, clientID int64) {
 	if store == nil {
-		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
 	}
 	var payload struct {
 		Enabled bool `json:"enabled"`
 	}
 	if err := decodeJSONBody(r, &payload); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	updated, err := store.SetClientEnabled(r.Context(), inboundID, clientID, payload.Enabled)
 	if err != nil {
-		http.Error(w, `{"error":"client_not_found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "client_not_found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1656,12 +1804,12 @@ func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
 
 func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) {
 	if store == nil {
-		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
 	}
 	var payload db.UpdateInboundParams
 	if err := decodeJSONBody(r, &payload); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	// Auto-generate REALITY private key if switching to reality without one
@@ -1684,7 +1832,7 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 	}
 	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)
 	if err != nil {
-		http.Error(w, `{"error":"update_inbound_failed"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "update_inbound_failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1693,12 +1841,12 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 
 func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, inboundID, clientID int64) {
 	if store == nil {
-		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
 	}
 	updated, err := store.ResetClientTraffic(r.Context(), clientID)
 	if err != nil {
-		http.Error(w, `{"error":"reset_traffic_failed"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "reset_traffic_failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1707,12 +1855,12 @@ func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, inb
 
 func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID int64) {
 	if store == nil {
-		http.Error(w, `{"error":"store_unavailable"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
 	}
 	var payload db.UpdateClientParams
 	if err := decodeJSONBody(r, &payload); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
 	updated, err := store.UpdateClient(r.Context(), clientID, payload)
@@ -1723,7 +1871,7 @@ func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID 
 			})
 			return
 		}
-		http.Error(w, `{"error":"update_client_failed"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "update_client_failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1733,7 +1881,7 @@ func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID 
 func xrayConfigHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		inbounds := []db.Inbound{}
@@ -1752,7 +1900,7 @@ func xrayConfigHandler(store Store) http.HandlerFunc {
 		}
 		config, err := xray.BuildConfigWithOutbounds(inbounds, outbounds, rules)
 		if err != nil {
-			http.Error(w, `{"error":"build_xray_config_failed"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "build_xray_config_failed")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1763,7 +1911,7 @@ func xrayConfigHandler(store Store) http.HandlerFunc {
 func xrayStatusHandler(controller XrayController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		if controller == nil {
@@ -1787,7 +1935,7 @@ type configValidationResult struct {
 func xrayValidateHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		result := validateXrayConfig(r.Context(), store)
@@ -1850,7 +1998,7 @@ func validateXrayConfig(ctx context.Context, store Store) configValidationResult
 func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		var payload struct {
@@ -1858,13 +2006,11 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 			AllowSystemChanges bool `json:"allow_system_changes"`
 		}
 		if err := decodeJSONBody(r, &payload); err != nil {
-			http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid_json")
 			return
 		}
 		if !payload.Confirm || !payload.AllowSystemChanges {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "confirmation_required", "commands_executed": []string{}})
+			writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{"commands_executed": []string{}})
 			return
 		}
 		if controller == nil {
@@ -2026,10 +2172,10 @@ sing-box version | head -1`
 		status := "installed"
 		if err != nil {
 			status = "failed"
-			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
 	}
 }
 
@@ -2073,17 +2219,17 @@ printf 'sing-box removed\n'`
 		status := "uninstalled"
 		if err != nil {
 			status = "failed"
-			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
 	}
 }
 
 func xrayLogsHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		lines := r.URL.Query().Get("lines")
@@ -2113,7 +2259,7 @@ func xrayLogsHandler() http.HandlerFunc {
 func xrayVersionHandler(controller XrayController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		ver := controller.Version(r.Context())
@@ -2125,7 +2271,7 @@ func xrayVersionHandler(controller XrayController) http.HandlerFunc {
 func certStatusHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		domain := ""
@@ -2213,7 +2359,7 @@ func installACMESh(email string) (string, error) {
 func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		var req struct {
@@ -2221,36 +2367,30 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			Email  string `json:"email"`
 		}
 		if err := decodeJSONBody(r, &req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_json"})
+			writeJSONError(w, http.StatusBadRequest, "invalid_json")
 			return
 		}
 		if req.Domain == "" || req.Email == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "domain_and_email_required"})
+			writeJSONError(w, http.StatusBadRequest, "domain_and_email_required")
 			return
 		}
 		if !validDomain.MatchString(req.Domain) {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_domain"})
+			writeJSONError(w, http.StatusBadRequest, "invalid_domain")
 			return
 		}
 		if !validEmail.MatchString(req.Email) {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_email"})
+			writeJSONError(w, http.StatusBadRequest, "invalid_email")
 			return
 		}
 		if cfg.configDir == "" {
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "cert_not_available"})
+			writeJSONError(w, http.StatusNotFound, "cert_not_available")
 			return
 		}
 
 		// Issue cert via acme.sh directly to /etc/xray/certs/
 		certDir := "/etc/xray/certs"
 		if err := os.MkdirAll(certDir, 0755); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "mkdir_cert_dir_failed"})
+			writeJSONError(w, http.StatusInternalServerError, "mkdir_cert_dir_failed")
 			return
 		}
 
@@ -2262,11 +2402,7 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 		if _, err := exec.LookPath("acme.sh"); err != nil {
 			installOut, err := installACMESh(req.Email)
 			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"error":  "install_acme_failed",
-					"detail": installOut,
-				})
+				writeJSONError(w, http.StatusInternalServerError, "install_acme_failed", map[string]interface{}{"detail": installOut})
 				return
 			}
 		}
@@ -2280,11 +2416,7 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			"--reloadcmd", "systemctl restart xray || true",
 		).CombinedOutput()
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":  "issue_cert_failed",
-				"detail": string(out),
-			})
+			writeJSONError(w, http.StatusInternalServerError, "issue_cert_failed", map[string]interface{}{"detail": string(out)})
 			return
 		}
 
@@ -2295,27 +2427,23 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 		configPath := cfg.configDir + "/panel.json"
 		existing, err := os.ReadFile(configPath)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "read_panel_config_failed"})
+			writeJSONError(w, http.StatusInternalServerError, "read_panel_config_failed")
 			return
 		}
 		var raw map[string]interface{}
 		if err := json.Unmarshal(existing, &raw); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "parse_panel_config_failed"})
+			writeJSONError(w, http.StatusInternalServerError, "parse_panel_config_failed")
 			return
 		}
 		raw["cert_domain"] = req.Domain
 		raw["cert_email"] = req.Email
 		updated, err := json.MarshalIndent(raw, "", "  ")
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "serialize_failed"})
+			writeJSONError(w, http.StatusInternalServerError, "serialize_failed")
 			return
 		}
 		if err := os.WriteFile(configPath, updated, 0o600); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "write_panel_config_failed"})
+			writeJSONError(w, http.StatusInternalServerError, "write_panel_config_failed")
 			return
 		}
 
@@ -2332,7 +2460,7 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 func versionHandler(version string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		if version == "" {
@@ -2351,7 +2479,7 @@ func updateCheckHandler(cfg *routerConfig) http.HandlerFunc {
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		current := strings.TrimSpace(cfg.version)
@@ -2414,7 +2542,7 @@ func updateCheckHandler(cfg *routerConfig) http.HandlerFunc {
 func updateStatusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		status := globalUpdateState.snapshot()
@@ -2426,7 +2554,7 @@ func updateStatusHandler() http.HandlerFunc {
 func updateHandler(version string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		current := strings.TrimSpace(version)
@@ -2435,9 +2563,7 @@ func updateHandler(version string) http.HandlerFunc {
 		}
 		status, started := globalUpdateState.start(current)
 		if !started {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(status)
+			writeJSON(w, http.StatusConflict, status)
 			return
 		}
 		command := "/usr/local/bin/migate-install --update"
@@ -2506,8 +2632,7 @@ func (s *updateRuntimeState) snapshot() updateRuntimeStatus {
 func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if cfg.configDir == "" {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":"settings_not_available"}`))
+			writeJSONError(w, http.StatusNotFound, "settings_not_available")
 			return
 		}
 		configPath := cfg.configDir + "/panel.json"
@@ -2515,13 +2640,13 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 		case http.MethodGet:
 			data, err := os.ReadFile(configPath)
 			if err != nil {
-				http.Error(w, `{"error":"read_config_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "read_config_failed")
 				return
 			}
 			// Mask password for GET
 			var raw map[string]interface{}
 			if err := json.Unmarshal(data, &raw); err != nil {
-				http.Error(w, `{"error":"parse_config_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "parse_config_failed")
 				return
 			}
 			if _, exists := raw["panel_password"]; exists {
@@ -2533,7 +2658,7 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 		case http.MethodPut:
 			var updated map[string]interface{}
 			if err := decodeJSONBody(r, &updated); err != nil {
-				http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
 			// Read existing to preserve password if not provided
@@ -2556,17 +2681,17 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 			}
 			data, err := json.MarshalIndent(updated, "", "  ")
 			if err != nil {
-				http.Error(w, `{"error":"serialize_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "serialize_failed")
 				return
 			}
 			if err := os.WriteFile(configPath, data, 0o600); err != nil {
-				http.Error(w, `{"error":"write_config_failed"}`, http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "write_config_failed")
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 	}
 }
@@ -2578,7 +2703,7 @@ func runningUnderGoTest() bool {
 func restartHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -2603,7 +2728,7 @@ func restartHandler() http.HandlerFunc {
 func serviceStatusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -2629,7 +2754,7 @@ func serviceStatusHandler() http.HandlerFunc {
 func subscriptionHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		if store == nil {
@@ -2643,7 +2768,7 @@ func subscriptionHandler(store Store) http.HandlerFunc {
 		}
 		inbounds, err := store.ListInbounds(r.Context())
 		if err != nil {
-			http.Error(w, `{"error":"list_inbounds_failed"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 			return
 		}
 		deriveRealityPublicKeys(inbounds)
@@ -2829,7 +2954,7 @@ func subscriptionHost(host string) string {
 func singboxStatusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -2861,12 +2986,12 @@ func singboxStatusHandler() http.HandlerFunc {
 func singboxApplyHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
 
 		if !singbox.IsInstalled() {
-			http.Error(w, `{"error":"singbox_not_installed"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "singbox_not_installed")
 			return
 		}
 
@@ -2909,17 +3034,17 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 		}
 		if applyErr != nil {
 			result["error"] = applyErr.Error()
-			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, result)
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(result)
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 
 func singboxValidateHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodGet {
-			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
 		result := validateSingboxConfig(r.Context(), store)
@@ -2985,7 +3110,7 @@ func tryApplySingbox(ctx context.Context, store Store) error {
 func singboxConfigHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -3010,7 +3135,7 @@ func singboxConfigHandler() http.HandlerFunc {
 func singboxVersionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -3031,7 +3156,7 @@ func singboxVersionHandler() http.HandlerFunc {
 func singboxLogsHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		lines := r.URL.Query().Get("lines")

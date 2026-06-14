@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -57,18 +56,14 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 		// Check session cookie
 		cookie, err := r.Cookie("migate_session")
 		if err != nil || !validateSessionToken(cookie.Value, cfg.sessionSecret) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		// Check if session token has been revoked
 		if cfg.store != nil {
 			revoked, err := cfg.store.IsBlacklisted(r.Context(), hashToken(cookie.Value))
 			if err == nil && revoked {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": "session_revoked"})
+				writeJSONError(w, http.StatusUnauthorized, "session_revoked")
 				return
 			}
 			// Update last_used timestamp
@@ -124,7 +119,7 @@ func signMessage(msg string, secret []byte) string {
 func loginHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		var req struct {
@@ -132,15 +127,11 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			Password string `json:"password"`
 		}
 		if err := decodeJSONBody(r, &req); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_request"})
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
 		if !constantTimeStringEqual(req.Username, cfg.authUsername) || !constantTimeStringEqual(req.Password, cfg.authPassword) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_credentials"})
+			writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")
 			return
 		}
 		token := createSessionToken(req.Username, cfg.sessionSecret)
@@ -162,8 +153,7 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			_ = cfg.store.AddToBlacklist(r.Context(), hashToken(token), time.Now().Add(7*24*time.Hour), false)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
 
@@ -176,7 +166,7 @@ func constantTimeStringEqual(a, b string) bool {
 func logoutHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		cookiePath := cfg.basePath
@@ -198,8 +188,7 @@ func logoutHandler(cfg *routerConfig) http.HandlerFunc {
 			HttpOnly: true,
 			MaxAge:   -1,
 		})
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
 	}
 }
 
@@ -208,7 +197,7 @@ func logoutHandler(cfg *routerConfig) http.HandlerFunc {
 func sessionHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		resp := map[string]interface{}{
@@ -236,8 +225,7 @@ func sessionHandler(cfg *routerConfig) http.HandlerFunc {
 			}
 			resp["revoked"] = revoked
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -245,19 +233,16 @@ func sessionHandler(cfg *routerConfig) http.HandlerFunc {
 func sessionsListHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		if cfg.store == nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]interface{}{})
+			writeJSON(w, http.StatusOK, []interface{}{})
 			return
 		}
 		sessions, err := cfg.store.ListActiveSessions(r.Context())
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "list_sessions_failed"})
+			writeJSONError(w, http.StatusInternalServerError, "list_sessions_failed")
 			return
 		}
 		// Return a safe representation: only the hash prefix, created_at, last_used
@@ -282,8 +267,7 @@ func sessionsListHandler(cfg *routerConfig) http.HandlerFunc {
 				ExpiresAt: s.ExpiresAt,
 			})
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(result)
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 
@@ -291,31 +275,24 @@ func sessionsListHandler(cfg *routerConfig) http.HandlerFunc {
 func sessionRevokeHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 			return
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 		path = strings.TrimSuffix(path, "/")
 		id, err := strconv.ParseInt(path, 10, 64)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_session_id"})
+			writeJSONError(w, http.StatusBadRequest, "invalid_session_id")
 			return
 		}
 		if cfg.store == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not_found"})
+			writeJSONError(w, http.StatusNotFound, "not_found")
 			return
 		}
 		if err := cfg.store.RevokeSession(r.Context(), id); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "session_not_found"})
+			writeJSONError(w, http.StatusNotFound, "session_not_found")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "revoked"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 	}
 }

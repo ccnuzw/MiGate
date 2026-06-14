@@ -17,7 +17,10 @@ Release builds run the frontend build first, then `go build` embeds `internal/we
 
 ## Current WebUI Scope
 
-The React panel is aligned with the legacy embedded Go panel as the functional baseline:
+The Vite + React panel is the only management interface. Go owns the API,
+subscription output, embedded static files, configuration generation, and
+system operations; the frontend owns screens, forms, validation feedback,
+navigation, theme, language, and operator interaction state.
 
 - Overview: server resources, inbound/client/outbound/routing counts, active/expired/limited client summary, total traffic, realtime traffic when Xray stats are available, Xray/sing-box status, manual refresh, request error notices, and recent config generation status.
 - Inbounds: list, search, sort, create, edit, delete, enable/disable, client management, reset traffic, subscription copy, and advanced fields for VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, and ShadowTLS.
@@ -29,18 +32,20 @@ The React panel is aligned with the legacy embedded Go panel as the functional b
 
 ## Routes
 
-The backend preserves API and subscription behavior:
+The backend keeps clear runtime boundaries:
 
 - `/api/*` is handled by Go API routes and never falls through to the SPA.
 - `/sub/*` remains public for client subscriptions.
 - `/assets/*` serves Vite static assets from the embedded dist.
-- `/`, `/login`, and other non-API paths fall back to `index.html`.
+- `/`, `/login`, and other non-API paths fall back to `index.html` for React routing.
+- `POST /login` is accepted as a compatibility login alias for deployments and tests that still post to the visible login URL; the React app uses `POST /api/login`.
 - `web_base_path` such as `/panel` is handled by Go before routing, so `/panel`, `/panel/login`, `/panel/assets/*`, `/panel/api/*`, and `/panel/sub/*` keep working.
 
 ## Web API Additions
 
 - `GET /api/xray/validate` builds the current Xray config from stored inbounds, outbounds, and routing rules without writing files, running core test commands, or restarting services. It returns `{target, valid, error, warnings, inbounds, outbounds, rules}`.
 - `GET /api/singbox/validate` builds and marshals the current sing-box config without writing files, running core check commands, or restarting services. It returns the same structured validation shape.
+- `GET /api/dashboard/summary` returns a read-only management summary for the React overview: inbound/client/outbound/routing counts, active/expired/limited clients, stored and realtime traffic totals, protocol distribution, and the current build-only validation results for Xray and sing-box.
 - Routing rules now persist and return `ip` and `rule_set` fields in addition to `inbound_tag`, `domain`, `protocol`, `outbound_tag`, and `enabled`. `rule_set` is currently stored as a reserved field and is not emitted into Xray config because the supported Xray rule fields are still `domain`, `ip`, `inboundTag`, `protocol`, and outbound routing targets.
 
 ## Development

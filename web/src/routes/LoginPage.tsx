@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { LockKeyhole } from 'lucide-react';
+import { basePath } from '../api/client';
 import { api } from '../api/endpoints';
 import { Field, useToast } from '../components/ui';
 
@@ -22,7 +23,7 @@ export default function LoginPage() {
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { username: 'admin', password: '' } });
   const login = useMutation({
     mutationFn: (values: FormValues) => api.login(values.username, values.password),
-    onSuccess: () => navigate(redirectTarget(location.state), { replace: true }),
+    onSuccess: () => navigate(redirectTarget(location), { replace: true }),
     onError: () => showToast('登录失败，请检查用户名或密码', 'error'),
   });
 
@@ -57,10 +58,30 @@ export default function LoginPage() {
   );
 }
 
-function redirectTarget(state: unknown): string {
-  const from = typeof state === 'object' && state && 'from' in state ? (state as { from?: { pathname?: string; search?: string } }).from : undefined;
+export function redirectTarget(location: ReturnType<typeof useLocation>): string {
+  const next = new URLSearchParams(location.search).get('next');
+  if (next && next.startsWith('/') && !next.startsWith('//')) {
+    const normalizedNext = stripRuntimeBasePath(next);
+    if (isSafeAppPath(normalizedNext) && !isLoginPath(normalizedNext)) return normalizedNext;
+  }
+  const from = typeof location.state === 'object' && location.state && 'from' in location.state ? (location.state as { from?: { pathname?: string; search?: string } }).from : undefined;
   const path = from?.pathname || '/';
   const search = from?.search || '';
-  if (path === '/login') return '/';
+  if (isLoginPath(path)) return '/';
   return `${path}${search}`;
+}
+
+export function stripRuntimeBasePath(path: string): string {
+  const base = basePath();
+  if (base && path === base) return '/';
+  if (base && path.startsWith(`${base}/`)) return path.slice(base.length) || '/';
+  return path;
+}
+
+function isLoginPath(path: string): boolean {
+  return path === '/login' || path.startsWith('/login/');
+}
+
+function isSafeAppPath(path: string): boolean {
+  return path.startsWith('/') && !path.startsWith('//');
 }

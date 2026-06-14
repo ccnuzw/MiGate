@@ -2,17 +2,15 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api } from '../api/endpoints';
+import type { DashboardSummary } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
 import { formatBytes, formatDuration, formatPercent, serviceLabel } from '../lib/format';
 
 export default function OverviewPage() {
   const visible = typeof document === 'undefined' || !document.hidden;
-  const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, refetchInterval: visible ? 15000 : false });
-  const outbounds = useQuery({ queryKey: ['outbounds'], queryFn: api.outbounds, refetchInterval: visible ? 30000 : false });
-  const rules = useQuery({ queryKey: ['routing-rules'], queryFn: api.routingRules, refetchInterval: visible ? 30000 : false });
+  const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false });
+  const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, refetchInterval: visible ? 30000 : false });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false });
-  const xrayValidate = useQuery({ queryKey: ['xray-validate'], queryFn: api.xrayValidate, refetchInterval: visible ? 60000 : false, retry: false });
-  const singboxValidate = useQuery({ queryKey: ['singbox-validate'], queryFn: api.singboxValidate, refetchInterval: visible ? 60000 : false, retry: false });
   const [xray, singbox] = useQueries({
     queries: [
       { queryKey: ['xray-status'], queryFn: api.xrayStatus, refetchInterval: visible ? 15000 : false },
@@ -21,67 +19,46 @@ export default function OverviewPage() {
   });
 
   const list = inbounds.data || [];
-  const clients = list.flatMap((item) => item.clients || []);
-  const now = Math.floor(Date.now() / 1000);
-  const activeClients = clients.filter((client) => {
-    const used = Number(client.up || 0) + Number(client.down || 0);
-    const limit = Number(client.traffic_limit || 0);
-    if (!client.enabled) return false;
-    if (client.expiry_at && client.expiry_at > 0 && client.expiry_at <= now) return false;
-    if (limit > 0 && used >= limit) return false;
-    return true;
-  }).length;
-  const expiredClients = clients.filter((client) => client.expiry_at && client.expiry_at > 0 && client.expiry_at <= now).length;
-  const limitedClients = clients.filter((client) => Number(client.traffic_limit || 0) > 0 && Number(client.up || 0) + Number(client.down || 0) >= Number(client.traffic_limit || 0)).length;
-  const up = list.reduce((sum, item) => sum + Number(item.traffic_up || 0), 0);
-  const down = list.reduce((sum, item) => sum + Number(item.traffic_down || 0), 0);
-  const realtimeUp = clients.reduce((sum, item) => sum + Number(item.xray_up || 0), 0);
-  const realtimeDown = clients.reduce((sum, item) => sum + Number(item.xray_down || 0), 0);
-  const protocols = Object.entries(
-    list.reduce<Record<string, number>>((acc, item) => {
-      acc[item.protocol] = (acc[item.protocol] || 0) + 1;
-      return acc;
-    }, {}),
-  ).map(([name, value]) => ({ name, value }));
+  const data = summary.data;
+  const counts = data?.counts || fallbackCounts(list);
+  const traffic = data?.traffic || fallbackTraffic(list);
+  const protocols = Object.entries(data?.protocols || fallbackProtocols(list)).map(([name, value]) => ({ name, value }));
 
-  if (inbounds.isLoading) return <LoadingBlock />;
+  if (summary.isLoading && inbounds.isLoading) return <LoadingBlock />;
 
   return (
     <div className="page-stack">
       <PageTitle
         title="运行概览"
         description="VPS 面板、核心服务和流量资源的实时摘要。"
-        action={<button className="btn secondary" onClick={() => refreshOverview([inbounds, outbounds, rules, resources, xray, singbox, xrayValidate, singboxValidate])}><RefreshCw className="h-4 w-4" /> 刷新</button>}
+        action={<button className="btn secondary" onClick={() => refreshOverview([summary, inbounds, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> 刷新</button>}
       />
       <OverviewAlerts
         errors={[
+          summary.error ? `概览摘要加载失败：${errorText(summary.error)}` : '',
           inbounds.error ? `入站加载失败：${errorText(inbounds.error)}` : '',
-          outbounds.error ? `出站加载失败：${errorText(outbounds.error)}` : '',
-          rules.error ? `路由加载失败：${errorText(rules.error)}` : '',
           resources.error ? `资源加载失败：${errorText(resources.error)}` : '',
           xray.error ? `Xray 状态加载失败：${errorText(xray.error)}` : '',
           singbox.error ? `sing-box 状态加载失败：${errorText(singbox.error)}` : '',
-          xrayValidate.error ? `Xray 生成校验不可用：${errorText(xrayValidate.error)}` : '',
-          singboxValidate.error ? `sing-box 生成校验不可用：${errorText(singboxValidate.error)}` : '',
-          xrayValidate.data && !xrayValidate.data.valid ? `Xray 生成校验失败：${xrayValidate.data.error || '未知错误'}` : '',
-          singboxValidate.data && !singboxValidate.data.valid ? `sing-box 生成校验失败：${singboxValidate.data.error || '未知错误'}` : '',
+          data?.validation.xray && !data.validation.xray.valid ? `Xray 生成校验失败：${data.validation.xray.error || '未知错误'}` : '',
+          data?.validation.singbox && !data.validation.singbox.valid ? `sing-box 生成校验失败：${data.validation.singbox.error || '未知错误'}` : '',
         ].filter(Boolean)}
       />
       <div className="metric-grid">
-        <Metric icon={Network} label="总流量" value={formatBytes(up + down)} sub={`${formatBytes(up)} ↑ / ${formatBytes(down)} ↓`} />
-        <Metric icon={Users} label="客户端" value={String(clients.length)} sub={`${activeClients} active · ${expiredClients} expired · ${limitedClients} limited`} />
-        <Metric icon={Shield} label="入站" value={String(list.length)} sub={`${list.filter((i) => i.enabled).length} enabled`} />
-        <Metric icon={Activity} label="实时流量" value={formatBytes(realtimeUp + realtimeDown)} sub={`${formatBytes(realtimeUp)} ↑ / ${formatBytes(realtimeDown)} ↓`} />
-        <Metric icon={Network} label="出站" value={String((outbounds.data || []).length)} sub={`${(outbounds.data || []).filter((item) => item.enabled).length} enabled`} />
-        <Metric icon={Activity} label="路由规则" value={String((rules.data || []).length)} sub={`${(rules.data || []).filter((item) => item.enabled).length} enabled`} />
+        <Metric icon={Network} label="总流量" value={formatBytes(traffic.total)} sub={`${formatBytes(traffic.up)} ↑ / ${formatBytes(traffic.down)} ↓`} />
+        <Metric icon={Users} label="客户端" value={String(counts.clients)} sub={`${counts.clients_active} active · ${counts.clients_expired} expired · ${counts.clients_limited} limited`} />
+        <Metric icon={Shield} label="入站" value={String(counts.inbounds)} sub={`${counts.inbounds_enabled} enabled`} />
+        <Metric icon={Activity} label="实时流量" value={formatBytes(traffic.xray_realtime)} sub={`${formatBytes(traffic.xray_up)} ↑ / ${formatBytes(traffic.xray_down)} ↓`} />
+        <Metric icon={Network} label="出站" value={String(counts.outbounds)} sub={`${counts.outbounds_enabled} enabled`} />
+        <Metric icon={Activity} label="路由规则" value={String(counts.routing_rules)} sub={`${counts.routing_enabled} enabled`} />
         <Metric icon={Activity} label="Xray" value={serviceLabel(xray.data?.status)} sub={xray.data?.version || '-'} />
         <Metric icon={Activity} label="sing-box" value={serviceLabel(singbox.data?.status)} sub={singbox.data?.version || '-'} />
       </div>
       <Card className="p-5">
         <h2 className="section-title mb-4">最近生成状态</h2>
         <div className="grid gap-3 md:grid-cols-2">
-          <ValidationSummary label="Xray" loading={xrayValidate.isLoading} valid={xrayValidate.data?.valid} error={xrayValidate.error} detail={validationSummary(xrayValidate.data, xrayValidate.error)} />
-          <ValidationSummary label="sing-box" loading={singboxValidate.isLoading} valid={singboxValidate.data?.valid} error={singboxValidate.error} detail={validationSummary(singboxValidate.data, singboxValidate.error)} />
+          <ValidationSummary label="Xray" loading={summary.isLoading} valid={data?.validation.xray.valid} error={summary.error} detail={validationSummary(data?.validation.xray, summary.error)} />
+          <ValidationSummary label="sing-box" loading={summary.isLoading} valid={data?.validation.singbox.valid} error={summary.error} detail={validationSummary(data?.validation.singbox, summary.error)} />
         </div>
       </Card>
       <div className="grid gap-4 xl:grid-cols-[1.4fr_.9fr]">
@@ -90,10 +67,10 @@ export default function OverviewPage() {
             <h2 className="section-title">流量走势</h2>
             <div className="flex gap-2 text-xs text-panel-muted">
               <span className="inline-flex items-center gap-1">
-                <ArrowUp className="h-3 w-3" /> {formatBytes(up)}
+                <ArrowUp className="h-3 w-3" /> {formatBytes(traffic.up)}
               </span>
               <span className="inline-flex items-center gap-1">
-                <ArrowDown className="h-3 w-3" /> {formatBytes(down)}
+                <ArrowDown className="h-3 w-3" /> {formatBytes(traffic.down)}
               </span>
             </div>
           </div>
@@ -127,6 +104,49 @@ export default function OverviewPage() {
       </Card>
     </div>
   );
+}
+
+function fallbackCounts(list: Array<{ enabled?: boolean; clients?: Array<{ enabled?: boolean; up?: number; down?: number; traffic_limit?: number; expiry_at?: number }> }>): DashboardSummary['counts'] {
+  const now = Math.floor(Date.now() / 1000);
+  const clients = list.flatMap((item) => item.clients || []);
+  const clientsExpired = clients.filter((client) => client.expiry_at && client.expiry_at > 0 && client.expiry_at <= now).length;
+  const clientsLimited = clients.filter((client) => Number(client.traffic_limit || 0) > 0 && Number(client.up || 0) + Number(client.down || 0) >= Number(client.traffic_limit || 0)).length;
+  const clientsActive = clients.filter((client) => {
+    const used = Number(client.up || 0) + Number(client.down || 0);
+    const limit = Number(client.traffic_limit || 0);
+    if (!client.enabled) return false;
+    if (client.expiry_at && client.expiry_at > 0 && client.expiry_at <= now) return false;
+    if (limit > 0 && used >= limit) return false;
+    return true;
+  }).length;
+  return {
+    inbounds: list.length,
+    inbounds_enabled: list.filter((item) => item.enabled).length,
+    clients: clients.length,
+    clients_active: clientsActive,
+    clients_expired: clientsExpired,
+    clients_limited: clientsLimited,
+    outbounds: 0,
+    outbounds_enabled: 0,
+    routing_rules: 0,
+    routing_enabled: 0,
+  };
+}
+
+function fallbackTraffic(list: Array<{ traffic_up?: number; traffic_down?: number; clients?: Array<{ xray_up?: number; xray_down?: number }> }>): DashboardSummary['traffic'] {
+  const clients = list.flatMap((item) => item.clients || []);
+  const up = list.reduce((sum, item) => sum + Number(item.traffic_up || 0), 0);
+  const down = list.reduce((sum, item) => sum + Number(item.traffic_down || 0), 0);
+  const xrayUp = clients.reduce((sum, item) => sum + Number(item.xray_up || 0), 0);
+  const xrayDown = clients.reduce((sum, item) => sum + Number(item.xray_down || 0), 0);
+  return { up, down, total: up + down, xray_up: xrayUp, xray_down: xrayDown, xray_realtime: xrayUp + xrayDown };
+}
+
+function fallbackProtocols(list: Array<{ protocol?: string }>) {
+  return list.reduce<Record<string, number>>((acc, item) => {
+    if (item.protocol) acc[item.protocol] = (acc[item.protocol] || 0) + 1;
+    return acc;
+  }, {});
 }
 
 function OverviewAlerts({ errors }: { errors: string[] }) {
@@ -210,7 +230,7 @@ function Resource({ icon: Icon, label, value }: { icon: React.ElementType; label
       <span className="inline-flex items-center gap-2 text-panel-muted">
         <Icon className="h-4 w-4" /> {label}
       </span>
-      <span className="font-medium">{value}</span>
+      <span className="min-w-0 break-words text-right font-medium">{value}</span>
     </div>
   );
 }

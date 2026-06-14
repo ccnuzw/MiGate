@@ -104,4 +104,69 @@ describe('api client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
+
+  it('loads the dashboard summary from the new read-only API', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.method).toBeUndefined();
+      return new Response(JSON.stringify({ counts: {}, traffic: {}, protocols: {}, validation: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await api.dashboardSummary();
+    expect(fetchMock).toHaveBeenCalledWith('/api/dashboard/summary', expect.any(Object));
+    vi.unstubAllGlobals();
+  });
+
+  it('preserves current location when redirecting to login after session expiry', async () => {
+    window.history.replaceState({}, '', '/panel/routing?tab=rules#top');
+    window.__MIGATE_BASE_PATH__ = '/panel';
+    const assign = vi.fn();
+    const originalLocation = window.location;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { 'content-type': 'application/json' } })));
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    });
+
+    await expect(apiFetch('/api/routing-rules')).rejects.toMatchObject({ status: 401 });
+    expect(assign).toHaveBeenCalledWith('/panel/login?next=%2Fpanel%2Frouting%3Ftab%3Drules%23top');
+
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    window.__MIGATE_BASE_PATH__ = undefined;
+    vi.unstubAllGlobals();
+  });
+
+  it('does not redirect when login itself returns 401', async () => {
+    const assign = vi.fn();
+    const originalLocation = window.location;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'invalid_credentials' }), { status: 401, headers: { 'content-type': 'application/json' } })));
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    });
+
+    await expect(api.login('admin', 'wrong')).rejects.toMatchObject({ status: 401, message: 'invalid_credentials' });
+    expect(assign).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    vi.unstubAllGlobals();
+  });
+
+  it('redirects for protected API paths that merely share the login prefix', async () => {
+    window.history.replaceState({}, '', '/panel/settings');
+    window.__MIGATE_BASE_PATH__ = '/panel';
+    const assign = vi.fn();
+    const originalLocation = window.location;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { 'content-type': 'application/json' } })));
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    });
+
+    await expect(apiFetch('/api/login-history')).rejects.toMatchObject({ status: 401 });
+    expect(assign).toHaveBeenCalledWith('/panel/login?next=%2Fpanel%2Fsettings');
+
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    window.__MIGATE_BASE_PATH__ = undefined;
+    vi.unstubAllGlobals();
+  });
 });

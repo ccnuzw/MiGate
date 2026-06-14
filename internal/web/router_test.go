@@ -353,14 +353,49 @@ func TestRestartEndpoint(t *testing.T) {
 	})
 }
 
-func TestRouterDoesNotServeLegacyHeavyRoutes(t *testing.T) {
+func TestAPIErrorResponsesUseJSONContentType(t *testing.T) {
+	router := web.NewRouter()
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+		status int
+		error  string
+	}{
+		{http.MethodPost, "/api/xray/apply", `{"confirm":true}`, http.StatusForbidden, "confirmation_required"},
+		{http.MethodPost, "/api/xray/apply", `{bad`, http.StatusBadRequest, "invalid_json"},
+		{http.MethodGet, "/api/restart", "", http.StatusMethodNotAllowed, "method_not_allowed"},
+	} {
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		router.ServeHTTP(response, req)
+		if response.Code != tc.status {
+			t.Fatalf("%s %s expected %d, got %d: %s", tc.method, tc.path, tc.status, response.Code, response.Body.String())
+		}
+		if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+			t.Fatalf("%s %s expected JSON content type, got %q", tc.method, tc.path, contentType)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("%s %s should return JSON body: %v body=%s", tc.method, tc.path, err, response.Body.String())
+		}
+		if payload["error"] != tc.error {
+			t.Fatalf("%s %s expected error %q, got %#v", tc.method, tc.path, tc.error, payload)
+		}
+	}
+}
+
+func TestRouterDoesNotServeRemovedHeavyRoutes(t *testing.T) {
 	router := web.NewRouter()
 	for _, path := range []string{"/api/remote/readiness", "/api/leak-check", "/api/egress/status", "/api/" + join("open", "vpn") + "/status", "/api/proxy/status"} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		router.ServeHTTP(response, req)
 		if response.Code != http.StatusNotFound {
-			t.Fatalf("legacy heavy route %s should be 404, got %d", path, response.Code)
+			t.Fatalf("removed heavy route %s should be 404, got %d", path, response.Code)
 		}
 	}
 }

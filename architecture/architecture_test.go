@@ -82,7 +82,7 @@ func TestRemovedLegacyRuntimeCodeIsFullyRemoved(t *testing.T) {
 	}
 
 	if _, exists := readIfExists(t, "internal", "web", "static", "app.js"); exists {
-		t.Fatal("legacy internal/web/static/app.js must be removed after frontend split")
+		t.Fatal("removed internal/web/static/app.js must stay absent after frontend split")
 	}
 
 	for _, file := range []string{

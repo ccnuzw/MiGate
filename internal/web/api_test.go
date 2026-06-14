@@ -547,7 +547,7 @@ func TestCreateInboundAPIRejectsUnsupportedProtocol(t *testing.T) {
 	defer store.Close()
 
 	router := web.NewRouter(web.WithStore(store))
-	payload := []byte(`{"remark":"legacy","protocol":"` + join("open", "vpn") + `","port":1194,"network":"udp"}`)
+	payload := []byte(`{"remark":"unsupported","protocol":"` + join("open", "vpn") + `","port":1194,"network":"udp"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -922,6 +922,65 @@ func TestStatsAPIReportsStoredAndRealtimeTrafficSeparately(t *testing.T) {
 	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"xray_up":1234`, `"xray_down":5678`, `"traffic_stats_source":"db"`, `"realtime_stats_source":"xray"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stats response missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	now := time.Now().Unix()
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "active@example.com"}); err != nil {
+		t.Fatalf("create active client: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "expired@example.com", ExpiryAt: now - 60}); err != nil {
+		t.Fatalf("create expired client: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 1}); err != nil {
+		t.Fatalf("create limited client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(context.Background(), "limited@example.com", 1, 0); err != nil {
+		t.Fatalf("update limited client traffic: %v", err)
+	}
+	if _, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080}); err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundTag: "proxy", Enabled: true}); err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"active@example.com": {Email: "active@example.com", Uplink: 10, Downlink: 20},
+	}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"counts"`,
+		`"clients":3`,
+		`"clients_active":1`,
+		`"clients_expired":1`,
+		`"clients_limited":1`,
+		`"outbounds":3`,
+		`"routing_rules":1`,
+		`"xray_realtime":30`,
+		`"protocols":{"vless":1}`,
+		`"validation"`,
+		`"target":"xray"`,
+		`"target":"singbox"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard summary missing %q: %s", want, body)
 		}
 	}
 }

@@ -129,6 +129,35 @@ export interface ConfigValidation {
   rules?: number;
 }
 
+export interface DashboardSummary {
+  generated_at: string;
+  counts: {
+    inbounds: number;
+    inbounds_enabled: number;
+    clients: number;
+    clients_active: number;
+    clients_expired: number;
+    clients_limited: number;
+    outbounds: number;
+    outbounds_enabled: number;
+    routing_rules: number;
+    routing_enabled: number;
+  };
+  traffic: {
+    up: number;
+    down: number;
+    total: number;
+    xray_up: number;
+    xray_down: number;
+    xray_realtime: number;
+  };
+  protocols: Record<string, number>;
+  validation: {
+    xray: ConfigValidation;
+    singbox: ConfigValidation;
+  };
+}
+
 export interface VersionResponse {
   version: string;
 }

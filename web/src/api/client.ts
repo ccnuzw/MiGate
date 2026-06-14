@@ -56,8 +56,9 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     headers,
   });
   const payload = await parseResponse(response).catch(() => null);
-  if (response.status === 401 && !path.includes('/api/session')) {
-    window.location.assign(appPath('/login'));
+  if (response.status === 401 && shouldRedirectOnUnauthorized(path)) {
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.location.assign(`${appPath('/login')}?next=${encodeURIComponent(current)}`);
   }
   if (!response.ok) {
     const message =
@@ -69,6 +70,18 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     throw new ApiError(response.status, message, payload);
   }
   return payload as T;
+}
+
+function shouldRedirectOnUnauthorized(path: string): boolean {
+  const endpoint = normalizeAPIPath(path);
+  return endpoint !== '/api/session' && endpoint !== '/api/login';
+}
+
+function normalizeAPIPath(path: string): string {
+  const withoutHash = path.split('#', 1)[0];
+  const withoutQuery = withoutHash.split('?', 1)[0];
+  if (withoutQuery.length > 1) return withoutQuery.replace(/\/+$/, '');
+  return withoutQuery || '/';
 }
 
 export function get<T>(path: string) {
