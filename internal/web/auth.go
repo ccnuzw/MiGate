@@ -18,6 +18,7 @@ import (
 const sessionTouchMinAge = time.Minute
 const sessionTouchRetention = 7 * 24 * time.Hour
 const sessionTouchGCInterval = time.Hour
+const maxActiveSessions = 10
 
 // WithAuth enables panel login authentication. Requests to most routes must
 // carry a valid session cookie obtained via POST /api/login.
@@ -214,7 +215,9 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 
 		// Track the new session in the token_blacklist table (revoked=0 = active)
 		if cfg.store != nil {
-			_ = cfg.store.AddToBlacklist(r.Context(), hashToken(token), time.Now().Add(7*24*time.Hour), false)
+			if err := cfg.store.AddToBlacklist(r.Context(), hashToken(token), time.Now().Add(7*24*time.Hour), false); err == nil {
+				_ = cfg.store.PruneActiveSessions(r.Context(), maxActiveSessions)
+			}
 		}
 
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -346,6 +349,10 @@ func sessionRevokeHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 		path = strings.TrimSuffix(path, "/")
+		if path == "others" {
+			revokeOtherSessions(w, r, cfg)
+			return
+		}
 		id, err := strconv.ParseInt(path, 10, 64)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_session_id")
@@ -361,4 +368,22 @@ func sessionRevokeHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 	}
+}
+
+func revokeOtherSessions(w http.ResponseWriter, r *http.Request, cfg *routerConfig) {
+	if cfg.store == nil {
+		writeJSONError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	cookie, err := r.Cookie("migate_session")
+	if err != nil || !validateSessionToken(cookie.Value, cfg.sessionSecret) {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	revoked, err := cfg.store.RevokeOtherSessions(r.Context(), hashToken(cookie.Value))
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "revoke_sessions_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "revoked", "revoked": revoked})
 }

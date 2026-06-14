@@ -36,6 +36,7 @@ func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xr
 	byClient := map[int64]clientTrafficSummary{}
 	for _, inbound := range inbounds {
 		inboundSummary := inboundTrafficSummary{Source: "db"}
+		inboundSourceSet := false
 		if isSingBoxProtocol(inbound.Protocol) {
 			inboundSummary.Source = "unavailable"
 		}
@@ -45,10 +46,19 @@ func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xr
 				clientSummary.Source = "unavailable"
 				clientSummary.Note = "sing-box realtime traffic stats are not yet wired"
 			} else if stats, ok := liveStats[client.Email]; ok {
+				clientSummary.Up = maxInt64(client.Up, stats.Uplink)
+				clientSummary.Down = maxInt64(client.Down, stats.Downlink)
 				clientSummary.XrayUp = stats.Uplink
 				clientSummary.XrayDown = stats.Downlink
+				clientSummary.Source = trafficSource(client.Up, client.Down, stats.Uplink, stats.Downlink)
 				clientSummary.RealtimeSource = "xray"
 				inboundSummary.RealtimeSource = "xray"
+			}
+			if !inboundSourceSet {
+				inboundSummary.Source = clientSummary.Source
+				inboundSourceSet = true
+			} else {
+				inboundSummary.Source = combineTrafficSources(inboundSummary.Source, clientSummary.Source)
 			}
 			byClient[client.ID] = clientSummary
 			inboundSummary.Up += clientSummary.Up
@@ -58,6 +68,38 @@ func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xr
 		byInbound[inbound.ID] = inboundSummary
 	}
 	return byInbound, byClient
+}
+
+func trafficSource(dbUp, dbDown, xrayUp, xrayDown int64) string {
+	upSource := "db"
+	if xrayUp >= dbUp {
+		upSource = "xray"
+	}
+	downSource := "db"
+	if xrayDown >= dbDown {
+		downSource = "xray"
+	}
+	if upSource == downSource {
+		return upSource
+	}
+	return "mixed"
+}
+
+func combineTrafficSources(current, next string) string {
+	if current == "" || current == next {
+		return next
+	}
+	if current == "unavailable" || next == "unavailable" {
+		return current
+	}
+	return "mixed"
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
@@ -259,7 +301,8 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 		}
 		for _, client := range inbound.Clients {
 			clientCount++
-			used := client.Up + client.Down
+			traffic := trafficByClient[client.ID]
+			used := traffic.Up + traffic.Down
 			expired := client.ExpiryAt > 0 && client.ExpiryAt <= now
 			limited := client.TrafficLimit > 0 && used >= client.TrafficLimit
 			if expired {

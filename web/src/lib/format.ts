@@ -36,10 +36,16 @@ export function serviceLabel(status?: string): string {
 }
 
 export function versionLabel(version?: string): string {
-  const normalized = String(version || '').trim().toLowerCase();
+  const raw = String(version || '').trim();
+  const firstLine = raw.split('\n').map((line) => line.trim()).find((line) => line && !line.startsWith('Tags:')) || raw;
+  const normalized = firstLine.toLowerCase();
   if (normalized === 'not_installed') return '未安装';
   if (normalized === 'unknown') return '未知';
-  return version || '-';
+  const xray = firstLine.match(/^xray\s+([^\s]+)/i);
+  if (xray) return `Xray ${xray[1]}`;
+  const singbox = firstLine.match(/^sing-box(?:\s+version)?\s+([^\s]+)/i);
+  if (singbox) return `sing-box ${singbox[1]}`;
+  return firstLine || '-';
 }
 
 export function randomUUID(): string {

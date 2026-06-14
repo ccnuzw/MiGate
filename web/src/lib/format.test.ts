@@ -16,4 +16,9 @@ describe('display format helpers', () => {
     expect(versionLabel('Xray 25.6.8')).toBe('Xray 25.6.8');
     expect(versionLabel(undefined)).toBe('-');
   });
+
+  it('keeps only the core name and version for verbose core version output', () => {
+    expect(versionLabel('Xray 25.6.8 (Xray, Penetrates Everything.) Custom (go1.24 linux/amd64)')).toBe('Xray 25.6.8');
+    expect(versionLabel('sing-box version 1.13.13\nEnvironment: go1.25 linux/amd64\nTags: with_quic')).toBe('sing-box 1.13.13');
+  });
 });

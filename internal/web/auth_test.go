@@ -531,6 +531,94 @@ func TestAuthSessionsEndpoint(t *testing.T) {
 	}
 }
 
+func TestAuthLoginPrunesOldActiveSessions(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := NewRouter(WithAuth("admin", "secret"), WithStore(store))
+
+	for i := 0; i < maxActiveSessions+2; i++ {
+		loginResp := httptest.NewRecorder()
+		loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+		loginReq.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(loginResp, loginReq)
+		if loginResp.Code != http.StatusOK {
+			t.Fatalf("login %d expected 200, got %d: %s", i, loginResp.Code, loginResp.Body.String())
+		}
+	}
+
+	sessions, err := store.ListActiveSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveSessions: %v", err)
+	}
+	if len(sessions) != maxActiveSessions {
+		t.Fatalf("expected %d active sessions, got %d", maxActiveSessions, len(sessions))
+	}
+}
+
+func TestAuthRevokeOtherSessions(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := NewRouter(WithAuth("admin", "secret"), WithStore(store))
+	login := func() *http.Cookie {
+		loginResp := httptest.NewRecorder()
+		loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+		loginReq.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(loginResp, loginReq)
+		if loginResp.Code != http.StatusOK {
+			t.Fatalf("login expected 200, got %d: %s", loginResp.Code, loginResp.Body.String())
+		}
+		for _, c := range loginResp.Result().Cookies() {
+			if c.Name == "migate_session" {
+				return c
+			}
+		}
+		t.Fatal("login should return session cookie")
+		return nil
+	}
+
+	oldCookie := login()
+	currentCookie := login()
+
+	revokeResp := httptest.NewRecorder()
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/others", nil)
+	revokeReq.AddCookie(currentCookie)
+	router.ServeHTTP(revokeResp, revokeReq)
+	if revokeResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", revokeResp.Code, revokeResp.Body.String())
+	}
+
+	oldResp := httptest.NewRecorder()
+	oldReq := httptest.NewRequest(http.MethodGet, "/api/inbounds", nil)
+	oldReq.AddCookie(oldCookie)
+	router.ServeHTTP(oldResp, oldReq)
+	if oldResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old session to be revoked, got %d", oldResp.Code)
+	}
+
+	currentResp := httptest.NewRecorder()
+	currentReq := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	currentReq.AddCookie(currentCookie)
+	router.ServeHTTP(currentResp, currentReq)
+	if currentResp.Code != http.StatusOK {
+		t.Fatalf("expected current session check 200, got %d", currentResp.Code)
+	}
+	var session map[string]interface{}
+	if err := json.NewDecoder(currentResp.Body).Decode(&session); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if session["authenticated"] != true {
+		t.Fatalf("expected current session to remain authenticated, got %+v", session)
+	}
+}
+
 // TestAuthSessionRevokeByID verifies DELETE /api/sessions/{id} revokes a session.
 func TestAuthSessionRevokeByID(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")

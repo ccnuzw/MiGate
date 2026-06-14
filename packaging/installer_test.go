@@ -227,6 +227,44 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	}
 }
 
+func TestInstallerConfiguresBoundedLogRetention(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	service := read(t, "packaging", "migate.service")
+	for _, want := range []string{
+		"configure_log_retention()",
+		"SystemMaxUse=128M",
+		"RuntimeMaxUse=64M",
+		"MaxRetentionSec=14day",
+		"journalctl --vacuum-size=128M",
+		"/var/log/migate-update.log",
+		"size 5M",
+		"rotate 3",
+		"copytruncate",
+		"configure_log_retention",
+		"StandardOutput=journal",
+		"StandardError=journal",
+		"LogRateLimitIntervalSec=30s",
+		"LogRateLimitBurst=200",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer log retention contract missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"StandardOutput=journal",
+		"StandardError=journal",
+		"LogRateLimitIntervalSec=30s",
+		"LogRateLimitBurst=200",
+	} {
+		if !strings.Contains(service, want) {
+			t.Fatalf("packaged systemd unit log limit missing %q", want)
+		}
+	}
+	if strings.Index(script, "configure_log_retention") > strings.Index(script, "write_systemd_service") {
+		t.Fatalf("installer should define log retention before service-writing flow")
+	}
+}
+
 func TestInstallerCompletionPrintsSaveableInstallSummary(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{

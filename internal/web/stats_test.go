@@ -132,12 +132,20 @@ func (s *countingSummaryStore) RecordSessionTouch(ctx context.Context, tokenHash
 	return errors.New("not implemented")
 }
 
+func (s *countingSummaryStore) PruneActiveSessions(ctx context.Context, maxActive int) error {
+	return errors.New("not implemented")
+}
+
 func (s *countingSummaryStore) ListActiveSessions(ctx context.Context) ([]db.BlacklistedSession, error) {
 	return nil, errors.New("not implemented")
 }
 
 func (s *countingSummaryStore) RevokeSession(ctx context.Context, id int64) error {
 	return errors.New("not implemented")
+}
+
+func (s *countingSummaryStore) RevokeOtherSessions(ctx context.Context, currentTokenHash string) (int64, error) {
+	return 0, errors.New("not implemented")
 }
 
 func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {

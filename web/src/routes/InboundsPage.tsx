@@ -1,15 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Edit2, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
+import { Copy, Edit2, Link2, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { ApiError, appPath } from '../api/client';
 import { api } from '../api/endpoints';
-import type { Client, Inbound } from '../api/types';
+import type { CertStatus, Client, Inbound } from '../api/types';
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, useConfirm, useToast } from '../components/ui';
 import { formatBytes, randomUUID } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { usePageVisible } from '../lib/visibility';
 import { PageTitle } from './OverviewPage';
 
 const advancedFields = [
@@ -100,12 +101,13 @@ export default function InboundsPage() {
   const confirm = useConfirm();
   const { showToast } = useToast();
   const { text } = useI18n();
+  const visible = usePageVisible();
   const [editingInbound, setEditingInbound] = useState<Inbound | null>(null);
   const [clientInbound, setClientInbound] = useState<Inbound | null>(null);
   const [editingClient, setEditingClient] = useState<{ inbound: Inbound; client: Client } | null>(null);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortKey>('id');
-  const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds });
+  const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, refetchInterval: visible ? 10_000 : false, staleTime: 5_000 });
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['inbounds'] });
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -321,6 +323,21 @@ function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; 
   const protocol = form.watch('protocol');
   const network = form.watch('network');
   const security = form.watch('security');
+  const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, enabled: !!inbound && security === 'tls', retry: false, staleTime: 60_000 });
+  const settingCert = cert.data;
+  const canAttachSettingCert = hasAttachableSettingCert(settingCert);
+  const regenerateCredential = () => {
+    form.setValue('uuid', generatedProtocolCredential(protocol), { shouldDirty: true, shouldValidate: true });
+  };
+  const attachSettingCert = () => {
+    if (!canAttachSettingCert || !settingCert) return;
+    form.setValue('tls_cert_file', settingCert.cert_path.trim(), { shouldDirty: true, shouldValidate: true });
+    form.setValue('tls_key_file', settingCert.key_path.trim(), { shouldDirty: true, shouldValidate: true });
+    if (!form.getValues('tls_sni') && settingCert.domain) {
+      form.setValue('tls_sni', settingCert.domain, { shouldDirty: true, shouldValidate: true });
+    }
+    showToast(text('已关联设置中的 TLS 证书'), 'success');
+  };
   const save = useMutation({
     mutationFn: (values: InboundValues) => (inbound?.id ? api.updateInbound(inbound.id, buildFullInboundPayload(inbound, values)) : api.createInbound(buildFullInboundPayload(inbound, values))),
     onSuccess: () => {
@@ -361,7 +378,12 @@ function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; 
           </select>
         </Field>
         <Field label={text(protocol === 'shadowsocks' || protocol === 'hysteria2' || protocol === 'tuic' || protocol === 'shadowtls' ? '密码 / 密钥' : 'UUID')}>
-          <input {...form.register('uuid')} />
+          <div className="input-action-row">
+            <input {...form.register('uuid')} />
+            <button className="icon-button" type="button" onClick={regenerateCredential} title={text('重新生成')}>
+              <RotateCcw className="h-4 w-4" />
+            </button>
+          </div>
         </Field>
         {(network === 'ws' || network === 'h2') ? (
           <>
@@ -387,6 +409,23 @@ function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound | null; 
         ) : null}
         {security === 'tls' ? (
           <>
+            <div className="span-2 rounded-lg border border-panel-line bg-panel-soft p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-panel-text">{text('关联设置证书')}</div>
+                  <div className="mt-1 break-all text-xs leading-5 text-panel-muted">
+                    {settingCert?.domain ? `${text('域名')}：${settingCert.domain}` : text('设置中暂无证书域名')}
+                    {settingCert?.issued ? ` · ${text('已获取')}` : ''}
+                  </div>
+                </div>
+                <button type="button" className="btn secondary h-8" disabled={!canAttachSettingCert} onClick={attachSettingCert}>
+                  <Link2 className="h-4 w-4" /> {text('关联证书')}
+                </button>
+              </div>
+              <div className="mt-2 text-xs leading-5 text-panel-muted">
+                {canAttachSettingCert ? text('将设置页已获取的证书路径填入下方 TLS 证书和私钥字段。') : text('请先在设置页配置并获取 TLS 证书。')}
+              </div>
+            </div>
             <Field label={text('TLS 证书文件')}><input {...form.register('tls_cert_file')} /></Field>
             <Field label={text('TLS 私钥文件')}><input {...form.register('tls_key_file')} /></Field>
             <Field label="TLS SNI"><input {...form.register('tls_sni')} /></Field>
@@ -432,6 +471,9 @@ function ClientModal({ inbound, client, onClose, onSaved }: { inbound: Inbound |
     resolver: zodResolver(clientSchema),
     values,
   });
+  const regenerateCredential = () => {
+    form.setValue('uuid', generatedProtocolCredential(inbound?.protocol), { shouldDirty: true, shouldValidate: true });
+  };
   const save = useMutation({
     mutationFn: (values: ClientValues) => (client ? api.updateClient(inbound!.id, client.id, { ...client, ...values }) : api.createClient(inbound!.id, values)),
     onSuccess: () => {
@@ -455,7 +497,15 @@ function ClientModal({ inbound, client, onClose, onSaved }: { inbound: Inbound |
     >
       <div className="form-grid">
         <Field label={text('客户端标识')}><input {...form.register('email')} /><FieldError message={form.formState.errors.email?.message ? text(form.formState.errors.email.message) : undefined} /></Field>
-        <Field label={text('UUID / 密码 / 密钥')}><input {...form.register('uuid')} /><FieldError message={form.formState.errors.uuid?.message ? text(form.formState.errors.uuid.message) : undefined} /></Field>
+        <Field label={text('UUID / 密码 / 密钥')}>
+          <div className="input-action-row">
+            <input {...form.register('uuid')} />
+            <button className="icon-button" type="button" onClick={regenerateCredential} title={text('重新生成')}>
+              <RotateCcw className="h-4 w-4" />
+            </button>
+          </div>
+          <FieldError message={form.formState.errors.uuid?.message ? text(form.formState.errors.uuid.message) : undefined} />
+        </Field>
         <Field label={text('流量限额（字节，0 不限制）')}><input type="number" {...form.register('traffic_limit')} /></Field>
         <Field label={text('过期时间戳（0 不限制）')}><input type="number" {...form.register('expiry_at')} /></Field>
         <label className="checkbox-field"><input type="checkbox" {...form.register('enabled')} /> {text('已启用')}</label>
@@ -535,6 +585,10 @@ function normalizeAdvancedValue(key: (typeof advancedFields)[number], value: unk
   return value == null ? '' : String(value);
 }
 
+export function hasAttachableSettingCert(cert?: CertStatus | null) {
+  return Boolean(cert?.issued && cert.cert_path.trim() && cert.key_path.trim());
+}
+
 function mergeClientTraffic(inbound: Inbound, client: Client): Client {
   const live = inbound.client_traffic?.[String(client.id)] || inbound.client_traffic?.[client.id as unknown as string];
   return {
@@ -551,7 +605,7 @@ function mergeClientTraffic(inbound: Inbound, client: Client): Client {
 export function clientFormValues(inbound: Inbound, client?: Client): ClientValues {
   return {
     email: client?.email || '',
-    uuid: client?.uuid || defaultClientCredential(inbound.protocol),
+    uuid: client?.uuid || generatedProtocolCredential(inbound.protocol),
     enabled: client?.enabled ?? true,
     traffic_limit: client?.traffic_limit || 0,
     expiry_at: client?.expiry_at || 0,
@@ -564,7 +618,7 @@ function sourceLabel(source: string | undefined, realtime: string | undefined, t
   return source || 'db';
 }
 
-function defaultClientCredential(protocol?: string) {
+export function generatedProtocolCredential(protocol?: string) {
   if (protocol === 'hysteria2' || protocol === 'tuic' || protocol === 'shadowtls') return randomUUID().replace(/-/g, '');
   return randomUUID();
 }

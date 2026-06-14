@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { certIssuePayload, isUpdateInProgress, isUpdateTerminal, settingsPayload, updateStatusRefetchInterval } from './SettingsPage';
+import { certIssuePayload, certSettingsPayload, isUpdateInProgress, isUpdateTerminal, settingsPayload, updateStatusRefetchInterval } from './SettingsPage';
 
 describe('settings helpers', () => {
   it('sends an empty password to preserve the existing backend password', () => {
@@ -14,6 +14,19 @@ describe('settings helpers', () => {
     expect(certIssuePayload({ cert_domain: 'new.example.com', cert_email: 'ops@example.com' }, { domain: 'old.example.com', email: 'old@example.com' })).toEqual({
       domain: 'new.example.com',
       email: 'ops@example.com',
+    });
+  });
+
+  it('saves only certificate fields from the certificate card', () => {
+    expect(certSettingsPayload(
+      { panel_port: 9999, web_base_path: '/panel', cert_domain: 'old.example.com', cert_email: 'old@example.com' },
+      { panel_port: 7777, web_base_path: '/draft', cert_domain: 'new.example.com', cert_email: 'ops@example.com', panel_password: 'draft' },
+    )).toMatchObject({
+      panel_port: 9999,
+      web_base_path: '/panel',
+      cert_domain: 'new.example.com',
+      cert_email: 'ops@example.com',
+      panel_password: '',
     });
   });
 

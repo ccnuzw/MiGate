@@ -510,17 +510,20 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 func TestCoreSingboxInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
 	script := webPackageSource(t)
 	for _, want := range []string{
+		`asset_name="sing-box-${version}-linux-${asset_arch}.tar.gz"`,
+		`url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset_name}"`,
 		`checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-checksums.txt"`,
+		`curl -fL "$url" -o "$tmp/$asset_name"`,
 		`curl -fL "$checksums_url" -o "$tmp/checksums.txt"`,
-		`grep "sing-box-${version}-linux-${asset_arch}.tar.gz" "$tmp/checksums.txt" > "$tmp/sing-box.tar.gz.sha256"`,
+		`grep "$asset_name" "$tmp/checksums.txt" > "$tmp/sing-box.tar.gz.sha256"`,
 		`sha256sum -c "sing-box.tar.gz.sha256"`,
-		`tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp"`,
+		`tar -xzf "$tmp/$asset_name" -C "$tmp"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("sing-box WebUI install script missing checksum contract %q", want)
 		}
 	}
-	if strings.Index(script, `sha256sum -c "sing-box.tar.gz.sha256"`) > strings.Index(script, `tar -xzf "$tmp/sing-box.tar.gz"`) {
+	if strings.Index(script, `sha256sum -c "sing-box.tar.gz.sha256"`) > strings.Index(script, `tar -xzf "$tmp/$asset_name"`) {
 		t.Fatalf("sing-box WebUI install script must verify checksum before extracting archive")
 	}
 }

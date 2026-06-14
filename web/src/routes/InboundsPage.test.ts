@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Inbound } from '../api/types';
-import { buildFullInboundPayload, createDefaultInbound, inboundFormValues } from './InboundsPage';
+import { buildFullInboundPayload, createDefaultInbound, hasAttachableSettingCert, inboundFormValues } from './InboundsPage';
 
 describe('inbound payload helpers', () => {
   const existing: Inbound = {
@@ -110,5 +110,12 @@ describe('inbound payload helpers', () => {
     expect(typeof payload.hy2_up_mbps).toBe('number');
     expect(typeof payload.hy2_down_mbps).toBe('number');
     expect(typeof payload.shadowtls_version).toBe('number');
+  });
+
+  it('allows attaching a settings certificate only after it is issued with both files', () => {
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: false, cert_path: '/etc/xray/certs/example.com.pem', key_path: '/etc/xray/certs/example.com.key' })).toBe(false);
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/xray/certs/example.com.pem', key_path: '' })).toBe(false);
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '   ', key_path: '/etc/xray/certs/example.com.key' })).toBe(false);
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/xray/certs/example.com.pem', key_path: '/etc/xray/certs/example.com.key' })).toBe(true);
   });
 });

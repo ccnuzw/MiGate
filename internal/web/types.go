@@ -74,8 +74,10 @@ type Store interface {
 	AddToBlacklist(ctx context.Context, tokenHash string, expiresAt time.Time, revoked bool) error
 	IsBlacklisted(ctx context.Context, tokenHash string) (bool, error)
 	RecordSessionTouch(ctx context.Context, tokenHash string) error
+	PruneActiveSessions(ctx context.Context, maxActive int) error
 	ListActiveSessions(ctx context.Context) ([]db.BlacklistedSession, error)
 	RevokeSession(ctx context.Context, id int64) error
+	RevokeOtherSessions(ctx context.Context, currentTokenHash string) (int64, error)
 }
 
 type sessionTouchThrottler interface {

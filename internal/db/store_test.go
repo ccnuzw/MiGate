@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1182,6 +1183,75 @@ func TestStoreRevokeSessionByID(t *testing.T) {
 	// Revoking again should fail (already revoked)
 	if err := store.RevokeSession(ctx, sessions[0].ID); err == nil {
 		t.Fatal("expected error when revoking already-revoked session")
+	}
+}
+
+func TestStorePruneActiveSessions(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	expires := time.Now().Add(24 * time.Hour)
+	for i := 0; i < 4; i++ {
+		hash := fmt.Sprintf("%064d", i)
+		if err := store.AddToBlacklist(ctx, hash, expires, false); err != nil {
+			t.Fatalf("AddToBlacklist %d: %v", i, err)
+		}
+	}
+
+	if err := store.PruneActiveSessions(ctx, 2); err != nil {
+		t.Fatalf("PruneActiveSessions: %v", err)
+	}
+	sessions, err := store.ListActiveSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 active sessions, got %d", len(sessions))
+	}
+	if sessions[0].TokenHash != fmt.Sprintf("%064d", 3) || sessions[1].TokenHash != fmt.Sprintf("%064d", 2) {
+		t.Fatalf("expected newest sessions to remain, got %+v", sessions)
+	}
+}
+
+func TestStoreRevokeOtherSessions(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	expires := time.Now().Add(24 * time.Hour)
+	current := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	other := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	revokedHash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	if err := store.AddToBlacklist(ctx, current, expires, false); err != nil {
+		t.Fatalf("AddToBlacklist current: %v", err)
+	}
+	if err := store.AddToBlacklist(ctx, other, expires, false); err != nil {
+		t.Fatalf("AddToBlacklist other: %v", err)
+	}
+	if err := store.AddToBlacklist(ctx, revokedHash, expires, true); err != nil {
+		t.Fatalf("AddToBlacklist revoked: %v", err)
+	}
+
+	n, err := store.RevokeOtherSessions(ctx, current)
+	if err != nil {
+		t.Fatalf("RevokeOtherSessions: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 revoked session, got %d", n)
+	}
+	sessions, err := store.ListActiveSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].TokenHash != current {
+		t.Fatalf("expected only current session to remain, got %+v", sessions)
 	}
 }
 

@@ -26,6 +26,7 @@ export const api = {
   session: () => get<Session>('/api/session'),
   sessions: () => get<SessionInfo[]>('/api/sessions'),
   revokeSession: (id: number) => del<{ status: string }>(`/api/sessions/${id}`),
+  revokeOtherSessions: () => del<{ status: string; revoked: number }>('/api/sessions/others'),
   health: () => get<{ status: string; mode: string }>('/api/health'),
   version: () => get<VersionResponse>('/api/version'),
   inbounds: async () => {

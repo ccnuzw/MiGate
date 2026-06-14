@@ -1431,6 +1431,30 @@ func (s *Store) CleanupExpiredSessions(ctx context.Context) error {
 	return err
 }
 
+// PruneActiveSessions revokes older active sessions, keeping only the newest maxActive records.
+func (s *Store) PruneActiveSessions(ctx context.Context, maxActive int) error {
+	if err := s.CleanupExpiredSessions(ctx); err != nil {
+		return err
+	}
+	if maxActive < 0 {
+		maxActive = 0
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET revoked=1 WHERE id IN (
+SELECT id FROM token_blacklist WHERE revoked=0 AND expires_at > ? ORDER BY id DESC LIMIT -1 OFFSET ?
+)`, time.Now().UTC().Format(time.RFC3339), maxActive)
+	return err
+}
+
+// RevokeOtherSessions revokes all active sessions except the supplied token hash.
+func (s *Store) RevokeOtherSessions(ctx context.Context, currentTokenHash string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET revoked=1 WHERE revoked=0 AND token_hash<>? AND expires_at > ?`,
+		currentTokenHash, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // ListActiveSessions returns non-revoked, non-expired sessions.
 func (s *Store) ListActiveSessions(ctx context.Context) ([]BlacklistedSession, error) {
 	if err := s.CleanupExpiredSessions(ctx); err != nil {

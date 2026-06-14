@@ -66,11 +66,12 @@ esac
 version="${SINGBOX_VERSION:-1.13.13}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-${asset_arch}.tar.gz"
+asset_name="sing-box-${version}-linux-${asset_arch}.tar.gz"
+url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset_name}"
 checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-checksums.txt"
-curl -fL "$url" -o "$tmp/sing-box.tar.gz"
+curl -fL "$url" -o "$tmp/$asset_name"
 curl -fL "$checksums_url" -o "$tmp/checksums.txt"
-grep "sing-box-${version}-linux-${asset_arch}.tar.gz" "$tmp/checksums.txt" > "$tmp/sing-box.tar.gz.sha256"
+grep "$asset_name" "$tmp/checksums.txt" > "$tmp/sing-box.tar.gz.sha256"
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$tmp" && sha256sum -c "sing-box.tar.gz.sha256")
 elif command -v shasum >/dev/null 2>&1; then
@@ -78,7 +79,7 @@ elif command -v shasum >/dev/null 2>&1; then
 else
   echo "sha256sum or shasum is required" >&2; exit 1
 fi
-tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp"
+tar -xzf "$tmp/$asset_name" -C "$tmp"
 cp "$tmp"/sing-box-*/sing-box /usr/local/bin/sing-box
 chmod +x /usr/local/bin/sing-box
 mkdir -p /etc/sing-box

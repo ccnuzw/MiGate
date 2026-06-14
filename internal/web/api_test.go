@@ -1143,7 +1143,7 @@ func (c fixedStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.C
 
 func (c fixedStatsClient) Close() error { return nil }
 
-func TestStatsAPIReportsStoredAndRealtimeTrafficSeparately(t *testing.T) {
+func TestStatsAPIUsesRealtimeTrafficAsCurrentWhenAvailable(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1167,7 +1167,7 @@ func TestStatsAPIReportsStoredAndRealtimeTrafficSeparately(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"xray_up":1234`, `"xray_down":5678`, `"traffic_stats_source":"db"`, `"realtime_stats_source":"xray"`} {
+	for _, want := range []string{`"traffic_up":1234`, `"traffic_down":5678`, `"traffic_total":6912`, `"xray_up":1234`, `"xray_down":5678`, `"traffic_stats_source":"xray"`, `"realtime_stats_source":"xray"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stats response missing %q: %s", want, body)
 		}
@@ -1223,13 +1223,117 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"routing_rules":1`,
 		`"xray_realtime":30`,
 		`"protocols":{"vless":1}`,
-		`"traffic_series":[{"name":"xray","up":1,"down":0}]`,
+		`"traffic_series":[{"name":"xray","up":11,"down":20}]`,
 		`"validation"`,
 		`"target":"xray"`,
 		`"target":"singbox"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestDashboardSummaryDoesNotRegressBelowStoredTraffic(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 120}); err != nil {
+		t.Fatalf("create limited client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(context.Background(), "limited@example.com", 100, 50); err != nil {
+		t.Fatalf("update limited client traffic: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"limited@example.com": {Email: "limited@example.com", Uplink: 10, Downlink: 20},
+	}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"clients_active":0`,
+		`"clients_limited":1`,
+		`"traffic":{"down":50,"total":150,"up":100,"xray_down":20,"xray_realtime":30,"xray_up":10}`,
+		`"traffic_series":[{"name":"xray","up":100,"down":50}]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray-stored", Protocol: "vless", Port: 8443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "stored@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(context.Background(), "stored@example.com", 100, 50); err != nil {
+		t.Fatalf("update client traffic: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"stored@example.com": {Email: "stored@example.com", Uplink: 10, Downlink: 20},
+	}}))
+
+	statsResponse := httptest.NewRecorder()
+	router.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+	if statsResponse.Code != http.StatusOK {
+		t.Fatalf("expected stats 200, got %d: %s", statsResponse.Code, statsResponse.Body.String())
+	}
+	statsBody := statsResponse.Body.String()
+	for _, want := range []string{
+		`"traffic_up":100`,
+		`"traffic_down":50`,
+		`"traffic_total":150`,
+		`"up":100`,
+		`"down":50`,
+		`"xray_up":10`,
+		`"xray_down":20`,
+		`"traffic_stats_source":"db"`,
+		`"realtime_stats_source":"xray"`,
+	} {
+		if !strings.Contains(statsBody, want) {
+			t.Fatalf("stats response missing %q: %s", want, statsBody)
+		}
+	}
+
+	inboundsResponse := httptest.NewRecorder()
+	router.ServeHTTP(inboundsResponse, httptest.NewRequest(http.MethodGet, "/api/inbounds", nil))
+	if inboundsResponse.Code != http.StatusOK {
+		t.Fatalf("expected inbounds 200, got %d: %s", inboundsResponse.Code, inboundsResponse.Body.String())
+	}
+	inboundsBody := inboundsResponse.Body.String()
+	for _, want := range []string{
+		`"traffic_up":100`,
+		`"traffic_down":50`,
+		`"traffic_total":150`,
+		`"traffic_stats_source":"db"`,
+		`"realtime_stats_source":"xray"`,
+		fmt.Sprintf(`"%d":{"up":100,"down":50,"xray_up":10,"xray_down":20`, client.ID),
+		`"source":"db"`,
+		`"realtime_source":"xray"`,
+	} {
+		if !strings.Contains(inboundsBody, want) {
+			t.Fatalf("inbounds response missing %q: %s", want, inboundsBody)
 		}
 	}
 }
@@ -1258,7 +1362,7 @@ func TestInboundsAPIAnnotatesLiveTrafficPerInboundAndClient(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"traffic_stats_source":"db"`, `"realtime_stats_source":"xray"`, fmt.Sprintf(`"%d":{"up":0,"down":0,"xray_up":222,"xray_down":333`, client.ID), `"source":"db"`, `"realtime_source":"xray"`} {
+	for _, want := range []string{`"traffic_up":222`, `"traffic_down":333`, `"traffic_total":555`, `"traffic_stats_source":"xray"`, `"realtime_stats_source":"xray"`, fmt.Sprintf(`"%d":{"up":222,"down":333,"xray_up":222,"xray_down":333`, client.ID), `"source":"xray"`, `"realtime_source":"xray"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("inbounds response missing %q: %s", want, body)
 		}

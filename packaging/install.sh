@@ -12,6 +12,10 @@ MIGATE_LINK="${MIGATE_LINK:-/usr/local/bin/mg}"
 INSTALLER_BIN="${INSTALLER_BIN:-/usr/local/bin/migate-install}"
 UNINSTALLER_BIN="${UNINSTALLER_BIN:-/usr/local/bin/migate-uninstall}"
 SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-singbox.service}"
+JOURNALD_CONF_DIR="${JOURNALD_CONF_DIR:-/etc/systemd/journald.conf.d}"
+JOURNALD_MIGATE_CONF="${JOURNALD_MIGATE_CONF:-${JOURNALD_CONF_DIR}/migate.conf}"
+LOGROTATE_CONF_DIR="${LOGROTATE_CONF_DIR:-/etc/logrotate.d}"
+LOGROTATE_MIGATE_CONF="${LOGROTATE_MIGATE_CONF:-${LOGROTATE_CONF_DIR}/migate}"
 
 ACTION="auto"
 ASSUME_YES=0
@@ -598,6 +602,48 @@ print_config_summary() {
   kv "Xray 配置" "${INSTALL_DIR}/xray.json"
 }
 
+configure_log_retention() {
+  if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
+    log_warn "systemd 不可用，跳过 journald 日志保留策略。"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] write %q with SystemMaxUse=128M and RuntimeMaxUse=64M\n' "$JOURNALD_MIGATE_CONF"
+    printf '[DRY-RUN] write %q for /var/log/migate-update.log rotation\n' "$LOGROTATE_MIGATE_CONF"
+    return 0
+  fi
+  mkdir -p "$JOURNALD_CONF_DIR"
+  cat > "$JOURNALD_MIGATE_CONF" <<'CONF'
+[Journal]
+SystemMaxUse=128M
+SystemKeepFree=512M
+RuntimeMaxUse=64M
+MaxRetentionSec=14day
+RateLimitIntervalSec=30s
+RateLimitBurst=1000
+CONF
+  log_ok "journald 日志保留策略已写入：$JOURNALD_MIGATE_CONF"
+  if command_exists logrotate; then
+    mkdir -p "$LOGROTATE_CONF_DIR"
+    cat > "$LOGROTATE_MIGATE_CONF" <<'CONF'
+/var/log/migate-update.log {
+  size 5M
+  rotate 3
+  compress
+  missingok
+  notifempty
+  copytruncate
+  create 0640 root root
+}
+CONF
+    log_ok "更新日志轮转策略已写入：$LOGROTATE_MIGATE_CONF"
+  else
+    log_warn "未检测到 logrotate，跳过 /var/log/migate-update.log 轮转配置。"
+  fi
+  systemctl restart systemd-journald 2>/dev/null || true
+  journalctl --vacuum-size=128M >/dev/null 2>&1 || true
+}
+
 write_config() {
   local panel_port="$1"
   local panel_username="$2"
@@ -703,6 +749,10 @@ ExecStart=${MIGATE_BIN} serve --host ${PANEL_BIND_HOST} --config ${CONFIG_PATH}
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 
 [Install]
 WantedBy=multi-user.target
@@ -831,6 +881,10 @@ ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 
 [Install]
 WantedBy=multi-user.target
@@ -916,6 +970,7 @@ install_release_flow() {
   fi
   install_migate_binary_from_tmp
   write_config "$PANEL_PORT" "$PANEL_USERNAME" "$PANEL_PASSWORD" "$WEB_BASE_PATH"
+  configure_log_retention
   write_systemd_service
 
   section "核心检测"
@@ -934,6 +989,7 @@ repair_service_flow() {
   require_root
   detect_systemd
   section "修复 systemd 服务"
+  configure_log_retention
   write_systemd_service
   restart_migate_service
   log_ok "服务修复完成"
