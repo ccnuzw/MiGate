@@ -347,7 +347,9 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
 );
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
+CREATE INDEX IF NOT EXISTS idx_inbounds_port ON inbounds(port);
 CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
+CREATE INDEX IF NOT EXISTS idx_clients_inbound_email ON clients(inbound_id, email);
 CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at);
 CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked, expires_at, id);
 `)
@@ -1210,6 +1212,98 @@ ORDER BY id ASC
 	return inbounds, nil
 }
 
+func (s *Store) ListInboundTraffic(ctx context.Context) ([]Inbound, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, uuid, remark, protocol, port, network, security, enabled
+FROM inbounds
+ORDER BY id ASC
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var inbounds []Inbound
+	byID := make(map[int64]int)
+	for rows.Next() {
+		var inbound Inbound
+		var enabled int
+		if err := rows.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled); err != nil {
+			return nil, err
+		}
+		inbound.Enabled = enabled != 0
+		inbound.Clients = []Client{}
+		byID[inbound.ID] = len(inbounds)
+		inbounds = append(inbounds, inbound)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	clientRows, err := s.db.QueryContext(ctx, `
+SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at
+FROM clients
+ORDER BY id ASC
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer clientRows.Close()
+	for clientRows.Next() {
+		var client Client
+		var enabled int
+		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+			return nil, err
+		}
+		client.Enabled = enabled != 0
+		if idx, ok := byID[client.InboundID]; ok {
+			inbounds[idx].Clients = append(inbounds[idx].Clients, client)
+		}
+	}
+	if err := clientRows.Err(); err != nil {
+		return nil, err
+	}
+	return inbounds, nil
+}
+
+func (s *Store) InboundExists(ctx context.Context, id int64) (bool, error) {
+	if id <= 0 {
+		return false, nil
+	}
+	var found int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM inbounds WHERE id=? LIMIT 1`, id).Scan(&found); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) FindInboundByPort(ctx context.Context, port int, excludeID int64) (Inbound, bool, error) {
+	if port <= 0 {
+		return Inbound{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, uuid, remark, protocol, port, network, security, enabled
+FROM inbounds
+WHERE port=? AND id<>?
+ORDER BY id ASC
+LIMIT 1
+`, port, excludeID)
+	var inbound Inbound
+	var enabled int
+	if err := row.Scan(&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Port, &inbound.Network, &inbound.Security, &enabled); err != nil {
+		if err == sql.ErrNoRows {
+			return Inbound{}, false, nil
+		}
+		return Inbound{}, false, err
+	}
+	inbound.Enabled = enabled != 0
+	inbound.Clients = []Client{}
+	return inbound, true, nil
+}
+
 func (s *Store) GetSubscriptionByClientUUID(ctx context.Context, uuid string) (Inbound, Client, bool, error) {
 	uuid = strings.TrimSpace(uuid)
 	if uuid == "" {
@@ -1429,6 +1523,30 @@ func (s *Store) RecordSessionTouchAfter(ctx context.Context, tokenHash string, m
 func (s *Store) CleanupExpiredSessions(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM token_blacklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
 	return err
+}
+
+// PruneActiveSessions revokes older active sessions, keeping only the newest maxActive records.
+func (s *Store) PruneActiveSessions(ctx context.Context, maxActive int) error {
+	if err := s.CleanupExpiredSessions(ctx); err != nil {
+		return err
+	}
+	if maxActive < 0 {
+		maxActive = 0
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET revoked=1 WHERE id IN (
+SELECT id FROM token_blacklist WHERE revoked=0 AND expires_at > ? ORDER BY id DESC LIMIT -1 OFFSET ?
+)`, time.Now().UTC().Format(time.RFC3339), maxActive)
+	return err
+}
+
+// RevokeOtherSessions revokes all active sessions except the supplied token hash.
+func (s *Store) RevokeOtherSessions(ctx context.Context, currentTokenHash string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE token_blacklist SET revoked=1 WHERE revoked=0 AND token_hash<>? AND expires_at > ?`,
+		currentTokenHash, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // ListActiveSessions returns non-revoked, non-expired sessions.

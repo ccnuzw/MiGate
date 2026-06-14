@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -74,31 +73,7 @@ func certStatusHandler(cfg *routerConfig) http.HandlerFunc {
 }
 
 func installACMESh(email string) (string, error) {
-	tmpDir, err := os.MkdirTemp("", "acmesh-*")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	scriptPath := tmpDir + "/acme.sh"
-	resp, err := http.Get("https://get.acme.sh")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("download acme.sh installer failed: status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(scriptPath, body, 0755); err != nil {
-		return "", fmt.Errorf("write acme.sh: %w", err)
-	}
-	cmd := exec.Command(scriptPath, "--email", email)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return "acme.sh is not installed. Install acme.sh from a pinned release and verify its checksum or signature before retrying.", fmt.Errorf("refusing to download and execute unverified acme.sh installer for %s", email)
 }
 
 func certIssueHandler(cfg *routerConfig) http.HandlerFunc {

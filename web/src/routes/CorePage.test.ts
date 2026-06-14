@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coreActionResult, coreStatusRefetchInterval } from './CorePage';
+import { coreActionResult, coreStatusRefetchInterval, isCoreInstalled } from './CorePage';
 
 describe('core action result', () => {
   it('treats xray apply validation failures as business errors', () => {
@@ -54,5 +54,12 @@ describe('core action result', () => {
   it('pauses core status polling while the page is hidden', () => {
     expect(coreStatusRefetchInterval(true)).toBe(12000);
     expect(coreStatusRefetchInterval(false)).toBe(false);
+  });
+
+  it('derives installed state from explicit status first, then version/status fallbacks', () => {
+    expect(isCoreInstalled({ installed: false, version: 'Xray 25.6.8', status: 'running' })).toBe(false);
+    expect(isCoreInstalled({ version: 'sing-box version 1.13.13' })).toBe(true);
+    expect(isCoreInstalled({ version: 'not_installed', status: 'not_installed' })).toBe(false);
+    expect(isCoreInstalled(undefined)).toBe(false);
   });
 });

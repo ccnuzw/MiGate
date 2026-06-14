@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 )
@@ -47,6 +48,13 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 						if oldPW, ok := existingMap["panel_password"]; ok {
 							updated["panel_password"] = oldPW
 						}
+					} else if password, ok := pw.(string); ok {
+						hashed, err := HashPanelPassword(password)
+						if err != nil {
+							writeJSONError(w, http.StatusInternalServerError, "hash_password_failed")
+							return
+						}
+						updated["panel_password"] = hashed
 					}
 					// Preserve database_path if not in update
 					if _, has := updated["database_path"]; !has {
@@ -55,6 +63,14 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 						}
 					}
 				}
+			}
+			if pw, ok := updated["panel_password"].(string); ok && pw != "" && !IsPanelPasswordHash(pw) {
+				hashed, err := HashPanelPassword(pw)
+				if err != nil {
+					writeJSONError(w, http.StatusInternalServerError, "hash_password_failed")
+					return
+				}
+				updated["panel_password"] = hashed
 			}
 			data, err := json.MarshalIndent(updated, "", "  ")
 			if err != nil {
@@ -71,4 +87,22 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 			methodNotAllowed(w)
 		}
 	}
+}
+
+func writePanelPasswordToConfig(configPath, hashedPassword string) error {
+	existing, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(existing, &raw); err != nil {
+		return fmt.Errorf("parse panel config: %w", err)
+	}
+	raw["panel_password"] = hashedPassword
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(configPath, data, 0o600)
 }

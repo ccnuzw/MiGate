@@ -60,7 +60,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/singbox/logs", singboxLogsHandler())
 	mux.HandleFunc("/sub/", subscriptionHandler(&cfg))
 	mux.HandleFunc("/", spaHandler(cfg.basePath))
-	handler := authMiddleware(mux, &cfg)
+	handler := csrfMiddleware(mux, &cfg)
+	handler = authMiddleware(handler, &cfg)
 	handler = securityHeadersMiddleware(handler, &cfg)
 	if cfg.basePath != "" {
 		return basePathMiddleware(handler, cfg.basePath)

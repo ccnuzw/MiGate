@@ -803,7 +803,7 @@ func TestSubscriptionEndpointReturnsClientShareLink(t *testing.T) {
 	}
 }
 
-func TestSubscriptionEndpointKeepsLegacyUUIDLinkCompatible(t *testing.T) {
+func TestSubscriptionEndpointRejectsClientUUIDFallback(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -824,11 +824,8 @@ func TestSubscriptionEndpointKeepsLegacyUUIDLinkCompatible(t *testing.T) {
 	req.Host = "panel.example.com"
 	router.ServeHTTP(response, req)
 
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected legacy UUID link to keep working, got %d: %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "legacy%40example.com") {
-		t.Fatalf("legacy subscription missing client share link: %s", response.Body.String())
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected UUID subscription link to be rejected, got %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -972,7 +969,7 @@ func TestSubscriptionEndpointStripsPanelPortBeforeAppendingInboundPort(t *testin
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "127.0.0.1:9999"
 	router.ServeHTTP(response, req)
 
@@ -1080,7 +1077,7 @@ func TestSubscriptionHysteria2DefaultGeneratedTLSLink(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
 	router.ServeHTTP(response, req)
 
@@ -1117,7 +1114,7 @@ func TestStatsMarksSingBoxClientTrafficAsUnavailable(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
@@ -1143,7 +1140,7 @@ func (c fixedStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.C
 
 func (c fixedStatsClient) Close() error { return nil }
 
-func TestStatsAPIReportsStoredAndRealtimeTrafficSeparately(t *testing.T) {
+func TestStatsAPIUsesRealtimeTrafficAsCurrentWhenAvailable(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1162,15 +1159,67 @@ func TestStatsAPIReportsStoredAndRealtimeTrafficSeparately(t *testing.T) {
 		"sam@example.com": {Email: "sam@example.com", Uplink: 1234, Downlink: 5678},
 	}}))
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"xray_up":1234`, `"xray_down":5678`, `"traffic_stats_source":"db"`, `"realtime_stats_source":"xray"`} {
+	for _, want := range []string{`"traffic_up":1234`, `"traffic_down":5678`, `"traffic_total":6912`, `"xray_up":1234`, `"xray_down":5678`, `"traffic_stats_source":"xray"`, `"realtime_stats_source":"xray"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stats response missing %q: %s", want, body)
 		}
+	}
+}
+
+func TestStatsAPIDefaultIsSummaryOnlyAndCached(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	calls := 0
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{
+		stats: map[string]*xray.ClientStats{
+			"sam@example.com": {Email: "sam@example.com", Uplink: 12, Downlink: 34},
+		},
+		calls: &calls,
+	}))
+	for i := 0; i < 2; i++ {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+		}
+		body := response.Body.String()
+		for _, want := range []string{`"clients":1`, `"traffic_up":12`, `"traffic_down":34`, `"traffic_total":46`} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("summary stats response missing %q: %s", want, body)
+			}
+		}
+		if strings.Contains(body, `"client_details"`) {
+			t.Fatalf("default stats response should omit client_details: %s", body)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("expected cached stats response to query live stats once, got %d calls", calls)
+	}
+
+	detail := httptest.NewRecorder()
+	router.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("expected detail 200, got %d: %s", detail.Code, detail.Body.String())
+	}
+	if !strings.Contains(detail.Body.String(), `"client_details"`) {
+		t.Fatalf("detail stats response should include client_details: %s", detail.Body.String())
 	}
 }
 
@@ -1223,13 +1272,140 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"routing_rules":1`,
 		`"xray_realtime":30`,
 		`"protocols":{"vless":1}`,
-		`"traffic_series":[{"name":"xray","up":1,"down":0}]`,
+		`"traffic_series":[{"name":"xray","up":11,"down":20}]`,
 		`"validation"`,
 		`"target":"xray"`,
 		`"target":"singbox"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestDashboardSummaryDoesNotRegressBelowStoredTraffic(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 120}); err != nil {
+		t.Fatalf("create limited client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(context.Background(), "limited@example.com", 100, 50); err != nil {
+		t.Fatalf("update limited client traffic: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"limited@example.com": {Email: "limited@example.com", Uplink: 10, Downlink: 20},
+	}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"clients_active":0`,
+		`"clients_limited":1`,
+		`"traffic":{"down":50,"total":150,"up":100,"xray_down":20,"xray_realtime":30,"xray_up":10}`,
+		`"traffic_series":[{"name":"xray","up":100,"down":50}]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray-stored", Protocol: "vless", Port: 8443, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "stored@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(context.Background(), "stored@example.com", 100, 50); err != nil {
+		t.Fatalf("update client traffic: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
+		"stored@example.com": {Email: "stored@example.com", Uplink: 10, Downlink: 20},
+	}}))
+
+	statsResponse := httptest.NewRecorder()
+	router.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
+	if statsResponse.Code != http.StatusOK {
+		t.Fatalf("expected stats 200, got %d: %s", statsResponse.Code, statsResponse.Body.String())
+	}
+	statsBody := statsResponse.Body.String()
+	for _, want := range []string{
+		`"traffic_up":100`,
+		`"traffic_down":50`,
+		`"traffic_total":150`,
+		`"up":100`,
+		`"down":50`,
+		`"xray_up":10`,
+		`"xray_down":20`,
+		`"traffic_stats_source":"db"`,
+		`"realtime_stats_source":"xray"`,
+	} {
+		if !strings.Contains(statsBody, want) {
+			t.Fatalf("stats response missing %q: %s", want, statsBody)
+		}
+	}
+
+	inboundsResponse := httptest.NewRecorder()
+	router.ServeHTTP(inboundsResponse, httptest.NewRequest(http.MethodGet, "/api/inbounds", nil))
+	if inboundsResponse.Code != http.StatusOK {
+		t.Fatalf("expected inbounds 200, got %d: %s", inboundsResponse.Code, inboundsResponse.Body.String())
+	}
+	inboundsBody := inboundsResponse.Body.String()
+	for _, want := range []string{
+		`"traffic_up":100`,
+		`"traffic_down":50`,
+		`"traffic_total":150`,
+		`"traffic_stats_source":"db"`,
+		`"realtime_stats_source":"xray"`,
+		fmt.Sprintf(`"%d":{"up":100,"down":50,"xray_up":10,"xray_down":20`, client.ID),
+		`"source":"db"`,
+		`"realtime_source":"xray"`,
+	} {
+		if !strings.Contains(inboundsBody, want) {
+			t.Fatalf("inbounds response missing %q: %s", want, inboundsBody)
+		}
+	}
+
+	trafficRefresh := httptest.NewRecorder()
+	router.ServeHTTP(trafficRefresh, httptest.NewRequest(http.MethodGet, "/api/inbounds?refresh=traffic", nil))
+	if trafficRefresh.Code != http.StatusOK {
+		t.Fatalf("expected traffic refresh 200, got %d: %s", trafficRefresh.Code, trafficRefresh.Body.String())
+	}
+	refreshBody := trafficRefresh.Body.String()
+	for _, want := range []string{
+		`"traffic_up":100`,
+		`"traffic_down":50`,
+		`"traffic_total":150`,
+		`"clients":[`,
+		fmt.Sprintf(`"%d":{"up":100,"down":50,"xray_up":10,"xray_down":20`, client.ID),
+	} {
+		if !strings.Contains(refreshBody, want) {
+			t.Fatalf("traffic refresh response missing %q: %s", want, refreshBody)
+		}
+	}
+	for _, forbidden := range []string{`"reality_private_key"`, `"tls_cert_file"`, `"hy2_obfs_password"`} {
+		if strings.Contains(refreshBody, forbidden) {
+			t.Fatalf("traffic refresh response should omit full config field %q: %s", forbidden, refreshBody)
 		}
 	}
 }
@@ -1258,7 +1434,7 @@ func TestInboundsAPIAnnotatesLiveTrafficPerInboundAndClient(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"traffic_stats_source":"db"`, `"realtime_stats_source":"xray"`, fmt.Sprintf(`"%d":{"up":0,"down":0,"xray_up":222,"xray_down":333`, client.ID), `"source":"db"`, `"realtime_source":"xray"`} {
+	for _, want := range []string{`"traffic_up":222`, `"traffic_down":333`, `"traffic_total":555`, `"traffic_stats_source":"xray"`, `"realtime_stats_source":"xray"`, fmt.Sprintf(`"%d":{"up":222,"down":333,"xray_up":222,"xray_down":333`, client.ID), `"source":"xray"`, `"realtime_source":"xray"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("inbounds response missing %q: %s", want, body)
 		}
@@ -1293,7 +1469,7 @@ func TestSubscriptionVLESSXHTTPRealityOmitsVisionFlow(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "103.193.149.217:9999"
 	router.ServeHTTP(response, req)
 
@@ -1348,7 +1524,7 @@ func TestSubscriptionVlessFormat(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
 	router.ServeHTTP(response, req)
 
@@ -1391,7 +1567,7 @@ func TestSubscriptionVmessReturnsBase64JSON(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
 	router.ServeHTTP(response, req)
 
@@ -1447,7 +1623,7 @@ func TestSubscriptionTrojanReturnsTrojanLink(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
 	router.ServeHTTP(response, req)
 
@@ -1487,7 +1663,7 @@ func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
 	router.ServeHTTP(response, req)
 
@@ -2202,7 +2378,7 @@ func TestSubscriptionSkipsExpiredClient(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for expired client, got %d", response.Code)
@@ -2232,7 +2408,7 @@ func TestSubscriptionSkipsDisabledClient(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for disabled client, got %d", response.Code)
@@ -2257,7 +2433,7 @@ func TestSubscriptionPassesValidClientWithFutureExpiry(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200 for valid client with future expiry, got %d", response.Code)
@@ -2424,8 +2600,8 @@ func TestSettingsPutUpdatesPanelConfig(t *testing.T) {
 	if saved["panel_username"] != "newadmin" {
 		t.Fatalf("expected panel_username=newadmin, got %v", saved["panel_username"])
 	}
-	if saved["panel_password"] != "newpass" {
-		t.Fatalf("expected panel_password=newpass, got %v", saved["panel_password"])
+	if password, ok := saved["panel_password"].(string); !ok || !web.IsPanelPasswordHash(password) || !web.VerifyPanelPassword(password, "newpass") {
+		t.Fatalf("expected panel_password to be an Argon2id hash for newpass, got %v", saved["panel_password"])
 	}
 	if saved["xray_config_path"] != "/opt/xray" {
 		t.Fatalf("expected xray_config_path=/opt/xray, got %v", saved["xray_config_path"])
@@ -2455,8 +2631,8 @@ func TestSettingsPutPreservesPasswordWhenEmpty(t *testing.T) {
 	if err := json.Unmarshal(raw, &saved); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if saved["panel_password"] != "secret" {
-		t.Fatalf("expected panel_password preserved as 'secret', got %v", saved["panel_password"])
+	if password, ok := saved["panel_password"].(string); !ok || !web.IsPanelPasswordHash(password) || !web.VerifyPanelPassword(password, "secret") {
+		t.Fatalf("expected panel_password preserved by migrating secret to hash, got %v", saved["panel_password"])
 	}
 	if saved["database_path"] != "/db/migate.db" {
 		t.Fatalf("expected database_path preserved, got %v", saved["database_path"])

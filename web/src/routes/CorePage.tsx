@@ -70,6 +70,8 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   });
   if (statusQuery.isLoading) return <LoadingBlock />;
   const status = statusQuery.data;
+  const installed = isCoreInstalled(status);
+  const installActionLabel = installed ? '升级/重装核心' : '安装核心';
   return (
     <div className={`page-stack core-page core-page-${core}`}>
       <PageTitle
@@ -79,14 +81,14 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
           <div className="core-action-row">
             <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
             <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
-            <SpinnerButton className="btn secondary" loading={install.isPending} onClick={async () => (await confirm({ title: text(`安装 ${label} 核心？`), description: text('该操作会执行系统安装命令。') })) && install.mutate()}><Download className="h-4 w-4" /> {text('安装核心')}</SpinnerButton>
-            <SpinnerButton className="btn danger" loading={uninstall.isPending} onClick={async () => (await confirm({ title: text(`卸载 ${label} 核心？`), description: text('该操作会删除或停用系统服务。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('卸载核心')}</SpinnerButton>
+            <SpinnerButton className="btn secondary" loading={install.isPending} onClick={async () => (await confirm({ title: text(`${installActionLabel} ${label}？`), description: text(installed ? '该操作会重新执行安装脚本，通常用于升级或修复当前核心。' : '该操作会执行系统安装命令。') })) && install.mutate()}><Download className="h-4 w-4" /> {text(installActionLabel)}</SpinnerButton>
+            <SpinnerButton className="btn danger" loading={uninstall.isPending} disabled={!installed} title={text(installed ? '卸载核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`卸载 ${label} 核心？`), description: text('该操作会删除或停用系统服务。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('卸载核心')}</SpinnerButton>
             <SpinnerButton className="btn primary" loading={apply.isPending} onClick={async () => (await confirm({ title: text(`应用 ${label} 配置？`), description: text('该操作会重新生成并应用核心配置。') })) && apply.mutate()}><Play className="h-4 w-4" /> {text('应用')}</SpinnerButton>
           </div>
         }
       />
       <div className="metric-grid core-metric-grid">
-        <CoreMetric label={text('安装')} value={text(status?.installed === false ? '未安装' : '已安装')} />
+        <CoreMetric label={text('安装')} value={text(installed ? '已安装' : '未安装')} />
         <CoreMetric label={text('托管')} value={text(status?.managed ? '已托管' : '未托管')} />
         <CoreMetric label={text('状态')} value={text(serviceLabel(status?.status))} />
         <CoreMetric label={text('版本')} value={text(versionLabel(status?.version || versionQuery.data?.version))} />
@@ -172,6 +174,14 @@ function normalizeStatus(status?: string): string {
 
 export function coreStatusRefetchInterval(visible: boolean) {
   return visible ? 12000 : false;
+}
+
+export function isCoreInstalled(status?: { installed?: boolean; version?: string; status?: string }): boolean {
+  if (typeof status?.installed === 'boolean') return status.installed;
+  const version = String(status?.version || '').trim().toLowerCase();
+  if (version && version !== 'unknown' && version !== 'not_installed') return true;
+  const serviceStatus = String(status?.status || '').trim().toLowerCase();
+  return Boolean(serviceStatus && serviceStatus !== 'unknown' && serviceStatus !== 'not_installed');
 }
 
 function isFailureStatus(status: string): boolean {

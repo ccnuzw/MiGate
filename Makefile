@@ -1,4 +1,4 @@
-.PHONY: dev web-install web-dev web-build go-build test test-go test-web check release clean-dist
+.PHONY: dev web-install web-dev web-build go-build go-build-release test test-go test-web check release clean-dist
 
 dev:
 	./scripts/dev.sh
@@ -14,6 +14,9 @@ web-build:
 
 go-build: web-build
 	go build ./cmd/migate
+
+go-build-release: web-build
+	go build -trimpath -ldflags="-s -w" ./cmd/migate
 
 test-go:
 	go test ./...

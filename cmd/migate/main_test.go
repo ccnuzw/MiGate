@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -32,6 +33,9 @@ func TestRouterFromPanelConfigOpensConfiguredDatabaseStore(t *testing.T) {
 	loginResp := httptest.NewRecorder()
 	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
 	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
 	router.ServeHTTP(loginResp, loginReq)
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("expected login 200, got %d: %s", loginResp.Code, loginResp.Body.String())
@@ -51,6 +55,9 @@ func TestRouterFromPanelConfigOpensConfiguredDatabaseStore(t *testing.T) {
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1")
+	req.Host = "127.0.0.1"
+	req.RemoteAddr = "127.0.0.1:12345"
 	req.AddCookie(sessionCookie)
 	router.ServeHTTP(response, req)
 
@@ -96,6 +103,9 @@ func TestRouterFromPanelConfigEnablesAuthWhenCredentialsPresent(t *testing.T) {
 	loginResp := httptest.NewRecorder()
 	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
 	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
 	router.ServeHTTP(loginResp, loginReq)
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 login, got %d", loginResp.Code)
@@ -177,6 +187,7 @@ func TestRouterFromPanelConfigCanTrustProxyHeaders(t *testing.T) {
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://example.com")
 	req.Header.Set("X-Forwarded-Proto", "https")
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
@@ -216,6 +227,7 @@ func TestRouterFromPanelConfigWithoutDatabaseKeepsPanelOptions(t *testing.T) {
 	loginResp := httptest.NewRecorder()
 	loginReq := httptest.NewRequest(http.MethodPost, "/panel/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
 	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "https://example.com")
 	loginReq.Header.Set("X-Forwarded-Proto", "https")
 	router.ServeHTTP(loginResp, loginReq)
 	if loginResp.Code != http.StatusOK {
@@ -521,8 +533,8 @@ func TestCLIResetPasswordUpdatesConfigAndRestartsService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read updated config: %v", err)
 	}
-	if updated.PanelPassword != "new-pass" {
-		t.Fatalf("password not updated: %+v", updated)
+	if !web.IsPanelPasswordHash(updated.PanelPassword) || !web.VerifyPanelPassword(updated.PanelPassword, "new-pass") {
+		t.Fatalf("password not updated as hash: %+v", updated)
 	}
 	if !strings.Contains(out.String(), "面板密码已更新") || len(runner.calls) != 1 || runner.calls[0] != "systemctl restart migate" {
 		t.Fatalf("unexpected reset output/calls: %q %+v", out.String(), runner.calls)

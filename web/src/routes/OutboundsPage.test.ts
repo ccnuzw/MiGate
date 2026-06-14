@@ -21,6 +21,8 @@ describe('outbound helpers', () => {
     expect(isFixedDefaultOutbound(outbounds[1])).toBe(true);
     expect(isFixedDefaultOutbound(outbounds[2])).toBe(false);
     expect(isFixedDefaultOutbound(outbounds[4])).toBe(false);
+    expect(isFixedDefaultOutbound({ id: 12, tag: 'direct', protocol: 'socks', enabled: true })).toBe(false);
+    expect(isFixedDefaultOutbound({ id: 13, tag: 'blocked', protocol: 'http', enabled: true })).toBe(false);
     expect(isReorderableOutbound(outbounds[4])).toBe(false);
   });
 

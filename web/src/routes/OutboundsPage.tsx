@@ -32,6 +32,7 @@ export default function OutboundsPage() {
   const [editing, setEditing] = useState<Outbound | null>(null);
   const [poolOpen, setPoolOpen] = useState(false);
   const [latency, setLatency] = useState<Record<number, PingResult>>({});
+  const [pingingIds, setPingingIds] = useState<Set<number>>(() => new Set());
   const outbounds = useQuery({ queryKey: ['outbounds'], queryFn: api.outbounds });
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['outbounds'] });
   const items = outbounds.data || [];
@@ -80,6 +81,21 @@ export default function OutboundsPage() {
     },
     onError: (error) => showToast(errorMessage(error, text('保存顺序失败')), 'error'),
   });
+  const pingOutbound = async (id: number) => {
+    if (pingingIds.has(id)) return;
+    setPingingIds((prev) => new Set(prev).add(id));
+    try {
+      await ping.mutateAsync(id);
+    } catch {
+      // The mutation's onError handler already shows the user-facing message.
+    } finally {
+      setPingingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
 
   if (outbounds.isLoading) return <LoadingBlock />;
   return (
@@ -115,12 +131,6 @@ export default function OutboundsPage() {
                   <span>{formatLatency(latency[item.id], text)}</span>
                 </div>
               </div>
-              <div className="action-row">
-                <SpinnerButton className="icon-button" loading={ping.isPending} onClick={() => ping.mutate(item.id)} title="Ping"><Gauge className="h-4 w-4" /></SpinnerButton>
-                <button className="icon-button" onClick={() => toggle.mutate(item)} disabled title={text('启停')}><Power className="h-4 w-4" /></button>
-                <button className="icon-button" onClick={() => setEditing(item)} disabled title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
-                <button className="icon-button danger-text" disabled onClick={async () => (await confirm({ title: text('删除出站？'), tone: 'danger' })) && remove.mutate(item.id)} title={text('删除')}><Trash2 className="h-4 w-4" /></button>
-              </div>
             </div>
           </div>
         ))}
@@ -146,7 +156,7 @@ export default function OutboundsPage() {
               <div className="action-row">
                 <button className="icon-button" disabled={!isReorderableOutbound(item) || reorderableItems.findIndex((o) => o.id === item.id) === 0} onClick={() => moveCustomOutbound(reorderableItems, reorderableItems.findIndex((o) => o.id === item.id), -1, reorder.mutate)} title={text('上移')}><ArrowUp className="h-4 w-4" /></button>
                 <button className="icon-button" disabled={!isReorderableOutbound(item) || reorderableItems.findIndex((o) => o.id === item.id) === reorderableItems.length - 1} onClick={() => moveCustomOutbound(reorderableItems, reorderableItems.findIndex((o) => o.id === item.id), 1, reorder.mutate)} title={text('下移')}><ArrowDown className="h-4 w-4" /></button>
-                <SpinnerButton className="icon-button" loading={ping.isPending} onClick={() => ping.mutate(item.id)} title="Ping"><Gauge className="h-4 w-4" /></SpinnerButton>
+                <SpinnerButton className="icon-button" loading={pingingIds.has(item.id)} onClick={() => pingOutbound(item.id)} title="Ping"><Gauge className="h-4 w-4" /></SpinnerButton>
                 <button className="icon-button" onClick={() => toggle.mutate(item)} title={text('启停')}><Power className="h-4 w-4" /></button>
                 <button className="icon-button" onClick={() => setEditing(item)} title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
                 <button className="icon-button danger-text" onClick={async () => (await confirm({ title: text('删除出站？'), tone: 'danger' })) && remove.mutate(item.id)} title={text('删除')}><Trash2 className="h-4 w-4" /></button>
@@ -274,7 +284,7 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
 }
 
 export function isFixedDefaultOutbound(item: Outbound) {
-  return item.tag === 'direct' || item.tag === 'blocked';
+  return (item.tag === 'direct' && item.protocol === 'freedom') || (item.tag === 'blocked' && item.protocol === 'blackhole');
 }
 
 export function isReorderableOutbound(item: Outbound) {

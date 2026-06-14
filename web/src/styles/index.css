@@ -517,6 +517,18 @@ textarea:focus {
   width: auto;
 }
 
+.input-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+}
+
+.input-action-row .icon-button {
+  width: 40px;
+  height: 40px;
+}
+
 .pool-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 132px;

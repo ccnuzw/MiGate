@@ -290,6 +290,8 @@ func runCLI(args []string, stdout, stderr io.Writer, runner commandRunner) int {
 		return cliInfo(stdout, stderr, m)
 	case "reset-password":
 		return cliResetPassword(stdout, stderr, runner, m, args[1:])
+	case "hash-password":
+		return cliHashPassword(stdout, stderr, args[1:])
 	case "start", "stop":
 		return cliSystemctl(stderr, runner, args[0], "migate")
 	case "restart":
@@ -319,6 +321,20 @@ func runCLI(args []string, stdout, stderr io.Writer, runner commandRunner) int {
 		printCLIMenu(stderr, m)
 		return 2
 	}
+}
+
+func cliHashPassword(stdout, stderr io.Writer, args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage: mg hash-password <password>")
+		return 2
+	}
+	hashed, err := web.HashPanelPassword(args[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "hash password: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, hashed)
+	return 0
 }
 
 func printCLIMenu(w io.Writer, m messages) {
@@ -476,7 +492,12 @@ func cliResetPassword(stdout, stderr io.Writer, runner commandRunner, m messages
 			return 1
 		}
 	}
-	cfg.PanelPassword = password
+	hashed, err := web.HashPanelPassword(password)
+	if err != nil {
+		fmt.Fprintf(stderr, "hash password: %v\n", err)
+		return 1
+	}
+	cfg.PanelPassword = hashed
 	if err := writePanelConfig(defaultPanelConfigPath, cfg); err != nil {
 		fmt.Fprintf(stderr, "write %s: %v\n", defaultPanelConfigPath, err)
 		return 1

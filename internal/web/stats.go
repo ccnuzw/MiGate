@@ -36,6 +36,7 @@ func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xr
 	byClient := map[int64]clientTrafficSummary{}
 	for _, inbound := range inbounds {
 		inboundSummary := inboundTrafficSummary{Source: "db"}
+		inboundSourceSet := false
 		if isSingBoxProtocol(inbound.Protocol) {
 			inboundSummary.Source = "unavailable"
 		}
@@ -45,10 +46,19 @@ func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xr
 				clientSummary.Source = "unavailable"
 				clientSummary.Note = "sing-box realtime traffic stats are not yet wired"
 			} else if stats, ok := liveStats[client.Email]; ok {
+				clientSummary.Up = maxInt64(client.Up, stats.Uplink)
+				clientSummary.Down = maxInt64(client.Down, stats.Downlink)
 				clientSummary.XrayUp = stats.Uplink
 				clientSummary.XrayDown = stats.Downlink
+				clientSummary.Source = trafficSource(client.Up, client.Down, stats.Uplink, stats.Downlink)
 				clientSummary.RealtimeSource = "xray"
 				inboundSummary.RealtimeSource = "xray"
+			}
+			if !inboundSourceSet {
+				inboundSummary.Source = clientSummary.Source
+				inboundSourceSet = true
+			} else {
+				inboundSummary.Source = combineTrafficSources(inboundSummary.Source, clientSummary.Source)
 			}
 			byClient[client.ID] = clientSummary
 			inboundSummary.Up += clientSummary.Up
@@ -60,7 +70,40 @@ func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xr
 	return byInbound, byClient
 }
 
+func trafficSource(dbUp, dbDown, xrayUp, xrayDown int64) string {
+	upSource := "db"
+	if xrayUp >= dbUp {
+		upSource = "xray"
+	}
+	downSource := "db"
+	if xrayDown >= dbDown {
+		downSource = "xray"
+	}
+	if upSource == downSource {
+		return upSource
+	}
+	return "mixed"
+}
+
+func combineTrafficSources(current, next string) string {
+	if current == "" || current == next {
+		return next
+	}
+	if current == "unavailable" || next == "unavailable" {
+		return current
+	}
+	return "mixed"
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
+	cache := newStatsResponseCache(3 * time.Second)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -70,90 +113,145 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 			return
 		}
-		ctx := r.Context()
-		inb, err := store.ListInbounds(ctx)
+		detail := queryBool(r, "detail")
+		response, err := cache.get(r.Context(), store, statsClient, detail)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed", map[string]interface{}{"detail": err.Error()})
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		obs, err := store.ListOutbounds(ctx)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed", map[string]interface{}{"detail": err.Error()})
-			return
-		}
-		rules, err := store.ListRoutingRules(ctx)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_routing_rules_failed", map[string]interface{}{"detail": err.Error()})
-			return
-		}
-		var clientCount int
-		for _, in := range inb {
-			clientCount += len(in.Clients)
-		}
-		totalObs := len(obs)
-		enabledObs := 0
-		for _, ob := range obs {
-			if ob.Enabled {
-				enabledObs++
-			}
-		}
-		totalRules := len(rules)
-		enabledRules := 0
-		for _, r := range rules {
-			if r.Enabled {
-				enabledRules++
-			}
-		}
-
-		trafficByInbound, trafficByClient := summarizeTraffic(ctx, inb, statsClient)
-		var clientList []map[string]interface{}
-		var totalUp int64
-		var totalDown int64
-		for _, in := range inb {
-			for _, c := range in.Clients {
-				clientTraffic := trafficByClient[c.ID]
-				info := map[string]interface{}{
-					"id":                   c.ID,
-					"inbound_id":           c.InboundID,
-					"protocol":             in.Protocol,
-					"email":                c.Email,
-					"enabled":              c.Enabled,
-					"up":                   clientTraffic.Up,
-					"down":                 clientTraffic.Down,
-					"xray_up":              clientTraffic.XrayUp,
-					"xray_down":            clientTraffic.XrayDown,
-					"traffic_limit":        c.TrafficLimit,
-					"expiry_at":            c.ExpiryAt,
-					"traffic_stats_source": clientTraffic.Source,
-				}
-				if clientTraffic.RealtimeSource != "" {
-					info["realtime_stats_source"] = clientTraffic.RealtimeSource
-				}
-				if clientTraffic.Note != "" {
-					info["traffic_stats_note"] = clientTraffic.Note
-				}
-				clientList = append(clientList, info)
-			}
-		}
-		for _, traffic := range trafficByInbound {
-			totalUp += traffic.Up
-			totalDown += traffic.Down
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"inbounds":              len(inb),
-			"clients":               clientCount,
-			"client_details":        clientList,
-			"traffic_up":            totalUp,
-			"traffic_down":          totalDown,
-			"traffic_total":         totalUp + totalDown,
-			"outbounds":             totalObs,
-			"outbounds_enabled":     enabledObs,
-			"routing_rules":         totalRules,
-			"routing_rules_enabled": enabledRules,
-		})
+		_ = json.NewEncoder(w).Encode(response)
 	}
+}
+
+type statsResponseCache struct {
+	ttl      time.Duration
+	mu       sync.Mutex
+	now      func() time.Time
+	byDetail map[bool]statsResponseCacheEntry
+}
+
+type statsResponseCacheEntry struct {
+	expiresAt time.Time
+	value     map[string]interface{}
+}
+
+func newStatsResponseCache(ttl time.Duration) *statsResponseCache {
+	return &statsResponseCache{ttl: ttl, now: time.Now, byDetail: map[bool]statsResponseCacheEntry{}}
+}
+
+func (c *statsResponseCache) get(ctx context.Context, store Store, statsClient xray.StatsClient, detail bool) (map[string]interface{}, error) {
+	if c == nil || c.ttl <= 0 {
+		return buildStatsResponse(ctx, store, statsClient, detail)
+	}
+	now := c.now()
+	c.mu.Lock()
+	if entry, ok := c.byDetail[detail]; ok && now.Before(entry.expiresAt) {
+		value := entry.value
+		c.mu.Unlock()
+		return value, nil
+	}
+	c.mu.Unlock()
+
+	value, err := buildStatsResponse(ctx, store, statsClient, detail)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.byDetail[detail]; ok && c.now().Before(entry.expiresAt) {
+		return entry.value, nil
+	}
+	c.byDetail[detail] = statsResponseCacheEntry{value: value, expiresAt: c.now().Add(c.ttl)}
+	return value, nil
+}
+
+func buildStatsResponse(ctx context.Context, store Store, statsClient xray.StatsClient, detail bool) (map[string]interface{}, error) {
+	inb, err := store.ListInboundTraffic(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list_inbounds_failed")
+	}
+	obs, err := store.ListOutbounds(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list_outbounds_failed")
+	}
+	rules, err := store.ListRoutingRules(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list_routing_rules_failed")
+	}
+	var clientCount int
+	for _, in := range inb {
+		clientCount += len(in.Clients)
+	}
+	enabledObs := 0
+	for _, ob := range obs {
+		if ob.Enabled {
+			enabledObs++
+		}
+	}
+	enabledRules := 0
+	for _, rule := range rules {
+		if rule.Enabled {
+			enabledRules++
+		}
+	}
+
+	trafficByInbound, trafficByClient := summarizeTraffic(ctx, inb, statsClient)
+	var totalUp int64
+	var totalDown int64
+	for _, traffic := range trafficByInbound {
+		totalUp += traffic.Up
+		totalDown += traffic.Down
+	}
+
+	response := map[string]interface{}{
+		"inbounds":              len(inb),
+		"clients":               clientCount,
+		"traffic_up":            totalUp,
+		"traffic_down":          totalDown,
+		"traffic_total":         totalUp + totalDown,
+		"outbounds":             len(obs),
+		"outbounds_enabled":     enabledObs,
+		"routing_rules":         len(rules),
+		"routing_rules_enabled": enabledRules,
+	}
+	if !detail {
+		return response, nil
+	}
+	clientList := make([]map[string]interface{}, 0, clientCount)
+	for _, in := range inb {
+		for _, c := range in.Clients {
+			clientTraffic := trafficByClient[c.ID]
+			info := map[string]interface{}{
+				"id":                   c.ID,
+				"inbound_id":           c.InboundID,
+				"protocol":             in.Protocol,
+				"email":                c.Email,
+				"enabled":              c.Enabled,
+				"up":                   clientTraffic.Up,
+				"down":                 clientTraffic.Down,
+				"xray_up":              clientTraffic.XrayUp,
+				"xray_down":            clientTraffic.XrayDown,
+				"traffic_limit":        c.TrafficLimit,
+				"expiry_at":            c.ExpiryAt,
+				"traffic_stats_source": clientTraffic.Source,
+			}
+			if clientTraffic.RealtimeSource != "" {
+				info["realtime_stats_source"] = clientTraffic.RealtimeSource
+			}
+			if clientTraffic.Note != "" {
+				info["traffic_stats_note"] = clientTraffic.Note
+			}
+			clientList = append(clientList, info)
+		}
+	}
+	response["client_details"] = clientList
+	return response, nil
+}
+
+func queryBool(r *http.Request, name string) bool {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(name)))
+	return value == "1" || value == "true" || value == "yes"
 }
 
 func dashboardSummaryHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
@@ -259,7 +357,8 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 		}
 		for _, client := range inbound.Clients {
 			clientCount++
-			used := client.Up + client.Down
+			traffic := trafficByClient[client.ID]
+			used := traffic.Up + traffic.Down
 			expired := client.ExpiryAt > 0 && client.ExpiryAt <= now
 			limited := client.TrafficLimit > 0 && used >= client.TrafficLimit
 			if expired {
@@ -289,6 +388,7 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 			enabledRules++
 		}
 	}
+	snapshot := validationSnapshot{inbounds: inbounds, outbounds: outbounds, rules: rules}
 	return map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"counts": map[string]int{
@@ -314,10 +414,16 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 		"protocols":      protocols,
 		"traffic_series": trafficSeries,
 		"validation": map[string]configValidationResult{
-			"xray":    validateXrayConfig(ctx, store),
-			"singbox": validateSingboxConfig(ctx, store),
+			"xray":    validateXrayConfigSnapshot(snapshot),
+			"singbox": validateSingboxConfigSnapshot(snapshot),
 		},
 	}, nil
+}
+
+type validationSnapshot struct {
+	inbounds  []db.Inbound
+	outbounds []db.Outbound
+	rules     []db.RoutingRule
 }
 
 type cpuSample struct {

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, RefreshCw, RotateCcw, Save, ShieldX, UploadCloud } from 'lucide-react';
+import { ChevronDown, ChevronUp, ExternalLink, RefreshCw, RotateCcw, Save, ShieldX, UploadCloud } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { ApiError } from '../api/client';
@@ -16,6 +16,7 @@ export default function SettingsPage() {
   const { showToast } = useToast();
   const { text } = useI18n();
   const [watchUpdateStatus, setWatchUpdateStatus] = useState(false);
+  const [showAllSessions, setShowAllSessions] = useState(false);
   const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, retry: false, staleTime: 60_000 });
   const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, retry: false, staleTime: 60_000 });
@@ -45,6 +46,15 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ['cert-status'] });
     },
     onError: (error) => showToast(errorMessage(error, text('保存设置失败')), 'error'),
+  });
+  const saveCert = useMutation({
+    mutationFn: (values: Settings) => api.saveSettings(certSettingsPayload(settings.data, values)),
+    onSuccess: () => {
+      showToast(text('证书配置已保存'), 'success');
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['cert-status'] });
+    },
+    onError: (error) => showToast(errorMessage(error, text('保存证书配置失败')), 'error'),
   });
   const restart = useMutation({
     mutationFn: api.restart,
@@ -79,6 +89,17 @@ export default function SettingsPage() {
     },
     onError: (error) => showToast(errorMessage(error, text('撤销会话失败')), 'error'),
   });
+  const revokeOthers = useMutation({
+    mutationFn: api.revokeOtherSessions,
+    onSuccess: (result) => {
+      showToast(`${text('已撤销')} ${result.revoked} ${text('个其他会话')}`, 'success');
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    },
+    onError: (error) => showToast(errorMessage(error, text('撤销其他会话失败')), 'error'),
+  });
+  const sessionItems = sessions.data || [];
+  const visibleSessions = showAllSessions ? sessionItems : sessionItems.slice(0, defaultVisibleSessions);
+  const hiddenSessionCount = Math.max(0, sessionItems.length - visibleSessions.length);
 
   if (settings.isLoading) return <LoadingBlock />;
 
@@ -98,8 +119,6 @@ export default function SettingsPage() {
           <Field label={text('Web 基础路径')}><input placeholder="/panel" {...form.register('web_base_path')} /></Field>
           <Field label={text('数据库路径')}><input {...form.register('database_path')} /></Field>
           <Field label={text('Xray 配置路径')}><input {...form.register('xray_config_path')} /></Field>
-          <Field label={text('证书域名')}><input placeholder="example.com" {...form.register('cert_domain')} /></Field>
-          <Field label={text('证书邮箱')}><input placeholder="admin@example.com" {...form.register('cert_email')} /></Field>
           <div className="span-2 flex flex-wrap justify-end gap-2">
             <button type="button" className="btn secondary" onClick={() => { settings.refetch(); cert.refetch(); service.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
             <SpinnerButton type="submit" className="btn primary" loading={save.isPending}><Save className="h-4 w-4" /> {text('保存设置')}</SpinnerButton>
@@ -109,45 +128,65 @@ export default function SettingsPage() {
       </Card>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="p-5">
-          <h2 className="section-title mb-3">{text('TLS 证书')}</h2>
-          <div className="grid gap-2 text-sm text-panel-muted">
-            <div>{text('状态')}：{text(cert.data?.issued ? '已获取' : cert.data?.domain ? '未获取' : '未配置')}</div>
-            <div>{text('域名')}：{cert.data?.domain || certDomain || '-'}</div>
-            <div className="break-all">{text('证书')}：{cert.data?.cert_path || '-'}</div>
-            <div className="break-all">{text('私钥')}：{cert.data?.key_path || '-'}</div>
-            <SpinnerButton className="btn secondary mt-2 w-fit" loading={issueCert.isPending} disabled={!certDomain || !certEmail} onClick={async () => (await confirm({ title: text('获取 TLS 证书？'), description: text('该操作会调用 acme.sh 并可能占用 80 端口。') })) && issueCert.mutate()}>{text('获取证书')}</SpinnerButton>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="section-title">{text('TLS 证书配置')}</h2>
+            <div className="flex flex-wrap gap-2">
+              <SpinnerButton type="button" className="btn secondary" loading={saveCert.isPending} onClick={form.handleSubmit((values) => saveCert.mutate(values))}><Save className="h-4 w-4" /> {text('保存证书配置')}</SpinnerButton>
+              <SpinnerButton className="btn primary" loading={issueCert.isPending} disabled={!certDomain || !certEmail} onClick={async () => (await confirm({ title: text('获取 TLS 证书？'), description: text('该操作会调用 acme.sh 并可能占用 80 端口。') })) && issueCert.mutate()}>{text('获取证书')}</SpinnerButton>
+            </div>
+          </div>
+          <div className="grid gap-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={text('证书域名')}><input placeholder="example.com" {...form.register('cert_domain')} /></Field>
+              <Field label={text('证书邮箱')}><input placeholder="admin@example.com" {...form.register('cert_email')} /></Field>
+            </div>
+            <div className="grid gap-2 text-sm text-panel-muted">
+              <div>{text('状态')}：{text(cert.data?.issued ? '已获取' : cert.data?.domain ? '未获取' : '未配置')}</div>
+              <div>{text('域名')}：{cert.data?.domain || certDomain || '-'}</div>
+              <div className="break-all">{text('证书')}：{cert.data?.cert_path || '-'}</div>
+              <div className="break-all">{text('私钥')}：{cert.data?.key_path || '-'}</div>
+            </div>
           </div>
         </Card>
         <Card className="p-5">
-          <h2 className="section-title mb-3">{text('服务状态')}</h2>
-          <div className="grid gap-2 text-sm text-panel-muted">
-            <div>{service.data?.service || 'migate'} · {text(serviceLabel(service.data?.status))}</div>
-            {service.data?.detail ? <div>{service.data.detail}</div> : null}
-            <button className="btn secondary mt-2 w-fit" onClick={() => service.refetch()}><RefreshCw className="h-4 w-4" /> {text('刷新状态')}</button>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="section-title">{text('服务维护')}</h2>
+            <div className="flex flex-wrap gap-2">
+              <button className="btn secondary" onClick={() => service.refetch()}><RefreshCw className="h-4 w-4" /> {text('刷新状态')}</button>
+              <button className="btn secondary" onClick={() => updateCheck.refetch()}><RefreshCw className="h-4 w-4" /> {text('检查更新')}</button>
+              <SpinnerButton className="btn primary" loading={update.isPending} disabled={isUpdateInProgress(updateStatus.data?.status)} onClick={async () => (await confirm({ title: text('立即更新 MiGate？'), description: text('更新器将通过 systemd-run 在服务外执行。') })) && update.mutate()}><UploadCloud className="h-4 w-4" /> {text('立即更新')}</SpinnerButton>
+            </div>
+          </div>
+          <div className="grid gap-4 text-sm text-panel-muted xl:grid-cols-2">
+            <div className="grid gap-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-panel-muted">{text('运行状态')}</div>
+              <div>{service.data?.service || 'migate'} · {text(serviceLabel(service.data?.status))}</div>
+              {service.data?.detail ? <div>{service.data.detail}</div> : null}
+            </div>
+            <div className="grid gap-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-panel-muted">{text('版本更新')}</div>
+              <div>{text('当前')}：{updateCheck.data?.current_version || '-'}</div>
+              <div>{text('最新')}：{updateCheck.data?.latest_version || '-'}</div>
+              <div>{text('可更新')}：{text(updateCheck.data?.update_available ? '是' : '否')}</div>
+              <div>{text('更新状态')}：{updateStatus.data?.status || '-'}</div>
+              {updateStatus.data?.message ? <div>{text('消息')}：{updateStatus.data.message}</div> : null}
+              {updateCheck.data?.release_url ? <a className="inline-flex w-fit items-center gap-1 text-teal-700" href={updateCheck.data.release_url} target="_blank" rel="noreferrer">{text('发布说明')} <ExternalLink className="h-3 w-3" /></a> : null}
+            </div>
           </div>
         </Card>
       </div>
       <Card className="p-5">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="section-title">{text('更新')}</h2>
-          <div className="flex flex-wrap gap-2">
-            <button className="btn secondary" onClick={() => updateCheck.refetch()}><RefreshCw className="h-4 w-4" /> {text('检查更新')}</button>
-            <SpinnerButton className="btn primary" loading={update.isPending} disabled={isUpdateInProgress(updateStatus.data?.status)} onClick={async () => (await confirm({ title: text('立即更新 MiGate？'), description: text('更新器将通过 systemd-run 在服务外执行。') })) && update.mutate()}><UploadCloud className="h-4 w-4" /> {text('立即更新')}</SpinnerButton>
+          <div>
+            <h2 className="section-title">{text('活动会话')}</h2>
+            <div className="mt-1 text-xs text-panel-muted">{text('最多保留最近')} {maxActiveSessionsLabel} {text('个活动会话')}</div>
           </div>
+          <SpinnerButton className="btn danger h-8" loading={revokeOthers.isPending} disabled={sessionItems.length <= 1} onClick={async () => (await confirm({ title: text('撤销其他会话？'), description: text('当前会话会保留，其他设备和浏览器需要重新登录。'), tone: 'danger' })) && revokeOthers.mutate()}>
+            <ShieldX className="h-4 w-4" /> {text('撤销其他会话')}
+          </SpinnerButton>
         </div>
-        <div className="grid gap-2 text-sm text-panel-muted sm:grid-cols-2">
-          <div>{text('当前')}：{updateCheck.data?.current_version || '-'}</div>
-          <div>{text('最新')}：{updateCheck.data?.latest_version || '-'}</div>
-          <div>{text('可更新')}：{text(updateCheck.data?.update_available ? '是' : '否')}</div>
-          <div>{text('状态')}：{updateStatus.data?.status || '-'}</div>
-          {updateStatus.data?.message ? <div className="sm:col-span-2">{text('消息')}：{updateStatus.data.message}</div> : null}
-          {updateCheck.data?.release_url ? <a className="inline-flex items-center gap-1 text-teal-700" href={updateCheck.data.release_url} target="_blank" rel="noreferrer">{text('发布说明')} <ExternalLink className="h-3 w-3" /></a> : null}
-        </div>
-      </Card>
-      <Card className="p-5">
-        <h2 className="section-title mb-3">{text('活动会话')}</h2>
         <div className="grid gap-2">
-          {(sessions.data || []).map((item) => (
+          {visibleSessions.map((item) => (
             <div key={item.id} className="client-row">
               <div className="min-w-0">
                 <div className="font-medium">{text('会话')} {item.id_prefix}</div>
@@ -162,12 +201,21 @@ export default function SettingsPage() {
               </SpinnerButton>
             </div>
           ))}
-          {(sessions.data || []).length === 0 ? <div className="text-sm text-panel-muted">{text('暂无会话数据')}</div> : null}
+          {hiddenSessionCount > 0 || showAllSessions ? (
+            <button type="button" className="btn secondary h-8 w-fit" onClick={() => setShowAllSessions((value) => !value)}>
+              {showAllSessions ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              {showAllSessions ? text('收起会话') : `${text('展开全部')} ${sessionItems.length} ${text('个会话')}`}
+            </button>
+          ) : null}
+          {sessionItems.length === 0 ? <div className="text-sm text-panel-muted">{text('暂无会话数据')}</div> : null}
         </div>
       </Card>
     </div>
   );
 }
+
+export const defaultVisibleSessions = 5;
+export const maxActiveSessionsLabel = 10;
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof ApiError ? error.message : fallback;
@@ -175,6 +223,15 @@ function errorMessage(error: unknown, fallback: string) {
 
 export function settingsPayload(current: Settings | undefined, values: Settings): Settings {
   return { ...current, ...values, panel_password: values.panel_password || '' };
+}
+
+export function certSettingsPayload(current: Settings | undefined, values: Settings): Settings {
+  return {
+    ...current,
+    cert_domain: values.cert_domain || '',
+    cert_email: values.cert_email || '',
+    panel_password: '',
+  };
 }
 
 export function certIssuePayload(values: Settings, current?: { domain?: string; email?: string }): { domain: string; email: string } {
