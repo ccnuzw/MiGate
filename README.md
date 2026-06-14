@@ -69,8 +69,9 @@ After installation, access:
 http://127.0.0.1:9999/panel
 ```
 
-The panel service binds to `127.0.0.1` by default. For public access, expose it
-through a reverse proxy such as Nginx or Caddy with HTTPS, and set
+The panel service binds to `0.0.0.0` by default for direct VPS panel access. For
+production use, set a strong password and prefer a reverse proxy such as Nginx or
+Caddy with HTTPS. Set
 `public_host` in `/etc/migate/panel.json` so subscription share links use your
 public domain or address. If MiGate is behind a trusted HTTPS reverse proxy, set
 `trust_proxy` to `true` so Secure cookies and HSTS can use `X-Forwarded-Proto`.

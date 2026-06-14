@@ -30,7 +30,7 @@ PANEL_PORT=9999
 PANEL_USERNAME="admin"
 PANEL_PASSWORD=""
 WEB_BASE_PATH="/panel"
-PANEL_BIND_HOST="${MIGATE_PANEL_BIND_HOST:-127.0.0.1}"
+PANEL_BIND_HOST="${MIGATE_PANEL_BIND_HOST:-0.0.0.0}"
 GENERATED_PASSWORD=0
 
 log_info() { printf '[INFO] %s\n' "$*"; }
@@ -64,7 +64,7 @@ Options:
 Environment:
   MIGATE_VERSION=vX.Y.Z
   MIGATE_REPO=owner/repo
-  MIGATE_PANEL_BIND_HOST=127.0.0.1
+  MIGATE_PANEL_BIND_HOST=0.0.0.0
   SINGBOX_VERSION=1.13.13
 EOF
 }
@@ -852,7 +852,7 @@ finish_message() {
   log_ok "MiGate binary: $MIGATE_BIN"
   log_ok "CLI: mg"
   log_info "WebUI: http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}"
-  log_warn "默认仅监听 ${PANEL_BIND_HOST}。公网访问请通过 Nginx/Caddy 等反向代理并启用 HTTPS。"
+  log_warn "当前监听 ${PANEL_BIND_HOST}。生产公网使用请配置强密码，并优先通过 Nginx/Caddy 等反向代理启用 HTTPS。"
   log_info "Username: ${PANEL_USERNAME}"
   if [ "$GENERATED_PASSWORD" -eq 1 ] || [ -n "$PANEL_PASSWORD" ]; then
     log_warn "Password: ${PANEL_PASSWORD}"

@@ -101,8 +101,9 @@ The installer writes or repairs:
 /etc/systemd/system/migate.service
 ```
 
-The generated service binds the panel to `127.0.0.1`. Publish the WebUI with a
-reverse proxy and HTTPS instead of exposing the panel listener directly. Use
+The generated service binds the panel to `0.0.0.0` by default for VPS panel-style
+access. For production use, set a strong password and prefer publishing through a
+reverse proxy with HTTPS. Use
 `public_host` in `/etc/migate/panel.json` to control the host embedded in
 subscription share links. If the proxy terminates HTTPS, set `trust_proxy` to
 `true` only when MiGate is reachable exclusively through that trusted proxy, so
