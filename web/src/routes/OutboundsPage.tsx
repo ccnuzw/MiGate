@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Edit2, Gauge, Plus, Power, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { Outbound, PingResult, ProxyPoolProxy } from '../api/types';
+import type { Outbound, PingResult, ProxyPoolProxy, ProxyPoolResponse } from '../api/types';
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
@@ -24,6 +24,7 @@ const schema = z.object({
 type InputValues = z.input<typeof schema>;
 type Values = z.output<typeof schema>;
 type ProxyPoolType = 'socks5' | 'http' | 'https';
+const proxyPoolTypes: ProxyPoolType[] = ['socks5', 'http', 'https'];
 
 export default function OutboundsPage() {
   const queryClient = useQueryClient();
@@ -40,6 +41,16 @@ export default function OutboundsPage() {
   const defaultItems = items.filter(isFixedDefaultOutbound);
   const customItems = items.filter((item) => !isFixedDefaultOutbound(item));
   const reorderableItems = customItems.filter(isReorderableOutbound);
+  const hasPoolOutbounds = customItems.some((item) => Boolean(outboundPoolType(item)));
+  const poolLookups = useQueries({
+    queries: proxyPoolTypes.map((type) => ({
+      queryKey: ['proxy-pool', type, ''],
+      queryFn: () => api.proxyPool(type),
+      enabled: hasPoolOutbounds,
+      staleTime: 60_000,
+    })),
+  });
+  const proxyLookup = useMemo(() => buildProxyLookup(poolLookups.map((result) => result.data)), [poolLookups]);
 
   const toggle = useMutation({
     mutationFn: (item: Outbound) => api.toggleOutbound(item, !item.enabled),
@@ -126,9 +137,7 @@ export default function OutboundsPage() {
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs text-panel-muted">{text('默认')}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                  <span>{item.protocol}</span>
-                  {item.address ? <span>{item.address}:{item.port || ''}</span> : null}
-                  {item.remark ? <span>{outboundRemarkLabel(item.remark, text)}</span> : null}
+                  {outboundMetaParts(item, text, proxyLookup.get(outboundLookupKey(item))).map((part) => <span key={part}>{part}</span>)}
                   <span>{formatLatency(latency[item.id], text)}</span>
                 </div>
               </div>
@@ -145,12 +154,11 @@ export default function OutboundsPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs">#{index + 1}</span>
                   <h2 className="truncate text-base font-semibold">{item.tag}</h2>
+                  <OutboundProtocolBadge item={item} />
                   <StatusBadge enabled={item.enabled} />
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                  <span>{item.protocol}</span>
-                  {item.address ? <span>{item.address}:{item.port || ''}</span> : null}
-                  {item.remark ? <span>{outboundRemarkLabel(item.remark, text)}</span> : null}
+                  {outboundMetaParts(item, text, proxyLookup.get(outboundLookupKey(item))).slice(1).map((part) => <span key={part}>{part}</span>)}
                   <span>{formatLatency(latency[item.id], text)}</span>
                 </div>
               </div>
@@ -330,13 +338,59 @@ function moveCustomOutbound(items: Outbound[], index: number, delta: number, sav
   save(movedCustomOutboundIds(items, index, delta));
 }
 
+function OutboundProtocolBadge({ item }: { item: Outbound }) {
+  const type = outboundPoolType(item) || item.protocol || 'unknown';
+  const label = type === 'socks5' ? 'SOCKS5' : type.toUpperCase();
+  return <span className={`protocol-badge outbound-protocol-${type || 'default'}`}>{label}</span>;
+}
+
 function proxyKey(proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) {
   return `${proxy.address}:${proxy.port}`;
+}
+
+function outboundPoolType(item: Pick<Outbound, 'tag'>): ProxyPoolType | '' {
+  if (item.tag.startsWith('pool-https-')) return 'https';
+  if (item.tag.startsWith('pool-http-')) return 'http';
+  if (item.tag.startsWith('pool-socks-')) return 'socks5';
+  return '';
+}
+
+function outboundLookupKey(item: Pick<Outbound, 'tag' | 'address' | 'port'>) {
+  const type = outboundPoolType(item);
+  if (!type || !item.address || !item.port) return '';
+  return `${type}:${proxyKey({ address: item.address, port: item.port })}`;
+}
+
+function buildProxyLookup(responses: Array<ProxyPoolResponse | undefined>) {
+  const lookup = new Map<string, ProxyPoolProxy>();
+  responses.forEach((response, index) => {
+    const type = proxyPoolTypes[index];
+    (response?.proxies || []).forEach((proxy) => {
+      lookup.set(`${type}:${proxyKey(proxy)}`, proxy);
+    });
+  });
+  return lookup;
 }
 
 export function outboundRemarkLabel(remark: string, text: (value: string) => string) {
   if (remark === '直接连接' || remark === '阻断') return text(remark);
   return remark;
+}
+
+export function outboundMetaParts(item: Pick<Outbound, 'protocol' | 'address' | 'port' | 'remark'>, text: (value: string) => string, proxy?: Pick<ProxyPoolProxy, 'country' | 'country_code'>): string[] {
+  const remark = item.remark ? outboundRemarkLabel(item.remark, text) : '';
+  const country = proxyCountryLabel(proxy);
+  const showCountry = country && (!remark || !remark.includes(country));
+  return [
+    item.protocol,
+    item.address ? `${item.address}:${item.port || ''}` : '',
+    showCountry ? `${text('国家/地区')}：${country}` : '',
+    remark ? `${text('备注')}：${remark}` : '',
+  ].filter(Boolean);
+}
+
+function proxyCountryLabel(proxy?: Pick<ProxyPoolProxy, 'country' | 'country_code'>) {
+  return String(proxy?.country || proxy?.country_code || '').trim();
 }
 
 function errorMessage(error: unknown, fallback: string) {

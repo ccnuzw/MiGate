@@ -219,16 +219,17 @@ dependency_status() {
     log_info "可选依赖 wget: 未找到"
   fi
   if command_exists unzip; then
-    log_ok "可选依赖 unzip: 已找到 ($(command -v unzip))"
+    log_ok "依赖 unzip: 已找到 ($(command -v unzip))"
   else
-    log_info "可选依赖 unzip: 未找到"
+    log_warn "依赖 unzip: 未找到"
+    missing=1
   fi
   return "$missing"
 }
 
 require_dependencies() {
   local missing=0
-  for dep in curl tar; do
+  for dep in curl tar unzip; do
     if ! command_exists "$dep"; then
       log_error "required dependency missing: ${dep}"
       missing=1
@@ -790,16 +791,92 @@ restart_migate_service() {
 
 install_xray() {
   section "安装/修复 Xray"
-  log_error "已禁用自动 Xray 安装：上游安装脚本未提供 MiGate 可固定校验的 checksum/signature。"
-  log_info "请手动安装并校验固定版本的 Xray 后执行："
-  log_info "  mkdir -p /usr/local/etc/xray"
-  log_info "  ln -sf ${INSTALL_DIR}/xray.json /usr/local/etc/xray/xray.json"
-  log_info "  ln -sf ${INSTALL_DIR}/xray.json /usr/local/etc/xray/config.json"
-  log_info "  systemctl enable --now xray"
+  local xray_version="${XRAY_VERSION:-26.3.27}"
+  local xray_asset_arch
+  case "$(arch)" in
+    amd64) xray_asset_arch="64" ;;
+    arm64) xray_asset_arch="arm64-v8a" ;;
+    *) log_error "unsupported Xray architecture"; return 1 ;;
+  esac
+  local xray_artifact="Xray-linux-${xray_asset_arch}.zip"
+  local xray_url="https://github.com/XTLS/Xray-core/releases/download/v${xray_version}/${xray_artifact}"
+  local xray_dgst_url="${xray_url}.dgst"
   if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] curl -fL %q -o "$tmp_xray/%s"\n' "$xray_url" "$xray_artifact"
+    printf '[DRY-RUN] curl -fL %q -o "$tmp_xray/%s.dgst"\n' "$xray_dgst_url" "$xray_artifact"
+    printf '[DRY-RUN] extract SHA2-256 to "$tmp_xray/%s.sha256"\n' "$xray_artifact"
+    printf '[DRY-RUN] verify sha256 with "%s.sha256"\n' "$xray_artifact"
+    printf '[DRY-RUN] install /usr/local/bin/xray\n'
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+      printf '[DRY-RUN] write /etc/systemd/system/xray.service and restart xray\n'
+    else
+      printf '[DRY-RUN] skip /etc/systemd/system/xray.service because systemd is unavailable\n'
+    fi
     return 0
   fi
-  return 1
+  if [ "$ASSUME_YES" -ne 1 ] && [ "$CORE_PROMPTS_CONFIRMED" -ne 1 ]; then
+    if ! confirm_no "确认安装/修复 Xray ${xray_version}？"; then
+      log_warn "跳过 Xray 安装。"
+      return 0
+    fi
+  fi
+  log_info "下载 Xray ${xray_version}: ${xray_url}"
+  local tmp_xray
+  tmp_xray="$(mktemp -d)"
+  curl -fL "$xray_url" -o "$tmp_xray/$xray_artifact"
+  log_info "下载 Xray 校验文件"
+  curl -fL "$xray_dgst_url" -o "$tmp_xray/$xray_artifact.dgst"
+  awk -F'= ' -v asset="$xray_artifact" '/^SHA2-256=/{print $2 "  " asset}' "$tmp_xray/$xray_artifact.dgst" > "$tmp_xray/$xray_artifact.sha256"
+  if ! grep -Eq '^[0-9a-fA-F]{64}[[:space:]]+' "$tmp_xray/$xray_artifact.sha256"; then
+    log_error "invalid Xray checksum file"
+    rm -rf "$tmp_xray"
+    return 1
+  fi
+  log_info "校验 Xray sha256"
+  verify_sha256 "$xray_artifact.sha256" "$tmp_xray"
+  log_info "解压并安装 Xray"
+  unzip -q "$tmp_xray/$xray_artifact" -d "$tmp_xray/xray"
+  cp "$tmp_xray/xray/xray" /usr/local/bin/xray
+  chmod +x /usr/local/bin/xray
+  mkdir -p /usr/local/share/xray "$INSTALL_DIR" /usr/local/etc/xray
+  [ -f "$tmp_xray/xray/geosite.dat" ] && cp "$tmp_xray/xray/geosite.dat" /usr/local/share/xray/geosite.dat
+  [ -f "$tmp_xray/xray/geoip.dat" ] && cp "$tmp_xray/xray/geoip.dat" /usr/local/share/xray/geoip.dat
+  rm -rf "$tmp_xray"
+  if [ ! -f "${INSTALL_DIR}/xray.json" ]; then
+    printf '%s\n' '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"protocol":"freedom","tag":"direct"},{"protocol":"blackhole","tag":"blocked"}]}' > "${INSTALL_DIR}/xray.json"
+  fi
+  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/xray.json
+  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/config.json
+  if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
+    log_warn "systemd 不可用，跳过 xray.service 写入。"
+    log_info "Manual run: /usr/local/bin/xray run -config /usr/local/etc/xray/config.json"
+    log_ok "Xray 安装/修复完成"
+    return 0
+  fi
+  cat > /etc/systemd/system/xray.service <<'UNIT'
+[Unit]
+Description=MiGate managed Xray service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable xray
+  systemctl restart xray 2>/dev/null || true
+  log_ok "Xray 安装/修复完成"
 }
 
 install_singbox() {

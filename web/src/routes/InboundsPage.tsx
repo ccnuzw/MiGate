@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Edit2, Link2, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
+import { Columns2, Copy, Edit2, Link2, Plus, Power, RectangleHorizontal, RotateCcw, Trash2 } from 'lucide-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ApiError, appPath } from '../api/client';
 import { api } from '../api/endpoints';
@@ -141,6 +141,7 @@ export const inboundCapabilities: Record<InboundProtocol, InboundCapability> = {
 };
 
 type SortKey = 'id' | 'port' | 'protocol' | 'clients';
+type InboundListColumns = 1 | 2;
 
 export default function InboundsPage() {
   const queryClient = useQueryClient();
@@ -152,6 +153,7 @@ export default function InboundsPage() {
   const [clientInbound, setClientInbound] = useState<Inbound | null>(null);
   const [editingClient, setEditingClient] = useState<{ inbound: Inbound; client: Client } | null>(null);
   const [search, setSearch] = useState('');
+  const [inboundColumns, setInboundColumns] = useState<InboundListColumns>(2);
   const [sort, setSort] = useState<SortKey>('id');
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, staleTime: 30_000 });
   const inboundTraffic = useQuery({
@@ -233,6 +235,14 @@ export default function InboundsPage() {
       />
       <div className="toolbar">
         <input className="max-w-md" placeholder="搜索入站、协议、端口..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="segmented-control" aria-label={text('入站列表布局')}>
+          <button type="button" className={inboundColumns === 1 ? 'active' : ''} onClick={() => setInboundColumns(1)} aria-pressed={inboundColumns === 1} title={text('一行一张')}>
+            <RectangleHorizontal className="h-4 w-4" />
+          </button>
+          <button type="button" className={inboundColumns === 2 ? 'active' : ''} onClick={() => setInboundColumns(2)} aria-pressed={inboundColumns === 2} title={text('一行两张')}>
+            <Columns2 className="h-4 w-4" />
+          </button>
+        </div>
         <select className="w-44" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
           <option value="id">按创建顺序</option>
           <option value="port">按端口</option>
@@ -243,17 +253,17 @@ export default function InboundsPage() {
       {filtered.length === 0 ? (
         <EmptyState title="暂无入站" description="创建第一个入站后，可继续为它添加客户端并复制订阅链接。" />
       ) : (
-        <div className="grid gap-4">
+        <div className={`inbound-card-grid ${inboundColumns === 2 ? 'inbound-card-grid-2' : ''}`}>
           {filtered.map((inbound) => (
             <div key={inbound.id} className="resource-card">
               <div className="resource-header">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="truncate text-base font-semibold">{inbound.remark || `${inbound.protocol}:${inbound.port}`}</h2>
+                    <ProtocolBadge protocol={inbound.protocol} />
                     <StatusBadge enabled={inbound.enabled} />
                   </div>
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                    <span>{inbound.protocol}</span>
                     <span>:{inbound.port}</span>
                     <span>{inbound.network || 'tcp'} / {inbound.security || 'none'}</span>
                     <span>{(inbound.clients || []).length} 客户端</span>
@@ -370,6 +380,21 @@ function MetaItem({ label, value }: { label: string; value: string }) {
       <span>{value}</span>
     </span>
   );
+}
+
+const protocolBadgeClasses: Record<string, string> = {
+  vless: 'protocol-vless',
+  vmess: 'protocol-vmess',
+  trojan: 'protocol-trojan',
+  shadowsocks: 'protocol-shadowsocks',
+  hysteria2: 'protocol-hysteria2',
+  tuic: 'protocol-tuic',
+  shadowtls: 'protocol-shadowtls',
+};
+
+function ProtocolBadge({ protocol }: { protocol: string }) {
+  const key = String(protocol || '').toLowerCase();
+  return <span className={`protocol-badge ${protocolBadgeClasses[key] || 'protocol-default'}`}>{protocol || 'unknown'}</span>;
 }
 
 export function createDefaultInbound(): Inbound {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Outbound } from '../api/types';
-import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundRemarkLabel } from './OutboundsPage';
+import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundMetaParts, outboundRemarkLabel } from './OutboundsPage';
 
 describe('outbound helpers', () => {
   const outbounds: Outbound[] = [
@@ -32,5 +32,21 @@ describe('outbound helpers', () => {
     expect(outboundRemarkLabel('直接连接', text)).toBe('Direct connection');
     expect(outboundRemarkLabel('阻断', text)).toBe('Blocked');
     expect(outboundRemarkLabel('HK proxy', text)).toBe('HK proxy');
+  });
+
+  it('shows imported pool country details in outbound card metadata', () => {
+    const text = (value: string) => value;
+
+    expect(outboundMetaParts({
+      protocol: 'http',
+      address: '205.178.136.32',
+      port: 8447,
+      remark: 'Jacksonville AS19871 Web.com Group, Inc.',
+    }, text, { country: 'United States', country_code: 'US' })).toEqual([
+      'http',
+      '205.178.136.32:8447',
+      '国家/地区：United States',
+      '备注：Jacksonville AS19871 Web.com Group, Inc.',
+    ]);
   });
 });

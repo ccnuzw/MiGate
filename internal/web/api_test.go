@@ -145,14 +145,14 @@ func TestSocks5PoolAPIFetchesRegionsAndImportsOutbound(t *testing.T) {
 	}
 
 	importResp := httptest.NewRecorder()
-	payload := strings.NewReader(`{"address":"184.181.217.201","port":4145,"city":"Goodyear","asn":"AS22773","organization":"Cox Communications"}`)
+	payload := strings.NewReader(`{"address":"184.181.217.201","port":4145,"country_code":"US","country":"美国","city":"Goodyear","asn":"AS22773","organization":"Cox Communications"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds/socks5-pool/import", payload)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(importResp, req)
 	if importResp.Code != http.StatusCreated {
 		t.Fatalf("expected 201 importing socks5 outbound, got %d: %s", importResp.Code, importResp.Body.String())
 	}
-	for _, want := range []string{`"protocol":"socks"`, `"address":"184.181.217.201"`, `"port":4145`, `"tag":"pool-socks-184-181-217-201-4145"`, `"remark":"Goodyear AS22773 Cox Communications"`} {
+	for _, want := range []string{`"protocol":"socks"`, `"address":"184.181.217.201"`, `"port":4145`, `"tag":"pool-socks-184-181-217-201-4145"`, `"remark":"美国 Goodyear AS22773 Cox Communications"`} {
 		if !strings.Contains(importResp.Body.String(), want) {
 			t.Fatalf("import response missing %q: %s", want, importResp.Body.String())
 		}
@@ -190,14 +190,14 @@ func TestHTTPProxyPoolAPIFetchesAndImportsHTTPOutbound(t *testing.T) {
 	}
 
 	importResp := httptest.NewRecorder()
-	payload := strings.NewReader(`{"address":"37.187.109.70","port":10111,"username":"sam","password":"secret","city":"Dunkirk","asn":"AS16276","organization":"OVH SAS"}`)
+	payload := strings.NewReader(`{"address":"37.187.109.70","port":10111,"username":"sam","password":"secret","country_code":"FR","country":"法国","city":"Dunkirk","asn":"AS16276","organization":"OVH SAS"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds/http-pool/import", payload)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(importResp, req)
 	if importResp.Code != http.StatusCreated {
 		t.Fatalf("expected 201 importing http outbound, got %d: %s", importResp.Code, importResp.Body.String())
 	}
-	for _, want := range []string{`"protocol":"http"`, `"address":"37.187.109.70"`, `"port":10111`, `"tag":"pool-http-37-187-109-70-10111"`, `"username":"sam"`, `"password":"secret"`} {
+	for _, want := range []string{`"protocol":"http"`, `"address":"37.187.109.70"`, `"port":10111`, `"tag":"pool-http-37-187-109-70-10111"`, `"remark":"法国 Dunkirk AS16276 OVH SAS"`, `"username":"sam"`, `"password":"secret"`} {
 		if !strings.Contains(importResp.Body.String(), want) {
 			t.Fatalf("import response missing %q: %s", want, importResp.Body.String())
 		}
@@ -228,14 +228,14 @@ func TestHTTPSProxyPoolImportsHTTPOutbound(t *testing.T) {
 	}
 
 	importResp := httptest.NewRecorder()
-	payload := strings.NewReader(`{"address":"205.178.137.78","port":8447,"city":"Jacksonville","asn":"AS19871","organization":"Web.com Group, Inc."}`)
+	payload := strings.NewReader(`{"address":"205.178.137.78","port":8447,"country_code":"US","country":"United States","city":"Jacksonville","asn":"AS19871","organization":"Web.com Group, Inc."}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds/https-pool/import", payload)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(importResp, req)
 	if importResp.Code != http.StatusCreated {
 		t.Fatalf("expected 201 importing https outbound, got %d: %s", importResp.Code, importResp.Body.String())
 	}
-	for _, want := range []string{`"protocol":"http"`, `"tag":"pool-https-205-178-137-78-8447"`} {
+	for _, want := range []string{`"protocol":"http"`, `"tag":"pool-https-205-178-137-78-8447"`, `"remark":"United States Jacksonville AS19871 Web.com Group, Inc."`} {
 		if !strings.Contains(importResp.Body.String(), want) {
 			t.Fatalf("https import response missing %q: %s", want, importResp.Body.String())
 		}

@@ -506,6 +506,8 @@ func proxyPoolImportHandler(store Store, ctrl XrayController, outboundProtocol s
 		Port         int    `json:"port"`
 		Username     string `json:"username"`
 		Password     string `json:"password"`
+		CountryCode  string `json:"country_code"`
+		Country      string `json:"country"`
 		City         string `json:"city"`
 		ASN          string `json:"asn"`
 		Organization string `json:"organization"`
@@ -520,7 +522,7 @@ func proxyPoolImportHandler(store Store, ctrl XrayController, outboundProtocol s
 		return
 	}
 	remarkParts := []string{}
-	for _, part := range []string{req.City, normalizeASN(req.ASN), req.Organization} {
+	for _, part := range []string{poolCountryLabel(req.Country, req.CountryCode), req.City, normalizeASN(req.ASN), req.Organization} {
 		part = strings.TrimSpace(part)
 		if part != "" {
 			remarkParts = append(remarkParts, part)
@@ -548,6 +550,15 @@ func proxyPoolImportHandler(store Store, ctrl XrayController, outboundProtocol s
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"outbound": outbound, "xray": applyResult})
+}
+
+func poolCountryLabel(country, countryCode string) string {
+	country = strings.TrimSpace(country)
+	countryCode = strings.ToUpper(strings.TrimSpace(countryCode))
+	if country != "" && !strings.EqualFold(country, countryCode) {
+		return country
+	}
+	return countryCode
 }
 
 func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {

@@ -534,6 +534,43 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 	}
 }
 
+func TestCoreInstallFailureReturnsStructuredActionResult(t *testing.T) {
+	router := web.NewRouter()
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/install", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected structured install failure response to be 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"status":"failed"`, `"error":"install_failed"`, "download Xray release"} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("install failure response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestCoreXrayInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
+	script := webPackageSource(t)
+	for _, want := range []string{
+		`asset_name="Xray-linux-${asset_arch}.zip"`,
+		`url="https://github.com/XTLS/Xray-core/releases/download/v${version}/${asset_name}"`,
+		`dgst_url="${url}.dgst"`,
+		`curl -fL "$url" -o "$tmp/$asset_name"`,
+		`curl -fL "$dgst_url" -o "$tmp/$asset_name.dgst"`,
+		`awk -F'= ' -v asset="$asset_name" '/^SHA2-256=/{print $2 "  " asset}' "$tmp/$asset_name.dgst" > "$tmp/$asset_name.sha256"`,
+		`sha256sum -c "$asset_name.sha256"`,
+		`unzip -q "$tmp/$asset_name" -d "$tmp/xray"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("Xray WebUI install script missing checksum contract %q", want)
+		}
+	}
+	if strings.Index(script, `sha256sum -c "$asset_name.sha256"`) > strings.Index(script, `unzip -q "$tmp/$asset_name" -d "$tmp/xray"`) {
+		t.Fatalf("Xray WebUI install script must verify checksum before extracting archive")
+	}
+}
+
 func TestCoreSingboxInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
 	script := webPackageSource(t)
 	for _, want := range []string{
@@ -568,10 +605,10 @@ func TestCoreInstallersDoNotExecuteUnverifiedRemoteScripts(t *testing.T) {
 	}
 	for _, want := range []string{
 		"refusing to download and execute unverified acme.sh installer",
-		"refuse unverified remote Xray installer",
+		"download Xray release",
 	} {
 		if !strings.Contains(script, want) {
-			t.Fatalf("web package missing explicit refusal for unverified installer %q", want)
+			t.Fatalf("web package missing safe installer marker %q", want)
 		}
 	}
 }
