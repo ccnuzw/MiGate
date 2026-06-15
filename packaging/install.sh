@@ -23,6 +23,8 @@ DRY_RUN=0
 REGENERATE_CONFIG=0
 INSTALL_XRAY=0
 INSTALL_SINGBOX=0
+EXPLICIT_INSTALL_XRAY=0
+EXPLICIT_INSTALL_SINGBOX=0
 SKIP_CORE_PROMPTS=0
 EXTRA_ARGS_COUNT=0
 XRAY_FOUND=0
@@ -453,13 +455,13 @@ parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --install) ACTION="install"; shift ;;
-      --upgrade|--update) ACTION="upgrade"; shift ;;
+      --upgrade|--update) ACTION="upgrade"; SKIP_CORE_PROMPTS=1; shift ;;
       --reinstall) ACTION="reinstall"; shift ;;
       --fresh-config) REGENERATE_CONFIG=1; shift ;;
       --uninstall) ACTION="uninstall"; shift ;;
       --repair-service) ACTION="repair-service"; shift ;;
-      --install-xray) INSTALL_XRAY=1; ACTION="${ACTION:-auto}"; shift ;;
-      --install-singbox) INSTALL_SINGBOX=1; ACTION="${ACTION:-auto}"; shift ;;
+      --install-xray) INSTALL_XRAY=1; EXPLICIT_INSTALL_XRAY=1; ACTION="${ACTION:-auto}"; shift ;;
+      --install-singbox) INSTALL_SINGBOX=1; EXPLICIT_INSTALL_SINGBOX=1; ACTION="${ACTION:-auto}"; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --yes|-y) ASSUME_YES=1; SKIP_CORE_PROMPTS=1; shift ;;
       --check) ACTION="check"; shift ;;
@@ -890,11 +892,11 @@ install_singbox() {
   esac
   local sb_artifact="sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz"
   local sb_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz"
-  local sb_checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-checksums.txt"
+  local sb_release_api_url="https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${sb_version}"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] curl -fL %q -o "$tmp_sb/%s"\n' "$sb_url" "$sb_artifact"
-    printf '[DRY-RUN] curl -fL %q -o "$tmp_sb/checksums.txt"\n' "$sb_checksums_url"
-    printf '[DRY-RUN] grep %q "$tmp_sb/checksums.txt" > "$tmp_sb/%s.sha256"\n' "$sb_artifact" "$sb_artifact"
+    printf '[DRY-RUN] curl -fsSL %q -o "$tmp_sb/release.json"\n' "$sb_release_api_url"
+    printf '[DRY-RUN] extract GitHub asset digest for %q > "$tmp_sb/%s.sha256"\n' "$sb_artifact" "$sb_artifact"
     printf '[DRY-RUN] sha256sum -c "%s.sha256"\n' "$sb_artifact"
     printf '[DRY-RUN] install /usr/local/bin/sing-box\n'
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
@@ -914,9 +916,26 @@ install_singbox() {
   local tmp_sb
   tmp_sb="$(mktemp -d)"
   curl -fL "$sb_url" -o "$tmp_sb/$sb_artifact"
-  log_info "下载 sing-box 校验文件"
-  curl -fL "$sb_checksums_url" -o "$tmp_sb/checksums.txt"
-  grep "$sb_artifact" "$tmp_sb/checksums.txt" > "$tmp_sb/$sb_artifact.sha256"
+  log_info "读取 sing-box Release 资产校验值"
+  curl -fsSL "$sb_release_api_url" -o "$tmp_sb/release.json"
+  local sb_digest
+  sb_digest="$(awk -v asset="$sb_artifact" '
+    /"name": "/ { in_asset=0 }
+    index($0, "\"name\": \"" asset "\"") { in_asset=1 }
+    in_asset && index($0, "\"digest\": \"sha256:") {
+      line=$0
+      sub(/^.*"digest": "sha256:/, "", line)
+      sub(/".*$/, "", line)
+      print line
+      exit
+    }
+  ' "$tmp_sb/release.json")"
+  if ! printf '%s\n' "$sb_digest" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+    log_error "无法从 sing-box Release API 获取 ${sb_artifact} 的 sha256 digest"
+    rm -rf "$tmp_sb"
+    return 1
+  fi
+  printf '%s  %s\n' "$sb_digest" "$sb_artifact" > "$tmp_sb/$sb_artifact.sha256"
   log_info "校验 sing-box sha256"
   verify_sha256 "$sb_artifact.sha256" "$tmp_sb"
   log_info "解压并安装 sing-box"
@@ -958,6 +977,21 @@ UNIT
   systemctl enable migate-singbox
   systemctl restart migate-singbox 2>/dev/null || true
   log_ok "sing-box 安装/修复完成"
+}
+
+maybe_install_core() {
+  local label="$1"
+  local installer="$2"
+  set +e
+  ( set -e; "$installer" )
+  local code="$?"
+  set -e
+  if [ "$code" -eq 0 ]; then
+    return 0
+  fi
+  log_warn "${label} 安装/修复失败（退出码：${code}），MiGate 安装/升级将继续。"
+  log_warn "稍后可运行对应的 migate-install --install-xray/--install-singbox --yes，或在 WebUI 核心页面重试。"
+  return 0
 }
 
 prompt_core_installs() {
@@ -1042,8 +1076,12 @@ install_release_flow() {
   if detect_core "Xray" "xray" "xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
   if detect_core "sing-box" "sing-box" "migate-singbox"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
   prompt_core_installs
-  [ "$INSTALL_XRAY" -eq 1 ] && install_xray
-  [ "$INSTALL_SINGBOX" -eq 1 ] && install_singbox
+  if [ "$INSTALL_XRAY" -eq 1 ]; then
+    if [ "$EXPLICIT_INSTALL_XRAY" -eq 1 ]; then install_xray; else maybe_install_core "Xray" install_xray; fi
+  fi
+  if [ "$INSTALL_SINGBOX" -eq 1 ]; then
+    if [ "$EXPLICIT_INSTALL_SINGBOX" -eq 1 ]; then install_singbox; else maybe_install_core "sing-box" install_singbox; fi
+  fi
 
   section "服务启动"
   restart_migate_service

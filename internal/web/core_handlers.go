@@ -121,7 +121,7 @@ if ! systemctl restart xray; then
 fi
 /usr/local/bin/xray version | head -1`
 		case "singbox":
-			commands = []string{"download sing-box release", "install /usr/local/bin/sing-box", "write /etc/systemd/system/migate-singbox.service", "systemctl enable --now migate-singbox"}
+			commands = []string{"download sing-box release", "verify sing-box release checksum", "install /usr/local/bin/sing-box", "write /etc/systemd/system/migate-singbox.service", "systemctl enable --now migate-singbox"}
 			script = `set -euo pipefail
 arch="$(uname -m)"
 case "$arch" in
@@ -134,10 +134,25 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 asset_name="sing-box-${version}-linux-${asset_arch}.tar.gz"
 url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset_name}"
-checksums_url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-checksums.txt"
+release_api_url="https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${version}"
 curl -fL "$url" -o "$tmp/$asset_name"
-curl -fL "$checksums_url" -o "$tmp/checksums.txt"
-grep "$asset_name" "$tmp/checksums.txt" > "$tmp/sing-box.tar.gz.sha256"
+curl -fsSL "$release_api_url" -o "$tmp/release.json"
+digest="$(awk -v asset="$asset_name" '
+  /"name": "/ { in_asset=0 }
+  index($0, "\"name\": \"" asset "\"") { in_asset=1 }
+  in_asset && index($0, "\"digest\": \"sha256:") {
+    line=$0
+    sub(/^.*"digest": "sha256:/, "", line)
+    sub(/".*$/, "", line)
+    print line
+    exit
+  }
+' "$tmp/release.json")"
+if ! printf '%s\n' "$digest" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+  echo "invalid sing-box release digest for $asset_name" >&2
+  exit 1
+fi
+printf '%s  %s\n' "$digest" "$asset_name" > "$tmp/sing-box.tar.gz.sha256"
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$tmp" && sha256sum -c "sing-box.tar.gz.sha256")
 elif command -v shasum >/dev/null 2>&1; then

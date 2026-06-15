@@ -339,9 +339,11 @@ func TestInstallerVerifiesSingBoxArchiveChecksumBeforeExtracting(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"sb_artifact=\"sing-box-${sb_version}-linux-${sb_asset_arch}.tar.gz\"",
-		"sb_checksums_url=\"https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-checksums.txt\"",
+		"sb_release_api_url=\"https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${sb_version}\"",
 		"curl -fL \"$sb_url\" -o \"$tmp_sb/$sb_artifact\"",
-		"grep \"$sb_artifact\" \"$tmp_sb/checksums.txt\" > \"$tmp_sb/$sb_artifact.sha256\"",
+		"curl -fsSL \"$sb_release_api_url\" -o \"$tmp_sb/release.json\"",
+		"/\"name\": \"/ { in_asset=0 }",
+		"printf '%s  %s\\n' \"$sb_digest\" \"$sb_artifact\" > \"$tmp_sb/$sb_artifact.sha256\"",
 		"verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"",
 		"tar -xzf \"$tmp_sb/$sb_artifact\" -C \"$tmp_sb\"",
 	} {
@@ -351,6 +353,48 @@ func TestInstallerVerifiesSingBoxArchiveChecksumBeforeExtracting(t *testing.T) {
 	}
 	if strings.Index(script, "verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"") > strings.Index(script, "tar -xzf \"$tmp_sb/$sb_artifact\"") {
 		t.Fatalf("installer must verify sing-box checksum before extracting archive")
+	}
+}
+
+func TestInstallerDoesNotAbortMainFlowWhenOptionalCoreInstallFails(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"maybe_install_core()",
+		"( set -e; \"$installer\" )",
+		"${label} 安装/修复失败",
+		"MiGate 安装/升级将继续",
+		"if [ \"$EXPLICIT_INSTALL_XRAY\" -eq 1 ]; then install_xray; else maybe_install_core \"Xray\" install_xray; fi",
+		"if [ \"$EXPLICIT_INSTALL_SINGBOX\" -eq 1 ]; then install_singbox; else maybe_install_core \"sing-box\" install_singbox; fi",
+		"install-singbox-only)",
+		"install_singbox",
+		"install-xray-only)",
+		"install_xray",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer optional core failure contract missing %q", want)
+		}
+	}
+	if strings.Index(script, "if [ \"$EXPLICIT_INSTALL_XRAY\" -eq 1 ]; then install_xray; else maybe_install_core \"Xray\" install_xray; fi") > strings.Index(script, "section \"服务启动\"") {
+		t.Fatalf("installer main flow must handle optional Xray failure before service startup")
+	}
+	if strings.Index(script, "if [ \"$EXPLICIT_INSTALL_SINGBOX\" -eq 1 ]; then install_singbox; else maybe_install_core \"sing-box\" install_singbox; fi") > strings.Index(script, "section \"服务启动\"") {
+		t.Fatalf("installer main flow must handle optional sing-box failure before service startup")
+	}
+}
+
+func TestInstallerExplicitCoreInstallFlagsRemainStrict(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"EXPLICIT_INSTALL_XRAY=0",
+		"EXPLICIT_INSTALL_SINGBOX=0",
+		"--install-xray) INSTALL_XRAY=1; EXPLICIT_INSTALL_XRAY=1",
+		"--install-singbox) INSTALL_SINGBOX=1; EXPLICIT_INSTALL_SINGBOX=1",
+		"if [ \"$EXPLICIT_INSTALL_XRAY\" -eq 1 ]; then install_xray; else maybe_install_core \"Xray\" install_xray; fi",
+		"if [ \"$EXPLICIT_INSTALL_SINGBOX\" -eq 1 ]; then install_singbox; else maybe_install_core \"sing-box\" install_singbox; fi",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer explicit core strictness contract missing %q", want)
+		}
 	}
 }
 
@@ -393,7 +437,7 @@ func TestInstallerSkipsSingBoxSystemdUnitWhenSystemdUnavailable(t *testing.T) {
 func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"--upgrade|--update)",
+		"--upgrade|--update) ACTION=\"upgrade\"; SKIP_CORE_PROMPTS=1",
 		"--check)",
 		"--version)",
 		"check_update()",
@@ -404,6 +448,33 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer update contract missing %q", want)
+		}
+	}
+}
+
+func TestInstallerUpdateSkipsCorePromptsUnlessExplicitlyRequested(t *testing.T) {
+	root := repoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "install.sh"), "--upgrade", "--yes", "--dry-run")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry-run upgrade failed: %v\n%s", err, out)
+	}
+	text := string(out)
+	for _, want := range []string{
+		"未指定 --install-xray，跳过 Xray 安装。",
+		"未指定 --install-singbox，跳过 sing-box 安装。",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dry-run upgrade missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{
+		"[DRY-RUN] install /usr/local/bin/xray",
+		"[DRY-RUN] install /usr/local/bin/sing-box",
+		"确认安装/修复",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("dry-run upgrade must not run/prompt core install %q:\n%s", forbidden, text)
 		}
 	}
 }

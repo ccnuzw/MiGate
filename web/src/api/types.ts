@@ -61,6 +61,9 @@ export interface RoutingRule {
   id: number;
   remark?: string;
   inbound_tag?: string;
+  client_id?: number;
+  client_email?: string;
+  client_label?: string;
   domain?: string;
   ip?: string;
   rule_set?: string;

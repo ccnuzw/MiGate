@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Outbound } from '../api/types';
-import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundMetaParts, outboundRemarkLabel } from './OutboundsPage';
+import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundFormValues, outboundMetaParts, outboundRemarkLabel } from './OutboundsPage';
 
 describe('outbound helpers', () => {
   const outbounds: Outbound[] = [
@@ -48,5 +48,28 @@ describe('outbound helpers', () => {
       '国家/地区：United States',
       '备注：Jacksonville AS19871 Web.com Group, Inc.',
     ]);
+  });
+
+  it('derives outbound edit form values from the persisted outbound', () => {
+    expect(outboundFormValues({
+      id: 9,
+      tag: 'proxy-a',
+      remark: 'Proxy A',
+      protocol: 'socks',
+      address: '127.0.0.1',
+      port: 1080,
+      username: 'sam',
+      password: 'secret',
+      enabled: true,
+    })).toMatchObject({
+      tag: 'proxy-a',
+      remark: 'Proxy A',
+      protocol: 'socks',
+      address: '127.0.0.1',
+      port: 1080,
+      username: 'sam',
+      password: 'secret',
+      enabled: true,
+    });
   });
 });

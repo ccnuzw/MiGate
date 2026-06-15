@@ -20,6 +20,13 @@ import type {
   VersionResponse,
 } from './types';
 
+type RoutingRuleResponse = RoutingRule | { rule: RoutingRule };
+
+function unwrapRoutingRule(response: RoutingRuleResponse): RoutingRule {
+  if ('rule' in response) return (response as { rule: RoutingRule }).rule;
+  return response as RoutingRule;
+}
+
 export const api = {
   login: (username: string, password: string) => post<{ status: string }>('/api/login', { username, password }),
   logout: () => post<{ status: string }>('/api/logout'),
@@ -61,8 +68,8 @@ export const api = {
   pingSocks5Pool: (proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) => post<PingResult>('/api/outbounds/socks5-pool/ping', proxy),
   importSocks5Pool: (proxy: ProxyPoolProxy) => post('/api/outbounds/socks5-pool/import', proxy),
   routingRules: () => get<RoutingRule[]>('/api/routing-rules'),
-  createRoutingRule: (body: Record<string, unknown>) => post('/api/routing-rules', body),
-  updateRoutingRule: (id: number, body: Record<string, unknown>) => put(`/api/routing-rules/${id}`, body),
+  createRoutingRule: async (body: Record<string, unknown>) => unwrapRoutingRule(await post<RoutingRuleResponse>('/api/routing-rules', body)),
+  updateRoutingRule: async (id: number, body: Record<string, unknown>) => unwrapRoutingRule(await put<RoutingRuleResponse>(`/api/routing-rules/${id}`, body)),
   deleteRoutingRule: (id: number) => del(`/api/routing-rules/${id}`),
   reorderRoutingRules: (ids: number[]) => post<{ status: string }>('/api/routing-rules/reorder', { ids }),
   dashboardSummary: () => get<DashboardSummary>('/api/dashboard/summary'),

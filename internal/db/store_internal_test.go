@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 )
 
@@ -74,5 +75,52 @@ func TestStoreLightweightInboundQueries(t *testing.T) {
 	}
 	if light[0].RealityPrivateKey != "" || light[0].TLSCertFile != "" {
 		t.Fatalf("traffic snapshot should omit full config fields: %+v", light[0])
+	}
+}
+
+func TestStoreMigratesRoutingRuleClientColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DROP TABLE routing_rules`); err != nil {
+		t.Fatalf("drop routing_rules: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+CREATE TABLE routing_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  inbound_tag TEXT NOT NULL DEFAULT '',
+  outbound_tag TEXT NOT NULL,
+  domain TEXT NOT NULL DEFAULT '',
+  protocol TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0
+)`); err != nil {
+		t.Fatalf("create legacy routing_rules: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO routing_rules (inbound_tag, outbound_tag, domain, protocol, enabled, sort) VALUES ('edge', 'direct', 'example.com', 'dns', 1, 0)`); err != nil {
+		t.Fatalf("insert legacy routing rule: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close legacy store: %v", err)
+	}
+
+	migrated, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer migrated.Close()
+
+	rules, err := migrated.ListRoutingRules(ctx)
+	if err != nil {
+		t.Fatalf("list migrated routing rules: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected legacy rule to survive migration, got %+v", rules)
+	}
+	if rules[0].ClientID != 0 || rules[0].ClientEmail != "" || rules[0].IP != "" || rules[0].RuleSet != "" {
+		t.Fatalf("expected migrated client fields to default empty: %+v", rules[0])
 	}
 }

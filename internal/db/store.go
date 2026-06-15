@@ -38,6 +38,8 @@ var supportedOutboundProtocols = map[string]bool{
 type RoutingRule struct {
 	ID          int64  `json:"id"`
 	InboundTag  string `json:"inbound_tag"`
+	ClientID    int64  `json:"client_id,omitempty"`
+	ClientEmail string `json:"client_email,omitempty"`
 	OutboundTag string `json:"outbound_tag"`
 	Domain      string `json:"domain"`
 	IP          string `json:"ip"`
@@ -49,6 +51,8 @@ type RoutingRule struct {
 
 type CreateRoutingRuleParams struct {
 	InboundTag  string `json:"inbound_tag"`
+	ClientID    int64  `json:"client_id,omitempty"`
+	ClientEmail string `json:"client_email,omitempty"`
 	OutboundTag string `json:"outbound_tag"`
 	Domain      string `json:"domain"`
 	IP          string `json:"ip"`
@@ -59,6 +63,8 @@ type CreateRoutingRuleParams struct {
 
 type UpdateRoutingRuleParams struct {
 	InboundTag  string `json:"inbound_tag"`
+	ClientID    int64  `json:"client_id,omitempty"`
+	ClientEmail string `json:"client_email,omitempty"`
 	OutboundTag string `json:"outbound_tag"`
 	Domain      string `json:"domain"`
 	IP          string `json:"ip"`
@@ -337,6 +343,8 @@ CREATE TABLE IF NOT EXISTS outbounds (
 CREATE TABLE IF NOT EXISTS routing_rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   inbound_tag TEXT NOT NULL DEFAULT '',
+  client_id INTEGER NOT NULL DEFAULT 0,
+  client_email TEXT NOT NULL DEFAULT '',
   outbound_tag TEXT NOT NULL,
   domain TEXT NOT NULL DEFAULT '',
   ip TEXT NOT NULL DEFAULT '',
@@ -420,6 +428,8 @@ CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked
 	for _, col := range []struct{ name, typ string }{
 		{"ip", "TEXT NOT NULL DEFAULT ''"},
 		{"rule_set", "TEXT NOT NULL DEFAULT ''"},
+		{"client_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"client_email", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE routing_rules ADD COLUMN %s %s", col.name, col.typ))
 	}
@@ -551,7 +561,19 @@ func (s *Store) UpdateOutbound(ctx context.Context, id int64, params UpdateOutbo
 	if params.Enabled {
 		enabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE outbounds SET tag=?, remark=?, protocol=?, address=?, port=?, username=?, password=?, enabled=? WHERE id=?`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Outbound{}, err
+	}
+	defer tx.Rollback()
+	var oldTag string
+	if err := tx.QueryRowContext(ctx, `SELECT tag FROM outbounds WHERE id=?`, id).Scan(&oldTag); err != nil {
+		if err == sql.ErrNoRows {
+			return Outbound{}, fmt.Errorf("outbound not found: %d", id)
+		}
+		return Outbound{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE outbounds SET tag=?, remark=?, protocol=?, address=?, port=?, username=?, password=?, enabled=? WHERE id=?`,
 		tag, remark, protocol, address, params.Port, strings.TrimSpace(params.Username), params.Password, enabled, id)
 	if err != nil {
 		return Outbound{}, err
@@ -563,10 +585,18 @@ func (s *Store) UpdateOutbound(ctx context.Context, id int64, params UpdateOutbo
 	if n == 0 {
 		return Outbound{}, fmt.Errorf("outbound not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
+	if oldTag != tag {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET outbound_tag=? WHERE outbound_tag=?`, tag, oldTag); err != nil {
+			return Outbound{}, err
+		}
+	}
+	row := tx.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
 	var outbound Outbound
 	var dbEnabled int
 	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabled, &outbound.Sort); err != nil {
+		return Outbound{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Outbound{}, err
 	}
 	outbound.Enabled = dbEnabled != 0
@@ -630,7 +660,7 @@ func (s *Store) ReorderOutbounds(ctx context.Context, ids []int64) error {
 }
 
 func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, ip, rule_set, protocol, enabled, sort FROM routing_rules ORDER BY sort ASC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, inbound_tag, client_id, client_email, outbound_tag, domain, ip, rule_set, protocol, enabled, sort FROM routing_rules ORDER BY sort ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -639,7 +669,7 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 	for rows.Next() {
 		var r RoutingRule
 		var dbEnabled int
-		if err := rows.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.IP, &r.RuleSet, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
+		if err := rows.Scan(&r.ID, &r.InboundTag, &r.ClientID, &r.ClientEmail, &r.OutboundTag, &r.Domain, &r.IP, &r.RuleSet, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
 			return nil, err
 		}
 		r.Enabled = dbEnabled != 0
@@ -675,14 +705,18 @@ func (s *Store) CreateRoutingRule(ctx context.Context, params CreateRoutingRuleP
 			return RoutingRule{}, fmt.Errorf("outbound_tag %q does not match any existing outbound", ob)
 		}
 	}
+	clientID, clientEmail, inboundTag, err := s.resolveRoutingRuleClient(ctx, params.ClientID, params.ClientEmail, params.InboundTag)
+	if err != nil {
+		return RoutingRule{}, err
+	}
 	var sort int
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort)+1, 0) FROM routing_rules`).Scan(&sort)
 	enabled := 0
 	if params.Enabled {
 		enabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO routing_rules (inbound_tag, outbound_tag, domain, ip, rule_set, protocol, enabled, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.IP), strings.TrimSpace(params.RuleSet), strings.TrimSpace(params.Protocol), enabled, sort)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO routing_rules (inbound_tag, client_id, client_email, outbound_tag, domain, ip, rule_set, protocol, enabled, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		inboundTag, clientID, clientEmail, ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.IP), strings.TrimSpace(params.RuleSet), strings.TrimSpace(params.Protocol), enabled, sort)
 	if err != nil {
 		return RoutingRule{}, err
 	}
@@ -690,7 +724,7 @@ func (s *Store) CreateRoutingRule(ctx context.Context, params CreateRoutingRuleP
 	if err != nil {
 		return RoutingRule{}, err
 	}
-	return RoutingRule{ID: id, InboundTag: strings.TrimSpace(params.InboundTag), OutboundTag: ob, Domain: strings.TrimSpace(params.Domain), IP: strings.TrimSpace(params.IP), RuleSet: strings.TrimSpace(params.RuleSet), Protocol: strings.TrimSpace(params.Protocol), Enabled: params.Enabled, Sort: sort}, nil
+	return RoutingRule{ID: id, InboundTag: inboundTag, ClientID: clientID, ClientEmail: clientEmail, OutboundTag: ob, Domain: strings.TrimSpace(params.Domain), IP: strings.TrimSpace(params.IP), RuleSet: strings.TrimSpace(params.RuleSet), Protocol: strings.TrimSpace(params.Protocol), Enabled: params.Enabled, Sort: sort}, nil
 }
 
 func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRoutingRuleParams) (RoutingRule, error) {
@@ -707,12 +741,16 @@ func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRo
 			return RoutingRule{}, fmt.Errorf("outbound_tag %q does not match any existing outbound", ob)
 		}
 	}
+	clientID, clientEmail, inboundTag, err := s.resolveRoutingRuleClient(ctx, params.ClientID, params.ClientEmail, params.InboundTag)
+	if err != nil {
+		return RoutingRule{}, err
+	}
 	enabled := 0
 	if params.Enabled {
 		enabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=?, outbound_tag=?, domain=?, ip=?, rule_set=?, protocol=?, enabled=? WHERE id=?`,
-		strings.TrimSpace(params.InboundTag), ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.IP), strings.TrimSpace(params.RuleSet), strings.TrimSpace(params.Protocol), enabled, id)
+	result, err := s.db.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=?, client_id=?, client_email=?, outbound_tag=?, domain=?, ip=?, rule_set=?, protocol=?, enabled=? WHERE id=?`,
+		inboundTag, clientID, clientEmail, ob, strings.TrimSpace(params.Domain), strings.TrimSpace(params.IP), strings.TrimSpace(params.RuleSet), strings.TrimSpace(params.Protocol), enabled, id)
 	if err != nil {
 		return RoutingRule{}, err
 	}
@@ -723,14 +761,46 @@ func (s *Store) UpdateRoutingRule(ctx context.Context, id int64, params UpdateRo
 	if n == 0 {
 		return RoutingRule{}, fmt.Errorf("routing rule not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_tag, outbound_tag, domain, ip, rule_set, protocol, enabled, sort FROM routing_rules WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_tag, client_id, client_email, outbound_tag, domain, ip, rule_set, protocol, enabled, sort FROM routing_rules WHERE id=?`, id)
 	var r RoutingRule
 	var dbEnabled int
-	if err := row.Scan(&r.ID, &r.InboundTag, &r.OutboundTag, &r.Domain, &r.IP, &r.RuleSet, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
+	if err := row.Scan(&r.ID, &r.InboundTag, &r.ClientID, &r.ClientEmail, &r.OutboundTag, &r.Domain, &r.IP, &r.RuleSet, &r.Protocol, &dbEnabled, &r.Sort); err != nil {
 		return RoutingRule{}, err
 	}
 	r.Enabled = dbEnabled != 0
 	return r, nil
+}
+
+func (s *Store) resolveRoutingRuleClient(ctx context.Context, clientID int64, clientEmail, inboundTag string) (int64, string, string, error) {
+	clientEmail = strings.TrimSpace(clientEmail)
+	inboundTag = strings.TrimSpace(inboundTag)
+	if clientID <= 0 {
+		if clientEmail != "" {
+			return 0, "", "", fmt.Errorf("client_id is required when client_email is set")
+		}
+		return 0, "", inboundTag, nil
+	}
+	var inboundID int64
+	var protocol string
+	var remark string
+	var email string
+	if err := s.db.QueryRowContext(ctx, `
+SELECT c.inbound_id, c.email, i.protocol, i.remark
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+WHERE c.id = ?
+`, clientID).Scan(&inboundID, &email, &protocol, &remark); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, "", "", fmt.Errorf("client not found: %d", clientID)
+		}
+		return 0, "", "", err
+	}
+	actualTag := fmt.Sprintf("inbound-%d-%s", inboundID, strings.ToLower(strings.TrimSpace(protocol)))
+	remark = strings.TrimSpace(remark)
+	if inboundTag != "" && inboundTag != actualTag && inboundTag != remark {
+		return 0, "", "", fmt.Errorf("client %d does not belong to inbound_tag %q", clientID, inboundTag)
+	}
+	return clientID, strings.TrimSpace(email), actualTag, nil
 }
 
 func (s *Store) DeleteRoutingRule(ctx context.Context, id int64) error {
@@ -1000,7 +1070,27 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if params.TuicZeroRTT {
 		tuicZeroRTTInt = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET uuid=?, remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Inbound{}, err
+	}
+	defer tx.Rollback()
+	var oldRemark string
+	var oldProtocol string
+	if err := tx.QueryRowContext(ctx, `SELECT remark, protocol FROM inbounds WHERE id=?`, id).Scan(&oldRemark, &oldProtocol); err != nil {
+		if err == sql.ErrNoRows {
+			return Inbound{}, fmt.Errorf("inbound not found: %d", id)
+		}
+		return Inbound{}, err
+	}
+	oldRemark = strings.TrimSpace(oldRemark)
+	oldRemarkMatches := 0
+	if oldRemark != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM inbounds WHERE TRIM(remark)=?`, oldRemark).Scan(&oldRemarkMatches); err != nil {
+			return Inbound{}, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE inbounds SET uuid=?, remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
 		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, reality_private_key=?, reality_public_key=?, ss_method=?,
 		tls_cert_file=?, tls_key_file=?, tls_sni=?, tls_fingerprint=?, tls_alpn=?, xhttp_path=?, xhttp_mode=?,
 		hy2_up_mbps=?, hy2_down_mbps=?, hy2_obfs=?, hy2_obfs_password=?, hy2_mport=?,
@@ -1024,8 +1114,20 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if n == 0 {
 		return Inbound{}, fmt.Errorf("inbound not found: %d", id)
 	}
+	oldGeneratedTag := fmt.Sprintf("inbound-%d-%s", id, strings.ToLower(strings.TrimSpace(oldProtocol)))
+	newGeneratedTag := fmt.Sprintf("inbound-%d-%s", id, protocol)
+	if oldGeneratedTag != newGeneratedTag {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=? WHERE inbound_tag=?`, newGeneratedTag, oldGeneratedTag); err != nil {
+			return Inbound{}, err
+		}
+	}
+	if oldRemark != "" && oldRemark != remark && oldRemarkMatches == 1 {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=? WHERE inbound_tag=?`, remark, oldRemark); err != nil {
+			return Inbound{}, err
+		}
+	}
 	// Reload to get the full row
-	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
+	row := tx.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
 		tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
 		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password, hy2_mport,
@@ -1041,6 +1143,9 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
 		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
 		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {
+		return Inbound{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -1059,7 +1164,8 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	}
 	var inboundID int64
 	var existingUUID string
-	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id, uuid FROM clients WHERE id = ?`, id).Scan(&inboundID, &existingUUID); err != nil {
+	var oldEmail string
+	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id, uuid, email FROM clients WHERE id = ?`, id).Scan(&inboundID, &existingUUID, &oldEmail); err != nil {
 		return Client{}, err
 	}
 	uuid := strings.TrimSpace(params.UUID)
@@ -1077,7 +1183,12 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	} else if err != sql.ErrNoRows {
 		return Client{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE clients SET uuid=?, email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Client{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE clients SET uuid=?, email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
 		uuid, email, enabled, params.TrafficLimit, params.ExpiryAt, id)
 	if err != nil {
 		return Client{}, err
@@ -1089,10 +1200,18 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	if strings.TrimSpace(oldEmail) != email {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET client_email=? WHERE client_id=?`, email, id); err != nil {
+			return Client{}, err
+		}
+	}
+	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
 	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		return Client{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0

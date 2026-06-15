@@ -24,6 +24,10 @@ describe('api client', () => {
     expect(basePath()).toBe('/panel');
     expect(appPath('/login')).toBe('/panel/login');
 
+    window.history.replaceState({}, '', '/panel/topology');
+    expect(basePath()).toBe('/panel');
+    expect(appPath('/api/routing-rules')).toBe('/panel/api/routing-rules');
+
     window.history.replaceState({}, '', '/foo/panel/inbounds');
     expect(basePath()).toBe('/foo/panel');
     expect(appPath('/api/inbounds')).toBe('/foo/panel/api/inbounds');
@@ -72,6 +76,20 @@ describe('api client', () => {
     vi.stubGlobal('fetch', fetchMock);
     await api.toggleOutbound({ id: 9, tag: 'proxy-socks', protocol: 'socks', address: '127.0.0.1', port: 1080, enabled: true }, false);
     expect(fetchMock).toHaveBeenCalledWith('/api/outbounds/9', expect.any(Object));
+    vi.unstubAllGlobals();
+  });
+
+  it('unwraps routing rule save responses', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.method).toBe('POST');
+      return new Response(JSON.stringify({ rule: { id: 3, inbound_tag: 'edge', outbound_tag: 'direct', enabled: true }, xray: { status: 'applied' } }), { status: 201, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(api.createRoutingRule({ inbound_tag: 'edge', outbound_tag: 'direct', enabled: true })).resolves.toMatchObject({
+      id: 3,
+      inbound_tag: 'edge',
+      outbound_tag: 'direct',
+    });
     vi.unstubAllGlobals();
   });
 
