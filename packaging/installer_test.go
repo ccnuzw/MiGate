@@ -65,9 +65,9 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"WebUI",
 		"xray.json",
 		"/usr/local/etc/xray/xray.json",
-		"ln -sf ${INSTALL_DIR}/xray.json /usr/local/etc/xray/xray.json",
+		"ln -sf \"${INSTALL_DIR}/xray.json\" /usr/local/etc/xray/xray.json",
 		"install_xray",
-		"未提供 MiGate 可固定校验",
+		"Xray-linux-${xray_asset_arch}.zip",
 		"hash-password",
 	} {
 		if !strings.Contains(script, want) {
@@ -351,6 +351,25 @@ func TestInstallerVerifiesSingBoxArchiveChecksumBeforeExtracting(t *testing.T) {
 	}
 	if strings.Index(script, "verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"") > strings.Index(script, "tar -xzf \"$tmp_sb/$sb_artifact\"") {
 		t.Fatalf("installer must verify sing-box checksum before extracting archive")
+	}
+}
+
+func TestInstallerVerifiesXrayArchiveChecksumBeforeExtracting(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"xray_artifact=\"Xray-linux-${xray_asset_arch}.zip\"",
+		"xray_dgst_url=\"${xray_url}.dgst\"",
+		"curl -fL \"$xray_url\" -o \"$tmp_xray/$xray_artifact\"",
+		"awk -F'= ' -v asset=\"$xray_artifact\" '/^SHA2-256=/{print $2 \"  \" asset}' \"$tmp_xray/$xray_artifact.dgst\" > \"$tmp_xray/$xray_artifact.sha256\"",
+		"verify_sha256 \"$xray_artifact.sha256\" \"$tmp_xray\"",
+		"unzip -q \"$tmp_xray/$xray_artifact\" -d \"$tmp_xray/xray\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer Xray checksum contract missing %q", want)
+		}
+	}
+	if strings.Index(script, "verify_sha256 \"$xray_artifact.sha256\" \"$tmp_xray\"") > strings.Index(script, "unzip -q \"$tmp_xray/$xray_artifact\" -d \"$tmp_xray/xray\"") {
+		t.Fatalf("installer must verify Xray checksum before extracting archive")
 	}
 }
 

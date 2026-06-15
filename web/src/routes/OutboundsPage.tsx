@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Edit2, Gauge, Plus, Power, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -6,8 +6,8 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { Outbound, PingResult, Socks5PoolProxy } from '../api/types';
-import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, useConfirm, useToast } from '../components/ui';
+import type { Outbound, PingResult, ProxyPoolProxy, ProxyPoolResponse } from '../api/types';
+import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
 
@@ -23,6 +23,8 @@ const schema = z.object({
 });
 type InputValues = z.input<typeof schema>;
 type Values = z.output<typeof schema>;
+type ProxyPoolType = 'socks5' | 'http' | 'https';
+const proxyPoolTypes: ProxyPoolType[] = ['socks5', 'http', 'https'];
 
 export default function OutboundsPage() {
   const queryClient = useQueryClient();
@@ -39,6 +41,16 @@ export default function OutboundsPage() {
   const defaultItems = items.filter(isFixedDefaultOutbound);
   const customItems = items.filter((item) => !isFixedDefaultOutbound(item));
   const reorderableItems = customItems.filter(isReorderableOutbound);
+  const hasPoolOutbounds = customItems.some((item) => Boolean(outboundPoolType(item)));
+  const poolLookups = useQueries({
+    queries: proxyPoolTypes.map((type) => ({
+      queryKey: ['proxy-pool', type, ''],
+      queryFn: () => api.proxyPool(type),
+      enabled: hasPoolOutbounds,
+      staleTime: 60_000,
+    })),
+  });
+  const proxyLookup = useMemo(() => buildProxyLookup(poolLookups.map((result) => result.data)), [poolLookups]);
 
   const toggle = useMutation({
     mutationFn: (item: Outbound) => api.toggleOutbound(item, !item.enabled),
@@ -105,7 +117,7 @@ export default function OutboundsPage() {
         description={text('配置默认直连、阻断以及 SOCKS / HTTP 代理链路。')}
         action={
           <div className="flex flex-wrap gap-2">
-            <button className="btn secondary" onClick={() => setPoolOpen(true)}>{text('导入 SOCKS5 地址池')}</button>
+            <button className="btn secondary" onClick={() => setPoolOpen(true)}>{text('导入代理池')}</button>
             <SpinnerButton className="btn secondary" loading={speedtest.isPending} onClick={() => speedtest.mutate()}><Gauge className="h-4 w-4" /> {text('批量测速')}</SpinnerButton>
             <button className="btn primary" onClick={() => setEditing({ id: 0, tag: '', protocol: 'socks', enabled: true })}><Plus className="h-4 w-4" /> {text('新增出站')}</button>
           </div>
@@ -125,9 +137,7 @@ export default function OutboundsPage() {
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs text-panel-muted">{text('默认')}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                  <span>{item.protocol}</span>
-                  {item.address ? <span>{item.address}:{item.port || ''}</span> : null}
-                  {item.remark ? <span>{outboundRemarkLabel(item.remark, text)}</span> : null}
+                  {outboundMetaParts(item, text, proxyLookup.get(outboundLookupKey(item))).map((part) => <span key={part}>{part}</span>)}
                   <span>{formatLatency(latency[item.id], text)}</span>
                 </div>
               </div>
@@ -144,12 +154,11 @@ export default function OutboundsPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs">#{index + 1}</span>
                   <h2 className="truncate text-base font-semibold">{item.tag}</h2>
+                  <OutboundProtocolBadge item={item} />
                   <StatusBadge enabled={item.enabled} />
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                  <span>{item.protocol}</span>
-                  {item.address ? <span>{item.address}:{item.port || ''}</span> : null}
-                  {item.remark ? <span>{outboundRemarkLabel(item.remark, text)}</span> : null}
+                  {outboundMetaParts(item, text, proxyLookup.get(outboundLookupKey(item))).slice(1).map((part) => <span key={part}>{part}</span>)}
                   <span>{formatLatency(latency[item.id], text)}</span>
                 </div>
               </div>
@@ -157,7 +166,7 @@ export default function OutboundsPage() {
                 <button className="icon-button" disabled={!isReorderableOutbound(item) || reorderableItems.findIndex((o) => o.id === item.id) === 0} onClick={() => moveCustomOutbound(reorderableItems, reorderableItems.findIndex((o) => o.id === item.id), -1, reorder.mutate)} title={text('上移')}><ArrowUp className="h-4 w-4" /></button>
                 <button className="icon-button" disabled={!isReorderableOutbound(item) || reorderableItems.findIndex((o) => o.id === item.id) === reorderableItems.length - 1} onClick={() => moveCustomOutbound(reorderableItems, reorderableItems.findIndex((o) => o.id === item.id), 1, reorder.mutate)} title={text('下移')}><ArrowDown className="h-4 w-4" /></button>
                 <SpinnerButton className="icon-button" loading={pingingIds.has(item.id)} onClick={() => pingOutbound(item.id)} title="Ping"><Gauge className="h-4 w-4" /></SpinnerButton>
-                <button className="icon-button" onClick={() => toggle.mutate(item)} title={text('启停')}><Power className="h-4 w-4" /></button>
+                <button className={toggleButtonClass(item.enabled)} onClick={() => toggle.mutate(item)} title={text('启停')}><Power className="h-4 w-4" /></button>
                 <button className="icon-button" onClick={() => setEditing(item)} title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
                 <button className="icon-button danger-text" onClick={async () => (await confirm({ title: text('删除出站？'), tone: 'danger' })) && remove.mutate(item.id)} title={text('删除')}><Trash2 className="h-4 w-4" /></button>
               </div>
@@ -166,7 +175,7 @@ export default function OutboundsPage() {
         ))}
       </div>
       <OutboundModal outbound={editing} onClose={() => setEditing(null)} onSaved={refresh} />
-      <Socks5PoolModal open={poolOpen} onClose={() => setPoolOpen(false)} onImported={() => { refresh(); setPoolOpen(false); }} />
+      <ProxyPoolModal open={poolOpen} onClose={() => setPoolOpen(false)} onImported={() => { refresh(); setPoolOpen(false); }} />
     </div>
   );
 }
@@ -211,22 +220,23 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
   );
 }
 
-function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
+function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
   const { showToast } = useToast();
   const { text } = useI18n();
+  const [poolType, setPoolType] = useState<ProxyPoolType>('socks5');
   const [country, setCountry] = useState('');
-  const [selected, setSelected] = useState<Socks5PoolProxy | null>(null);
+  const [selected, setSelected] = useState<ProxyPoolProxy | null>(null);
   const [latency, setLatency] = useState<Record<string, PingResult>>({});
-  const pool = useQuery({ queryKey: ['socks5-pool', country], queryFn: () => api.socks5Pool(country), enabled: open, staleTime: 60_000 });
+  const pool = useQuery({ queryKey: ['proxy-pool', poolType, country], queryFn: () => api.proxyPool(poolType, country), enabled: open, staleTime: 60_000 });
   const regions = useMemo(() => [...(pool.data?.regions || [])].sort((a, b) => b.count - a.count), [pool.data]);
   const ping = useMutation({
-    mutationFn: api.pingSocks5Pool,
+    mutationFn: (proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) => api.pingProxyPool(poolType, proxy),
     onSuccess: (result, proxy) => setLatency((prev) => ({ ...prev, [proxyKey(proxy)]: result })),
   });
   const importProxy = useMutation({
-    mutationFn: (proxy: Socks5PoolProxy) => api.importSocks5Pool(proxy),
+    mutationFn: (proxy: ProxyPoolProxy) => api.importProxyPool(poolType, proxy),
     onSuccess: () => {
-      showToast(text('SOCKS5 出站已导入'), 'success');
+      showToast(text('代理出站已导入'), 'success');
       onImported();
     },
     onError: (error) => showToast(errorMessage(error, text('导入失败')), 'error'),
@@ -234,7 +244,7 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
   return (
     <Modal
       open={open}
-      title={text('导入 SOCKS5 地址池')}
+      title={text('导入代理池')}
       onClose={onClose}
       panelClassName="socks5-pool-panel"
       footer={
@@ -246,6 +256,21 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
     >
       <div className="socks5-pool-layout">
         <div className="grid content-start gap-3">
+          <Field label={text('代理类型')}>
+            <select
+              value={poolType}
+              onChange={(event) => {
+                setPoolType(event.target.value as ProxyPoolType);
+                setCountry('');
+                setSelected(null);
+                setLatency({});
+              }}
+            >
+              <option value="socks5">SOCKS5</option>
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+            </select>
+          </Field>
           <Field label={text('国家/地区')}>
             <select value={country} onChange={(event) => { setCountry(event.target.value); setSelected(null); }}>
               <option value="">{text('全部地区')}</option>
@@ -313,13 +338,59 @@ function moveCustomOutbound(items: Outbound[], index: number, delta: number, sav
   save(movedCustomOutboundIds(items, index, delta));
 }
 
-function proxyKey(proxy: Pick<Socks5PoolProxy, 'address' | 'port'>) {
+function OutboundProtocolBadge({ item }: { item: Outbound }) {
+  const type = outboundPoolType(item) || item.protocol || 'unknown';
+  const label = type === 'socks5' ? 'SOCKS5' : type.toUpperCase();
+  return <span className={`protocol-badge outbound-protocol-${type || 'default'}`}>{label}</span>;
+}
+
+function proxyKey(proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) {
   return `${proxy.address}:${proxy.port}`;
+}
+
+function outboundPoolType(item: Pick<Outbound, 'tag'>): ProxyPoolType | '' {
+  if (item.tag.startsWith('pool-https-')) return 'https';
+  if (item.tag.startsWith('pool-http-')) return 'http';
+  if (item.tag.startsWith('pool-socks-')) return 'socks5';
+  return '';
+}
+
+function outboundLookupKey(item: Pick<Outbound, 'tag' | 'address' | 'port'>) {
+  const type = outboundPoolType(item);
+  if (!type || !item.address || !item.port) return '';
+  return `${type}:${proxyKey({ address: item.address, port: item.port })}`;
+}
+
+function buildProxyLookup(responses: Array<ProxyPoolResponse | undefined>) {
+  const lookup = new Map<string, ProxyPoolProxy>();
+  responses.forEach((response, index) => {
+    const type = proxyPoolTypes[index];
+    (response?.proxies || []).forEach((proxy) => {
+      lookup.set(`${type}:${proxyKey(proxy)}`, proxy);
+    });
+  });
+  return lookup;
 }
 
 export function outboundRemarkLabel(remark: string, text: (value: string) => string) {
   if (remark === '直接连接' || remark === '阻断') return text(remark);
   return remark;
+}
+
+export function outboundMetaParts(item: Pick<Outbound, 'protocol' | 'address' | 'port' | 'remark'>, text: (value: string) => string, proxy?: Pick<ProxyPoolProxy, 'country' | 'country_code'>): string[] {
+  const remark = item.remark ? outboundRemarkLabel(item.remark, text) : '';
+  const country = proxyCountryLabel(proxy);
+  const showCountry = country && (!remark || !remark.includes(country));
+  return [
+    item.protocol,
+    item.address ? `${item.address}:${item.port || ''}` : '',
+    showCountry ? `${text('国家/地区')}：${country}` : '',
+    remark ? `${text('备注')}：${remark}` : '',
+  ].filter(Boolean);
+}
+
+function proxyCountryLabel(proxy?: Pick<ProxyPoolProxy, 'country' | 'country_code'>) {
+  return String(proxy?.country || proxy?.country_code || '').trim();
 }
 
 function errorMessage(error: unknown, fallback: string) {

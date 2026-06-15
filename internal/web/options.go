@@ -45,6 +45,18 @@ func WithSocks5PoolURL(poolURL string) Option {
 	}
 }
 
+func WithHTTPPoolURL(poolURL string) Option {
+	return func(cfg *routerConfig) {
+		cfg.httpPoolURL = strings.TrimSpace(poolURL)
+	}
+}
+
+func WithHTTPSPoolURL(poolURL string) Option {
+	return func(cfg *routerConfig) {
+		cfg.httpsPoolURL = strings.TrimSpace(poolURL)
+	}
+}
+
 func WithUpdateCheckURL(checkURL string) Option {
 	return func(cfg *routerConfig) {
 		cfg.updateCheckURL = strings.TrimSpace(checkURL)

@@ -145,17 +145,130 @@ func TestSocks5PoolAPIFetchesRegionsAndImportsOutbound(t *testing.T) {
 	}
 
 	importResp := httptest.NewRecorder()
-	payload := strings.NewReader(`{"address":"184.181.217.201","port":4145,"city":"Goodyear","asn":"AS22773","organization":"Cox Communications"}`)
+	payload := strings.NewReader(`{"address":"184.181.217.201","port":4145,"country_code":"US","country":"美国","city":"Goodyear","asn":"AS22773","organization":"Cox Communications"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds/socks5-pool/import", payload)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(importResp, req)
 	if importResp.Code != http.StatusCreated {
 		t.Fatalf("expected 201 importing socks5 outbound, got %d: %s", importResp.Code, importResp.Body.String())
 	}
-	for _, want := range []string{`"protocol":"socks"`, `"address":"184.181.217.201"`, `"port":4145`, `"tag":"pool-socks-184-181-217-201-4145"`, `"remark":"Goodyear AS22773 Cox Communications"`} {
+	for _, want := range []string{`"protocol":"socks"`, `"address":"184.181.217.201"`, `"port":4145`, `"tag":"pool-socks-184-181-217-201-4145"`, `"remark":"美国 Goodyear AS22773 Cox Communications"`} {
 		if !strings.Contains(importResp.Body.String(), want) {
 			t.Fatalf("import response missing %q: %s", want, importResp.Body.String())
 		}
+	}
+}
+
+func TestHTTPProxyPoolAPIFetchesAndImportsHTTPOutbound(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") == "" {
+			t.Fatalf("expected pool fetch to send user agent")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"proxy":"http://sam:secret@37.187.109.70:10111","protocol":"http","ip":"37.187.109.70","port":10111,"country":"FR","city":"Dunkirk","asn":"16276","asOrganization":"OVH SAS","latitude":"51.0344","longitude":"2.37681","country_cn":"法国","country_en":"France"}
+		]`))
+	}))
+	defer upstream.Close()
+
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store), web.WithHTTPPoolURL(upstream.URL))
+
+	list := httptest.NewRecorder()
+	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/outbounds/http-pool?country=FR", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected 200 listing http pool, got %d: %s", list.Code, list.Body.String())
+	}
+	for _, want := range []string{`"protocol":"http"`, `"country_code":"FR"`, `"city":"Dunkirk"`, `"asn":"AS16276"`, `"organization":"OVH SAS"`, `"latitude":51.0344`, `"longitude":2.37681`, `"username":"sam"`, `"password":"secret"`} {
+		if !strings.Contains(list.Body.String(), want) {
+			t.Fatalf("http pool response missing %q: %s", want, list.Body.String())
+		}
+	}
+
+	importResp := httptest.NewRecorder()
+	payload := strings.NewReader(`{"address":"37.187.109.70","port":10111,"username":"sam","password":"secret","country_code":"FR","country":"法国","city":"Dunkirk","asn":"AS16276","organization":"OVH SAS"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/outbounds/http-pool/import", payload)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(importResp, req)
+	if importResp.Code != http.StatusCreated {
+		t.Fatalf("expected 201 importing http outbound, got %d: %s", importResp.Code, importResp.Body.String())
+	}
+	for _, want := range []string{`"protocol":"http"`, `"address":"37.187.109.70"`, `"port":10111`, `"tag":"pool-http-37-187-109-70-10111"`, `"remark":"法国 Dunkirk AS16276 OVH SAS"`, `"username":"sam"`, `"password":"secret"`} {
+		if !strings.Contains(importResp.Body.String(), want) {
+			t.Fatalf("import response missing %q: %s", want, importResp.Body.String())
+		}
+	}
+}
+
+func TestHTTPSProxyPoolImportsHTTPOutbound(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"proxy":"https://205.178.137.78:8447","protocol":"https","ip":"205.178.137.78","port":8447,"country":"US","city":"Jacksonville","asn":"19871","asOrganization":"Web.com Group, Inc.","country_en":"United States"}]`))
+	}))
+	defer upstream.Close()
+
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store), web.WithHTTPSPoolURL(upstream.URL))
+
+	list := httptest.NewRecorder()
+	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/outbounds/https-pool?country=US", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected 200 listing https pool, got %d: %s", list.Code, list.Body.String())
+	}
+	if !strings.Contains(list.Body.String(), `"protocol":"https"`) || !strings.Contains(list.Body.String(), `"address":"205.178.137.78"`) {
+		t.Fatalf("unexpected https pool response: %s", list.Body.String())
+	}
+
+	importResp := httptest.NewRecorder()
+	payload := strings.NewReader(`{"address":"205.178.137.78","port":8447,"country_code":"US","country":"United States","city":"Jacksonville","asn":"AS19871","organization":"Web.com Group, Inc."}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/outbounds/https-pool/import", payload)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(importResp, req)
+	if importResp.Code != http.StatusCreated {
+		t.Fatalf("expected 201 importing https outbound, got %d: %s", importResp.Code, importResp.Body.String())
+	}
+	for _, want := range []string{`"protocol":"http"`, `"tag":"pool-https-205-178-137-78-8447"`, `"remark":"United States Jacksonville AS19871 Web.com Group, Inc."`} {
+		if !strings.Contains(importResp.Body.String(), want) {
+			t.Fatalf("https import response missing %q: %s", want, importResp.Body.String())
+		}
+	}
+}
+
+func TestHTTPProxyPoolCacheRefreshesWhenURLChanges(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"proxy":"http://198.51.100.10:8080","country":"US","country_en":"United States"}]`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"proxy":"http://203.0.113.20:8080","country":"JP","country_en":"Japan"}]`))
+	}))
+	defer second.Close()
+
+	firstRouter := web.NewRouter(web.WithHTTPPoolURL(first.URL))
+	firstResp := httptest.NewRecorder()
+	firstRouter.ServeHTTP(firstResp, httptest.NewRequest(http.MethodGet, "/api/outbounds/http-pool", nil))
+	if firstResp.Code != http.StatusOK || !strings.Contains(firstResp.Body.String(), `"address":"198.51.100.10"`) {
+		t.Fatalf("expected first upstream response, got %d: %s", firstResp.Code, firstResp.Body.String())
+	}
+
+	secondRouter := web.NewRouter(web.WithHTTPPoolURL(second.URL))
+	secondResp := httptest.NewRecorder()
+	secondRouter.ServeHTTP(secondResp, httptest.NewRequest(http.MethodGet, "/api/outbounds/http-pool", nil))
+	if secondResp.Code != http.StatusOK || !strings.Contains(secondResp.Body.String(), `"address":"203.0.113.20"`) {
+		t.Fatalf("expected second upstream response after URL change, got %d: %s", secondResp.Code, secondResp.Body.String())
+	}
+	if strings.Contains(secondResp.Body.String(), `"address":"198.51.100.10"`) {
+		t.Fatalf("second URL should not reuse first URL cache: %s", secondResp.Body.String())
 	}
 }
 

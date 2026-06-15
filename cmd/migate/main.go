@@ -765,6 +765,8 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	router := web.NewRouter(opts...)
 
 	stopSocks5Cache := web.StartSocks5PoolCacheScheduler("")
+	stopHTTPProxyCache := web.StartHTTPPoolCacheScheduler("")
+	stopHTTPSProxyCache := web.StartHTTPSPoolCacheScheduler("")
 
 	// Start schedulers in background and wait for them during cleanup.
 	var schedWG sync.WaitGroup
@@ -782,6 +784,8 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			stopSocks5Cache()
+			stopHTTPProxyCache()
+			stopHTTPSProxyCache()
 			trafficSched.Stop()
 			schedWG.Wait()
 			closeStore()

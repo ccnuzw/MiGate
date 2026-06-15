@@ -9,6 +9,8 @@ func NewRouter(options ...Option) http.Handler {
 	cfg := routerConfig{
 		xrayController: defaultXrayController{},
 		socks5PoolURL:  defaultSocks5PoolURL,
+		httpPoolURL:    defaultHTTPPoolURL,
+		httpsPoolURL:   defaultHTTPSPoolURL,
 		updateCheckURL: defaultUpdateCheckURL,
 		loginLimiter:   newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
 	}

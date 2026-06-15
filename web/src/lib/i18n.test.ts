@@ -9,7 +9,7 @@ describe('i18n text translation', () => {
   it('translates major page copy and dynamic messages in English mode', () => {
     const samples = [
       ['入站与客户端', 'Inbounds and clients'],
-      ['导入 SOCKS5 地址池', 'Import SOCKS5 pool'],
+      ['导入代理池', 'Import proxy pool'],
       ['路由规则已保存', 'Routing rule saved'],
       ['应用 Xray 配置？', 'Apply Xray config?'],
       ['设置已保存，端口或路径变更需要重启服务后生效', 'Settings saved. Port or path changes require a service restart.'],

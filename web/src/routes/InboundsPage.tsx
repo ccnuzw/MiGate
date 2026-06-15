@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Edit2, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
+import { Columns2, Copy, Edit2, Link2, Plus, Power, RectangleHorizontal, RotateCcw, Trash2 } from 'lucide-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ApiError, appPath } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CertStatus, Client, Inbound } from '../api/types';
-import { EmptyState, LoadingBlock, SpinnerButton, StatusBadge, useConfirm, useToast } from '../components/ui';
+import { EmptyState, LoadingBlock, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { formatBytes, randomUUID } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { usePageVisible } from '../lib/visibility';
@@ -42,13 +42,106 @@ export const advancedFields = [
   'shadowtls_password',
 ] as const;
 
+export type InboundAdvancedField = (typeof advancedFields)[number];
+
 export const numericAdvancedFields = new Set<(typeof advancedFields)[number]>([
   'hy2_up_mbps',
   'hy2_down_mbps',
   'shadowtls_version',
 ]);
 
+export const inboundProtocols = ['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'shadowtls'] as const;
+export const inboundSecurities = ['none', 'tls', 'reality'] as const;
+
+type InboundProtocol = (typeof inboundProtocols)[number];
+type InboundSecurity = (typeof inboundSecurities)[number];
+type InboundNetwork = string;
+
+type InboundCapability = {
+  networks: InboundNetwork[];
+  defaultNetwork: InboundNetwork;
+  defaultSecurity: InboundSecurity;
+  securityByNetwork: Partial<Record<InboundNetwork, InboundSecurity[]>> & { default: InboundSecurity[] };
+  protocolAdvancedFields: InboundAdvancedField[];
+  securityAdvancedFields: Partial<Record<InboundSecurity, InboundAdvancedField[]>>;
+};
+
+const xrayNetworks = ['tcp', 'ws', 'grpc', 'h2', 'xhttp', 'quic', 'kcp'];
+const realityFields: InboundAdvancedField[] = ['reality_dest', 'reality_server_names', 'reality_short_id', 'reality_private_key', 'reality_public_key', 'tls_fingerprint'];
+const xrayTlsFields: InboundAdvancedField[] = ['tls_cert_file', 'tls_key_file', 'tls_sni', 'tls_fingerprint', 'tls_alpn'];
+const singboxTlsFields: InboundAdvancedField[] = ['tls_cert_file', 'tls_key_file', 'tls_sni'];
+
+export const inboundCapabilities: Record<InboundProtocol, InboundCapability> = {
+  vless: {
+    networks: xrayNetworks,
+    defaultNetwork: 'tcp',
+    defaultSecurity: 'reality',
+    securityByNetwork: {
+      default: ['none', 'tls'],
+      tcp: ['none', 'tls', 'reality'],
+      grpc: ['none', 'tls', 'reality'],
+      xhttp: ['none', 'tls', 'reality'],
+    },
+    protocolAdvancedFields: [],
+    securityAdvancedFields: { tls: xrayTlsFields, reality: realityFields },
+  },
+  vmess: {
+    networks: xrayNetworks,
+    defaultNetwork: 'tcp',
+    defaultSecurity: 'tls',
+    securityByNetwork: { default: ['none', 'tls'] },
+    protocolAdvancedFields: [],
+    securityAdvancedFields: { tls: xrayTlsFields },
+  },
+  trojan: {
+    networks: xrayNetworks,
+    defaultNetwork: 'tcp',
+    defaultSecurity: 'tls',
+    securityByNetwork: {
+      default: ['none', 'tls'],
+      tcp: ['none', 'tls', 'reality'],
+      grpc: ['none', 'tls', 'reality'],
+      xhttp: ['none', 'tls', 'reality'],
+    },
+    protocolAdvancedFields: [],
+    securityAdvancedFields: { tls: xrayTlsFields, reality: realityFields },
+  },
+  shadowsocks: {
+    networks: xrayNetworks,
+    defaultNetwork: 'tcp',
+    defaultSecurity: 'none',
+    securityByNetwork: { default: ['none', 'tls'] },
+    protocolAdvancedFields: ['ss_method'],
+    securityAdvancedFields: { tls: xrayTlsFields },
+  },
+  hysteria2: {
+    networks: ['udp'],
+    defaultNetwork: 'udp',
+    defaultSecurity: 'tls',
+    securityByNetwork: { default: ['tls'] },
+    protocolAdvancedFields: ['hy2_up_mbps', 'hy2_down_mbps', 'hy2_obfs', 'hy2_obfs_password'],
+    securityAdvancedFields: { tls: singboxTlsFields },
+  },
+  tuic: {
+    networks: ['udp'],
+    defaultNetwork: 'udp',
+    defaultSecurity: 'tls',
+    securityByNetwork: { default: ['tls'] },
+    protocolAdvancedFields: ['tuic_congestion_control', 'tuic_zero_rtt'],
+    securityAdvancedFields: { tls: singboxTlsFields },
+  },
+  shadowtls: {
+    networks: ['tcp'],
+    defaultNetwork: 'tcp',
+    defaultSecurity: 'none',
+    securityByNetwork: { default: ['none'] },
+    protocolAdvancedFields: ['shadowtls_version', 'tls_sni'],
+    securityAdvancedFields: {},
+  },
+};
+
 type SortKey = 'id' | 'port' | 'protocol' | 'clients';
+type InboundListColumns = 1 | 2;
 
 export default function InboundsPage() {
   const queryClient = useQueryClient();
@@ -60,6 +153,7 @@ export default function InboundsPage() {
   const [clientInbound, setClientInbound] = useState<Inbound | null>(null);
   const [editingClient, setEditingClient] = useState<{ inbound: Inbound; client: Client } | null>(null);
   const [search, setSearch] = useState('');
+  const [inboundColumns, setInboundColumns] = useState<InboundListColumns>(2);
   const [sort, setSort] = useState<SortKey>('id');
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, staleTime: 30_000 });
   const inboundTraffic = useQuery({
@@ -141,6 +235,14 @@ export default function InboundsPage() {
       />
       <div className="toolbar">
         <input className="max-w-md" placeholder="搜索入站、协议、端口..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="segmented-control" aria-label={text('入站列表布局')}>
+          <button type="button" className={inboundColumns === 1 ? 'active' : ''} onClick={() => setInboundColumns(1)} aria-pressed={inboundColumns === 1} title={text('一行一张')}>
+            <RectangleHorizontal className="h-4 w-4" />
+          </button>
+          <button type="button" className={inboundColumns === 2 ? 'active' : ''} onClick={() => setInboundColumns(2)} aria-pressed={inboundColumns === 2} title={text('一行两张')}>
+            <Columns2 className="h-4 w-4" />
+          </button>
+        </div>
         <select className="w-44" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
           <option value="id">按创建顺序</option>
           <option value="port">按端口</option>
@@ -151,24 +253,24 @@ export default function InboundsPage() {
       {filtered.length === 0 ? (
         <EmptyState title="暂无入站" description="创建第一个入站后，可继续为它添加客户端并复制订阅链接。" />
       ) : (
-        <div className="grid gap-4">
+        <div className={`inbound-card-grid ${inboundColumns === 2 ? 'inbound-card-grid-2' : ''}`}>
           {filtered.map((inbound) => (
             <div key={inbound.id} className="resource-card">
               <div className="resource-header">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="truncate text-base font-semibold">{inbound.remark || `${inbound.protocol}:${inbound.port}`}</h2>
+                    <ProtocolBadge protocol={inbound.protocol} />
                     <StatusBadge enabled={inbound.enabled} />
                   </div>
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                    <span>{inbound.protocol}</span>
                     <span>:{inbound.port}</span>
                     <span>{inbound.network || 'tcp'} / {inbound.security || 'none'}</span>
                     <span>{(inbound.clients || []).length} 客户端</span>
                   </div>
                 </div>
                 <div className="action-row">
-                  <SpinnerButton className="icon-button" loading={toggleInbound.isPending} onClick={() => toggleInbound.mutate(inbound)} title="启停">
+                  <SpinnerButton className={toggleButtonClass(inbound.enabled)} loading={toggleInbound.isPending} onClick={() => toggleInbound.mutate(inbound)} title="启停">
                     <Power className="h-4 w-4" />
                   </SpinnerButton>
                   <button className="icon-button" onClick={() => setEditingInbound(inbound)} title="编辑">
@@ -260,9 +362,9 @@ function ClientRow({
         </div>
       </div>
       <div className="action-row">
-        <button className="icon-button" onClick={onCopySub} title="复制订阅链接"><Copy className="h-4 w-4" /></button>
+        <button className="icon-button" onClick={onCopySub} title="复制订阅链接"><Link2 className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onCopyShare} title="复制客户端分享链接"><Copy className="h-4 w-4" /></button>
-        <button className="icon-button" onClick={onToggle} title="启停"><Power className="h-4 w-4" /></button>
+        <button className={toggleButtonClass(client.enabled)} onClick={onToggle} title="启停"><Power className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onEdit} title="编辑"><Edit2 className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onReset} title="重置流量"><RotateCcw className="h-4 w-4" /></button>
         <button className="icon-button danger-text" onClick={onDelete} title="删除"><Trash2 className="h-4 w-4" /></button>
@@ -278,6 +380,21 @@ function MetaItem({ label, value }: { label: string; value: string }) {
       <span>{value}</span>
     </span>
   );
+}
+
+const protocolBadgeClasses: Record<string, string> = {
+  vless: 'protocol-vless',
+  vmess: 'protocol-vmess',
+  trojan: 'protocol-trojan',
+  shadowsocks: 'protocol-shadowsocks',
+  hysteria2: 'protocol-hysteria2',
+  tuic: 'protocol-tuic',
+  shadowtls: 'protocol-shadowtls',
+};
+
+function ProtocolBadge({ protocol }: { protocol: string }) {
+  const key = String(protocol || '').toLowerCase();
+  return <span className={`protocol-badge ${protocolBadgeClasses[key] || 'protocol-default'}`}>{protocol || 'unknown'}</span>;
 }
 
 export function createDefaultInbound(): Inbound {
@@ -317,7 +434,7 @@ export function inboundFormValues(inbound: Inbound): InboundValues {
     const value = inbound[key];
     (base as Record<string, unknown>)[key] = value ?? defaultAdvancedValue(key);
   }
-  return base;
+  return normalizeInboundCombination(base);
 }
 
 export function buildFullInboundPayload(inbound: Inbound | null, values: InboundValues): Record<string, unknown> {
@@ -330,10 +447,11 @@ export function buildFullInboundPayload(inbound: Inbound | null, values: Inbound
   delete payload.traffic_stats_source;
   delete payload.realtime_stats_source;
   delete payload.client_traffic;
-  Object.assign(payload, values);
-  payload.port = Number(values.port || 0);
+  const normalized = normalizeInboundCombination(values);
+  Object.assign(payload, normalized);
+  payload.port = Number(normalized.port || 0);
   for (const key of advancedFields) {
-    payload[key] = normalizeAdvancedValue(key, payload[key]);
+    payload[key] = isInboundAdvancedFieldEnabled(normalized, key) ? normalizeAdvancedValue(key, payload[key]) : defaultAdvancedValue(key);
   }
   return payload;
 }
@@ -352,7 +470,6 @@ const inboundTemplates: Array<{ id: InboundTemplateId; label: string; values: Pa
       reality_dest: 'www.cloudflare.com:443',
       reality_server_names: 'www.cloudflare.com',
       tls_fingerprint: 'chrome',
-      tls_alpn: 'h2,http/1.1',
     },
   },
   {
@@ -402,7 +519,7 @@ export function inboundTemplateOptions() {
 
 export function applyInboundTemplate(current: InboundValues | Inbound, id: InboundTemplateId): InboundValues {
   const template = inboundTemplates.find((item) => item.id === id) || inboundTemplates[0];
-  const next = inboundFormValues({ id: 'id' in current ? current.id : 0, ...clearTemplateAdvancedFields(current, id), ...template.values, uuid: current.uuid || randomUUID(), enabled: current.enabled ?? true } as Inbound);
+  const next = normalizeInboundCombination(inboundFormValues({ id: 'id' in current ? current.id : 0, ...clearTemplateAdvancedFields(current, id), ...template.values, uuid: current.uuid || randomUUID(), enabled: current.enabled ?? true } as Inbound));
   if (template.id === 'recommended') next.reality_short_id = randomHex(4);
   if (template.id === 'performance') {
     next.uuid = randomSecret(24);
@@ -417,7 +534,7 @@ export function applyInboundTemplate(current: InboundValues | Inbound, id: Inbou
 
 function clearTemplateAdvancedFields(current: InboundValues | Inbound, id: InboundTemplateId): InboundValues {
   const next = inboundFormValues(current as Inbound);
-  const keep = new Set<(typeof advancedFields)[number]>(templateAdvancedFields[id]);
+  const keep = new Set<InboundAdvancedField>(templateAdvancedFields[id]);
   for (const key of advancedFields) {
     if (!keep.has(key)) {
       (next as Record<string, unknown>)[key] = defaultAdvancedValue(key);
@@ -426,12 +543,99 @@ function clearTemplateAdvancedFields(current: InboundValues | Inbound, id: Inbou
   return next;
 }
 
-const templateAdvancedFields: Record<InboundTemplateId, Array<(typeof advancedFields)[number]>> = {
-  recommended: ['reality_dest', 'reality_server_names', 'reality_short_id', 'reality_private_key', 'reality_public_key', 'tls_fingerprint', 'tls_alpn'],
+const templateAdvancedFields: Record<InboundTemplateId, InboundAdvancedField[]> = {
+  recommended: ['reality_dest', 'reality_server_names', 'reality_short_id', 'reality_private_key', 'reality_public_key', 'tls_fingerprint'],
   compatible: ['ws_path', 'ws_host', 'tls_cert_file', 'tls_key_file', 'tls_sni', 'tls_fingerprint', 'tls_alpn'],
-  performance: ['tls_cert_file', 'tls_key_file', 'tls_sni', 'tls_fingerprint', 'tls_alpn', 'hy2_up_mbps', 'hy2_down_mbps', 'hy2_obfs', 'hy2_obfs_password', 'hy2_mport'],
+  performance: ['tls_cert_file', 'tls_key_file', 'tls_sni', 'hy2_up_mbps', 'hy2_down_mbps', 'hy2_obfs', 'hy2_obfs_password'],
   simple: ['ss_method'],
 };
+
+export function sanitizeInboundFormValues(values: InboundValues, changes: Partial<Pick<InboundValues, 'protocol' | 'network' | 'security'>> = {}): InboundValues {
+  const changedProtocol = changes.protocol ? asInboundProtocol(changes.protocol) : undefined;
+  const protocolDefaults = changedProtocol ? inboundCapabilities[changedProtocol] : undefined;
+  const next = normalizeInboundCombination({
+    ...values,
+    ...changes,
+    network: changes.network ?? protocolDefaults?.defaultNetwork ?? values.network,
+    security: changes.security ?? protocolDefaults?.defaultSecurity ?? values.security,
+  });
+  const enabled = enabledInboundAdvancedFields(next);
+  for (const key of advancedFields) {
+    if (!enabled.has(key)) {
+      (next as Record<string, unknown>)[key] = defaultAdvancedValue(key);
+    } else if (isBlankAdvancedValue(key, next[key])) {
+      (next as Record<string, unknown>)[key] = seededAdvancedValue(key);
+    }
+  }
+  return next;
+}
+
+export function normalizeInboundCombination(values: InboundValues): InboundValues {
+  const protocol = inboundProtocols.includes(values.protocol as InboundProtocol) ? values.protocol as InboundProtocol : 'vless';
+  const capability = inboundCapabilities[protocol];
+  const network = capability.networks.includes(values.network) ? values.network : capability.defaultNetwork;
+  const securities = allowedInboundSecurities(protocol, network);
+  const security = securities.includes(values.security as InboundSecurity) ? values.security as InboundSecurity : preferredInboundSecurity(capability, securities, values.security);
+  return { ...values, protocol, network, security };
+}
+
+export function allowedInboundNetworks(protocol: string): string[] {
+  return inboundCapabilities[asInboundProtocol(protocol)].networks;
+}
+
+export function allowedInboundSecurities(protocol: string, network: string): InboundSecurity[] {
+  const capability = inboundCapabilities[asInboundProtocol(protocol)];
+  return capability.securityByNetwork[network] || capability.securityByNetwork.default;
+}
+
+export function isInboundAdvancedFieldEnabled(values: Pick<InboundValues, 'protocol' | 'network' | 'security'>, key: InboundAdvancedField): boolean {
+  const normalized = normalizeInboundCombination(values as InboundValues);
+  return enabledInboundAdvancedFields(normalized).has(key);
+}
+
+export function enabledInboundAdvancedFields(values: Pick<InboundValues, 'protocol' | 'network' | 'security'>): Set<InboundAdvancedField> {
+  const protocol = asInboundProtocol(values.protocol);
+  const capability = inboundCapabilities[protocol];
+  const fields = new Set<InboundAdvancedField>(capability.protocolAdvancedFields);
+  const security = values.security as InboundSecurity;
+  for (const key of capability.securityAdvancedFields[security] || []) fields.add(key);
+  if (values.network === 'ws' || values.network === 'h2') {
+    fields.add('ws_path');
+    fields.add('ws_host');
+  }
+  if (values.network === 'grpc') fields.add('grpc_service_name');
+  if (values.network === 'xhttp') {
+    fields.add('xhttp_path');
+    fields.add('xhttp_mode');
+  }
+  return fields;
+}
+
+function asInboundProtocol(protocol: string): InboundProtocol {
+  return inboundProtocols.includes(protocol as InboundProtocol) ? protocol as InboundProtocol : 'vless';
+}
+
+function preferredInboundSecurity(capability: InboundCapability, securities: InboundSecurity[], current?: string): InboundSecurity {
+  if (securities.includes(capability.defaultSecurity)) return capability.defaultSecurity;
+  if (current === 'reality' && securities.includes('tls')) return 'tls';
+  return securities[0] || 'none';
+}
+
+function isBlankAdvancedValue(key: InboundAdvancedField, value: unknown): boolean {
+  const current = normalizeAdvancedValue(key, value);
+  return current === defaultAdvancedValue(key);
+}
+
+function seededAdvancedValue(key: InboundAdvancedField): string | number | boolean {
+  if (key === 'reality_dest') return 'www.cloudflare.com:443';
+  if (key === 'reality_server_names') return 'www.cloudflare.com';
+  if (key === 'ss_method') return '2022-blake3-aes-128-gcm';
+  if (key === 'xhttp_mode') return 'stream-one';
+  if (key === 'hy2_up_mbps' || key === 'hy2_down_mbps') return 100;
+  if (key === 'tuic_congestion_control') return 'bbr';
+  if (key === 'shadowtls_version') return 3;
+  return defaultAdvancedValue(key);
+}
 
 function defaultAdvancedValue(key: (typeof advancedFields)[number]): string | number | boolean {
   if (numericAdvancedFields.has(key)) return 0;
