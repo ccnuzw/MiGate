@@ -11,6 +11,7 @@ const OverviewPage = lazy(() => import('./routes/OverviewPage'));
 const InboundsPage = lazy(() => import('./routes/InboundsPage'));
 const OutboundsPage = lazy(() => import('./routes/OutboundsPage'));
 const RoutingPage = lazy(() => import('./routes/RoutingPage'));
+const TopologyPage = lazy(() => import('./routes/TopologyPage'));
 const CorePage = lazy(() => import('./routes/CorePage'));
 const SettingsPage = lazy(() => import('./routes/SettingsPage'));
 
@@ -28,6 +29,7 @@ export default function App() {
                   <Route path="inbounds" element={<InboundsPage />} />
                   <Route path="outbounds" element={<OutboundsPage />} />
                   <Route path="routing" element={<RoutingPage />} />
+                  <Route path="topology" element={<TopologyPage />} />
                   <Route path="xray" element={<CorePage core="xray" />} />
                   <Route path="singbox" element={<CorePage core="singbox" />} />
                   <Route path="settings" element={<SettingsPage />} />

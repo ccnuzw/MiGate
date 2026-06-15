@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { RoutingRule } from '../api/types';
-import { generatedInboundTag, inboundSelectionOptions, inboundTagOptions, movedRoutingRuleIds, outboundSelectionOptions, routingPayload, ruleTitle } from './RoutingPage';
+import { clientSelectionOptions, generatedInboundTag, inboundSelectionOptions, inboundTagOptions, movedRoutingRuleIds, outboundSelectionOptions, routingPayload, ruleTitle } from './RoutingPage';
 
 describe('routing helpers', () => {
   it('builds create and edit payloads with backend field names only', () => {
     expect(routingPayload({ inbound_tag: 'edge', domain: 'geosite:netflix', ip: 'geoip:private', rule_set: 'geosite-category-ads-all', protocol: '', outbound_tag: 'proxy-a', enabled: true })).toEqual({
       inbound_tag: 'edge',
+      client_id: 0,
+      client_email: '',
       domain: 'geosite:netflix',
       ip: 'geoip:private',
       rule_set: 'geosite-category-ads-all',
@@ -16,6 +18,8 @@ describe('routing helpers', () => {
 
     expect(routingPayload({ inbound_tag: undefined, domain: undefined, protocol: 'bittorrent', outbound_tag: 'blocked', enabled: false })).toEqual({
       inbound_tag: '',
+      client_id: 0,
+      client_email: '',
       domain: '',
       ip: '',
       rule_set: '',
@@ -29,6 +33,8 @@ describe('routing helpers', () => {
     const rule: RoutingRule = { id: 8, inbound_tag: 'edge', domain: 'example.com', ip: '8.8.8.8', rule_set: 'geoip-cn', protocol: 'dns', outbound_tag: 'direct', enabled: true };
     expect(routingPayload({ ...rule, enabled: !rule.enabled })).toEqual({
       inbound_tag: 'edge',
+      client_id: 0,
+      client_email: '',
       domain: 'example.com',
       ip: '8.8.8.8',
       rule_set: 'geoip-cn',
@@ -52,23 +58,60 @@ describe('routing helpers', () => {
     expect(inboundTagOptions([
       { id: 7, remark: 'edge', protocol: 'VLESS', port: 443, network: 'tcp', security: 'none', enabled: true, clients: [] },
       { id: 8, remark: '', protocol: 'vmess', port: 8443, network: 'ws', security: 'tls', enabled: true, clients: [] },
-    ])).toEqual(['inbound-7-vless', 'edge', 'inbound-8-vmess']);
+    ])).toEqual(['inbound-7-vless', 'inbound-8-vmess']);
   });
 
-  it('labels inbound actual tags and remark aliases clearly', () => {
+  it('shows each inbound once while keeping remark aliases searchable', () => {
     const options = inboundSelectionOptions([
       { id: 7, remark: 'edge', protocol: 'VLESS', port: 443, network: 'tcp', security: 'reality', enabled: true, clients: [{ id: 1, inbound_id: 7, email: 'alice', uuid: 'u', enabled: true }] },
     ]);
 
+    expect(options).toHaveLength(2);
     expect(options[1]).toMatchObject({
       value: 'inbound-7-vless',
-      title: 'inbound-7-vless',
-      typeLabel: '实际 Tag',
-    });
-    expect(options[2]).toMatchObject({
-      value: 'edge',
+      aliases: ['edge'],
       title: 'edge',
-      typeLabel: '备注别名',
+      subtitle: 'inbound-7-vless',
+      typeLabel: '入站',
+    });
+    expect(options[1].search).toContain('edge');
+  });
+
+  it('keeps user-provided names as raw display values', () => {
+    const inboundOptions = inboundSelectionOptions([
+      { id: 7, remark: '启用客户入口', protocol: 'VLESS', port: 443, network: 'tcp', security: 'reality', enabled: true, clients: [] },
+    ]);
+    expect(inboundOptions[1]).toMatchObject({
+      title: '启用客户入口',
+      subtitle: 'inbound-7-vless',
+    });
+
+    const clientOptions = clientSelectionOptions([
+      { id: 7, remark: '启用客户入口', protocol: 'VLESS', port: 443, network: 'tcp', security: 'reality', enabled: true, clients: [{ id: 11, inbound_id: 7, email: '客户启用', uuid: 'u-1', enabled: true }] },
+    ], 'inbound-7-vless');
+    expect(clientOptions.find((option) => option.id === 11)).toMatchObject({
+      title: '客户启用',
+      meta: expect.arrayContaining([{ label: '入站：', value: '启用客户入口' }]),
+    });
+  });
+
+  it('offers client options scoped by selected inbound and includes missing clients', () => {
+    const options = clientSelectionOptions([
+      { id: 7, remark: 'edge', protocol: 'VLESS', port: 443, network: 'tcp', security: 'reality', enabled: true, clients: [{ id: 11, inbound_id: 7, email: 'alice@example.com', uuid: 'u-1', enabled: true }] },
+      { id: 8, remark: 'other', protocol: 'vmess', port: 8443, network: 'ws', security: 'tls', enabled: true, clients: [{ id: 12, inbound_id: 8, email: 'bob@example.com', uuid: 'u-2', enabled: true }] },
+    ], 'inbound-7-vless', { client_id: 99, client_email: 'deleted@example.com' });
+
+    expect(options.map((option) => option.id)).toEqual([0, 11, 99]);
+    expect(options.find((option) => option.id === 11)).toMatchObject({
+      email: 'alice@example.com',
+      title: 'alice@example.com',
+      inboundTag: 'inbound-7-vless',
+      typeLabel: '客户端级',
+    });
+    expect(options.find((option) => option.id === 99)).toMatchObject({
+      missing: true,
+      title: 'deleted@example.com',
+      typeLabel: '客户端已缺失',
     });
   });
 
@@ -89,5 +132,6 @@ describe('routing helpers', () => {
     expect(ruleTitle({ id: 1, inbound_tag: 'haha', outbound_tag: 'direct', enabled: true }, text)).toBe('入站: haha -> direct');
     expect(ruleTitle({ id: 2, outbound_tag: 'pool-socks', enabled: true }, text)).toBe('全部入站 -> pool-socks');
     expect(ruleTitle({ id: 3, domain: 'geosite:netflix, example.com', outbound_tag: 'proxy-a', enabled: true }, text)).toBe('geosite:netflix -> proxy-a');
+    expect(ruleTitle({ id: 4, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_tag: 'proxy-a', enabled: true }, text)).toBe('inbound-7-vless / alice@example.com -> proxy-a');
   });
 });

@@ -817,10 +817,119 @@ textarea:focus {
   gap: 20px 24px;
 }
 
+.routing-rule-builder {
+  display: grid;
+  gap: 16px;
+}
+
+.routing-path-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr) 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+  background: rgb(var(--soft));
+  padding: 10px 12px;
+}
+
+.routing-path-step {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: rgb(var(--text));
+}
+
+.routing-path-step svg {
+  color: #0f766e;
+}
+
+.routing-path-label {
+  color: rgb(var(--muted));
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.routing-path-step strong {
+  grid-column: 2;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routing-path-muted {
+  color: rgb(var(--muted));
+}
+
+.routing-path-muted svg {
+  color: rgb(var(--muted));
+}
+
+.routing-path-arrow {
+  color: rgb(var(--muted));
+}
+
+.routing-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  align-items: start;
+  gap: 14px;
+}
+
+.routing-match-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+  background: rgb(var(--surface));
+  padding: 14px;
+}
+
+.routing-match-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.routing-match-title {
+  color: rgb(var(--text));
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.routing-match-help {
+  margin-top: 3px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.routing-match-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.routing-enabled-toggle {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
 .choice-field {
   display: grid;
   min-width: 0;
   gap: 10px;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+  background: rgb(var(--surface));
+  padding: 12px;
 }
 
 .choice-field-header {
@@ -894,7 +1003,7 @@ textarea:focus {
 
 .choice-list {
   display: grid;
-  max-height: 420px;
+  max-height: 356px;
   overflow: auto;
   border: 1px solid rgb(var(--line));
   border-radius: 8px;
@@ -905,14 +1014,14 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 20px;
   width: 100%;
-  min-height: 84px;
+  min-height: 74px;
   align-items: center;
   gap: 12px;
   border: 0;
   border-bottom: 1px solid rgb(var(--line));
   background: rgb(var(--surface));
   color: rgb(var(--text));
-  padding: 12px 14px;
+  padding: 11px 12px;
   text-align: left;
 }
 
@@ -972,7 +1081,8 @@ textarea:focus {
 .choice-row-sub {
   color: rgb(var(--muted));
   font-size: 12px;
-  line-height: 1.4;
+  font-weight: 500;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
@@ -1042,8 +1152,8 @@ textarea:focus {
 }
 
 .modal-panel.routing-modal-panel {
-  width: min(1520px, calc(100vw - 28px));
-  max-height: min(94vh, 1040px);
+  width: min(1360px, calc(100vw - 28px));
+  max-height: min(92vh, 980px);
 }
 
 .socks5-pool-panel {
@@ -1131,8 +1241,230 @@ textarea:focus {
   display: none;
 }
 
+.topology-page {
+  min-width: 0;
+}
+
+.topology-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.topology-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  padding: 12px 14px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.topology-legend-item {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-line {
+  width: 32px;
+  height: 0;
+  flex: 0 0 auto;
+  border-top: 2px solid #0f766e;
+}
+
+.legend-line-all {
+  border-top-color: #0f766e;
+}
+
+.legend-line-default {
+  border-top-color: #64748b;
+  border-top-style: dashed;
+}
+
+.legend-line-client {
+  border-top-color: #94a3b8;
+  border-top-style: dashed;
+}
+
+.topology-canvas-card {
+  height: min(760px, calc(100vh - 270px));
+  min-height: 560px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.topology-canvas-card .react-flow {
+  background: rgb(var(--surface));
+}
+
+.topology-canvas-card .react-flow__attribution {
+  background: rgb(var(--surface) / 0.82);
+  color: rgb(var(--muted));
+}
+
+.topology-canvas-card .react-flow__controls,
+.topology-canvas-card .react-flow__minimap {
+  border: 1px solid rgb(var(--line));
+  background: rgb(var(--surface));
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
+}
+
+.topology-canvas-card .react-flow__controls-button {
+  border-bottom-color: rgb(var(--line));
+  background: rgb(var(--surface));
+  color: rgb(var(--text));
+}
+
+.topology-node {
+  width: 270px;
+  border: 1px solid rgb(var(--line));
+  border-radius: 10px;
+  background: rgb(var(--surface));
+  color: rgb(var(--text));
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08), 0 0 0 1px rgb(var(--line) / 0.75);
+}
+
+.topology-node-disabled {
+  opacity: 0.56;
+}
+
+.topology-node-missing {
+  border-color: rgba(220, 38, 38, 0.52);
+  box-shadow: 0 10px 30px rgba(220, 38, 38, 0.08), 0 0 0 1px rgba(220, 38, 38, 0.12);
+}
+
+.topology-node-header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 1px solid rgb(var(--line));
+  padding: 12px;
+}
+
+.topology-node-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+}
+
+.topology-node-client .topology-node-icon {
+  background: rgba(37, 99, 235, 0.12);
+  color: #2563eb;
+}
+
+.topology-node-outbound .topology-node-icon {
+  background: rgba(180, 83, 9, 0.14);
+  color: #b45309;
+}
+
+.topology-node-missing-inbound .topology-node-icon,
+.topology-node-missing-outbound .topology-node-icon {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+
+.topology-node-title,
+.topology-node-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-node-title {
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.topology-node-subtitle {
+  margin-top: 3px;
+  color: rgb(var(--muted));
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.topology-node-meta {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px 12px;
+}
+
+.topology-node-meta-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+  line-height: 1.28;
+}
+
+.topology-node-meta-row b {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(var(--text));
+  font-weight: 650;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid rgb(var(--surface));
+  background: #0f766e;
+}
+
+.topology-canvas-card .react-flow__edge-path {
+  stroke-width: 3.4;
+}
+
+.topology-edge-client .react-flow__edge-path {
+  stroke-dasharray: 4 4;
+  stroke-width: 2.6;
+}
+
+.topology-edge-default .react-flow__edge-path {
+  stroke: #64748b;
+  stroke-dasharray: 8 6;
+  stroke-width: 2.6;
+}
+
+.topology-edge-all .react-flow__edge-textbg {
+  fill: rgb(var(--surface));
+}
+
+.topology-edge-disabled .react-flow__edge-path {
+  stroke-dasharray: 6 5;
+  stroke-width: 3;
+}
+
+.topology-edge-missing .react-flow__edge-path {
+  stroke: #dc2626;
+  stroke-width: 3.6;
+}
+
+.topology-canvas-card .react-flow__edge-text {
+  fill: rgb(var(--muted));
+  font-size: 11px;
+  font-weight: 650;
+}
+
 @media (max-width: 1024px) {
   .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .topology-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1277,6 +1609,21 @@ textarea:focus {
     width: min(100%, calc(100vw - 24px));
   }
 
+  .routing-path-summary,
+  .routing-picker-grid,
+  .routing-match-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .routing-path-arrow {
+    display: none;
+  }
+
+  .routing-match-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .choice-list {
     max-height: 300px;
   }
@@ -1319,6 +1666,11 @@ textarea:focus {
 
   .span-2 {
     grid-column: auto;
+  }
+
+  .topology-canvas-card {
+    height: 620px;
+    min-height: 620px;
   }
 }
 

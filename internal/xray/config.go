@@ -48,6 +48,7 @@ type Balancer struct {
 
 type RoutingRule struct {
 	InboundTag  []string `json:"inboundTag,omitempty"`
+	User        []string `json:"user,omitempty"`
 	Domain      []string `json:"domain,omitempty"`
 	IP          []string `json:"ip,omitempty"`
 	Protocol    []string `json:"protocol,omitempty"`
@@ -124,6 +125,7 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 	}
 	if len(routingRules) > 0 {
 		inboundTagAliases := map[string]string{}
+		clientsByID := map[int64]db.Client{}
 		for _, inbound := range inbounds {
 			if !inbound.Enabled {
 				continue
@@ -138,6 +140,12 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 				inboundTagAliases[strings.TrimSpace(inbound.Remark)] = actualTag
 			}
 			inboundTagAliases[actualTag] = actualTag
+			for _, client := range inbound.Clients {
+				if !client.Enabled || strings.TrimSpace(client.Email) == "" {
+					continue
+				}
+				clientsByID[client.ID] = client
+			}
 		}
 		r := &RoutingConfig{DomainStrategy: "AsIs", Rules: []RoutingRule{}}
 		for _, rule := range routingRules {
@@ -146,6 +154,13 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 			}
 			xr := RoutingRule{}
 			xr.OutboundTag = rule.OutboundTag
+			if rule.ClientID > 0 {
+				client, ok := clientsByID[rule.ClientID]
+				if !ok || strings.TrimSpace(client.Email) == "" {
+					continue
+				}
+				xr.User = []string{strings.TrimSpace(client.Email)}
+			}
 			if rule.InboundTag != "" {
 				if actual, ok := inboundTagAliases[rule.InboundTag]; ok {
 					xr.InboundTag = []string{actual}

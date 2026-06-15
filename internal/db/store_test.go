@@ -265,6 +265,106 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 	}
 }
 
+func TestStoreRoutingRuleClientFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "edge", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "edge",
+		ClientID:    client.ID,
+		OutboundTag: "blocked",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create client routing rule: %v", err)
+	}
+	wantInboundTag := fmt.Sprintf("inbound-%d-vless", inbound.ID)
+	if rule.ClientID != client.ID || rule.ClientEmail != "alice@example.com" || rule.InboundTag != wantInboundTag {
+		t.Fatalf("unexpected client routing rule: %+v", rule)
+	}
+
+	updated, err := store.UpdateRoutingRule(context.Background(), rule.ID, db.UpdateRoutingRuleParams{
+		ClientID:    client.ID,
+		OutboundTag: "direct",
+		Domain:      "example.com",
+		Enabled:     false,
+	})
+	if err != nil {
+		t.Fatalf("update client routing rule: %v", err)
+	}
+	if updated.ClientID != client.ID || updated.ClientEmail != "alice@example.com" || updated.OutboundTag != "direct" || updated.Enabled {
+		t.Fatalf("unexpected updated client routing rule: %+v", updated)
+	}
+
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ClientID != client.ID || rules[0].ClientEmail != "alice@example.com" {
+		t.Fatalf("client fields not persisted: %+v", rules)
+	}
+}
+
+func TestStoreRejectsRoutingRuleClientInboundMismatch(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "edge", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "other-inbound",
+		ClientID:    client.ID,
+		OutboundTag: "direct",
+		Enabled:     true,
+	})
+	if err == nil {
+		t.Fatal("expected client inbound mismatch to be rejected")
+	}
+}
+
+func TestStoreRejectsRoutingRuleClientEmailWithoutClientID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "inbound-1-vless",
+		ClientEmail: "alice@example.com",
+		OutboundTag: "direct",
+		Enabled:     true,
+	})
+	if err == nil {
+		t.Fatal("expected client_email without client_id to be rejected")
+	}
+}
+
 func TestStoreDeleteRoutingRule(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

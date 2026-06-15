@@ -170,6 +170,58 @@ func TestBuildConfigWithRoutingRules(t *testing.T) {
 		t.Fatal("expected no user routing rules when no rules are configured")
 	}
 }
+
+func TestBuildConfigWithClientRoutingRules(t *testing.T) {
+	inbounds := []db.Inbound{{
+		ID:       7,
+		UUID:     "77777777-7777-4777-8777-777777777777",
+		Remark:   "edge-hk",
+		Protocol: "vless",
+		Port:     443,
+		Network:  "tcp",
+		Security: "none",
+		Enabled:  true,
+		Clients: []db.Client{
+			{ID: 11, UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "alice@example.com", Enabled: true},
+			{ID: 12, UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Email: "", Enabled: true},
+			{ID: 13, UUID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Email: "disabled@example.com", Enabled: false},
+		},
+	}}
+	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
+		{Tag: "proxy-socks", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true, Sort: 1},
+	}, []db.RoutingRule{
+		{ID: 1, InboundTag: "edge-hk", ClientID: 11, OutboundTag: "proxy-socks", Enabled: true},
+		{ID: 2, InboundTag: "edge-hk", ClientID: 12, OutboundTag: "direct", Enabled: true},
+		{ID: 3, InboundTag: "edge-hk", ClientID: 999, ClientEmail: "missing@example.com", OutboundTag: "direct", Enabled: true},
+		{ID: 4, InboundTag: "edge-hk", ClientID: 11, OutboundTag: "direct", Enabled: false},
+		{ID: 5, InboundTag: "edge-hk", ClientID: 13, OutboundTag: "direct", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with client routing rules: %v", err)
+	}
+	userRules := userRoutingRulesForTest(config.Routing.Rules)
+	if len(userRules) != 1 {
+		t.Fatalf("expected only one valid enabled client routing rule, got %+v", userRules)
+	}
+	got := userRules[0]
+	if got.OutboundTag != "proxy-socks" {
+		t.Fatalf("unexpected outbound tag: %+v", got)
+	}
+	if len(got.User) != 1 || got.User[0] != "alice@example.com" {
+		t.Fatalf("expected Xray user email match, got %+v", got.User)
+	}
+	if len(got.InboundTag) != 1 || got.InboundTag[0] != "inbound-7-vless" {
+		t.Fatalf("expected inbound tag restriction, got %+v", got.InboundTag)
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"user":["alice@example.com"]`) {
+		t.Fatalf("generated config does not include Xray user field: %s", string(encoded))
+	}
+}
 func TestBuildConfigRejectsUnsupportedProtocol(t *testing.T) {
 	_, err := xray.BuildConfig([]db.Inbound{{Protocol: join("open", "vpn"), Port: 1194, Enabled: true}})
 	if err == nil {
