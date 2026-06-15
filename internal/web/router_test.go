@@ -3,6 +3,7 @@ package web_test
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -535,7 +536,12 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 }
 
 func TestCoreInstallFailureReturnsStructuredActionResult(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithCoreScriptRunner(func(script string) ([]byte, error) {
+		if !strings.Contains(script, "Xray-linux-${asset_arch}.zip") {
+			t.Fatalf("runner received unexpected script: %s", script)
+		}
+		return []byte("download Xray release failed"), errors.New("download failed")
+	}))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/install", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
 	req.Header.Set("Content-Type", "application/json")

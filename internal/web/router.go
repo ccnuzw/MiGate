@@ -7,12 +7,13 @@ import (
 
 func NewRouter(options ...Option) http.Handler {
 	cfg := routerConfig{
-		xrayController: defaultXrayController{},
-		socks5PoolURL:  defaultSocks5PoolURL,
-		httpPoolURL:    defaultHTTPPoolURL,
-		httpsPoolURL:   defaultHTTPSPoolURL,
-		updateCheckURL: defaultUpdateCheckURL,
-		loginLimiter:   newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
+		xrayController:   defaultXrayController{},
+		socks5PoolURL:    defaultSocks5PoolURL,
+		httpPoolURL:      defaultHTTPPoolURL,
+		httpsPoolURL:     defaultHTTPSPoolURL,
+		updateCheckURL:   defaultUpdateCheckURL,
+		loginLimiter:     newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
+		coreScriptRunner: runCoreScript,
 	}
 	for _, option := range options {
 		option(&cfg)
@@ -39,8 +40,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/xray/validate", xrayValidateHandler(cfg.store))
 	mux.HandleFunc("/api/xray/status", xrayStatusHandler(cfg.xrayController))
 	mux.HandleFunc("/api/xray/apply", xrayApplyHandler(cfg.xrayController, cfg.store))
-	mux.HandleFunc("/api/xray/install", coreInstallHandler("xray"))
-	mux.HandleFunc("/api/xray/uninstall", coreUninstallHandler("xray"))
+	mux.HandleFunc("/api/xray/install", coreInstallHandler("xray", cfg.coreScriptRunner))
+	mux.HandleFunc("/api/xray/uninstall", coreUninstallHandler("xray", cfg.coreScriptRunner))
 	mux.HandleFunc("/api/xray/logs", xrayLogsHandler())
 	mux.HandleFunc("/api/xray/version", xrayVersionHandler(cfg.xrayController))
 	mux.HandleFunc("/api/cert/status", certStatusHandler(&cfg))
@@ -55,8 +56,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
 	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(cfg.store))
 	mux.HandleFunc("/api/singbox/validate", singboxValidateHandler(cfg.store))
-	mux.HandleFunc("/api/singbox/install", coreInstallHandler("singbox"))
-	mux.HandleFunc("/api/singbox/uninstall", coreUninstallHandler("singbox"))
+	mux.HandleFunc("/api/singbox/install", coreInstallHandler("singbox", cfg.coreScriptRunner))
+	mux.HandleFunc("/api/singbox/uninstall", coreUninstallHandler("singbox", cfg.coreScriptRunner))
 	mux.HandleFunc("/api/singbox/config", singboxConfigHandler(cfg.store))
 	mux.HandleFunc("/api/singbox/version", singboxVersionHandler())
 	mux.HandleFunc("/api/singbox/logs", singboxLogsHandler())

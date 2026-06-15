@@ -28,7 +28,10 @@ func decodeCoreActionPayload(w http.ResponseWriter, r *http.Request) (coreAction
 	return payload, true
 }
 
-func coreInstallHandler(core string) http.HandlerFunc {
+func coreInstallHandler(core string, runner func(script string) ([]byte, error)) http.HandlerFunc {
+	if runner == nil {
+		runner = runCoreScript
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -180,7 +183,7 @@ fi
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
 			return
 		}
-		out, err := runCoreScript(script)
+		out, err := runner(script)
 		status := "installed"
 		if err != nil {
 			status = "failed"
@@ -197,7 +200,10 @@ func runCoreScript(script string) ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
-func coreUninstallHandler(core string) http.HandlerFunc {
+func coreUninstallHandler(core string, runner func(script string) ([]byte, error)) http.HandlerFunc {
+	if runner == nil {
+		runner = runCoreScript
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -226,7 +232,7 @@ printf 'sing-box removed\n'`
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
 			return
 		}
-		out, err := runCoreScript(script)
+		out, err := runner(script)
 		status := "uninstalled"
 		if err != nil {
 			status = "failed"

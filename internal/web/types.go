@@ -144,25 +144,26 @@ func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
 func (defaultXrayController) Version(ctx context.Context) string { return "" }
 
 type routerConfig struct {
-	store          Store
-	xrayController XrayController
-	authEnabled    bool
-	authUsername   string
-	authPassword   string
-	authMu         sync.RWMutex
-	sessionSecret  []byte
-	configDir      string
-	version        string
-	basePath       string
-	statsClient    xray.StatsClient
-	socks5PoolURL  string
-	httpPoolURL    string
-	httpsPoolURL   string
-	updateCheckURL string
-	publicHost     string
-	trustProxy     bool
-	loginLimiter   *loginLimiter
-	sessionTouches map[string]time.Time
-	sessionTouchGC time.Time
-	sessionTouchMu sync.Mutex
+	store            Store
+	xrayController   XrayController
+	authEnabled      bool
+	authUsername     string
+	authPassword     string
+	authMu           sync.RWMutex
+	sessionSecret    []byte
+	configDir        string
+	version          string
+	basePath         string
+	statsClient      xray.StatsClient
+	socks5PoolURL    string
+	httpPoolURL      string
+	httpsPoolURL     string
+	updateCheckURL   string
+	publicHost       string
+	trustProxy       bool
+	loginLimiter     *loginLimiter
+	coreScriptRunner func(script string) ([]byte, error)
+	sessionTouches   map[string]time.Time
+	sessionTouchGC   time.Time
+	sessionTouchMu   sync.Mutex
 }

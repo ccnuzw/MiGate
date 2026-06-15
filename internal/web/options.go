@@ -87,3 +87,11 @@ func WithStatsClient(client xray.StatsClient) Option {
 		cfg.statsClient = client
 	}
 }
+
+// WithCoreScriptRunner injects the executor used by core install/uninstall
+// endpoints. Tests use this to avoid running privileged system changes.
+func WithCoreScriptRunner(runner func(script string) ([]byte, error)) Option {
+	return func(cfg *routerConfig) {
+		cfg.coreScriptRunner = runner
+	}
+}
