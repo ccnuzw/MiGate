@@ -794,10 +794,18 @@ textarea:focus {
   color: #047857;
 }
 
-.outbound-protocol-default,
-.outbound-protocol-socks,
-.outbound-protocol-freedom,
+.outbound-protocol-freedom {
+  background: rgba(5, 150, 105, 0.12);
+  color: #047857;
+}
+
 .outbound-protocol-blackhole {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+.outbound-protocol-default,
+.outbound-protocol-socks {
   background: rgb(var(--soft));
   color: rgb(var(--muted));
 }
@@ -1011,17 +1019,17 @@ textarea:focus {
 }
 
 .choice-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 20px;
+  display: flex;
+  position: relative;
   width: 100%;
-  min-height: 74px;
+  min-height: 96px;
   align-items: center;
   gap: 12px;
   border: 0;
   border-bottom: 1px solid rgb(var(--line));
   background: rgb(var(--surface));
   color: rgb(var(--text));
-  padding: 11px 12px;
+  padding: 14px 42px 14px 16px;
   text-align: left;
 }
 
@@ -1043,20 +1051,27 @@ textarea:focus {
 }
 
 .choice-row-active svg {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  flex: 0 0 auto;
   color: #0f766e;
+  transform: translateY(-50%);
 }
 
 .choice-row-main {
-  display: grid;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   min-width: 0;
-  gap: 6px;
+  gap: 7px;
 }
 
 .choice-row-title-line {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
 }
 
 .choice-row-title-line .choice-row-title {
@@ -1064,8 +1079,18 @@ textarea:focus {
 }
 
 .choice-row-title,
+.choice-row-kicker,
 .choice-row-sub {
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.choice-row-kicker {
+  color: rgb(var(--muted));
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
 .choice-row-title {
@@ -1073,9 +1098,8 @@ textarea:focus {
   color: rgb(var(--text));
   font-size: 14px;
   font-weight: 650;
-  line-height: 1.28;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 .choice-row-sub {
@@ -1083,7 +1107,7 @@ textarea:focus {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.35;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .choice-type-badge {
@@ -1101,29 +1125,59 @@ textarea:focus {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  gap: 4px 14px;
+  align-items: start;
+  gap: 6px 10px;
   color: rgb(var(--muted));
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
-.choice-row-meta-grid span {
-  display: inline;
+.choice-row-meta-grid > span {
+  display: inline-flex;
   min-width: 0;
   max-width: 100%;
-  overflow-wrap: anywhere;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.outbound-choice-row .choice-row-meta-grid {
+  gap: 5px 16px;
 }
 
 .choice-row-meta-grid b {
+  flex: 0 0 auto;
   color: rgb(var(--text));
   font-weight: 650;
   margin-right: 2px;
+}
+
+.choice-meta-value {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 
 .choice-row-meta {
   color: rgb(var(--muted));
   font-size: 12px;
   line-height: 1.35;
+}
+
+.outbound-choice-row {
+  min-height: 104px;
+}
+
+.choice-protocol-badge {
+  min-height: 20px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.inbound-choice-row .choice-row-meta-grid span,
+.outbound-choice-row .choice-row-meta-grid span {
+  min-height: auto;
 }
 
 .span-2 {
@@ -1626,10 +1680,6 @@ textarea:focus {
 
   .choice-list {
     max-height: 300px;
-  }
-
-  .choice-row-meta-grid {
-    grid-template-columns: 1fr;
   }
 
   .inbound-modal-panel {

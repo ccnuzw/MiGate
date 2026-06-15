@@ -97,6 +97,42 @@ func TestStoreUpdatesOutboundFields(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateOutboundCascadesRoutingRuleTag(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "proxy-old", Protocol: "http", Address: "10.0.0.1", Port: 8080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundTag: "proxy-old",
+		Domain:      "geosite:netflix",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	if _, err := store.UpdateOutbound(context.Background(), ob.ID, db.UpdateOutboundParams{
+		Tag: "proxy-new", Protocol: "http", Address: "10.0.0.2", Port: 8081, Enabled: true,
+	}); err != nil {
+		t.Fatalf("update outbound: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != rule.ID || rules[0].OutboundTag != "proxy-new" {
+		t.Fatalf("routing rule outbound tag was not cascaded: %+v", rules)
+	}
+}
+
 func TestStoreUpdateOutboundRejectsUnknownID(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -686,6 +722,121 @@ func TestStoreUpdateInboundUpdatesFields(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateInboundCascadesRoutingRuleInboundTag(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "old-edge", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	remarkRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "old-edge",
+		OutboundTag: "blocked",
+		Domain:      "geosite:netflix",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create remark routing rule: %v", err)
+	}
+	generatedRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  fmt.Sprintf("inbound-%d-vless", inbound.ID),
+		OutboundTag: "direct",
+		Domain:      "example.com",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create generated routing rule: %v", err)
+	}
+
+	if _, err := store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark: "new-edge", Protocol: "vmess", Port: 8443, Network: "ws", Security: "tls", Enabled: true,
+	}); err != nil {
+		t.Fatalf("update inbound: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	got := map[int64]string{}
+	for _, rule := range rules {
+		got[rule.ID] = rule.InboundTag
+	}
+	if got[remarkRule.ID] != "new-edge" {
+		t.Fatalf("remark inbound tag was not cascaded: %+v", rules)
+	}
+	if got[generatedRule.ID] != fmt.Sprintf("inbound-%d-vmess", inbound.ID) {
+		t.Fatalf("generated inbound tag was not cascaded: %+v", rules)
+	}
+}
+
+func TestStoreUpdateInboundDoesNotCascadeDuplicateRemarkRules(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	first, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "shared-edge", Protocol: "vless", Port: 443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create first inbound: %v", err)
+	}
+	second, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "shared-edge", Protocol: "vmess", Port: 8443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create second inbound: %v", err)
+	}
+	remarkRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "shared-edge",
+		OutboundTag: "blocked",
+		Domain:      "geosite:netflix",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create remark routing rule: %v", err)
+	}
+	generatedRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  fmt.Sprintf("inbound-%d-vless", first.ID),
+		OutboundTag: "direct",
+		Domain:      "example.com",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create generated routing rule: %v", err)
+	}
+
+	if _, err := store.UpdateInbound(context.Background(), first.ID, db.UpdateInboundParams{
+		Remark: "renamed-edge", Protocol: "trojan", Port: 9443, Network: "tcp", Security: "tls", Enabled: true,
+	}); err != nil {
+		t.Fatalf("update inbound: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	got := map[int64]string{}
+	for _, rule := range rules {
+		got[rule.ID] = rule.InboundTag
+	}
+	if got[remarkRule.ID] != "shared-edge" {
+		t.Fatalf("duplicate remark rule should not be cascaded: %+v", rules)
+	}
+	if got[generatedRule.ID] != fmt.Sprintf("inbound-%d-trojan", first.ID) {
+		t.Fatalf("generated inbound tag should still be cascaded: %+v", rules)
+	}
+	if second.ID == first.ID {
+		t.Fatal("test setup produced duplicate inbound IDs")
+	}
+}
+
 func TestStoreUpdateInboundRejectsUnknownID(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -775,6 +926,47 @@ func TestStoreUpdateClientUpdatesFields(t *testing.T) {
 	}
 	if len(loaded) != 1 || len(loaded[0].Clients) != 1 || loaded[0].Clients[0].Email != "new@test.com" || loaded[0].Clients[0].UUID != "22222222-2222-4222-8222-222222222222" || loaded[0].Clients[0].Enabled != true {
 		t.Fatalf("updated client not persisted: %+v", loaded[0].Clients[0])
+	}
+}
+
+func TestStoreUpdateClientCascadesRoutingRuleClientEmail(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "edge", Protocol: "vless", Port: 443, Network: "tcp", Security: "reality",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "old@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundTag:  "edge",
+		ClientID:    client.ID,
+		OutboundTag: "blocked",
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create client routing rule: %v", err)
+	}
+
+	if _, err := store.UpdateClient(context.Background(), client.ID, db.UpdateClientParams{
+		Email: "new@example.com", UUID: client.UUID, Enabled: true,
+	}); err != nil {
+		t.Fatalf("update client: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != rule.ID || rules[0].ClientEmail != "new@example.com" {
+		t.Fatalf("client email was not cascaded to routing rule: %+v", rules)
 	}
 }
 

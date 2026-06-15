@@ -167,7 +167,7 @@ export default function InboundsPage() {
     if (!inboundTraffic.data) return;
     queryClient.setQueryData<Inbound[]>(['inbounds'], (current) => mergeInboundTraffic(current || [], inboundTraffic.data || []));
   }, [inboundTraffic.data, queryClient]);
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['inbounds'] });
+  const refresh = () => refreshInboundDependencies(queryClient);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = (inbounds.data || []).filter((item) => !q || [item.remark, item.protocol, String(item.port), item.network, item.security].join(' ').toLowerCase().includes(q));
@@ -380,6 +380,13 @@ function MetaItem({ label, value }: { label: string; value: string }) {
       <span>{value}</span>
     </span>
   );
+}
+
+function refreshInboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ['inbounds'] });
+  queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
+  queryClient.invalidateQueries({ queryKey: ['outbounds'] });
+  queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
 }
 
 const protocolBadgeClasses: Record<string, string> = {

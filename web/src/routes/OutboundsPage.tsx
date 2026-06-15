@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Edit2, Gauge, Plus, Power, Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -36,7 +36,7 @@ export default function OutboundsPage() {
   const [latency, setLatency] = useState<Record<number, PingResult>>({});
   const [pingingIds, setPingingIds] = useState<Set<number>>(() => new Set());
   const outbounds = useQuery({ queryKey: ['outbounds'], queryFn: api.outbounds });
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['outbounds'] });
+  const refresh = () => refreshOutboundDependencies(queryClient);
   const items = outbounds.data || [];
   const defaultItems = items.filter(isFixedDefaultOutbound);
   const customItems = items.filter((item) => !isFixedDefaultOutbound(item));
@@ -185,8 +185,11 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
   const { text } = useI18n();
   const form = useForm<InputValues, unknown, Values>({
     resolver: zodResolver(schema),
-    values: outbound ? { tag: outbound.tag || '', remark: outbound.remark || '', protocol: (outbound.protocol || 'socks') as Values['protocol'], address: outbound.address || '', port: Number(outbound.port || 0), username: outbound.username || '', password: outbound.password || '', enabled: outbound.enabled ?? true } : undefined,
+    defaultValues: outboundFormValues(null),
   });
+  useEffect(() => {
+    form.reset(outboundFormValues(outbound));
+  }, [form, outbound]);
   const protocol = form.watch('protocol');
   const save = useMutation({
     mutationFn: (values: Values) => {
@@ -218,6 +221,37 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
       </div>
     </Modal>
   );
+}
+
+export function outboundFormValues(outbound: Outbound | null): InputValues {
+  return outbound
+    ? {
+        tag: outbound.tag || '',
+        remark: outbound.remark || '',
+        protocol: (outbound.protocol || 'socks') as Values['protocol'],
+        address: outbound.address || '',
+        port: Number(outbound.port || 0),
+        username: outbound.username || '',
+        password: outbound.password || '',
+        enabled: outbound.enabled ?? true,
+      }
+    : {
+        tag: '',
+        remark: '',
+        protocol: 'socks',
+        address: '',
+        port: 0,
+        username: '',
+        password: '',
+        enabled: true,
+      };
+}
+
+function refreshOutboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ['outbounds'] });
+  queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
+  queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
+  queryClient.invalidateQueries({ queryKey: ['inbounds'] });
 }
 
 function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {

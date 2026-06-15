@@ -129,9 +129,19 @@ describe('routing helpers', () => {
   it('uses source and outbound summary instead of generic default titles', () => {
     const text = (value: string) => value;
 
-    expect(ruleTitle({ id: 1, inbound_tag: 'haha', outbound_tag: 'direct', enabled: true }, text)).toBe('入站: haha -> direct');
+    const inbounds = [
+      { id: 7, remark: '深圳入口', protocol: 'vless', port: 443, network: 'tcp', security: 'reality', enabled: true, clients: [{ id: 11, inbound_id: 7, email: 'alice@example.com', uuid: 'u-1', enabled: true }] },
+      { id: 8, remark: '', protocol: 'vmess', port: 8443, network: 'ws', security: 'tls', enabled: true, clients: [] },
+    ];
+
+    expect(ruleTitle({ id: 1, inbound_tag: 'haha', outbound_tag: 'direct', enabled: true }, text)).toBe('haha -> direct');
     expect(ruleTitle({ id: 2, outbound_tag: 'pool-socks', enabled: true }, text)).toBe('全部入站 -> pool-socks');
     expect(ruleTitle({ id: 3, domain: 'geosite:netflix, example.com', outbound_tag: 'proxy-a', enabled: true }, text)).toBe('geosite:netflix -> proxy-a');
     expect(ruleTitle({ id: 4, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_tag: 'proxy-a', enabled: true }, text)).toBe('inbound-7-vless / alice@example.com -> proxy-a');
+    expect(ruleTitle({ id: 5, inbound_tag: 'inbound-7-vless', outbound_tag: 'proxy-a', enabled: true }, text, inbounds)).toBe('深圳入口 -> proxy-a');
+    expect(ruleTitle({ id: 6, inbound_tag: 'inbound-7-vless', client_id: 11, outbound_tag: 'proxy-a', enabled: true }, text, inbounds)).toBe('深圳入口 / alice@example.com -> proxy-a');
+    expect(ruleTitle({ id: 7, inbound_tag: 'inbound-8-vmess', outbound_tag: 'direct', enabled: true }, text, inbounds)).toBe('inbound-8-vmess -> direct');
+    expect(ruleTitle({ id: 8, client_id: 11, outbound_tag: 'proxy-a', enabled: true }, text, inbounds)).toBe('深圳入口 / alice@example.com -> proxy-a');
+    expect(ruleTitle({ id: 9, inbound_tag: 'inbound-7-vless', domain: 'geosite:netflix', outbound_tag: 'proxy-a', enabled: true }, text, inbounds)).toBe('深圳入口 -> proxy-a');
   });
 });

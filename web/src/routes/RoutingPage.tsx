@@ -85,7 +85,7 @@ export default function RoutingPage() {
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs">#{index + 1}</span>
-                  <h2 className="truncate text-base font-semibold">{ruleTitle(item, text)}</h2>
+                  <h2 className="truncate text-base font-semibold">{ruleTitle(item, text, inbounds.data || [])}</h2>
                   <StatusBadge enabled={item.enabled} />
                   {item.client_id && !findClientById(inbounds.data || [], item.client_id) ? <StatusBadge enabled={false}>{text('客户端已缺失')}</StatusBadge> : null}
                 </div>
@@ -272,15 +272,15 @@ function InboundPicker({ options, value, onChange }: { options: InboundOption[];
       </div>
       <div className="choice-list" role="radiogroup" aria-label={text('来源入站 Tag')}>
         {filtered.map((option) => (
-          <button key={option.value || 'all'} type="button" className={inboundOptionMatches(option, value) ? 'choice-row choice-row-active' : 'choice-row'} onClick={() => onChange(option.value)} role="radio" aria-checked={inboundOptionMatches(option, value)}>
+          <button key={option.value || 'all'} type="button" className={inboundOptionMatches(option, value) ? 'choice-row choice-row-active inbound-choice-row' : 'choice-row inbound-choice-row'} onClick={() => onChange(option.value)} role="radio" aria-checked={inboundOptionMatches(option, value)}>
             <span className="choice-row-main">
+              {option.subtitle ? <span className="choice-row-kicker">{option.subtitle}</span> : null}
               <span className="choice-row-title-line">
                 <span className="choice-row-title">{option.title}</span>
                 <span className="choice-type-badge">{text(option.typeLabel)}</span>
               </span>
-              {option.subtitle ? <span className="choice-row-sub">{option.subtitle}</span> : null}
               <span className="choice-row-meta-grid">
-                {option.meta.map((item) => <span key={`${option.value}-${item.label}`}><b>{text(item.label)}</b>{formatChoiceMetaValue(item, text)}</span>)}
+                {option.meta.map((item) => <ChoiceMetaItem key={`${option.value}-${item.label}`} item={item} text={text} />)}
               </span>
             </span>
             {inboundOptionMatches(option, value) ? <Check className="h-4 w-4" /> : null}
@@ -318,7 +318,7 @@ function ClientPicker({ options, value, missingLabel, onChange }: { options: Cli
               </span>
               {option.subtitle ? <span className="choice-row-sub">{option.subtitle}</span> : null}
               <span className="choice-row-meta-grid">
-                {option.meta.map((item) => <span key={`${option.id}-${item.label}`}><b>{text(item.label)}</b>{formatChoiceMetaValue(item, text)}</span>)}
+                {option.meta.map((item) => <ChoiceMetaItem key={`${option.id}-${item.label}`} item={item} text={text} />)}
               </span>
             </span>
             {option.id === value ? <Check className="h-4 w-4" /> : null}
@@ -348,13 +348,15 @@ function OutboundPicker({ options, value, onChange }: { options: OutboundOption[
       </div>
       <div className="choice-list" role="radiogroup" aria-label={text('目标出站')}>
         {filtered.map((option) => (
-          <button key={option.tag} type="button" className={option.tag === value ? 'choice-row choice-row-active' : 'choice-row'} onClick={() => onChange(option.tag)} role="radio" aria-checked={option.tag === value}>
+          <button key={option.tag} type="button" className={option.tag === value ? 'choice-row choice-row-active outbound-choice-row' : 'choice-row outbound-choice-row'} onClick={() => onChange(option.tag)} role="radio" aria-checked={option.tag === value}>
             <span className="choice-row-main">
               <span className="choice-row-title-line">
                 <span className="choice-row-title">{option.tag}</span>
+                <span className={`protocol-badge choice-protocol-badge outbound-protocol-${option.protocolType || 'default'}`}>{option.protocolLabel}</span>
               </span>
+              {option.remark ? <span className="choice-row-sub">{option.remark}</span> : null}
               <span className="choice-row-meta-grid">
-                {option.meta.map((item) => <span key={`${option.tag}-${item.label}`}><b>{text(item.label)}</b>{formatChoiceMetaValue(item, text)}</span>)}
+                {option.meta.map((item) => <ChoiceMetaItem key={`${option.tag}-${item.label}`} item={item} text={text} />)}
               </span>
             </span>
             {option.tag === value ? <Check className="h-4 w-4" /> : null}
@@ -422,6 +424,9 @@ type ClientOption = {
 
 type OutboundOption = {
   tag: string;
+  protocolType: string;
+  protocolLabel: string;
+  remark: string;
   meta: ChoiceMeta[];
   search: string;
 };
@@ -434,6 +439,15 @@ type ChoiceMeta = {
 
 function formatChoiceMetaValue(item: ChoiceMeta, text: (value: string) => string) {
   return item.translateValue ? text(item.value) : item.value;
+}
+
+function ChoiceMetaItem({ item, text }: { item: ChoiceMeta; text: (value: string) => string }) {
+  return (
+    <span>
+      <b>{text(item.label)}</b>
+      <span className="choice-meta-value">{formatChoiceMetaValue(item, text)}</span>
+    </span>
+  );
 }
 
 export function inboundSelectionOptions(inbounds: Inbound[]): InboundOption[] {
@@ -547,17 +561,20 @@ export function outboundSelectionOptions(outbounds: Outbound[], proxyLookup = ne
       const proxy = proxyLookup.get(outboundLookupKey(item));
       const country = proxyCountryLabel(proxy);
       const remark = item.remark || '';
+      const rawProtocolType = outboundPoolType(item) || item.protocol || 'default';
+      const protocolType = protocolSlug(rawProtocolType);
       const meta = [
-        { label: '协议：', value: item.protocol || '-' },
         item.address ? { label: '地址：', value: `${item.address}:${item.port || ''}` } : null,
         country && (!remark || !remark.includes(country)) ? { label: '国家/地区：', value: country } : null,
-        remark ? { label: '备注：', value: remark } : null,
-        { label: '状态：', value: item.enabled === false ? '禁用' : '启用', translateValue: true },
+        item.enabled === false ? { label: '状态：', value: '禁用', translateValue: true } : null,
       ].filter(Boolean) as ChoiceMeta[];
       return {
         tag: item.tag,
+        protocolType,
+        protocolLabel: protocolLabel(rawProtocolType),
+        remark,
         meta,
-        search: [item.tag, item.remark, item.protocol, item.address, item.port, country].filter(Boolean).join(' ').toLowerCase(),
+        search: [item.tag, item.remark, item.protocol, rawProtocolType, protocolType, protocolLabel(rawProtocolType), item.address, item.port, country].filter(Boolean).join(' ').toLowerCase(),
       };
     });
 }
@@ -635,18 +652,29 @@ function proxyCountryLabel(proxy?: Pick<ProxyPoolProxy, 'country' | 'country_cod
   return String(proxy?.country || proxy?.country_code || '').trim();
 }
 
+function protocolLabel(protocol: string) {
+  const value = protocol || 'default';
+  const normalized = protocolSlug(value);
+  if (normalized === 'socks5') return 'SOCKS5';
+  if (normalized === 'default') return 'OUT';
+  return value.toUpperCase();
+}
+
+function protocolSlug(protocol: string) {
+  return String(protocol || 'default').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'default';
+}
+
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof ApiError ? error.message : fallback;
 }
 
-export function ruleTitle(rule: RoutingRule, text: (value: string) => string) {
+export function ruleTitle(rule: RoutingRule, text: (value: string) => string, inbounds: Inbound[] = []) {
+  const inbound = readableInboundName(rule, inbounds, text);
+  const outbound = rule.outbound_tag;
   if (Number(rule.client_id || 0) > 0) {
-    const inbound = rule.inbound_tag || text('全部入站');
-    const client = rule.client_email || rule.client_label || `${text('客户端')} #${rule.client_id}`;
-    return `${inbound} / ${client} -> ${rule.outbound_tag}`;
+    return `${inbound || readableClientInboundName(rule, inbounds, text)} / ${readableClientName(rule, inbounds, text)} -> ${outbound}`;
   }
-  const match = firstRoutingMatch(rule, text);
-  return `${match} -> ${rule.outbound_tag}`;
+  return `${inbound || firstRoutingMatch(rule, text)} -> ${outbound}`;
 }
 
 function firstRoutingMatch(rule: RoutingRule, text: (value: string) => string) {
@@ -655,6 +683,30 @@ function firstRoutingMatch(rule: RoutingRule, text: (value: string) => string) {
   if (rule.rule_set) return compactRuleValue(rule.rule_set);
   if (rule.protocol) return `${text('协议')}: ${compactRuleValue(rule.protocol)}`;
   return rule.inbound_tag ? `${text('入站')}: ${rule.inbound_tag}` : text('全部入站');
+}
+
+function readableInboundName(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string) {
+  if (!rule.inbound_tag) return '';
+  const inbound = findInboundByTag(inbounds, rule.inbound_tag);
+  return String(inbound?.remark || rule.inbound_tag).trim() || text('未命名入站');
+}
+
+function readableClientName(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string) {
+  const clientID = Number(rule.client_id || 0);
+  if (!clientID) return '-';
+  const found = findClientById(inbounds, clientID);
+  return String(found?.client.email || rule.client_email || rule.client_label || `${text('客户端')} #${clientID}`).trim();
+}
+
+function readableClientInboundName(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string) {
+  const clientID = Number(rule.client_id || 0);
+  const found = clientID ? findClientById(inbounds, clientID) : undefined;
+  if (!found) return text('全部入站');
+  return String(found.inbound.remark || generatedInboundTag(found.inbound)).trim() || text('未命名入站');
+}
+
+function findInboundByTag(inbounds: Inbound[], tag: string) {
+  return inbounds.find((item) => generatedInboundTag(item) === tag || String(item.remark || '').trim() === tag);
 }
 
 function compactRuleValue(value: string) {

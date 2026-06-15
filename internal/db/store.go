@@ -561,7 +561,19 @@ func (s *Store) UpdateOutbound(ctx context.Context, id int64, params UpdateOutbo
 	if params.Enabled {
 		enabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE outbounds SET tag=?, remark=?, protocol=?, address=?, port=?, username=?, password=?, enabled=? WHERE id=?`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Outbound{}, err
+	}
+	defer tx.Rollback()
+	var oldTag string
+	if err := tx.QueryRowContext(ctx, `SELECT tag FROM outbounds WHERE id=?`, id).Scan(&oldTag); err != nil {
+		if err == sql.ErrNoRows {
+			return Outbound{}, fmt.Errorf("outbound not found: %d", id)
+		}
+		return Outbound{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE outbounds SET tag=?, remark=?, protocol=?, address=?, port=?, username=?, password=?, enabled=? WHERE id=?`,
 		tag, remark, protocol, address, params.Port, strings.TrimSpace(params.Username), params.Password, enabled, id)
 	if err != nil {
 		return Outbound{}, err
@@ -573,10 +585,18 @@ func (s *Store) UpdateOutbound(ctx context.Context, id int64, params UpdateOutbo
 	if n == 0 {
 		return Outbound{}, fmt.Errorf("outbound not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
+	if oldTag != tag {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET outbound_tag=? WHERE outbound_tag=?`, tag, oldTag); err != nil {
+			return Outbound{}, err
+		}
+	}
+	row := tx.QueryRowContext(ctx, `SELECT id, tag, remark, protocol, address, port, username, password, enabled, sort FROM outbounds WHERE id=?`, id)
 	var outbound Outbound
 	var dbEnabled int
 	if err := row.Scan(&outbound.ID, &outbound.Tag, &outbound.Remark, &outbound.Protocol, &outbound.Address, &outbound.Port, &outbound.Username, &outbound.Password, &dbEnabled, &outbound.Sort); err != nil {
+		return Outbound{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Outbound{}, err
 	}
 	outbound.Enabled = dbEnabled != 0
@@ -1050,7 +1070,27 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if params.TuicZeroRTT {
 		tuicZeroRTTInt = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE inbounds SET uuid=?, remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Inbound{}, err
+	}
+	defer tx.Rollback()
+	var oldRemark string
+	var oldProtocol string
+	if err := tx.QueryRowContext(ctx, `SELECT remark, protocol FROM inbounds WHERE id=?`, id).Scan(&oldRemark, &oldProtocol); err != nil {
+		if err == sql.ErrNoRows {
+			return Inbound{}, fmt.Errorf("inbound not found: %d", id)
+		}
+		return Inbound{}, err
+	}
+	oldRemark = strings.TrimSpace(oldRemark)
+	oldRemarkMatches := 0
+	if oldRemark != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM inbounds WHERE TRIM(remark)=?`, oldRemark).Scan(&oldRemarkMatches); err != nil {
+			return Inbound{}, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE inbounds SET uuid=?, remark=?, protocol=?, port=?, network=?, security=?, enabled=?,
 		ws_path=?, ws_host=?, grpc_service_name=?, reality_dest=?, reality_server_names=?, reality_short_id=?, reality_private_key=?, reality_public_key=?, ss_method=?,
 		tls_cert_file=?, tls_key_file=?, tls_sni=?, tls_fingerprint=?, tls_alpn=?, xhttp_path=?, xhttp_mode=?,
 		hy2_up_mbps=?, hy2_down_mbps=?, hy2_obfs=?, hy2_obfs_password=?, hy2_mport=?,
@@ -1074,8 +1114,20 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if n == 0 {
 		return Inbound{}, fmt.Errorf("inbound not found: %d", id)
 	}
+	oldGeneratedTag := fmt.Sprintf("inbound-%d-%s", id, strings.ToLower(strings.TrimSpace(oldProtocol)))
+	newGeneratedTag := fmt.Sprintf("inbound-%d-%s", id, protocol)
+	if oldGeneratedTag != newGeneratedTag {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=? WHERE inbound_tag=?`, newGeneratedTag, oldGeneratedTag); err != nil {
+			return Inbound{}, err
+		}
+	}
+	if oldRemark != "" && oldRemark != remark && oldRemarkMatches == 1 {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET inbound_tag=? WHERE inbound_tag=?`, remark, oldRemark); err != nil {
+			return Inbound{}, err
+		}
+	}
 	// Reload to get the full row
-	row := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
+	row := tx.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, port, network, security, enabled,
 		ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method,
 		tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
 		hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password, hy2_mport,
@@ -1091,6 +1143,9 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
 		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
 		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword); err != nil {
+		return Inbound{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Inbound{}, err
 	}
 	inbound.Enabled = dbEnabled != 0
@@ -1109,7 +1164,8 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	}
 	var inboundID int64
 	var existingUUID string
-	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id, uuid FROM clients WHERE id = ?`, id).Scan(&inboundID, &existingUUID); err != nil {
+	var oldEmail string
+	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id, uuid, email FROM clients WHERE id = ?`, id).Scan(&inboundID, &existingUUID, &oldEmail); err != nil {
 		return Client{}, err
 	}
 	uuid := strings.TrimSpace(params.UUID)
@@ -1127,7 +1183,12 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	} else if err != sql.ErrNoRows {
 		return Client{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE clients SET uuid=?, email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Client{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE clients SET uuid=?, email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
 		uuid, email, enabled, params.TrafficLimit, params.ExpiryAt, id)
 	if err != nil {
 		return Client{}, err
@@ -1139,10 +1200,18 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	if strings.TrimSpace(oldEmail) != email {
+		if _, err := tx.ExecContext(ctx, `UPDATE routing_rules SET client_email=? WHERE client_id=?`, email, id); err != nil {
+			return Client{}, err
+		}
+	}
+	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
 	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		return Client{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
