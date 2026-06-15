@@ -50,6 +50,10 @@ textarea {
   font: inherit;
 }
 
+button {
+  cursor: pointer;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.56;
@@ -127,6 +131,18 @@ textarea:focus {
 .icon-button:hover,
 .btn:hover {
   filter: brightness(0.97);
+}
+
+.toggle-button-on {
+  border-color: rgb(22 163 74 / 0.35);
+  background: rgb(22 163 74 / 0.12);
+  color: #15803d;
+}
+
+.toggle-button-off {
+  border-color: rgb(220 38 38 / 0.35);
+  background: rgb(220 38 38 / 0.1);
+  color: #dc2626;
 }
 
 .danger-text {

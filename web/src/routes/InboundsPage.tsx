@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Edit2, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
+import { Copy, Edit2, Link2, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ApiError, appPath } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CertStatus, Client, Inbound } from '../api/types';
-import { EmptyState, LoadingBlock, SpinnerButton, StatusBadge, useConfirm, useToast } from '../components/ui';
+import { EmptyState, LoadingBlock, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { formatBytes, randomUUID } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { usePageVisible } from '../lib/visibility';
@@ -260,7 +260,7 @@ export default function InboundsPage() {
                   </div>
                 </div>
                 <div className="action-row">
-                  <SpinnerButton className="icon-button" loading={toggleInbound.isPending} onClick={() => toggleInbound.mutate(inbound)} title="启停">
+                  <SpinnerButton className={toggleButtonClass(inbound.enabled)} loading={toggleInbound.isPending} onClick={() => toggleInbound.mutate(inbound)} title="启停">
                     <Power className="h-4 w-4" />
                   </SpinnerButton>
                   <button className="icon-button" onClick={() => setEditingInbound(inbound)} title="编辑">
@@ -352,9 +352,9 @@ function ClientRow({
         </div>
       </div>
       <div className="action-row">
-        <button className="icon-button" onClick={onCopySub} title="复制订阅链接"><Copy className="h-4 w-4" /></button>
+        <button className="icon-button" onClick={onCopySub} title="复制订阅链接"><Link2 className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onCopyShare} title="复制客户端分享链接"><Copy className="h-4 w-4" /></button>
-        <button className="icon-button" onClick={onToggle} title="启停"><Power className="h-4 w-4" /></button>
+        <button className={toggleButtonClass(client.enabled)} onClick={onToggle} title="启停"><Power className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onEdit} title="编辑"><Edit2 className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onReset} title="重置流量"><RotateCcw className="h-4 w-4" /></button>
         <button className="icon-button danger-text" onClick={onDelete} title="删除"><Trash2 className="h-4 w-4" /></button>

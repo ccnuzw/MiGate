@@ -215,7 +215,7 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
         {security === 'reality' ? (
           <>
             <Field label={text('伪装目标')}><input {...form.register('reality_dest')} placeholder="www.cloudflare.com:443" /></Field>
-            <Field label="Server Name"><input {...form.register('reality_server_names')} placeholder="www.cloudflare.com" /></Field>
+            <Field label={text('REALITY 服务名')}><input {...form.register('reality_server_names')} placeholder="www.cloudflare.com" /></Field>
           </>
         ) : null}
         {enabledAdvanced.has('tls_sni') ? <Field label={text('域名 / SNI')}><input {...form.register('tls_sni')} placeholder="example.com" /></Field> : null}

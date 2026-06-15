@@ -7,7 +7,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Outbound, PingResult, ProxyPoolProxy } from '../api/types';
-import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, useConfirm, useToast } from '../components/ui';
+import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
 
@@ -158,7 +158,7 @@ export default function OutboundsPage() {
                 <button className="icon-button" disabled={!isReorderableOutbound(item) || reorderableItems.findIndex((o) => o.id === item.id) === 0} onClick={() => moveCustomOutbound(reorderableItems, reorderableItems.findIndex((o) => o.id === item.id), -1, reorder.mutate)} title={text('上移')}><ArrowUp className="h-4 w-4" /></button>
                 <button className="icon-button" disabled={!isReorderableOutbound(item) || reorderableItems.findIndex((o) => o.id === item.id) === reorderableItems.length - 1} onClick={() => moveCustomOutbound(reorderableItems, reorderableItems.findIndex((o) => o.id === item.id), 1, reorder.mutate)} title={text('下移')}><ArrowDown className="h-4 w-4" /></button>
                 <SpinnerButton className="icon-button" loading={pingingIds.has(item.id)} onClick={() => pingOutbound(item.id)} title="Ping"><Gauge className="h-4 w-4" /></SpinnerButton>
-                <button className="icon-button" onClick={() => toggle.mutate(item)} title={text('启停')}><Power className="h-4 w-4" /></button>
+                <button className={toggleButtonClass(item.enabled)} onClick={() => toggle.mutate(item)} title={text('启停')}><Power className="h-4 w-4" /></button>
                 <button className="icon-button" onClick={() => setEditing(item)} title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
                 <button className="icon-button danger-text" onClick={async () => (await confirm({ title: text('删除出站？'), tone: 'danger' })) && remove.mutate(item.id)} title={text('删除')}><Trash2 className="h-4 w-4" /></button>
               </div>

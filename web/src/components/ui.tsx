@@ -163,6 +163,10 @@ export function StatusBadge({ enabled, children }: { enabled: boolean; children?
   return <span className={clsx('status-badge', enabled ? 'status-on' : 'status-off')}>{children || text(enabled ? '启用' : '禁用')}</span>;
 }
 
+export function toggleButtonClass(enabled: boolean) {
+  return clsx('icon-button toggle-button', enabled ? 'toggle-button-on' : 'toggle-button-off');
+}
+
 export function Card({ children, className }: { children: React.ReactNode; className?: string }) {
   return <div className={clsx('rounded-lg border border-panel-line bg-panel-surface shadow-panel', className)}>{children}</div>;
 }
