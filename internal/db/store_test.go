@@ -327,16 +327,31 @@ func TestStoreMigratesAndCreatesInboundWithClients(t *testing.T) {
 	if client.ID == 0 || client.UUID == "" || client.Enabled != true {
 		t.Fatalf("unexpected client: %+v", client)
 	}
+	disabled := false
+	disabledClient, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID,
+		Email:     "disabled@example.com",
+		Enabled:   &disabled,
+	})
+	if err != nil {
+		t.Fatalf("create disabled client: %v", err)
+	}
+	if disabledClient.Enabled != false {
+		t.Fatalf("expected disabled client, got %+v", disabledClient)
+	}
 
 	inbounds, err := store.ListInbounds(context.Background())
 	if err != nil {
 		t.Fatalf("list inbounds: %v", err)
 	}
-	if len(inbounds) != 1 || len(inbounds[0].Clients) != 1 {
-		t.Fatalf("expected inbound with one client, got %+v", inbounds)
+	if len(inbounds) != 1 || len(inbounds[0].Clients) != 2 {
+		t.Fatalf("expected inbound with two clients, got %+v", inbounds)
 	}
 	if inbounds[0].Clients[0].Email != "sam@example.com" {
 		t.Fatalf("unexpected client email: %+v", inbounds[0].Clients[0])
+	}
+	if inbounds[0].Clients[1].Email != "disabled@example.com" || inbounds[0].Clients[1].Enabled {
+		t.Fatalf("disabled client not persisted: %+v", inbounds[0].Clients[1])
 	}
 }
 
@@ -380,6 +395,11 @@ func TestStoreRejectsDuplicateClientEmailAndUUID(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "duplicate client email") {
 		t.Fatalf("expected duplicate client email on update, got %v", err)
 	}
+	if _, err := store.UpdateClient(context.Background(), second.ID, db.UpdateClientParams{
+		Email: "other@example.com", UUID: "11111111-1111-4111-8111-111111111111", Enabled: true,
+	}); err == nil || !strings.Contains(err.Error(), "duplicate client uuid") {
+		t.Fatalf("expected duplicate client uuid on update, got %v", err)
+	}
 }
 
 func TestStoreRejectsUnsupportedProtocol(t *testing.T) {
@@ -397,6 +417,34 @@ func TestStoreRejectsUnsupportedProtocol(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error for unsupported protocol %q", protocol)
 		}
+	}
+}
+
+func TestStoreAutoAssignsInboundPort(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	first, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "auto-a", Protocol: "vless", Port: 0, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create first auto-port inbound: %v", err)
+	}
+	if first.Port < 20000 || first.Port > 60999 {
+		t.Fatalf("expected auto-assigned high port, got %+v", first)
+	}
+
+	second, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "auto-b", Protocol: "vmess", Port: 0, Network: "ws", Security: "tls",
+	})
+	if err != nil {
+		t.Fatalf("create second auto-port inbound: %v", err)
+	}
+	if second.Port == first.Port {
+		t.Fatalf("auto-assigned duplicate port: first=%+v second=%+v", first, second)
 	}
 }
 
@@ -609,11 +657,23 @@ func TestStoreUpdateClientUpdatesFields(t *testing.T) {
 		t.Fatalf("id/uuid changed: old=%+v new=%+v", client, updated)
 	}
 
+	updated, err = store.UpdateClient(context.Background(), client.ID, db.UpdateClientParams{
+		Email:   "new@test.com",
+		UUID:    "22222222-2222-4222-8222-222222222222",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("update client uuid: %v", err)
+	}
+	if updated.UUID != "22222222-2222-4222-8222-222222222222" || !updated.Enabled {
+		t.Fatalf("uuid/enabled not updated: %+v", updated)
+	}
+
 	loaded, err := store.ListInbounds(context.Background())
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(loaded) != 1 || len(loaded[0].Clients) != 1 || loaded[0].Clients[0].Email != "new@test.com" || loaded[0].Clients[0].Enabled != false {
+	if len(loaded) != 1 || len(loaded[0].Clients) != 1 || loaded[0].Clients[0].Email != "new@test.com" || loaded[0].Clients[0].UUID != "22222222-2222-4222-8222-222222222222" || loaded[0].Clients[0].Enabled != true {
 		t.Fatalf("updated client not persisted: %+v", loaded[0].Clients[0])
 	}
 }

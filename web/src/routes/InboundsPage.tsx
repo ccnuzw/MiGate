@@ -281,11 +281,11 @@ function MetaItem({ label, value }: { label: string; value: string }) {
 }
 
 export function createDefaultInbound(): Inbound {
-  return {
+  const seed: Inbound = {
     id: 0,
     remark: '',
     protocol: 'vless',
-    port: 443,
+    port: 0,
     network: 'tcp',
     security: 'reality',
     enabled: true,
@@ -300,13 +300,14 @@ export function createDefaultInbound(): Inbound {
     tuic_congestion_control: 'bbr',
     shadowtls_version: 3,
   };
+  return { ...seed, ...applyInboundTemplate(seed, 'recommended'), id: 0, clients: [] };
 }
 
 export function inboundFormValues(inbound: Inbound): InboundValues {
   const base = {
     remark: inbound.remark || '',
     protocol: inbound.protocol as InboundValues['protocol'],
-    port: inbound.port || 443,
+    port: inbound.port || 0,
     network: inbound.network || 'tcp',
     security: inbound.security || 'none',
     uuid: String(inbound.uuid || ''),
@@ -330,11 +331,107 @@ export function buildFullInboundPayload(inbound: Inbound | null, values: Inbound
   delete payload.realtime_stats_source;
   delete payload.client_traffic;
   Object.assign(payload, values);
+  payload.port = Number(values.port || 0);
   for (const key of advancedFields) {
     payload[key] = normalizeAdvancedValue(key, payload[key]);
   }
   return payload;
 }
+
+type InboundTemplateId = 'recommended' | 'compatible' | 'performance' | 'simple';
+
+const inboundTemplates: Array<{ id: InboundTemplateId; label: string; values: Partial<InboundValues> }> = [
+  {
+    id: 'recommended',
+    label: '推荐：VLESS + REALITY + TCP',
+    values: {
+      protocol: 'vless',
+      port: 0,
+      network: 'tcp',
+      security: 'reality',
+      reality_dest: 'www.cloudflare.com:443',
+      reality_server_names: 'www.cloudflare.com',
+      tls_fingerprint: 'chrome',
+      tls_alpn: 'h2,http/1.1',
+    },
+  },
+  {
+    id: 'compatible',
+    label: '兼容：VMess + WS + TLS',
+    values: {
+      protocol: 'vmess',
+      port: 0,
+      network: 'ws',
+      security: 'tls',
+      ws_path: '/migate',
+      ws_host: 'example.com',
+      tls_sni: 'example.com',
+      tls_alpn: 'http/1.1',
+    },
+  },
+  {
+    id: 'performance',
+    label: '高性能：Hysteria2',
+    values: {
+      protocol: 'hysteria2',
+      port: 0,
+      network: 'udp',
+      security: 'tls',
+      tls_sni: 'example.com',
+      hy2_up_mbps: 100,
+      hy2_down_mbps: 100,
+      hy2_obfs: 'salamander',
+    },
+  },
+  {
+    id: 'simple',
+    label: '简单代理：Shadowsocks',
+    values: {
+      protocol: 'shadowsocks',
+      port: 0,
+      network: 'tcp',
+      security: 'none',
+      ss_method: '2022-blake3-aes-128-gcm',
+    },
+  },
+];
+
+export function inboundTemplateOptions() {
+  return inboundTemplates.map(({ id, label }) => ({ id, label }));
+}
+
+export function applyInboundTemplate(current: InboundValues | Inbound, id: InboundTemplateId): InboundValues {
+  const template = inboundTemplates.find((item) => item.id === id) || inboundTemplates[0];
+  const next = inboundFormValues({ id: 'id' in current ? current.id : 0, ...clearTemplateAdvancedFields(current, id), ...template.values, uuid: current.uuid || randomUUID(), enabled: current.enabled ?? true } as Inbound);
+  if (template.id === 'recommended') next.reality_short_id = randomHex(4);
+  if (template.id === 'performance') {
+    next.uuid = randomSecret(24);
+    next.hy2_obfs_password = randomSecret(18);
+  } else if (template.id === 'simple') {
+    next.uuid = randomSecret(24);
+  } else if (!next.uuid) {
+    next.uuid = randomUUID();
+  }
+  return next;
+}
+
+function clearTemplateAdvancedFields(current: InboundValues | Inbound, id: InboundTemplateId): InboundValues {
+  const next = inboundFormValues(current as Inbound);
+  const keep = new Set<(typeof advancedFields)[number]>(templateAdvancedFields[id]);
+  for (const key of advancedFields) {
+    if (!keep.has(key)) {
+      (next as Record<string, unknown>)[key] = defaultAdvancedValue(key);
+    }
+  }
+  return next;
+}
+
+const templateAdvancedFields: Record<InboundTemplateId, Array<(typeof advancedFields)[number]>> = {
+  recommended: ['reality_dest', 'reality_server_names', 'reality_short_id', 'reality_private_key', 'reality_public_key', 'tls_fingerprint', 'tls_alpn'],
+  compatible: ['ws_path', 'ws_host', 'tls_cert_file', 'tls_key_file', 'tls_sni', 'tls_fingerprint', 'tls_alpn'],
+  performance: ['tls_cert_file', 'tls_key_file', 'tls_sni', 'tls_fingerprint', 'tls_alpn', 'hy2_up_mbps', 'hy2_down_mbps', 'hy2_obfs', 'hy2_obfs_password', 'hy2_mport'],
+  simple: ['ss_method'],
+};
 
 function defaultAdvancedValue(key: (typeof advancedFields)[number]): string | number | boolean {
   if (numericAdvancedFields.has(key)) return 0;
@@ -408,9 +505,56 @@ export function clientFormValues(inbound: Inbound, client?: Client): ClientValue
     email: client?.email || '',
     uuid: client?.uuid || generatedProtocolCredential(inbound.protocol),
     enabled: client?.enabled ?? true,
-    traffic_limit: client?.traffic_limit || 0,
-    expiry_at: client?.expiry_at || 0,
+    traffic_limit_gb: bytesToGB(client?.traffic_limit || 0),
+    ...expiryToForm(client?.expiry_at || 0),
   };
+}
+
+export function buildClientPayload(values: ClientValues): { email: string; uuid: string; enabled: boolean; traffic_limit: number; expiry_at: number } {
+  return {
+    email: values.email,
+    uuid: values.uuid,
+    enabled: values.enabled,
+    traffic_limit: gbToBytes(values.traffic_limit_gb || 0),
+    expiry_at: formExpiryToUnix(values),
+  };
+}
+
+export function gbToBytes(value: number): number {
+  const gb = Number(value || 0);
+  if (!Number.isFinite(gb) || gb <= 0) return 0;
+  return Math.round(gb * 1024 ** 3);
+}
+
+export function bytesToGB(value: number): number {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return 0;
+  return Number((bytes / 1024 ** 3).toFixed(2));
+}
+
+function expiryToForm(expiryAt: number): Pick<ClientValues, 'expiry_mode' | 'expiry_date'> {
+  if (!expiryAt) return { expiry_mode: 'unlimited', expiry_date: '' };
+  return { expiry_mode: 'custom', expiry_date: formatLocalDate(new Date(expiryAt * 1000)) };
+}
+
+function formExpiryToUnix(values: Pick<ClientValues, 'expiry_mode' | 'expiry_date'>): number {
+  if (values.expiry_mode === 'unlimited') return 0;
+  if (values.expiry_mode === '30d') return relativeExpiryUnix(30);
+  if (values.expiry_mode === '90d') return relativeExpiryUnix(90);
+  if (!values.expiry_date) return 0;
+  const timestamp = Date.parse(`${values.expiry_date}T23:59:59`);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : 0;
+}
+
+function relativeExpiryUnix(days: number): number {
+  return Math.floor(Date.now() / 1000) + days * 86400;
+}
+
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function sourceLabel(source: string | undefined, realtime: string | undefined, text: (value: string) => string) {
@@ -422,6 +566,16 @@ function sourceLabel(source: string | undefined, realtime: string | undefined, t
 export function generatedProtocolCredential(protocol?: string) {
   if (protocol === 'hysteria2' || protocol === 'tuic' || protocol === 'shadowtls') return randomUUID().replace(/-/g, '');
   return randomUUID();
+}
+
+function randomHex(bytes: number) {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return Array.from(values, (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function randomSecret(length: number) {
+  return randomUUID().replace(/-/g, '').slice(0, length);
 }
 
 function subscriptionURL(client: Client) {

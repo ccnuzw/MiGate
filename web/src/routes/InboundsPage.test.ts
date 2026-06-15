@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { Inbound } from '../api/types';
-import { buildFullInboundPayload, createDefaultInbound, hasAttachableSettingCert, inboundFormValues, mergeInboundTraffic } from './InboundsPage';
+import {
+  applyInboundTemplate,
+  buildClientPayload,
+  buildFullInboundPayload,
+  bytesToGB,
+  clientFormValues,
+  createDefaultInbound,
+  gbToBytes,
+  hasAttachableSettingCert,
+  inboundFormValues,
+  mergeInboundTraffic,
+} from './InboundsPage';
 
 describe('inbound payload helpers', () => {
   const existing: Inbound = {
@@ -80,13 +91,78 @@ describe('inbound payload helpers', () => {
       security: 'reality',
       reality_dest: 'www.cloudflare.com:443',
       reality_server_names: 'www.cloudflare.com',
-      ss_method: '2022-blake3-aes-128-gcm',
-      xhttp_mode: 'stream-one',
+      ss_method: '',
+      xhttp_mode: '',
+      hy2_up_mbps: 0,
+      hy2_down_mbps: 0,
+      tuic_congestion_control: '',
+      shadowtls_version: 0,
+    });
+  });
+
+  it('applies recommended and compatibility templates without leaking unrelated advanced fields', () => {
+    const base = inboundFormValues(createDefaultInbound());
+
+    const recommended = applyInboundTemplate(base, 'recommended');
+    const recommendedAgain = applyInboundTemplate(base, 'recommended');
+    expect(recommended).toMatchObject({
+      protocol: 'vless',
+      network: 'tcp',
+      security: 'reality',
+      port: 0,
+      reality_dest: 'www.cloudflare.com:443',
+      reality_server_names: 'www.cloudflare.com',
+    });
+    expect(recommended.reality_short_id).toHaveLength(8);
+    expect(recommendedAgain.reality_short_id).toHaveLength(8);
+    expect(recommendedAgain.reality_short_id).not.toBe(recommended.reality_short_id);
+
+    const compatible = applyInboundTemplate(recommended, 'compatible');
+    expect(compatible).toMatchObject({
+      protocol: 'vmess',
+      network: 'ws',
+      security: 'tls',
+      ws_path: '/migate',
+      ws_host: 'example.com',
+      tls_sni: 'example.com',
+    });
+    expect(compatible.uuid).toBe(recommended.uuid);
+    expect(compatible.reality_dest).toBe('');
+    expect(compatible.reality_server_names).toBe('');
+    expect(compatible.reality_short_id).toBe('');
+  });
+
+  it('applies performance and simple templates with generated secrets', () => {
+    const base = inboundFormValues(createDefaultInbound());
+
+    const performance = applyInboundTemplate(base, 'performance');
+    const performanceAgain = applyInboundTemplate(base, 'performance');
+    expect(performance).toMatchObject({
+      protocol: 'hysteria2',
+      network: 'udp',
+      security: 'tls',
+      port: 0,
       hy2_up_mbps: 100,
       hy2_down_mbps: 100,
-      tuic_congestion_control: 'bbr',
-      shadowtls_version: 3,
+      hy2_obfs: 'salamander',
     });
+    expect(performance.uuid).toHaveLength(24);
+    expect(performance.hy2_obfs_password).toHaveLength(18);
+    expect(performanceAgain.hy2_obfs_password).toHaveLength(18);
+    expect(performanceAgain.hy2_obfs_password).not.toBe(performance.hy2_obfs_password);
+
+    const simple = applyInboundTemplate(base, 'simple');
+    expect(simple).toMatchObject({
+      protocol: 'shadowsocks',
+      network: 'tcp',
+      security: 'none',
+      port: 0,
+      ss_method: '2022-blake3-aes-128-gcm',
+    });
+    expect(simple.uuid).toHaveLength(24);
+    expect(simple.hy2_obfs).toBe('');
+    expect(simple.hy2_obfs_password).toBe('');
+    expect(simple.tls_sni).toBe('');
   });
 
   it('normalizes missing numeric advanced fields when editing a basic inbound', () => {
@@ -110,6 +186,24 @@ describe('inbound payload helpers', () => {
     expect(typeof payload.hy2_up_mbps).toBe('number');
     expect(typeof payload.hy2_down_mbps).toBe('number');
     expect(typeof payload.shadowtls_version).toBe('number');
+  });
+
+  it('keeps an empty inbound port as zero so the backend can auto-assign it', () => {
+    const values = inboundFormValues(createDefaultInbound());
+    values.port = 0;
+
+    const payload = buildFullInboundPayload(null, values);
+
+    expect(payload.port).toBe(0);
+  });
+
+  it('normalizes blank inbound ports to zero for backend auto-assignment', () => {
+    const values = inboundFormValues(createDefaultInbound());
+    values.port = '' as unknown as typeof values.port;
+
+    const payload = buildFullInboundPayload(null, values);
+
+    expect(payload.port).toBe(0);
   });
 
   it('allows attaching a settings certificate only after it is issued with both files', () => {
@@ -155,5 +249,54 @@ describe('inbound payload helpers', () => {
     expect(merged.reality_private_key).toBe('private-key');
     expect(merged.traffic_total).toBe(46);
     expect(merged.clients?.[0]).toMatchObject({ email: 'sam@example.com', enabled: false, up: 12, down: 34, traffic_limit: 2000, expiry_at: 99 });
+  });
+});
+
+describe('client form helpers', () => {
+  it('converts traffic limits between GB and bytes', () => {
+    expect(gbToBytes(1)).toBe(1073741824);
+    expect(gbToBytes(1.5)).toBe(1610612736);
+    expect(gbToBytes(0)).toBe(0);
+    expect(bytesToGB(1073741824)).toBe(1);
+    expect(bytesToGB(1610612736)).toBe(1.5);
+  });
+
+  it('reflects existing client traffic and custom expiry values', () => {
+    const inbound = createDefaultInbound();
+    const expiryAt = Math.floor(new Date('2030-01-01T23:59:59').getTime() / 1000);
+    const values = clientFormValues(inbound, {
+      id: 1,
+      inbound_id: inbound.id,
+      email: 'sam',
+      uuid: '11111111-1111-4111-8111-111111111111',
+      enabled: true,
+      traffic_limit: 5 * 1024 ** 3,
+      expiry_at: expiryAt,
+    });
+
+    expect(values.traffic_limit_gb).toBe(5);
+    expect(values.expiry_mode).toBe('custom');
+    expect(values.expiry_date).toBe('2030-01-01');
+  });
+
+  it('builds the API payload with bytes and the current expiry contract', () => {
+    const payload = buildClientPayload({
+      email: 'sam',
+      uuid: 'secret',
+      enabled: true,
+      traffic_limit_gb: 2,
+      expiry_mode: 'custom',
+      expiry_date: '2030-01-01',
+    });
+
+    const expectedExpiry = Math.floor(new Date('2030-01-01T23:59:59').getTime() / 1000);
+
+    expect(payload).toMatchObject({
+      email: 'sam',
+      uuid: 'secret',
+      enabled: true,
+      traffic_limit: 2 * 1024 ** 3,
+      expiry_at: expectedExpiry,
+    });
   });
 });
