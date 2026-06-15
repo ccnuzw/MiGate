@@ -326,6 +326,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 	var payload struct {
 		Email        string `json:"email"`
 		UUID         string `json:"uuid"`
+		Enabled      *bool  `json:"enabled"`
 		TrafficLimit int64  `json:"traffic_limit"`
 		ExpiryAt     int64  `json:"expiry_at"`
 	}
@@ -333,7 +334,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return false
 	}
-	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
+	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, Enabled: payload.Enabled, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate client") {
 			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{

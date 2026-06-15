@@ -6,10 +6,16 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
+)
+
+const (
+	autoInboundPortMin = 20000
+	autoInboundPortMax = 60999
 )
 
 var supportedProtocols = map[string]bool{
@@ -207,6 +213,7 @@ type CreateClientParams struct {
 	InboundID    int64  `json:"inbound_id,omitempty"`
 	UUID         string `json:"uuid,omitempty"`
 	Email        string `json:"email"`
+	Enabled      *bool  `json:"enabled,omitempty"`
 	TrafficLimit int64  `json:"traffic_limit,omitempty"`
 	ExpiryAt     int64  `json:"expiry_at,omitempty"`
 }
@@ -254,6 +261,7 @@ type UpdateInboundParams struct {
 }
 
 type UpdateClientParams struct {
+	UUID         string `json:"uuid,omitempty"`
 	Email        string `json:"email"`
 	Enabled      bool   `json:"enabled"`
 	TrafficLimit int64  `json:"traffic_limit"`
@@ -760,7 +768,15 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 	if !supportedProtocols[protocol] {
 		return Inbound{}, fmt.Errorf("unsupported protocol: %s", params.Protocol)
 	}
-	if params.Port <= 0 || params.Port > 65535 {
+	port := params.Port
+	if port == 0 {
+		allocated, err := s.allocateInboundPort(ctx, 0)
+		if err != nil {
+			return Inbound{}, err
+		}
+		port = allocated
+	}
+	if port <= 0 || port > 65535 {
 		return Inbound{}, fmt.Errorf("invalid port: %d", params.Port)
 	}
 	network := strings.ToLower(strings.TrimSpace(params.Network))
@@ -772,7 +788,7 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 	if remark == "" {
 		remark = protocol
 	}
-	id, uuid, err := s.insertInbound(ctx, params.UUID, remark, protocol, params.Port, network, security,
+	id, uuid, err := s.insertInbound(ctx, params.UUID, remark, protocol, port, network, security,
 		params.WsPath, params.WsHost, params.GrpcServiceName,
 		params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey,
 		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.TLSSNI, params.TLSFingerprint, params.TLSALPN, params.XHTTPPath, params.XHTTPMode,
@@ -792,7 +808,7 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		}
 		clients = []Client{createdClient}
 	}
-	return Inbound{ID: id, UUID: uuid, Remark: remark, Protocol: protocol, Port: params.Port, Network: network, Security: security, Enabled: true,
+	return Inbound{ID: id, UUID: uuid, Remark: remark, Protocol: protocol, Port: port, Network: network, Security: security, Enabled: true,
 		WsPath: params.WsPath, WsHost: params.WsHost, GrpcServiceName: params.GrpcServiceName,
 		RealityDest: params.RealityDest, RealityServerNames: params.RealityServerNames, RealityShortID: params.RealityShortID,
 		RealityPrivateKey: params.RealityPrivateKey,
@@ -887,10 +903,18 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 	if err != nil {
 		return Client{}, err
 	}
+	enabled := true
+	if params.Enabled != nil {
+		enabled = *params.Enabled
+	}
+	dbEnabled := 0
+	if enabled {
+		dbEnabled = 1
+	}
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO clients (inbound_id, uuid, subscription_token, email, enabled, created_at, traffic_limit, expiry_at)
-VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-`, params.InboundID, uuid, subscriptionToken, email, time.Now().UTC().Format(time.RFC3339), params.TrafficLimit, params.ExpiryAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`, params.InboundID, uuid, subscriptionToken, email, dbEnabled, time.Now().UTC().Format(time.RFC3339), params.TrafficLimit, params.ExpiryAt)
 	if err != nil {
 		return Client{}, err
 	}
@@ -898,7 +922,7 @@ VALUES (?, ?, ?, ?, 1, ?, ?, ?)
 	if err != nil {
 		return Client{}, err
 	}
-	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, SubscriptionToken: subscriptionToken, Email: email, Enabled: true, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
+	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, SubscriptionToken: subscriptionToken, Email: email, Enabled: enabled, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
 }
 
 func (s *Store) DeleteClient(ctx context.Context, id int64) error {
@@ -936,7 +960,15 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if remark == "" {
 		return Inbound{}, fmt.Errorf("remark cannot be empty")
 	}
-	if params.Port <= 0 || params.Port > 65535 {
+	port := params.Port
+	if port == 0 {
+		allocated, err := s.allocateInboundPort(ctx, id)
+		if err != nil {
+			return Inbound{}, err
+		}
+		port = allocated
+	}
+	if port <= 0 || port > 65535 {
 		return Inbound{}, fmt.Errorf("invalid port: %d", params.Port)
 	}
 	network := strings.ToLower(strings.TrimSpace(params.Network))
@@ -975,7 +1007,7 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 		tuic_congestion_control=?, tuic_zero_rtt=?,
 		wg_private_key=?, wg_address=?, wg_peer_public_key=?, wg_allowed_ips=?, wg_endpoint=?, wg_preshared_key=?, wg_mtu=?,
 		shadowtls_version=?, shadowtls_password=? WHERE id=?`,
-		uuid, remark, protocol, params.Port, network, security, enabled,
+		uuid, remark, protocol, port, network, security, enabled,
 		params.WsPath, params.WsHost, params.GrpcServiceName, params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey, params.SSMethod,
 		params.TLSCertFile, params.TLSKeyFile, params.TLSSNI, params.TLSFingerprint, params.TLSALPN, params.XHTTPPath, params.XHTTPMode,
 		params.Hy2UpMbps, params.Hy2DownMbps, params.Hy2Obfs, params.Hy2ObfsPassword, params.Hy2MPort,
@@ -1026,8 +1058,13 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 		enabled = 1
 	}
 	var inboundID int64
-	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id FROM clients WHERE id = ?`, id).Scan(&inboundID); err != nil {
+	var existingUUID string
+	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id, uuid FROM clients WHERE id = ?`, id).Scan(&inboundID, &existingUUID); err != nil {
 		return Client{}, err
+	}
+	uuid := strings.TrimSpace(params.UUID)
+	if uuid == "" {
+		uuid = existingUUID
 	}
 	var existingID int64
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE inbound_id = ? AND email = ? AND id <> ? LIMIT 1`, inboundID, email, id).Scan(&existingID); err == nil {
@@ -1035,8 +1072,13 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	} else if err != sql.ErrNoRows {
 		return Client{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE clients SET email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
-		email, enabled, params.TrafficLimit, params.ExpiryAt, id)
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE uuid = ? AND id <> ? LIMIT 1`, uuid, id).Scan(&existingID); err == nil {
+		return Client{}, fmt.Errorf("duplicate client uuid: %s", uuid)
+	} else if err != sql.ErrNoRows {
+		return Client{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE clients SET uuid=?, email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
+		uuid, email, enabled, params.TrafficLimit, params.ExpiryAt, id)
 	if err != nil {
 		return Client{}, err
 	}
@@ -1302,6 +1344,35 @@ LIMIT 1
 	inbound.Enabled = enabled != 0
 	inbound.Clients = []Client{}
 	return inbound, true, nil
+}
+
+func (s *Store) allocateInboundPort(ctx context.Context, excludeID int64) (int, error) {
+	for port := autoInboundPortMin; port <= autoInboundPortMax; port++ {
+		if _, ok, err := s.FindInboundByPort(ctx, port, excludeID); err != nil {
+			return 0, err
+		} else if ok {
+			continue
+		}
+		if !inboundPortAvailable(port) {
+			continue
+		}
+		return port, nil
+	}
+	return 0, fmt.Errorf("no available inbound port in range %d-%d", autoInboundPortMin, autoInboundPortMax)
+}
+
+func inboundPortAvailable(port int) bool {
+	tcpListener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	defer tcpListener.Close()
+	udpConn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	_ = udpConn.Close()
+	return true
 }
 
 func (s *Store) GetSubscriptionByClientUUID(ctx context.Context, uuid string) (Inbound, Client, bool, error) {

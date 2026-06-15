@@ -3,6 +3,18 @@ import type { OutputAsset, OutputChunk } from 'rollup';
 import react from '@vitejs/plugin-react';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 
+const backendProxy = {
+  target: 'http://127.0.0.1:9999',
+  changeOrigin: false,
+  configure(proxy) {
+    proxy.on('proxyReq', (proxyReq, req) => {
+      if (req.headers.host) {
+        proxyReq.setHeader('Host', req.headers.host);
+      }
+    });
+  },
+};
+
 export default defineConfig({
   plugins: [react(), precompressAssets()],
   base: './',
@@ -30,10 +42,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:9999',
-      '/sub': 'http://127.0.0.1:9999',
-      '/panel/api': 'http://127.0.0.1:9999',
-      '/panel/sub': 'http://127.0.0.1:9999',
+      '/api': backendProxy,
+      '/sub': backendProxy,
+      '/panel/api': backendProxy,
+      '/panel/sub': backendProxy,
     },
   },
 });

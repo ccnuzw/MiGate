@@ -517,6 +517,81 @@ textarea:focus {
   width: auto;
 }
 
+.split-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.advanced-toggle {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: rgb(var(--text));
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.advanced-toggle svg {
+  transition: transform 150ms ease;
+}
+
+.advanced-panel {
+  border-radius: 8px;
+  border: 1px solid rgb(var(--line));
+  background: rgb(var(--soft));
+  padding: 14px;
+}
+
+.advanced-form-grid {
+  align-items: start;
+  gap: 16px 20px;
+}
+
+.advanced-form-grid > label {
+  align-self: start;
+}
+
+.advanced-form-grid input,
+.advanced-form-grid select,
+.advanced-form-grid textarea {
+  min-height: 40px;
+}
+
+.advanced-note {
+  margin-top: -4px;
+  border-radius: 8px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.inbound-modal-panel {
+  width: min(880px, calc(100vw - 36px));
+}
+
+.inbound-form-grid {
+  gap: 18px 20px;
+  align-items: start;
+}
+
+.template-panel {
+  border-radius: 8px;
+  border: 1px solid rgb(var(--line));
+  background: rgb(var(--soft));
+  padding: 14px;
+}
+
+.template-panel .split-control {
+  grid-template-columns: minmax(280px, 420px) auto;
+  justify-content: start;
+}
+
 .input-action-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 40px;
@@ -852,6 +927,14 @@ textarea:focus {
 
   .form-grid,
   .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inbound-modal-panel {
+    width: min(100%, calc(100vw - 24px));
+  }
+
+  .template-panel .split-control {
     grid-template-columns: 1fr;
   }
 
