@@ -11,6 +11,7 @@ import {
   hasAttachableSettingCert,
   inboundFormValues,
   mergeInboundTraffic,
+  sanitizeInboundFormValues,
 } from './InboundsPage';
 
 describe('inbound payload helpers', () => {
@@ -57,7 +58,7 @@ describe('inbound payload helpers', () => {
     shadowtls_password: 'shadow-secret',
   };
 
-  it('preserves advanced fields when editing visible basic fields', () => {
+  it('preserves valid advanced fields and clears fields hidden for the current combination', () => {
     const values = inboundFormValues(existing);
     values.remark = 'edge-updated';
     values.port = 8443;
@@ -71,10 +72,11 @@ describe('inbound payload helpers', () => {
       reality_public_key: 'public-key',
       xhttp_path: '/xhttp',
       xhttp_mode: 'stream-one',
-      hy2_obfs_password: 'obfs-secret',
-      hy2_mport: '40000-50000',
-      tuic_zero_rtt: true,
-      shadowtls_password: 'shadow-secret',
+      hy2_obfs_password: '',
+      hy2_mport: '',
+      tuic_zero_rtt: false,
+      shadowtls_password: '',
+      tls_alpn: '',
     });
     expect(payload).not.toHaveProperty('id');
     expect(payload).not.toHaveProperty('clients');
@@ -91,6 +93,8 @@ describe('inbound payload helpers', () => {
       security: 'reality',
       reality_dest: 'www.cloudflare.com:443',
       reality_server_names: 'www.cloudflare.com',
+      tls_fingerprint: 'chrome',
+      tls_alpn: '',
       ss_method: '',
       xhttp_mode: '',
       hy2_up_mbps: 0,
@@ -112,6 +116,8 @@ describe('inbound payload helpers', () => {
       port: 0,
       reality_dest: 'www.cloudflare.com:443',
       reality_server_names: 'www.cloudflare.com',
+      tls_fingerprint: 'chrome',
+      tls_alpn: '',
     });
     expect(recommended.reality_short_id).toHaveLength(8);
     expect(recommendedAgain.reality_short_id).toHaveLength(8);
@@ -145,6 +151,8 @@ describe('inbound payload helpers', () => {
       hy2_up_mbps: 100,
       hy2_down_mbps: 100,
       hy2_obfs: 'salamander',
+      tls_sni: 'example.com',
+      hy2_mport: '',
     });
     expect(performance.uuid).toHaveLength(24);
     expect(performance.hy2_obfs_password).toHaveLength(18);
@@ -162,7 +170,95 @@ describe('inbound payload helpers', () => {
     expect(simple.uuid).toHaveLength(24);
     expect(simple.hy2_obfs).toBe('');
     expect(simple.hy2_obfs_password).toBe('');
+    expect(simple.hy2_mport).toBe('');
     expect(simple.tls_sni).toBe('');
+  });
+
+  it('sanitizes protocol, transport, and security changes to supported combinations', () => {
+    const hy2 = applyInboundTemplate(inboundFormValues(createDefaultInbound()), 'performance');
+    const vless = sanitizeInboundFormValues(hy2, { protocol: 'vless' });
+    expect(vless).toMatchObject({
+      protocol: 'vless',
+      network: 'tcp',
+      security: 'reality',
+      reality_dest: 'www.cloudflare.com:443',
+      reality_server_names: 'www.cloudflare.com',
+      hy2_obfs: '',
+      hy2_obfs_password: '',
+    });
+
+    const reality = applyInboundTemplate(inboundFormValues(createDefaultInbound()), 'recommended');
+    const vmess = sanitizeInboundFormValues(reality, { protocol: 'vmess' });
+    expect(vmess).toMatchObject({
+      protocol: 'vmess',
+      network: 'tcp',
+      security: 'tls',
+      reality_dest: '',
+      reality_server_names: '',
+      reality_short_id: '',
+      tls_fingerprint: 'chrome',
+    });
+
+    const ws = sanitizeInboundFormValues(reality, { network: 'ws' });
+    expect(ws).toMatchObject({
+      protocol: 'vless',
+      network: 'ws',
+      security: 'tls',
+      reality_dest: '',
+      reality_server_names: '',
+      reality_short_id: '',
+      ws_path: '',
+      ws_host: '',
+      tls_fingerprint: 'chrome',
+    });
+  });
+
+  it('removes invalid advanced fields from the submitted payload after manual switches', () => {
+    const values = inboundFormValues(existing);
+    values.protocol = 'vmess';
+    values.network = 'ws';
+    values.security = 'reality';
+
+    const payload = buildFullInboundPayload(existing, values);
+
+    expect(payload).toMatchObject({
+      protocol: 'vmess',
+      network: 'ws',
+      security: 'tls',
+      ws_path: '/ws',
+      ws_host: 'cdn.example.com',
+      reality_dest: '',
+      reality_server_names: '',
+      reality_short_id: '',
+      reality_private_key: '',
+      reality_public_key: '',
+      hy2_mport: '',
+      shadowtls_password: '',
+      tls_alpn: 'h2,http/1.1',
+    });
+  });
+
+  it('keeps ShadowTLS handshake SNI but clears its unsupported inbound password', () => {
+    const values = inboundFormValues({
+      ...existing,
+      protocol: 'shadowtls',
+      network: 'tcp',
+      security: 'none',
+      tls_sni: 'handshake.example.com',
+      shadowtls_version: 3,
+      shadowtls_password: 'legacy-shadow-password',
+    });
+
+    const payload = buildFullInboundPayload(existing, values);
+
+    expect(payload).toMatchObject({
+      protocol: 'shadowtls',
+      network: 'tcp',
+      security: 'none',
+      tls_sni: 'handshake.example.com',
+      shadowtls_version: 3,
+      shadowtls_password: '',
+    });
   });
 
   it('normalizes missing numeric advanced fields when editing a basic inbound', () => {

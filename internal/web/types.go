@@ -156,6 +156,8 @@ type routerConfig struct {
 	basePath       string
 	statsClient    xray.StatsClient
 	socks5PoolURL  string
+	httpPoolURL    string
+	httpsPoolURL   string
 	updateCheckURL string
 	publicHost     string
 	trustProxy     bool

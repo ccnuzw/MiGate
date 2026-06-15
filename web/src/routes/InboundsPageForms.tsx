@@ -10,14 +10,20 @@ import type { Client, Inbound } from '../api/types';
 import { Field, FieldError, Modal, SpinnerButton, useToast } from '../components/ui';
 import { useI18n } from '../lib/i18n';
 import {
+  allowedInboundNetworks,
+  allowedInboundSecurities,
   applyInboundTemplate,
   buildClientPayload,
   buildFullInboundPayload,
   clientFormValues,
+  enabledInboundAdvancedFields,
   generatedProtocolCredential,
   hasAttachableSettingCert,
   inboundFormValues,
+  inboundProtocols,
+  inboundSecurities,
   inboundTemplateOptions,
+  sanitizeInboundFormValues,
 } from './InboundsPage';
 
 const inboundSchema = z.object({
@@ -87,6 +93,9 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
   const protocol = form.watch('protocol');
   const network = form.watch('network');
   const security = form.watch('security');
+  const allowedNetworks = allowedInboundNetworks(protocol || 'vless');
+  const allowedSecurities = allowedInboundSecurities(protocol || 'vless', network || '');
+  const enabledAdvanced = enabledInboundAdvancedFields({ protocol, network, security });
   const portValue = form.watch('port');
   const portRegistration = form.register('port');
   const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, enabled: !!inbound && security === 'tls', retry: false, staleTime: 60_000 });
@@ -95,12 +104,15 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
   const regenerateCredential = () => {
     form.setValue('uuid', generatedProtocolCredential(protocol), { shouldDirty: true, shouldValidate: true });
   };
-  const applyTemplate = (id: Exclude<TemplateSelectValue, 'keep'>) => {
-    setTemplateId(id);
-    const next = applyInboundTemplate(form.getValues() as InboundValues, id);
+  const setSanitizedValues = (next: InboundValues) => {
     (Object.keys(next) as Array<keyof InboundValues>).forEach((key) => {
       form.setValue(key, next[key], { shouldDirty: true, shouldValidate: true });
     });
+  };
+  const applyTemplate = (id: Exclude<TemplateSelectValue, 'keep'>) => {
+    setTemplateId(id);
+    const next = applyInboundTemplate(form.getValues() as InboundValues, id);
+    setSanitizedValues(next);
   };
   const attachSettingCert = () => {
     if (!canAttachSettingCert || !settingCert) return;
@@ -168,18 +180,36 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
           <FieldError message={form.formState.errors.port?.message} />
         </Field>
         <Field label={text('协议')}>
-          <select {...form.register('protocol')}>
-            {['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'shadowtls'].map((p) => <option key={p} value={p}>{p}</option>)}
+          <select
+            value={protocol}
+            onChange={(event) => {
+              setTemplateId('keep');
+              setSanitizedValues(sanitizeInboundFormValues(form.getValues() as InboundValues, { protocol: event.target.value as InboundValues['protocol'] }));
+            }}
+          >
+            {inboundProtocols.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
         <Field label={text('传输')}>
-          <select {...form.register('network')}>
-            {['tcp', 'udp', 'ws', 'grpc', 'h2', 'xhttp', 'quic', 'kcp'].map((p) => <option key={p} value={p}>{p}</option>)}
+          <select
+            value={network}
+            onChange={(event) => {
+              setTemplateId('keep');
+              setSanitizedValues(sanitizeInboundFormValues(form.getValues() as InboundValues, { network: event.target.value }));
+            }}
+          >
+            {allowedNetworks.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
         <Field label={text('安全')}>
-          <select {...form.register('security')}>
-            {['none', 'tls', 'reality'].map((p) => <option key={p} value={p}>{p}</option>)}
+          <select
+            value={security}
+            onChange={(event) => {
+              setTemplateId('keep');
+              setSanitizedValues(sanitizeInboundFormValues(form.getValues() as InboundValues, { security: event.target.value }));
+            }}
+          >
+            {inboundSecurities.filter((p) => allowedSecurities.includes(p)).map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
         {security === 'reality' ? (
@@ -188,7 +218,7 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
             <Field label="Server Name"><input {...form.register('reality_server_names')} placeholder="www.cloudflare.com" /></Field>
           </>
         ) : null}
-        {security === 'tls' ? <Field label={text('域名 / SNI')}><input {...form.register('tls_sni')} placeholder="example.com" /></Field> : null}
+        {enabledAdvanced.has('tls_sni') ? <Field label={text('域名 / SNI')}><input {...form.register('tls_sni')} placeholder="example.com" /></Field> : null}
         <div className="span-2">
           <button className="advanced-toggle" type="button" onClick={() => setAdvancedOpen((open) => !open)} aria-expanded={advancedOpen}>
             <ChevronDown className={advancedOpen ? 'h-4 w-4 rotate-180' : 'h-4 w-4'} />
@@ -206,17 +236,17 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
                   </button>
                 </div>
               </Field>
-              {security === 'reality' ? <Field label={text('REALITY Short ID')}><input {...form.register('reality_short_id')} /></Field> : null}
-              {(network === 'ws' || network === 'h2') ? <Field label={text('WS/H2 路径')}><input {...form.register('ws_path')} /></Field> : null}
-              {network === 'grpc' ? <Field label={text('gRPC 服务名')}><input {...form.register('grpc_service_name')} /></Field> : null}
-              {network === 'xhttp' ? <Field label={text('XHTTP 路径')}><input {...form.register('xhttp_path')} /></Field> : null}
+              {enabledAdvanced.has('reality_short_id') ? <Field label={text('REALITY Short ID')}><input {...form.register('reality_short_id')} /></Field> : null}
+              {enabledAdvanced.has('ws_path') ? <Field label={text('WS/H2 路径')}><input {...form.register('ws_path')} /></Field> : null}
+              {enabledAdvanced.has('grpc_service_name') ? <Field label={text('gRPC 服务名')}><input {...form.register('grpc_service_name')} /></Field> : null}
+              {enabledAdvanced.has('xhttp_path') ? <Field label={text('XHTTP 路径')}><input {...form.register('xhttp_path')} /></Field> : null}
               <div className="advanced-note span-2">{text('仅用于识别这个入站，不是客户端连接凭据；一般无需修改。')}</div>
-              {(network === 'ws' || network === 'h2') ? (
+              {enabledAdvanced.has('ws_host') ? (
                 <>
                   <Field label={text('WS/H2 主机')}><input {...form.register('ws_host')} /></Field>
                 </>
               ) : null}
-              {network === 'xhttp' ? (
+              {enabledAdvanced.has('xhttp_mode') ? (
                 <>
                   <Field label={text('XHTTP 模式')}><input {...form.register('xhttp_mode')} placeholder="stream-one" /></Field>
                 </>
@@ -226,7 +256,6 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
                   <Field label={text('REALITY 私钥')}><input {...form.register('reality_private_key')} /></Field>
                   <Field label={text('REALITY 公钥')}><input {...form.register('reality_public_key')} readOnly /></Field>
                   <Field label="TLS Fingerprint"><input {...form.register('tls_fingerprint')} /></Field>
-                  <Field label="TLS ALPN"><input {...form.register('tls_alpn')} placeholder="h2,http/1.1" /></Field>
                 </>
               ) : null}
               {security === 'tls' ? (
@@ -248,32 +277,30 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
                 {canAttachSettingCert ? text('将设置页已获取的证书路径填入下方 TLS 证书和私钥字段。') : text('请先在设置页配置并获取 TLS 证书。')}
               </div>
             </div>
-            <Field label={text('TLS 证书文件')}><input {...form.register('tls_cert_file')} /></Field>
-            <Field label={text('TLS 私钥文件')}><input {...form.register('tls_key_file')} /></Field>
-            <Field label="TLS Fingerprint"><input {...form.register('tls_fingerprint')} /></Field>
-            <Field label="TLS ALPN"><input {...form.register('tls_alpn')} /></Field>
+            {enabledAdvanced.has('tls_cert_file') ? <Field label={text('TLS 证书文件')}><input {...form.register('tls_cert_file')} /></Field> : null}
+            {enabledAdvanced.has('tls_key_file') ? <Field label={text('TLS 私钥文件')}><input {...form.register('tls_key_file')} /></Field> : null}
+            {enabledAdvanced.has('tls_fingerprint') ? <Field label="TLS Fingerprint"><input {...form.register('tls_fingerprint')} /></Field> : null}
+            {enabledAdvanced.has('tls_alpn') ? <Field label="TLS ALPN"><input {...form.register('tls_alpn')} /></Field> : null}
                 </>
               ) : null}
-              {protocol === 'shadowsocks' ? <Field label={text('Shadowsocks 加密方法')}><input {...form.register('ss_method')} placeholder="2022-blake3-aes-128-gcm" /></Field> : null}
+              {enabledAdvanced.has('ss_method') ? <Field label={text('Shadowsocks 加密方法')}><input {...form.register('ss_method')} placeholder="2022-blake3-aes-128-gcm" /></Field> : null}
               {protocol === 'hysteria2' ? (
                 <>
-                  <Field label={text('HY2 上行 Mbps')}><input type="number" {...form.register('hy2_up_mbps')} /></Field>
-                  <Field label={text('HY2 下行 Mbps')}><input type="number" {...form.register('hy2_down_mbps')} /></Field>
-                  <Field label={text('HY2 混淆')}><input {...form.register('hy2_obfs')} /></Field>
-                  <Field label={text('HY2 混淆密码')}><input {...form.register('hy2_obfs_password')} /></Field>
-                  <Field label={text('HY2 多端口')}><input {...form.register('hy2_mport')} placeholder="40000-50000" /></Field>
+                  {enabledAdvanced.has('hy2_up_mbps') ? <Field label={text('HY2 上行 Mbps')}><input type="number" {...form.register('hy2_up_mbps')} /></Field> : null}
+                  {enabledAdvanced.has('hy2_down_mbps') ? <Field label={text('HY2 下行 Mbps')}><input type="number" {...form.register('hy2_down_mbps')} /></Field> : null}
+                  {enabledAdvanced.has('hy2_obfs') ? <Field label={text('HY2 混淆')}><input {...form.register('hy2_obfs')} /></Field> : null}
+                  {enabledAdvanced.has('hy2_obfs_password') ? <Field label={text('HY2 混淆密码')}><input {...form.register('hy2_obfs_password')} /></Field> : null}
                 </>
               ) : null}
               {protocol === 'tuic' ? (
                 <>
-                  <Field label={text('TUIC 拥塞控制')}><input {...form.register('tuic_congestion_control')} placeholder="bbr" /></Field>
-                  <label className="checkbox-field"><input type="checkbox" {...form.register('tuic_zero_rtt')} /> {text('启用 0-RTT')}</label>
+                  {enabledAdvanced.has('tuic_congestion_control') ? <Field label={text('TUIC 拥塞控制')}><input {...form.register('tuic_congestion_control')} placeholder="bbr" /></Field> : null}
+                  {enabledAdvanced.has('tuic_zero_rtt') ? <label className="checkbox-field"><input type="checkbox" {...form.register('tuic_zero_rtt')} /> {text('启用 0-RTT')}</label> : null}
                 </>
               ) : null}
               {protocol === 'shadowtls' ? (
                 <>
-                  <Field label={text('ShadowTLS 版本')}><input type="number" {...form.register('shadowtls_version')} /></Field>
-                  <Field label={text('ShadowTLS 密码')}><input {...form.register('shadowtls_password')} /></Field>
+                  {enabledAdvanced.has('shadowtls_version') ? <Field label={text('ShadowTLS 版本')}><input type="number" {...form.register('shadowtls_version')} /></Field> : null}
                 </>
               ) : null}
             </div>

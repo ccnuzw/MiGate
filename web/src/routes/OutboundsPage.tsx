@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { Outbound, PingResult, Socks5PoolProxy } from '../api/types';
+import type { Outbound, PingResult, ProxyPoolProxy } from '../api/types';
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, useConfirm, useToast } from '../components/ui';
 import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
@@ -23,6 +23,7 @@ const schema = z.object({
 });
 type InputValues = z.input<typeof schema>;
 type Values = z.output<typeof schema>;
+type ProxyPoolType = 'socks5' | 'http' | 'https';
 
 export default function OutboundsPage() {
   const queryClient = useQueryClient();
@@ -105,7 +106,7 @@ export default function OutboundsPage() {
         description={text('配置默认直连、阻断以及 SOCKS / HTTP 代理链路。')}
         action={
           <div className="flex flex-wrap gap-2">
-            <button className="btn secondary" onClick={() => setPoolOpen(true)}>{text('导入 SOCKS5 地址池')}</button>
+            <button className="btn secondary" onClick={() => setPoolOpen(true)}>{text('导入代理池')}</button>
             <SpinnerButton className="btn secondary" loading={speedtest.isPending} onClick={() => speedtest.mutate()}><Gauge className="h-4 w-4" /> {text('批量测速')}</SpinnerButton>
             <button className="btn primary" onClick={() => setEditing({ id: 0, tag: '', protocol: 'socks', enabled: true })}><Plus className="h-4 w-4" /> {text('新增出站')}</button>
           </div>
@@ -166,7 +167,7 @@ export default function OutboundsPage() {
         ))}
       </div>
       <OutboundModal outbound={editing} onClose={() => setEditing(null)} onSaved={refresh} />
-      <Socks5PoolModal open={poolOpen} onClose={() => setPoolOpen(false)} onImported={() => { refresh(); setPoolOpen(false); }} />
+      <ProxyPoolModal open={poolOpen} onClose={() => setPoolOpen(false)} onImported={() => { refresh(); setPoolOpen(false); }} />
     </div>
   );
 }
@@ -211,22 +212,23 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
   );
 }
 
-function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
+function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
   const { showToast } = useToast();
   const { text } = useI18n();
+  const [poolType, setPoolType] = useState<ProxyPoolType>('socks5');
   const [country, setCountry] = useState('');
-  const [selected, setSelected] = useState<Socks5PoolProxy | null>(null);
+  const [selected, setSelected] = useState<ProxyPoolProxy | null>(null);
   const [latency, setLatency] = useState<Record<string, PingResult>>({});
-  const pool = useQuery({ queryKey: ['socks5-pool', country], queryFn: () => api.socks5Pool(country), enabled: open, staleTime: 60_000 });
+  const pool = useQuery({ queryKey: ['proxy-pool', poolType, country], queryFn: () => api.proxyPool(poolType, country), enabled: open, staleTime: 60_000 });
   const regions = useMemo(() => [...(pool.data?.regions || [])].sort((a, b) => b.count - a.count), [pool.data]);
   const ping = useMutation({
-    mutationFn: api.pingSocks5Pool,
+    mutationFn: (proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) => api.pingProxyPool(poolType, proxy),
     onSuccess: (result, proxy) => setLatency((prev) => ({ ...prev, [proxyKey(proxy)]: result })),
   });
   const importProxy = useMutation({
-    mutationFn: (proxy: Socks5PoolProxy) => api.importSocks5Pool(proxy),
+    mutationFn: (proxy: ProxyPoolProxy) => api.importProxyPool(poolType, proxy),
     onSuccess: () => {
-      showToast(text('SOCKS5 出站已导入'), 'success');
+      showToast(text('代理出站已导入'), 'success');
       onImported();
     },
     onError: (error) => showToast(errorMessage(error, text('导入失败')), 'error'),
@@ -234,7 +236,7 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
   return (
     <Modal
       open={open}
-      title={text('导入 SOCKS5 地址池')}
+      title={text('导入代理池')}
       onClose={onClose}
       panelClassName="socks5-pool-panel"
       footer={
@@ -246,6 +248,21 @@ function Socks5PoolModal({ open, onClose, onImported }: { open: boolean; onClose
     >
       <div className="socks5-pool-layout">
         <div className="grid content-start gap-3">
+          <Field label={text('代理类型')}>
+            <select
+              value={poolType}
+              onChange={(event) => {
+                setPoolType(event.target.value as ProxyPoolType);
+                setCountry('');
+                setSelected(null);
+                setLatency({});
+              }}
+            >
+              <option value="socks5">SOCKS5</option>
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+            </select>
+          </Field>
           <Field label={text('国家/地区')}>
             <select value={country} onChange={(event) => { setCountry(event.target.value); setSelected(null); }}>
               <option value="">{text('全部地区')}</option>
@@ -313,7 +330,7 @@ function moveCustomOutbound(items: Outbound[], index: number, delta: number, sav
   save(movedCustomOutboundIds(items, index, delta));
 }
 
-function proxyKey(proxy: Pick<Socks5PoolProxy, 'address' | 'port'>) {
+function proxyKey(proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) {
   return `${proxy.address}:${proxy.port}`;
 }
 

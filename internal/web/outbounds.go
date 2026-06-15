@@ -16,7 +16,11 @@ import (
 	"github.com/imzyb/MiGate/internal/db"
 )
 
-const defaultSocks5PoolURL = "https://github.cmliussss.net/raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data/socks5.json"
+const (
+	defaultSocks5PoolURL = "https://github.cmliussss.net/raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data/socks5.json"
+	defaultHTTPPoolURL   = "https://raw.githubusercontent.com/EDT-Pages/Proxy-List/refs/heads/main/data/http.json"
+	defaultHTTPSPoolURL  = "https://raw.githubusercontent.com/EDT-Pages/Proxy-List/refs/heads/main/data/https.json"
+)
 
 func outboundsHandler(store Store, ctrl XrayController) http.HandlerFunc {
 	if ctrl == nil {
@@ -67,6 +71,7 @@ func pingOutbound(address string, port int) map[string]interface{} {
 }
 
 type socks5PoolProxy struct {
+	Protocol     string  `json:"protocol,omitempty"`
 	Address      string  `json:"address"`
 	Port         int     `json:"port"`
 	Username     string  `json:"username,omitempty"`
@@ -92,9 +97,14 @@ type socks5PoolCache struct {
 	proxies   []socks5PoolProxy
 	updatedAt time.Time
 	err       string
+	sourceURL string
 }
 
-var globalSocks5PoolCache = &socks5PoolCache{}
+var (
+	globalSocks5PoolCache = &socks5PoolCache{}
+	globalHTTPPoolCache   = &socks5PoolCache{}
+	globalHTTPSPoolCache  = &socks5PoolCache{}
+)
 
 func nextSocks5PoolRefresh(now time.Time) time.Time {
 	loc := now.Location()
@@ -110,9 +120,29 @@ func nextSocks5PoolRefresh(now time.Time) time.Time {
 // so opening the dialog does not block on the remote pool.
 func StartSocks5PoolCacheScheduler(poolURL string) func() {
 	cfg := &routerConfig{socks5PoolURL: poolURL}
+	return startProxyPoolCacheScheduler(func(ctx context.Context) {
+		_, _, _, _ = cachedSocks5Pool(ctx, cfg)
+	})
+}
+
+func StartHTTPPoolCacheScheduler(poolURL string) func() {
+	cfg := &routerConfig{httpPoolURL: poolURL}
+	return startProxyPoolCacheScheduler(func(ctx context.Context) {
+		_, _, _, _ = cachedHTTPPool(ctx, cfg)
+	})
+}
+
+func StartHTTPSPoolCacheScheduler(poolURL string) func() {
+	cfg := &routerConfig{httpsPoolURL: poolURL}
+	return startProxyPoolCacheScheduler(func(ctx context.Context) {
+		_, _, _, _ = cachedHTTPSPool(ctx, cfg)
+	})
+}
+
+func startProxyPoolCacheScheduler(refresh func(context.Context)) func() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		_, _, _, _ = cachedSocks5Pool(ctx, cfg)
+		refresh(ctx)
 		for {
 			delay := time.Until(nextSocks5PoolRefresh(time.Now()))
 			if delay < time.Second {
@@ -124,7 +154,7 @@ func StartSocks5PoolCacheScheduler(poolURL string) func() {
 				timer.Stop()
 				return
 			case <-timer.C:
-				_, _, _, _ = cachedSocks5Pool(ctx, cfg)
+				refresh(ctx)
 			}
 		}
 	}()
@@ -132,41 +162,65 @@ func StartSocks5PoolCacheScheduler(poolURL string) func() {
 }
 
 func cachedSocks5Pool(ctx context.Context, cfg *routerConfig) ([]socks5PoolProxy, time.Time, string, error) {
-	globalSocks5PoolCache.mu.Lock()
-	cached := append([]socks5PoolProxy(nil), globalSocks5PoolCache.proxies...)
-	updatedAt := globalSocks5PoolCache.updatedAt
-	lastErr := globalSocks5PoolCache.err
-	fresh := len(cached) > 0 && time.Now().Before(nextSocks5PoolRefresh(updatedAt))
-	globalSocks5PoolCache.mu.Unlock()
+	return cachedProxyPool(ctx, globalSocks5PoolCache, cfg.socks5PoolURL, defaultSocks5PoolURL, "socks")
+}
+
+func cachedHTTPPool(ctx context.Context, cfg *routerConfig) ([]socks5PoolProxy, time.Time, string, error) {
+	return cachedProxyPool(ctx, globalHTTPPoolCache, cfg.httpPoolURL, defaultHTTPPoolURL, "http")
+}
+
+func cachedHTTPSPool(ctx context.Context, cfg *routerConfig) ([]socks5PoolProxy, time.Time, string, error) {
+	return cachedProxyPool(ctx, globalHTTPSPoolCache, cfg.httpsPoolURL, defaultHTTPSPoolURL, "https")
+}
+
+func cachedProxyPool(ctx context.Context, cache *socks5PoolCache, poolURL string, defaultURL string, protocol string) ([]socks5PoolProxy, time.Time, string, error) {
+	sourceURL := strings.TrimSpace(poolURL)
+	if sourceURL == "" {
+		sourceURL = defaultURL
+	}
+	cache.mu.Lock()
+	cached := append([]socks5PoolProxy(nil), cache.proxies...)
+	updatedAt := cache.updatedAt
+	lastErr := cache.err
+	fresh := len(cached) > 0 && cache.sourceURL == sourceURL && time.Now().Before(nextSocks5PoolRefresh(updatedAt))
+	cache.mu.Unlock()
 	if fresh {
 		return cached, updatedAt, "hit", nil
 	}
-	proxies, err := fetchSocks5Pool(ctx, cfg.socks5PoolURL)
-	globalSocks5PoolCache.mu.Lock()
-	defer globalSocks5PoolCache.mu.Unlock()
+	proxies, err := fetchProxyPool(ctx, sourceURL, defaultURL, protocol)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	if err != nil {
-		globalSocks5PoolCache.err = err.Error()
-		if len(globalSocks5PoolCache.proxies) > 0 {
-			return append([]socks5PoolProxy(nil), globalSocks5PoolCache.proxies...), globalSocks5PoolCache.updatedAt, "stale", nil
+		cache.err = err.Error()
+		if len(cache.proxies) > 0 && cache.sourceURL == sourceURL {
+			return append([]socks5PoolProxy(nil), cache.proxies...), cache.updatedAt, "stale", nil
 		}
 		return nil, time.Time{}, "miss", err
 	}
-	globalSocks5PoolCache.proxies = append([]socks5PoolProxy(nil), proxies...)
-	globalSocks5PoolCache.updatedAt = time.Now()
-	globalSocks5PoolCache.err = ""
+	cache.proxies = append([]socks5PoolProxy(nil), proxies...)
+	cache.updatedAt = time.Now()
+	cache.err = ""
+	cache.sourceURL = sourceURL
 	_ = lastErr
-	return append([]socks5PoolProxy(nil), proxies...), globalSocks5PoolCache.updatedAt, "refresh", nil
+	return append([]socks5PoolProxy(nil), proxies...), cache.updatedAt, "refresh", nil
 }
 
 func fetchSocks5Pool(ctx context.Context, poolURL string) ([]socks5PoolProxy, error) {
 	if poolURL == "" {
 		poolURL = defaultSocks5PoolURL
 	}
+	return fetchProxyPool(ctx, poolURL, defaultSocks5PoolURL, "socks")
+}
+
+func fetchProxyPool(ctx context.Context, poolURL string, defaultURL string, protocol string) ([]socks5PoolProxy, error) {
+	if poolURL == "" {
+		poolURL = defaultURL
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, poolURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "MiGate/1.0 socks5-pool")
+	req.Header.Set("User-Agent", "MiGate/1.0 proxy-pool")
 	client := &http.Client{Timeout: 12 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -180,10 +234,14 @@ func fetchSocks5Pool(ctx context.Context, poolURL string) ([]socks5PoolProxy, er
 	if err != nil {
 		return nil, err
 	}
-	return parseSocks5Pool(body)
+	return parseProxyPool(body, protocol)
 }
 
 func parseSocks5Pool(body []byte) ([]socks5PoolProxy, error) {
+	return parseProxyPool(body, "socks")
+}
+
+func parseProxyPool(body []byte, protocol string) ([]socks5PoolProxy, error) {
 	var raw interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
@@ -194,6 +252,7 @@ func parseSocks5Pool(body []byte) ([]socks5PoolProxy, error) {
 		proxyURL := firstString(item, "proxy", "url", "uri")
 		parsedAddress, parsedPort, parsedUser, parsedPass := parseSocks5ProxyURL(proxyURL)
 		proxy := socks5PoolProxy{
+			Protocol:     protocol,
 			Address:      firstNonEmpty(firstString(item, "address", "addr", "ip", "host", "server"), parsedAddress),
 			Port:         firstInt(item, "port"),
 			Username:     parsedUser,
@@ -350,11 +409,29 @@ func socks5PoolRegions(proxies []socks5PoolProxy) []socks5PoolRegion {
 }
 
 func socks5PoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
+	proxyPoolListHandler(func(ctx context.Context) ([]socks5PoolProxy, time.Time, string, error) {
+		return cachedSocks5Pool(ctx, cfg)
+	}, w, r)
+}
+
+func httpPoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
+	proxyPoolListHandler(func(ctx context.Context) ([]socks5PoolProxy, time.Time, string, error) {
+		return cachedHTTPPool(ctx, cfg)
+	}, w, r)
+}
+
+func httpsPoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
+	proxyPoolListHandler(func(ctx context.Context) ([]socks5PoolProxy, time.Time, string, error) {
+		return cachedHTTPSPool(ctx, cfg)
+	}, w, r)
+}
+
+func proxyPoolListHandler(load func(context.Context) ([]socks5PoolProxy, time.Time, string, error), w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	proxies, updatedAt, cacheStatus, err := cachedSocks5Pool(r.Context(), cfg)
+	proxies, updatedAt, cacheStatus, err := load(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "pool_fetch_failed", map[string]interface{}{"cache_status": cacheStatus, "detail": err.Error()})
 		return
@@ -375,6 +452,10 @@ func socks5PoolListHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Req
 }
 
 func socks5PoolPingHandler(w http.ResponseWriter, r *http.Request) {
+	proxyPoolPingHandler(w, r)
+}
+
+func proxyPoolPingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
@@ -397,6 +478,18 @@ func socks5PoolPingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func socks5PoolImportHandler(store Store, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
+	proxyPoolImportHandler(store, ctrl, "socks", "socks", w, r)
+}
+
+func httpPoolImportHandler(store Store, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
+	proxyPoolImportHandler(store, ctrl, "http", "http", w, r)
+}
+
+func httpsPoolImportHandler(store Store, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
+	proxyPoolImportHandler(store, ctrl, "http", "https", w, r)
+}
+
+func proxyPoolImportHandler(store Store, ctrl XrayController, outboundProtocol string, tagProtocol string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
@@ -438,9 +531,9 @@ func socks5PoolImportHandler(store Store, ctrl XrayController, w http.ResponseWr
 		remark = address
 	}
 	outbound, err := store.CreateOutbound(r.Context(), db.CreateOutboundParams{
-		Tag:      fmt.Sprintf("pool-socks-%s-%d", strings.NewReplacer(".", "-", ":", "-").Replace(address), req.Port),
+		Tag:      fmt.Sprintf("pool-%s-%s-%d", tagProtocol, strings.NewReplacer(".", "-", ":", "-").Replace(address), req.Port),
 		Remark:   remark,
-		Protocol: "socks",
+		Protocol: outboundProtocol,
 		Address:  address,
 		Port:     req.Port,
 		Username: strings.TrimSpace(req.Username),
@@ -475,6 +568,30 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		if path == "socks5-pool/import" {
 			socks5PoolImportHandler(store, ctrl, w, r)
+			return
+		}
+		if path == "http-pool" {
+			httpPoolListHandler(cfg, w, r)
+			return
+		}
+		if path == "http-pool/ping" {
+			proxyPoolPingHandler(w, r)
+			return
+		}
+		if path == "http-pool/import" {
+			httpPoolImportHandler(store, ctrl, w, r)
+			return
+		}
+		if path == "https-pool" {
+			httpsPoolListHandler(cfg, w, r)
+			return
+		}
+		if path == "https-pool/ping" {
+			proxyPoolPingHandler(w, r)
+			return
+		}
+		if path == "https-pool/import" {
+			httpsPoolImportHandler(store, ctrl, w, r)
 			return
 		}
 		// Handle /api/outbounds/reorder

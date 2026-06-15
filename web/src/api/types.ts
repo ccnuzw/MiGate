@@ -216,13 +216,14 @@ export interface CertStatus {
   key_path: string;
 }
 
-export interface Socks5PoolRegion {
+export interface ProxyPoolRegion {
   code: string;
   name: string;
   count: number;
 }
 
-export interface Socks5PoolProxy {
+export interface ProxyPoolProxy {
+  protocol?: string;
   address: string;
   port: number;
   username?: string;
@@ -237,13 +238,17 @@ export interface Socks5PoolProxy {
   latency?: number;
 }
 
-export interface Socks5PoolResponse {
-  regions: Socks5PoolRegion[];
-  proxies: Socks5PoolProxy[];
+export interface ProxyPoolResponse {
+  regions: ProxyPoolRegion[];
+  proxies: ProxyPoolProxy[];
   cache_status: string;
   cache_updated_at: string;
   next_refresh_at: string;
 }
+
+export type Socks5PoolRegion = ProxyPoolRegion;
+export type Socks5PoolProxy = ProxyPoolProxy;
+export type Socks5PoolResponse = ProxyPoolResponse;
 
 export interface PingResult {
   latency: number;
