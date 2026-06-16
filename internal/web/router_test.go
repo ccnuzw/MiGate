@@ -380,6 +380,27 @@ func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
 	}
 }
 
+func TestCoreInstallRunsOutsideMiGateServiceSandboxWhenSystemdIsAvailable(t *testing.T) {
+	body := webPackageSource(t)
+	for _, want := range []string{
+		`func coreSystemdRunAvailable() bool`,
+		`exec.LookPath("systemd-run")`,
+		`os.Stat("/run/systemd/system")`,
+		`exec.Command(`,
+		`"systemd-run"`,
+		`"--wait"`,
+		`"--pipe"`,
+		`"--property=User=root"`,
+		`"--property=TimeoutSec=300"`,
+		`"bash"`,
+		`"-s"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("core installer missing detached root execution contract %q", want)
+		}
+	}
+}
+
 func TestSocks5PoolEndpointReportsCacheMetadata(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -566,13 +587,13 @@ func TestCoreXrayInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
 		`curl -fL "$dgst_url" -o "$tmp/$asset_name.dgst"`,
 		`awk -F'= ' -v asset="$asset_name" '/^SHA2-256=/{print $2 "  " asset}' "$tmp/$asset_name.dgst" > "$tmp/$asset_name.sha256"`,
 		`sha256sum -c "$asset_name.sha256"`,
-		`unzip -q "$tmp/$asset_name" -d "$tmp/xray"`,
+		`unzip -oq "$tmp/$asset_name" -d "$tmp/xray"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("Xray WebUI install script missing checksum contract %q", want)
 		}
 	}
-	if strings.Index(script, `sha256sum -c "$asset_name.sha256"`) > strings.Index(script, `unzip -q "$tmp/$asset_name" -d "$tmp/xray"`) {
+	if strings.Index(script, `sha256sum -c "$asset_name.sha256"`) > strings.Index(script, `unzip -oq "$tmp/$asset_name" -d "$tmp/xray"`) {
 		t.Fatalf("Xray WebUI install script must verify checksum before extracting archive")
 	}
 }
@@ -588,13 +609,13 @@ func TestCoreSingboxInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) 
 		`/"name": "/ { in_asset=0 }`,
 		`printf '%s  %s\n' "$digest" "$asset_name" > "$tmp/sing-box.tar.gz.sha256"`,
 		`sha256sum -c "sing-box.tar.gz.sha256"`,
-		`tar -xzf "$tmp/$asset_name" -C "$tmp"`,
+		`tar --no-same-owner -xzf "$tmp/$asset_name" -C "$tmp"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("sing-box WebUI install script missing checksum contract %q", want)
 		}
 	}
-	if strings.Index(script, `sha256sum -c "sing-box.tar.gz.sha256"`) > strings.Index(script, `tar -xzf "$tmp/$asset_name"`) {
+	if strings.Index(script, `sha256sum -c "sing-box.tar.gz.sha256"`) > strings.Index(script, `tar --no-same-owner -xzf "$tmp/$asset_name"`) {
 		t.Fatalf("sing-box WebUI install script must verify checksum before extracting archive")
 	}
 }

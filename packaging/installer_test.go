@@ -324,13 +324,13 @@ func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 		"download_file \"$CHECKSUM_URL\"",
 		"grep \"migate-linux-${ARCH}.tar.gz\"",
 		"verify_sha256 \"${ARTIFACT}.sha256\" \"$TMP\"",
-		"tar -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"",
+		"tar --no-same-owner -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer release checksum contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "verify_sha256 \"${ARTIFACT}.sha256\" \"$TMP\"") > strings.Index(script, "tar -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"") {
+	if strings.Index(script, "verify_sha256 \"${ARTIFACT}.sha256\" \"$TMP\"") > strings.Index(script, "tar --no-same-owner -xzf \"$TMP/migate-linux-${ARCH}.tar.gz\"") {
 		t.Fatalf("installer must verify checksum before extracting MiGate release archive")
 	}
 }
@@ -345,13 +345,13 @@ func TestInstallerVerifiesSingBoxArchiveChecksumBeforeExtracting(t *testing.T) {
 		"/\"name\": \"/ { in_asset=0 }",
 		"printf '%s  %s\\n' \"$sb_digest\" \"$sb_artifact\" > \"$tmp_sb/$sb_artifact.sha256\"",
 		"verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"",
-		"tar -xzf \"$tmp_sb/$sb_artifact\" -C \"$tmp_sb\"",
+		"tar --no-same-owner -xzf \"$tmp_sb/$sb_artifact\" -C \"$tmp_sb\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box checksum contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"") > strings.Index(script, "tar -xzf \"$tmp_sb/$sb_artifact\"") {
+	if strings.Index(script, "verify_sha256 \"$sb_artifact.sha256\" \"$tmp_sb\"") > strings.Index(script, "tar --no-same-owner -xzf \"$tmp_sb/$sb_artifact\"") {
 		t.Fatalf("installer must verify sing-box checksum before extracting archive")
 	}
 }
@@ -406,13 +406,13 @@ func TestInstallerVerifiesXrayArchiveChecksumBeforeExtracting(t *testing.T) {
 		"curl -fL \"$xray_url\" -o \"$tmp_xray/$xray_artifact\"",
 		"awk -F'= ' -v asset=\"$xray_artifact\" '/^SHA2-256=/{print $2 \"  \" asset}' \"$tmp_xray/$xray_artifact.dgst\" > \"$tmp_xray/$xray_artifact.sha256\"",
 		"verify_sha256 \"$xray_artifact.sha256\" \"$tmp_xray\"",
-		"unzip -q \"$tmp_xray/$xray_artifact\" -d \"$tmp_xray/xray\"",
+		"unzip -oq \"$tmp_xray/$xray_artifact\" -d \"$tmp_xray/xray\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer Xray checksum contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "verify_sha256 \"$xray_artifact.sha256\" \"$tmp_xray\"") > strings.Index(script, "unzip -q \"$tmp_xray/$xray_artifact\" -d \"$tmp_xray/xray\"") {
+	if strings.Index(script, "verify_sha256 \"$xray_artifact.sha256\" \"$tmp_xray\"") > strings.Index(script, "unzip -oq \"$tmp_xray/$xray_artifact\" -d \"$tmp_xray/xray\"") {
 		t.Fatalf("installer must verify Xray checksum before extracting archive")
 	}
 }
@@ -594,6 +594,7 @@ func TestReleaseArchivesIncludeUninstallScript(t *testing.T) {
 
 func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 	service := read(t, "packaging", "migate.service")
+	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"ExecStart=/usr/local/bin/migate serve",
 		"--host 0.0.0.0",
@@ -602,14 +603,33 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 		"NoNewPrivileges=true",
 		"PrivateTmp=true",
 		"ProtectSystem=strict",
-		"ProtectHome=true",
-		"ReadWritePaths=/etc/migate /usr/local/migate /var/log",
+		"ReadWritePaths=/etc/migate /usr/local/migate /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system",
 		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
 		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
-		"SystemCallFilter=@system-service",
 	} {
 		if !strings.Contains(service, want) {
 			t.Fatalf("service missing %q: %s", want, service)
+		}
+	}
+	for _, want := range []string{
+		`mkdir -p "$CONFIG_DIR" "$INSTALL_DIR" /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system`,
+		"ProtectSystem=strict",
+		"ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer-generated service missing permission contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"ProtectHome=",
+		"SystemCallFilter=",
+	} {
+		if strings.Contains(service, forbidden) {
+			t.Fatalf("service must not restrict runtime management permissions with %q: %s", forbidden, service)
+		}
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer-generated service must not restrict runtime management permissions with %q", forbidden)
 		}
 	}
 	forbidden := []string{"python", "uv", "pip", "npm", join("open", "vpn"), "tun", "egress", "remote", "leak", "rollout"}

@@ -2,10 +2,13 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxXrayLogLines = 200
@@ -78,7 +81,7 @@ elif command -v shasum >/dev/null 2>&1; then
 else
   echo "sha256sum or shasum is required" >&2; exit 1
 fi
-unzip -q "$tmp/$asset_name" -d "$tmp/xray"
+unzip -oq "$tmp/$asset_name" -d "$tmp/xray"
 cp "$tmp/xray/xray" /usr/local/bin/xray
 chmod +x /usr/local/bin/xray
 mkdir -p /usr/local/share/xray /usr/local/migate /usr/local/etc/xray
@@ -160,7 +163,7 @@ elif command -v shasum >/dev/null 2>&1; then
 else
   echo "sha256sum or shasum is required" >&2; exit 1
 fi
-tar -xzf "$tmp/$asset_name" -C "$tmp"
+tar --no-same-owner -xzf "$tmp/$asset_name" -C "$tmp"
 cp "$tmp"/sing-box-*/sing-box /usr/local/bin/sing-box
 chmod +x /usr/local/bin/sing-box
 mkdir -p /etc/sing-box
@@ -210,9 +213,37 @@ fi
 }
 
 func runCoreScript(script string) ([]byte, error) {
+	if coreSystemdRunAvailable() {
+		unit := fmt.Sprintf("migate-core-%d-%d", os.Getpid(), time.Now().UnixNano())
+		cmd := exec.Command(
+			"systemd-run",
+			"--wait",
+			"--pipe",
+			"--quiet",
+			"--unit="+unit,
+			"--collect",
+			"--property=Type=oneshot",
+			"--property=User=root",
+			"--property=TimeoutSec=300",
+			"bash",
+			"-s",
+		)
+		cmd.Stdin = strings.NewReader(script)
+		return cmd.CombinedOutput()
+	}
 	cmd := exec.Command("bash", "-s")
 	cmd.Stdin = strings.NewReader(script)
 	return cmd.CombinedOutput()
+}
+
+func coreSystemdRunAvailable() bool {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		return false
+	}
+	if _, err := os.Stat("/run/systemd/system"); err != nil {
+		return false
+	}
+	return true
 }
 
 func coreUninstallHandler(core string, runner func(script string) ([]byte, error)) http.HandlerFunc {
