@@ -19,6 +19,10 @@ export interface Client {
   expiry_at?: number;
   xray_up?: number;
   xray_down?: number;
+  rate_up?: number;
+  rate_down?: number;
+  traffic_status?: string;
+  traffic_message?: string;
   traffic_stats_source?: string;
   realtime_stats_source?: string;
   traffic_stats_note?: string;
@@ -37,9 +41,13 @@ export interface Inbound {
   traffic_up?: number;
   traffic_down?: number;
   traffic_total?: number;
+  rate_up?: number;
+  rate_down?: number;
+  traffic_status?: string;
+  traffic_message?: string;
   traffic_stats_source?: string;
   realtime_stats_source?: string;
-  client_traffic?: Record<string, { up: number; down: number; xray_up?: number; xray_down?: number; source: string; realtime_source?: string; note?: string }>;
+  client_traffic?: Record<string, { up: number; down: number; rate_up?: number; rate_down?: number; xray_up?: number; xray_down?: number; status?: string; message?: string; source?: string; realtime_source?: string; note?: string }>;
   [key: string]: unknown;
 }
 
@@ -155,16 +163,92 @@ export interface DashboardSummary {
     xray_down: number;
     xray_realtime: number;
   };
+  traffic_rates?: {
+    rate_up: number;
+    rate_down: number;
+    rate_total: number;
+  };
+  traffic_status?: {
+    overall: string;
+    engines?: Record<string, string>;
+  };
   protocols: Record<string, number>;
   traffic_series: Array<{
     name: string;
+    time?: string;
     up: number;
     down: number;
+    rate_up?: number;
+    rate_down?: number;
   }>;
   validation: {
     xray: ConfigValidation;
     singbox: ConfigValidation;
   };
+}
+
+export interface TrafficCoverage {
+  overall: string;
+  ok?: number;
+  partial?: number;
+  unsupported?: number;
+  unavailable?: number;
+  waiting?: number;
+  engines?: Record<string, string>;
+}
+
+export interface TrafficSummary {
+  total_up: number;
+  total_down: number;
+  total: number;
+  rate_up: number;
+  rate_down: number;
+  rate_total: number;
+  status: TrafficCoverage;
+  last_updated_at: string;
+}
+
+export interface TrafficInbound {
+  id: number;
+  remark: string;
+  protocol: string;
+  port: number;
+  total_up: number;
+  total_down: number;
+  total: number;
+  rate_up: number;
+  rate_down: number;
+  status: string;
+  message?: string;
+  engine?: string;
+  last_updated_at: string;
+}
+
+export interface TrafficClient {
+  id: number;
+  inbound_id: number;
+  email: string;
+  protocol: string;
+  total_up: number;
+  total_down: number;
+  total: number;
+  rate_up: number;
+  rate_down: number;
+  traffic_limit: number;
+  expiry_at: number;
+  status: string;
+  message?: string;
+  engine?: string;
+  last_updated_at: string;
+}
+
+export interface TrafficSeriesPoint {
+  name: string;
+  time?: string;
+  up: number;
+  down: number;
+  rate_up?: number;
+  rate_down?: number;
 }
 
 export interface VersionResponse {

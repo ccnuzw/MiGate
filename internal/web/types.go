@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -14,27 +15,38 @@ type XrayStatusStore interface {
 }
 
 type clientTrafficSummary struct {
-	Up             int64  `json:"up"`
-	Down           int64  `json:"down"`
-	XrayUp         int64  `json:"xray_up,omitempty"`
-	XrayDown       int64  `json:"xray_down,omitempty"`
-	Source         string `json:"source"`
-	RealtimeSource string `json:"realtime_source,omitempty"`
-	Note           string `json:"note,omitempty"`
+	Up       int64   `json:"up"`
+	Down     int64   `json:"down"`
+	RateUp   float64 `json:"rate_up"`
+	RateDown float64 `json:"rate_down"`
+	Status   string  `json:"status"`
+	Message  string  `json:"message,omitempty"`
+	Engine   string  `json:"engine,omitempty"`
+	XrayUp   int64   `json:"xray_up,omitempty"`
+	XrayDown int64   `json:"xray_down,omitempty"`
+	Source   string  `json:"source,omitempty"`
+	Note     string  `json:"note,omitempty"`
 }
 
 type inboundTrafficSummary struct {
-	Up             int64  `json:"up"`
-	Down           int64  `json:"down"`
-	Total          int64  `json:"total"`
-	Source         string `json:"source"`
-	RealtimeSource string `json:"realtime_source,omitempty"`
+	Up       int64   `json:"up"`
+	Down     int64   `json:"down"`
+	Total    int64   `json:"total"`
+	RateUp   float64 `json:"rate_up"`
+	RateDown float64 `json:"rate_down"`
+	Status   string  `json:"status"`
+	Message  string  `json:"message,omitempty"`
+	Engine   string  `json:"engine,omitempty"`
+	Source   string  `json:"source,omitempty"`
 }
 
 type trafficSeriesPoint struct {
-	Name string `json:"name"`
-	Up   int64  `json:"up"`
-	Down int64  `json:"down"`
+	Name     string  `json:"name"`
+	Time     string  `json:"time,omitempty"`
+	Up       int64   `json:"up"`
+	Down     int64   `json:"down"`
+	RateUp   float64 `json:"rate_up,omitempty"`
+	RateDown float64 `json:"rate_down,omitempty"`
 }
 
 type inboundView struct {
@@ -42,6 +54,10 @@ type inboundView struct {
 	TrafficUp      int64                          `json:"traffic_up"`
 	TrafficDown    int64                          `json:"traffic_down"`
 	TrafficTotal   int64                          `json:"traffic_total"`
+	RateUp         float64                        `json:"rate_up"`
+	RateDown       float64                        `json:"rate_down"`
+	TrafficStatus  string                         `json:"traffic_status"`
+	TrafficMessage string                         `json:"traffic_message,omitempty"`
 	TrafficSource  string                         `json:"traffic_stats_source"`
 	RealtimeSource string                         `json:"realtime_stats_source,omitempty"`
 	ClientTraffic  map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
@@ -60,6 +76,10 @@ type inboundTrafficView struct {
 	TrafficUp      int64                          `json:"traffic_up"`
 	TrafficDown    int64                          `json:"traffic_down"`
 	TrafficTotal   int64                          `json:"traffic_total"`
+	RateUp         float64                        `json:"rate_up"`
+	RateDown       float64                        `json:"rate_down"`
+	TrafficStatus  string                         `json:"traffic_status"`
+	TrafficMessage string                         `json:"traffic_message,omitempty"`
 	TrafficSource  string                         `json:"traffic_stats_source"`
 	RealtimeSource string                         `json:"realtime_stats_source,omitempty"`
 	ClientTraffic  map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
@@ -92,6 +112,13 @@ type Store interface {
 	SetOutboundEnabled(ctx context.Context, id int64, enabled bool) (db.Outbound, error)
 	SetClientEnabled(ctx context.Context, inboundID int64, id int64, enabled bool) (db.Client, error)
 	ResetClientTraffic(ctx context.Context, id int64) (db.Client, error)
+	ResetClientTrafficBaseline(ctx context.Context, id int64, baselines []db.TrafficRawStat) (db.Client, error)
+	GetClientTrafficUsage(ctx context.Context, statsKey string) (db.ClientTrafficUsage, bool, error)
+	GetClientTrafficUsageForClient(ctx context.Context, clientID int64) (db.ClientTrafficUsage, bool, error)
+	ListTrafficStates(ctx context.Context) ([]db.TrafficState, error)
+	ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]db.TrafficSample, error)
+	ApplyTrafficRawStats(ctx context.Context, stats []db.TrafficRawStat, observedAt time.Time) error
+	MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error
 	AddToBlacklist(ctx context.Context, tokenHash string, expiresAt time.Time, revoked bool) error
 	IsBlacklisted(ctx context.Context, tokenHash string) (bool, error)
 	RecordSessionTouch(ctx context.Context, tokenHash string) error
@@ -144,26 +171,27 @@ func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
 func (defaultXrayController) Version(ctx context.Context) string { return "" }
 
 type routerConfig struct {
-	store            Store
-	xrayController   XrayController
-	authEnabled      bool
-	authUsername     string
-	authPassword     string
-	authMu           sync.RWMutex
-	sessionSecret    []byte
-	configDir        string
-	version          string
-	basePath         string
-	statsClient      xray.StatsClient
-	socks5PoolURL    string
-	httpPoolURL      string
-	httpsPoolURL     string
-	updateCheckURL   string
-	publicHost       string
-	trustProxy       bool
-	loginLimiter     *loginLimiter
-	coreScriptRunner func(script string) ([]byte, error)
-	sessionTouches   map[string]time.Time
-	sessionTouchGC   time.Time
-	sessionTouchMu   sync.Mutex
+	store              Store
+	xrayController     XrayController
+	authEnabled        bool
+	authUsername       string
+	authPassword       string
+	authMu             sync.RWMutex
+	sessionSecret      []byte
+	configDir          string
+	version            string
+	basePath           string
+	statsClient        xray.StatsClient
+	singboxStatsClient singbox.StatsClient
+	socks5PoolURL      string
+	httpPoolURL        string
+	httpsPoolURL       string
+	updateCheckURL     string
+	publicHost         string
+	trustProxy         bool
+	loginLimiter       *loginLimiter
+	coreScriptRunner   func(script string) ([]byte, error)
+	sessionTouches     map[string]time.Time
+	sessionTouchGC     time.Time
+	sessionTouchMu     sync.Mutex
 }

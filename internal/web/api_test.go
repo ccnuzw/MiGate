@@ -3,6 +3,7 @@ package web_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -746,7 +747,7 @@ func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "client@example.com"})
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "client@example.com"})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
@@ -760,7 +761,7 @@ func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"inbounds"`, `"outbounds"`, `"protocol":"vless"`, `"protocol":"freedom"`, `"email":"client@example.com"`} {
+	for _, want := range []string{`"inbounds"`, `"outbounds"`, `"protocol":"vless"`, `"protocol":"freedom"`, `"email":"` + client.StatsKey + `"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("xray config response missing %q: %s", want, body)
 		}
@@ -1210,7 +1211,7 @@ func TestSubscriptionHysteria2DefaultGeneratedTLSLink(t *testing.T) {
 	}
 }
 
-func TestStatsMarksSingBoxClientTrafficAsUnavailable(t *testing.T) {
+func TestStatsMarksSingBoxClientTrafficAsWaitingBeforeFirstSample(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1232,10 +1233,13 @@ func TestStatsMarksSingBoxClientTrafficAsUnavailable(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"protocol":"hysteria2"`, `"traffic_stats_source":"unavailable"`, `"traffic_stats_note":"sing-box realtime traffic stats are not yet wired"`, fmt.Sprintf(`"id":%d`, client.ID)} {
+	for _, want := range []string{`"protocol":"hysteria2"`, `"traffic_status":"waiting"`, fmt.Sprintf(`"id":%d`, client.ID)} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sing-box stats response missing %q: %s", want, body)
 		}
+	}
+	if strings.Contains(body, `"traffic_stats_note"`) {
+		t.Fatalf("waiting sing-box stats should not expose legacy unsupported note: %s", body)
 	}
 }
 
@@ -1251,7 +1255,33 @@ func (c fixedStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.C
 	return c.stats, nil
 }
 
+func (c fixedStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+	if c.calls != nil {
+		(*c.calls)++
+	}
+	result := make([]xray.TrafficStat, 0, len(c.stats))
+	for _, stat := range c.stats {
+		result = append(result, xray.TrafficStat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
+	}
+	return result, nil
+}
+
 func (c fixedStatsClient) Close() error { return nil }
+
+func seedClientTraffic(t *testing.T, store *db.Store, client db.Client, up, down int64) {
+	t.Helper()
+	ctx := context.Background()
+	t0 := time.Unix(1000, 0)
+	raw := func(rawUp, rawDown int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: rawUp, RawDown: rawDown, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(100, 100), t0); err != nil {
+		t.Fatalf("seed baseline traffic: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(100+up, 100+down), t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("seed increment traffic: %v", err)
+	}
+}
 
 func TestStatsAPIUsesRealtimeTrafficAsCurrentWhenAvailable(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
@@ -1263,21 +1293,20 @@ func TestStatsAPIUsesRealtimeTrafficAsCurrentWhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
+	seedClientTraffic(t, store, client, 1234, 5678)
 
-	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
-		"sam@example.com": {Email: "sam@example.com", Uplink: 1234, Downlink: 5678},
-	}}))
+	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":1234`, `"traffic_down":5678`, `"traffic_total":6912`, `"xray_up":1234`, `"xray_down":5678`, `"traffic_stats_source":"xray"`, `"realtime_stats_source":"xray"`} {
+	for _, want := range []string{`"traffic_up":1234`, `"traffic_down":5678`, `"traffic_total":6912`, `"xray_up":1334`, `"xray_down":5778`, `"traffic_stats_source":"migate"`, `"traffic_status":"ok"`, `"rate_up":123.4`, `"rate_down":567.8`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stats response missing %q: %s", want, body)
 		}
@@ -1294,18 +1323,14 @@ func TestStatsAPIDefaultIsSummaryOnlyAndCached(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	_, err = store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "sam@example.com"})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
+	seedClientTraffic(t, store, client, 12, 34)
 
 	calls := 0
-	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{
-		stats: map[string]*xray.ClientStats{
-			"sam@example.com": {Email: "sam@example.com", Uplink: 12, Downlink: 34},
-		},
-		calls: &calls,
-	}))
+	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{calls: &calls}))
 	for i := 0; i < 2; i++ {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
@@ -1322,8 +1347,8 @@ func TestStatsAPIDefaultIsSummaryOnlyAndCached(t *testing.T) {
 			t.Fatalf("default stats response should omit client_details: %s", body)
 		}
 	}
-	if calls != 1 {
-		t.Fatalf("expected cached stats response to query live stats once, got %d calls", calls)
+	if calls != 0 {
+		t.Fatalf("stats response should use stored traffic states without querying live stats, got %d calls", calls)
 	}
 
 	detail := httptest.NewRecorder()
@@ -1347,18 +1372,19 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	now := time.Now().Unix()
-	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "active@example.com"}); err != nil {
+	activeClient, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "active@example.com"})
+	if err != nil {
 		t.Fatalf("create active client: %v", err)
 	}
 	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "expired@example.com", ExpiryAt: now - 60}); err != nil {
 		t.Fatalf("create expired client: %v", err)
 	}
-	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 1}); err != nil {
+	limitedClient, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 1})
+	if err != nil {
 		t.Fatalf("create limited client: %v", err)
 	}
-	if err := store.UpdateClientTraffic(context.Background(), "limited@example.com", 1, 0); err != nil {
-		t.Fatalf("update limited client traffic: %v", err)
-	}
+	seedClientTraffic(t, store, activeClient, 10, 20)
+	seedClientTraffic(t, store, limitedClient, 1, 0)
 	if _, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080}); err != nil {
 		t.Fatalf("create outbound: %v", err)
 	}
@@ -1366,9 +1392,7 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		t.Fatalf("create routing rule: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
-		"active@example.com": {Email: "active@example.com", Uplink: 10, Downlink: 20},
-	}}))
+	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
 	if response.Code != http.StatusOK {
@@ -1383,9 +1407,11 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"clients_limited":1`,
 		`"outbounds":3`,
 		`"routing_rules":1`,
-		`"xray_realtime":30`,
+		`"xray_realtime":31`,
 		`"protocols":{"vless":1}`,
-		`"traffic_series":[{"name":"xray","up":11,"down":20}]`,
+		`"traffic_series"`,
+		`"up":11`,
+		`"down":20`,
 		`"validation"`,
 		`"target":"xray"`,
 		`"target":"singbox"`,
@@ -1406,16 +1432,13 @@ func TestDashboardSummaryDoesNotRegressBelowStoredTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 120}); err != nil {
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "limited@example.com", TrafficLimit: 120})
+	if err != nil {
 		t.Fatalf("create limited client: %v", err)
 	}
-	if err := store.UpdateClientTraffic(context.Background(), "limited@example.com", 100, 50); err != nil {
-		t.Fatalf("update limited client traffic: %v", err)
-	}
+	seedClientTraffic(t, store, client, 100, 50)
 
-	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
-		"limited@example.com": {Email: "limited@example.com", Uplink: 10, Downlink: 20},
-	}}))
+	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
 	if response.Code != http.StatusOK {
@@ -1425,8 +1448,10 @@ func TestDashboardSummaryDoesNotRegressBelowStoredTraffic(t *testing.T) {
 	for _, want := range []string{
 		`"clients_active":0`,
 		`"clients_limited":1`,
-		`"traffic":{"down":50,"total":150,"up":100,"xray_down":20,"xray_realtime":30,"xray_up":10}`,
-		`"traffic_series":[{"name":"xray","up":100,"down":50}]`,
+		`"traffic":{"down":50,"total":150,"up":100,"xray_down":50,"xray_realtime":150,"xray_up":100}`,
+		`"traffic_series"`,
+		`"up":100`,
+		`"down":50`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard summary missing %q: %s", want, body)
@@ -1448,13 +1473,9 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	if err := store.UpdateClientTraffic(context.Background(), "stored@example.com", 100, 50); err != nil {
-		t.Fatalf("update client traffic: %v", err)
-	}
+	seedClientTraffic(t, store, client, 100, 50)
 
-	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
-		"stored@example.com": {Email: "stored@example.com", Uplink: 10, Downlink: 20},
-	}}))
+	router := web.NewRouter(web.WithStore(store))
 
 	statsResponse := httptest.NewRecorder()
 	router.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
@@ -1468,10 +1489,10 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 		`"traffic_total":150`,
 		`"up":100`,
 		`"down":50`,
-		`"xray_up":10`,
-		`"xray_down":20`,
-		`"traffic_stats_source":"db"`,
-		`"realtime_stats_source":"xray"`,
+		`"xray_up":200`,
+		`"xray_down":150`,
+		`"traffic_stats_source":"migate"`,
+		`"traffic_status":"ok"`,
 	} {
 		if !strings.Contains(statsBody, want) {
 			t.Fatalf("stats response missing %q: %s", want, statsBody)
@@ -1488,11 +1509,10 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 		`"traffic_up":100`,
 		`"traffic_down":50`,
 		`"traffic_total":150`,
-		`"traffic_stats_source":"db"`,
-		`"realtime_stats_source":"xray"`,
-		fmt.Sprintf(`"%d":{"up":100,"down":50,"xray_up":10,"xray_down":20`, client.ID),
-		`"source":"db"`,
-		`"realtime_source":"xray"`,
+		`"traffic_stats_source":"migate"`,
+		`"traffic_status":"ok"`,
+		fmt.Sprintf(`"%d":{"up":100,"down":50`, client.ID),
+		`"status":"ok"`,
 	} {
 		if !strings.Contains(inboundsBody, want) {
 			t.Fatalf("inbounds response missing %q: %s", want, inboundsBody)
@@ -1510,7 +1530,7 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 		`"traffic_down":50`,
 		`"traffic_total":150`,
 		`"clients":[`,
-		fmt.Sprintf(`"%d":{"up":100,"down":50,"xray_up":10,"xray_down":20`, client.ID),
+		fmt.Sprintf(`"%d":{"up":100,"down":50`, client.ID),
 	} {
 		if !strings.Contains(refreshBody, want) {
 			t.Fatalf("traffic refresh response missing %q: %s", want, refreshBody)
@@ -1520,6 +1540,225 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 		if strings.Contains(refreshBody, forbidden) {
 			t.Fatalf("traffic refresh response should omit full config field %q: %s", forbidden, refreshBody)
 		}
+	}
+}
+
+func TestTrafficSeriesAPIUsesTrafficSamples(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "series", Protocol: "vless", Port: 8444, Network: "tcp", Security: "reality"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "series@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	t0 := time.Now().UTC().Add(-time.Hour)
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(context.Background(), raw(10, 20), t0); err != nil {
+		t.Fatalf("baseline sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(context.Background(), raw(30, 60), t0.Add(time.Minute)); err != nil {
+		t.Fatalf("increment sample: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"series"`, `"time"`, `"up":20`, `"down":40`, `"rate_up":0.3333333333333333`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("traffic series response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, client.StatsKey) {
+		t.Fatalf("traffic series should be aggregated by time, not raw client key: %s", body)
+	}
+}
+
+func TestTrafficSeriesAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	xrayInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 18445, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create xray inbound: %v", err)
+	}
+	singboxInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 18446, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create singbox inbound: %v", err)
+	}
+	xrayClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: xrayInbound.ID, Email: "xray-series"})
+	if err != nil {
+		t.Fatalf("create xray client: %v", err)
+	}
+	singboxClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: singboxInbound.ID, Email: "hy2-series"})
+	if err != nil {
+		t.Fatalf("create singbox client: %v", err)
+	}
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 1000, RawDown: 1000, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 2000, RawDown: 2000, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 200, RawDown: 200, Status: "ok"},
+	}, t0); err != nil {
+		t.Fatalf("baseline samples: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 110, RawDown: 120, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 1100, RawDown: 1200, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 2100, RawDown: 2200, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 230, RawDown: 240, Status: "ok"},
+	}, t0.Add(time.Minute)); err != nil {
+		t.Fatalf("increment samples: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=20", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"up":40`) || !strings.Contains(body, `"down":60`) {
+		t.Fatalf("expected series to aggregate only xray expected delta 10/20 plus singbox expected delta 30/40, got %s", body)
+	}
+	for _, forbidden := range []string{xrayClient.StatsKey, singboxClient.StatsKey, `"up":140`, `"down":260`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("series leaked unfiltered or unaggregated sample %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestDashboardSummaryTrafficSeriesUsesExpectedEngineFilter(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	xrayInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 18448, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create xray inbound: %v", err)
+	}
+	singboxInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 18449, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create singbox inbound: %v", err)
+	}
+	xrayClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: xrayInbound.ID, Email: "xray-dashboard-series"})
+	if err != nil {
+		t.Fatalf("create xray client: %v", err)
+	}
+	singboxClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: singboxInbound.ID, Email: "hy2-dashboard-series"})
+	if err != nil {
+		t.Fatalf("create singbox client: %v", err)
+	}
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 1000, RawDown: 1000, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 2000, RawDown: 2000, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 200, RawDown: 200, Status: "ok"},
+	}, t0); err != nil {
+		t.Fatalf("baseline samples: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 110, RawDown: 120, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 1100, RawDown: 1200, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 2100, RawDown: 2200, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 230, RawDown: 240, Status: "ok"},
+	}, t0.Add(time.Minute)); err != nil {
+		t.Fatalf("increment samples: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	summary := httptest.NewRecorder()
+	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
+	if summary.Code != http.StatusOK {
+		t.Fatalf("expected summary 200, got %d: %s", summary.Code, summary.Body.String())
+	}
+	series := httptest.NewRecorder()
+	router.ServeHTTP(series, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=240", nil))
+	if series.Code != http.StatusOK {
+		t.Fatalf("expected series 200, got %d: %s", series.Code, series.Body.String())
+	}
+	var summaryBody struct {
+		TrafficSeries []struct {
+			Up   int64 `json:"up"`
+			Down int64 `json:"down"`
+		} `json:"traffic_series"`
+	}
+	if err := json.NewDecoder(summary.Body).Decode(&summaryBody); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	var seriesBody struct {
+		Series []struct {
+			Up   int64 `json:"up"`
+			Down int64 `json:"down"`
+		} `json:"series"`
+	}
+	if err := json.NewDecoder(series.Body).Decode(&seriesBody); err != nil {
+		t.Fatalf("decode series: %v", err)
+	}
+	if len(summaryBody.TrafficSeries) != 2 || len(seriesBody.Series) != 2 {
+		t.Fatalf("expected two points from both endpoints, summary=%+v series=%+v", summaryBody.TrafficSeries, seriesBody.Series)
+	}
+	for i := range seriesBody.Series {
+		if summaryBody.TrafficSeries[i] != seriesBody.Series[i] {
+			t.Fatalf("summary series should match traffic series at %d, summary=%+v series=%+v", i, summaryBody.TrafficSeries, seriesBody.Series)
+		}
+	}
+	last := summaryBody.TrafficSeries[len(summaryBody.TrafficSeries)-1]
+	if last.Up != 40 || last.Down != 60 {
+		t.Fatalf("expected dashboard series to avoid cross-engine double count, got %+v", summaryBody.TrafficSeries)
+	}
+}
+
+func TestTrafficSeriesLimitUpperBoundIsExplicit(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "limit", Protocol: "vless", Port: 18450, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "limit-series"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"}}, t0); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 101, RawDown: 102, Status: "ok"}}, t0.Add(time.Minute)); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	ok := httptest.NewRecorder()
+	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=2000", nil))
+	if ok.Code != http.StatusOK {
+		t.Fatalf("expected legal upper limit 2000 to pass, got %d: %s", ok.Code, ok.Body.String())
+	}
+	if !strings.Contains(ok.Body.String(), `"series"`) || !strings.Contains(ok.Body.String(), `"up":1`) {
+		t.Fatalf("expected legal upper limit response to include series point, got %s", ok.Body.String())
+	}
+	tooHigh := httptest.NewRecorder()
+	router.ServeHTTP(tooHigh, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=2001", nil))
+	if tooHigh.Code != http.StatusBadRequest || !strings.Contains(tooHigh.Body.String(), "invalid_limit") {
+		t.Fatalf("expected over-limit request to fail clearly, got %d: %s", tooHigh.Code, tooHigh.Body.String())
 	}
 }
 
@@ -1537,17 +1776,16 @@ func TestInboundsAPIAnnotatesLiveTrafficPerInboundAndClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
+	seedClientTraffic(t, store, client, 222, 333)
 
-	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{stats: map[string]*xray.ClientStats{
-		"live@example.com": {Email: "live@example.com", Uplink: 222, Downlink: 333},
-	}}))
+	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/inbounds", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":222`, `"traffic_down":333`, `"traffic_total":555`, `"traffic_stats_source":"xray"`, `"realtime_stats_source":"xray"`, fmt.Sprintf(`"%d":{"up":222,"down":333,"xray_up":222,"xray_down":333`, client.ID), `"source":"xray"`, `"realtime_source":"xray"`} {
+	for _, want := range []string{`"traffic_up":222`, `"traffic_down":333`, `"traffic_total":555`, `"traffic_stats_source":"migate"`, `"traffic_status":"ok"`, fmt.Sprintf(`"%d":{"up":222,"down":333`, client.ID), `"status":"ok"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("inbounds response missing %q: %s", want, body)
 		}
@@ -1970,6 +2208,51 @@ func TestPatchClientEnabledAPIRejectsClientOutsideInbound(t *testing.T) {
 	}
 	if len(loaded) != 2 || len(loaded[1].Clients) != 1 || !loaded[1].Clients[0].Enabled {
 		t.Fatalf("cross-inbound PATCH changed the wrong client: %+v", loaded)
+	}
+}
+
+func TestResetClientTrafficAPIRejectsClientOutsideInbound(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inboundA, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "a", Protocol: "vless", Port: 443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound a: %v", err)
+	}
+	inboundB, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "b", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound b: %v", err)
+	}
+	clientB, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inboundB.ID, Email: "b-reset@test.com"})
+	if err != nil {
+		t.Fatalf("create client b: %v", err)
+	}
+	raw := []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: clientB.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"}}
+	if err := store.ApplyTrafficRawStats(context.Background(), raw, time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline traffic: %v", err)
+	}
+	raw[0].RawUp = 150
+	raw[0].RawDown = 160
+	if err := store.ApplyTrafficRawStats(context.Background(), raw, time.Unix(110, 0)); err != nil {
+		t.Fatalf("increment traffic: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inboundA.ID, 10)+"/clients/"+strconv.FormatInt(clientB.ID, 10)+"/reset-traffic", nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for client outside inbound, got %d: %s", response.Code, response.Body.String())
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(context.Background(), clientB.ID)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !found || usage.TotalUp != 50 || usage.TotalDown != 60 {
+		t.Fatalf("cross-inbound reset changed traffic state: found=%v usage=%+v", found, usage)
 	}
 }
 
@@ -2550,6 +2833,129 @@ func TestSubscriptionPassesValidClientWithFutureExpiry(t *testing.T) {
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200 for valid client with future expiry, got %d", response.Code)
+	}
+}
+
+func TestSubscriptionLimitUsesUnifiedTrafficStateAndResetReopens(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "limited", Protocol: "vless", Port: 18443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "limited", TrafficLimit: 100})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1000, 1000), time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1060, 1050), time.Unix(110, 0)); err != nil {
+		t.Fatalf("over limit sample: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected over-limit subscription to be blocked, got %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := store.ResetClientTrafficBaseline(ctx, client.ID, raw(1060, 1050)); err != nil {
+		t.Fatalf("reset baseline: %v", err)
+	}
+	reopened := httptest.NewRecorder()
+	router.ServeHTTP(reopened, httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil))
+	if reopened.Code != http.StatusOK {
+		t.Fatalf("expected reset subscription to reopen, got %d: %s", reopened.Code, reopened.Body.String())
+	}
+}
+
+func TestSubscriptionLimitUsesLegacyClientTotalsWhenNoTrafficState(t *testing.T) {
+	path := t.TempDir() + "/legacy-subscription.db"
+	store, err := db.Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "legacy", Protocol: "vless", Port: 18447, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	over, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "legacy-over", TrafficLimit: 100})
+	if err != nil {
+		t.Fatalf("create over client: %v", err)
+	}
+	under, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "legacy-under", TrafficLimit: 100})
+	if err != nil {
+		t.Fatalf("create under client: %v", err)
+	}
+	seedClientTraffic(t, store, over, 70, 40)
+	seedClientTraffic(t, store, under, 30, 40)
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	defer rawDB.Close()
+	if _, err := rawDB.ExecContext(ctx, `DELETE FROM traffic_states WHERE scope_type='client' AND scope_key IN (?, ?)`, over.StatsKey, under.StatsKey); err != nil {
+		t.Fatalf("delete traffic states: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	blocked := httptest.NewRecorder()
+	router.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/sub/"+over.SubscriptionToken, nil))
+	if blocked.Code != http.StatusNotFound {
+		t.Fatalf("expected legacy over-limit subscription to be blocked, got %d: %s", blocked.Code, blocked.Body.String())
+	}
+	allowed := httptest.NewRecorder()
+	router.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/sub/"+under.SubscriptionToken, nil))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("expected legacy under-limit subscription to pass, got %d: %s", allowed.Code, allowed.Body.String())
+	}
+}
+
+func TestSubscriptionLimitUsesSingboxTrafficState(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 18444, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "hy2", TrafficLimit: 50})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1, 1), time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(20, 20), time.Unix(110, 0)); err != nil {
+		t.Fatalf("under limit sample: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	allowed := httptest.NewRecorder()
+	router.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("expected under-limit singbox subscription to pass, got %d: %s", allowed.Code, allowed.Body.String())
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(40, 30), time.Unix(120, 0)); err != nil {
+		t.Fatalf("over limit sample: %v", err)
+	}
+	blocked := httptest.NewRecorder()
+	router.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil))
+	if blocked.Code != http.StatusNotFound {
+		t.Fatalf("expected over-limit singbox subscription to be blocked, got %d: %s", blocked.Code, blocked.Body.String())
 	}
 }
 

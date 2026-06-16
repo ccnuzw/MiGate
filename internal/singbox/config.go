@@ -19,9 +19,10 @@ import (
 
 // Config is the top-level sing-box configuration.
 type Config struct {
-	Log       LogConfig        `json:"log"`
-	Inbounds  []InboundConfig  `json:"inbounds"`
-	Outbounds []OutboundConfig `json:"outbounds"`
+	Log          LogConfig          `json:"log"`
+	Inbounds     []InboundConfig    `json:"inbounds"`
+	Outbounds    []OutboundConfig   `json:"outbounds"`
+	Experimental *ExperimentalConfig `json:"experimental,omitempty"`
 }
 
 // LogConfig holds logging settings.
@@ -94,6 +95,22 @@ type OutboundConfig struct {
 	Tag  string `json:"tag"`
 }
 
+type ExperimentalConfig struct {
+	V2RayAPI *V2RayAPIConfig `json:"v2ray_api,omitempty"`
+}
+
+type V2RayAPIConfig struct {
+	Listen string          `json:"listen,omitempty"`
+	Stats  *StatsAPIConfig `json:"stats,omitempty"`
+}
+
+type StatsAPIConfig struct {
+	Enabled  bool     `json:"enabled"`
+	Inbounds []string `json:"inbounds,omitempty"`
+	Outbounds []string `json:"outbounds,omitempty"`
+	Users    []string `json:"users,omitempty"`
+}
+
 // BuildConfig generates a sing-box configuration for supported inbounds.
 // Returns the config and a list of port assignments (inbound index -> port).
 func BuildConfig(inbounds []db.Inbound) Config {
@@ -103,6 +120,10 @@ func BuildConfig(inbounds []db.Inbound) Config {
 			{Type: "direct", Tag: "direct"},
 		},
 		Inbounds: []InboundConfig{},
+		Experimental: &ExperimentalConfig{V2RayAPI: &V2RayAPIConfig{
+			Listen: "127.0.0.1:10086",
+			Stats:  &StatsAPIConfig{Enabled: true},
+		}},
 	}
 
 	for i, inbound := range inbounds {
@@ -118,21 +139,28 @@ func BuildConfig(inbounds []db.Inbound) Config {
 
 		switch protocol {
 		case "hysteria2":
+			tag := fmt.Sprintf("hy2-inbound-%d", inbound.ID)
 			ib := InboundConfig{
 				Type:       "hysteria2",
-				Tag:        fmt.Sprintf("hy2-inbound-%d", inbound.ID),
+				Tag:        tag,
 				Listen:     "0.0.0.0",
 				ListenPort: port,
 				UpMbps:     inbound.Hy2UpMbps,
 				DownMbps:   inbound.Hy2DownMbps,
 			}
+			cfg.Experimental.V2RayAPI.Stats.Inbounds = append(cfg.Experimental.V2RayAPI.Stats.Inbounds, tag)
 
 			// Build users from clients
 			for _, client := range enabledClients(inbound.Clients) {
+				name := client.StatsKey
+				if strings.TrimSpace(name) == "" {
+					name = client.Email
+				}
 				ib.Users = append(ib.Users, UserConfig{
-					Name:     client.Email,
+					Name:     name,
 					Password: client.UUID,
 				})
+				cfg.Experimental.V2RayAPI.Stats.Users = append(cfg.Experimental.V2RayAPI.Stats.Users, name)
 			}
 
 			// Obfuscation
@@ -165,14 +193,16 @@ func BuildConfig(inbounds []db.Inbound) Config {
 			cfg.Inbounds = append(cfg.Inbounds, ib)
 
 		case "tuic":
+			tag := fmt.Sprintf("tuic-inbound-%d", inbound.ID)
 			ib := InboundConfig{
 				Type:              "tuic",
-				Tag:               fmt.Sprintf("tuic-inbound-%d", inbound.ID),
+				Tag:               tag,
 				Listen:            "0.0.0.0",
 				ListenPort:        port,
 				CongestionControl: "bbr",
 				ZeroRTTHandshake:  inbound.TuicZeroRTT,
 			}
+			cfg.Experimental.V2RayAPI.Stats.Inbounds = append(cfg.Experimental.V2RayAPI.Stats.Inbounds, tag)
 
 			if inbound.TuicCongestionControl != "" {
 				ib.CongestionControl = inbound.TuicCongestionControl
@@ -180,11 +210,16 @@ func BuildConfig(inbounds []db.Inbound) Config {
 
 			// Build users from clients (TUIC in sing-box v1.13 requires valid UUID format for uuid)
 			for _, client := range enabledClients(inbound.Clients) {
+				name := client.StatsKey
+				if strings.TrimSpace(name) == "" {
+					name = client.Email
+				}
 				ib.Users = append(ib.Users, UserConfig{
-					Name:     client.Email,
+					Name:     name,
 					UUID:     stableTUICUUID(client.UUID),
 					Password: client.UUID,
 				})
+				cfg.Experimental.V2RayAPI.Stats.Users = append(cfg.Experimental.V2RayAPI.Stats.Users, name)
 			}
 
 			// TLS (required for tuic)
@@ -209,9 +244,10 @@ func BuildConfig(inbounds []db.Inbound) Config {
 			continue
 
 		case "shadowtls":
+			tag := fmt.Sprintf("shadowtls-inbound-%d", inbound.ID)
 			ib := InboundConfig{
 				Type:       "shadowtls",
-				Tag:        fmt.Sprintf("shadowtls-inbound-%d", inbound.ID),
+				Tag:        tag,
 				Listen:     "0.0.0.0",
 				ListenPort: port,
 				Version:    inbound.ShadowTLSVersion,
@@ -219,6 +255,7 @@ func BuildConfig(inbounds []db.Inbound) Config {
 				// Put password on users only; omit inbound password entirely.
 				// Password: inbound.ShadowTLSPassword,
 			}
+			cfg.Experimental.V2RayAPI.Stats.Inbounds = append(cfg.Experimental.V2RayAPI.Stats.Inbounds, tag)
 
 			if inbound.TLSSNI != "" {
 				ib.Handshake = &HandshakeConfig{
@@ -229,10 +266,15 @@ func BuildConfig(inbounds []db.Inbound) Config {
 
 			// Build users from clients
 			for _, client := range enabledClients(inbound.Clients) {
+				name := client.StatsKey
+				if strings.TrimSpace(name) == "" {
+					name = client.Email
+				}
 				ib.Users = append(ib.Users, UserConfig{
-					Name:     client.Email,
+					Name:     name,
 					Password: client.UUID,
 				})
+				cfg.Experimental.V2RayAPI.Stats.Users = append(cfg.Experimental.V2RayAPI.Stats.Users, name)
 			}
 
 			cfg.Inbounds = append(cfg.Inbounds, ib)

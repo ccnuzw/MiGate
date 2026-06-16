@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -85,6 +86,12 @@ func WithLoginRateLimit(failureLimit int, cooldown time.Duration) Option {
 func WithStatsClient(client xray.StatsClient) Option {
 	return func(cfg *routerConfig) {
 		cfg.statsClient = client
+	}
+}
+
+func WithSingboxStatsClient(client singbox.StatsClient) Option {
+	return func(cfg *routerConfig) {
+		cfg.singboxStatsClient = client
 	}
 }
 

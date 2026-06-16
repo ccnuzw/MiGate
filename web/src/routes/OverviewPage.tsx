@@ -2,7 +2,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
 import { useMemo } from 'react';
 import { api } from '../api/endpoints';
-import type { DashboardSummary } from '../api/types';
+import type { DashboardSummary, TrafficSeriesPoint } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
 import { formatBytes, formatDuration, formatPercent, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
@@ -12,6 +12,13 @@ export default function OverviewPage() {
   const visible = usePageVisible();
   const { text } = useI18n();
   const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
+  const trafficSeriesQuery = useQuery({
+    queryKey: ['traffic-series', 'client'],
+    queryFn: () => api.trafficSeries({ scope_type: 'client', since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), limit: 240 }),
+    refetchInterval: visible ? 15000 : false,
+    retry: false,
+    staleTime: 10_000,
+  });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false, staleTime: 5_000 });
   const [xray, singbox] = useQueries({
     queries: [
@@ -23,8 +30,10 @@ export default function OverviewPage() {
   const data = summary.data;
   const counts = data?.counts || emptyCounts;
   const traffic = data?.traffic || emptyTraffic;
+  const rates = data?.traffic_rates || emptyRates;
+  const trafficStatus = data?.traffic_status;
   const protocols = Object.entries(data?.protocols || {}).map(([name, value]) => ({ name, value }));
-  const trafficSeries = data?.traffic_series || [];
+  const trafficSeries = trafficSeriesQuery.data?.series || data?.traffic_series || [];
 
   if (summary.isLoading) return <LoadingBlock />;
 
@@ -32,12 +41,13 @@ export default function OverviewPage() {
     <div className="page-stack">
       <PageTitle
         title={text('运行概览')}
-        description={text('VPS 面板、核心服务和流量资源的实时摘要。')}
+        description={text('VPS 面板、核心服务和业务累计用量的摘要。')}
         action={<button className="btn secondary" onClick={() => refreshOverview([summary, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
       />
       <OverviewAlerts
           errors={[
             summary.error ? `${text('概览摘要加载失败')}：${errorText(summary.error)}` : '',
+            trafficSeriesQuery.error ? `${text('流量趋势加载失败')}：${errorText(trafficSeriesQuery.error)}` : '',
             resources.error ? `${text('资源加载失败')}：${errorText(resources.error)}` : '',
           xray.error ? `Xray ${text('状态加载失败')}：${errorText(xray.error)}` : '',
           singbox.error ? `sing-box ${text('状态加载失败')}：${errorText(singbox.error)}` : '',
@@ -49,11 +59,12 @@ export default function OverviewPage() {
         <Metric icon={Network} tone="teal" label={text('总流量')} value={formatBytes(traffic.total)} sub={`${formatBytes(traffic.up)} ↑ / ${formatBytes(traffic.down)} ↓`} />
         <Metric icon={Users} tone="blue" label={text('客户端')} value={String(counts.clients)} sub={`${counts.clients_active} ${text('活跃')} · ${counts.clients_expired} ${text('过期')} · ${counts.clients_limited} ${text('受限')}`} />
         <Metric icon={Shield} tone="emerald" label={text('入站')} value={String(counts.inbounds)} sub={`${counts.inbounds_enabled} ${text('已启用')}`} />
-        <Metric icon={Activity} tone="violet" label={text('实时流量')} value={formatBytes(traffic.xray_realtime)} sub={`${formatBytes(traffic.xray_up)} ↑ / ${formatBytes(traffic.xray_down)} ↓`} />
+        <Metric icon={Activity} tone="violet" label={text('当前速率')} value={`${formatBytes(rates.rate_total)}/s`} sub={`${formatBytes(rates.rate_up)}/s ↑ / ${formatBytes(rates.rate_down)}/s ↓`} />
         <Metric icon={Network} tone="amber" label={text('出站')} value={String(counts.outbounds)} sub={`${counts.outbounds_enabled} ${text('已启用')}`} />
         <Metric icon={Activity} tone="slate" label={text('路由规则')} value={String(counts.routing_rules)} sub={`${counts.routing_enabled} ${text('已启用')}`} />
         <Metric icon={Activity} tone={xray.data?.status === 'running' ? 'emerald' : 'rose'} label="Xray" value={text(serviceLabel(xray.data?.status))} sub={text(versionLabel(xray.data?.version))} />
         <Metric icon={Activity} tone={singbox.data?.status === 'running' ? 'emerald' : 'rose'} label="sing-box" value={text(serviceLabel(singbox.data?.status))} sub={text(versionLabel(singbox.data?.version))} />
+        <Metric icon={Activity} tone={trafficStatus?.overall === 'ok' ? 'emerald' : trafficStatus?.overall === 'partial' ? 'amber' : 'slate'} label={text('统计状态')} value={trafficStatusLabel(trafficStatus?.overall, text)} sub={engineStatusSummary(trafficStatus?.engines, text)} />
       </div>
       <Card className="p-5">
         <h2 className="section-title mb-4">{text('最近生成状态')}</h2>
@@ -65,7 +76,7 @@ export default function OverviewPage() {
       <div className="grid gap-4 xl:grid-cols-[1.4fr_.9fr]">
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between gap-4">
-            <h2 className="section-title">{text('流量走势')}</h2>
+            <h2 className="section-title">{text('累计流量趋势')}</h2>
             <div className="flex gap-2 text-xs text-panel-muted">
               <span className="inline-flex items-center gap-1">
                 <ArrowUp className="h-3 w-3" /> {formatBytes(traffic.up)}
@@ -121,6 +132,12 @@ const emptyTraffic: DashboardSummary['traffic'] = {
   xray_realtime: 0,
 };
 
+const emptyRates = {
+  rate_up: 0,
+  rate_down: 0,
+  rate_total: 0,
+};
+
 function OverviewAlerts({ errors }: { errors: string[] }) {
   if (errors.length === 0) return null;
   return (
@@ -135,7 +152,7 @@ function OverviewAlerts({ errors }: { errors: string[] }) {
   );
 }
 
-function TrafficChart({ data }: { data: DashboardSummary['traffic_series'] }) {
+function TrafficChart({ data }: { data: TrafficSeriesPoint[] }) {
   const { text } = useI18n();
   const chart = useMemo(() => buildChart(data), [data]);
   if (data.length === 0) {
@@ -143,7 +160,7 @@ function TrafficChart({ data }: { data: DashboardSummary['traffic_series'] }) {
   }
   return (
     <div className="relative h-full w-full">
-      <svg className="h-full w-full overflow-visible" viewBox="0 0 640 220" role="img" aria-label={text('流量走势')}>
+      <svg className="h-full w-full overflow-visible" viewBox="0 0 640 220" role="img" aria-label={text('累计流量趋势')}>
         <defs>
           <linearGradient id="traffic-up-fill" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="#0f766e" stopOpacity="0.32" />
@@ -165,7 +182,7 @@ function TrafficChart({ data }: { data: DashboardSummary['traffic_series'] }) {
           <g key={point.name + point.x}>
             <circle cx={point.x} cy={point.upY} fill="#0f766e" r="3.5" />
             <circle cx={point.x} cy={point.downY} fill="#b45309" r="3.5" />
-            <title>{`${point.name}: ↑ ${formatBytes(point.up)} / ↓ ${formatBytes(point.down)}`}</title>
+            <title>{`${formatSeriesTime(point.time)} · ${text('累计')} ↑ ${formatBytes(point.up)} / ↓ ${formatBytes(point.down)}`}</title>
           </g>
         ))}
       </svg>
@@ -173,7 +190,7 @@ function TrafficChart({ data }: { data: DashboardSummary['traffic_series'] }) {
   );
 }
 
-function buildChart(data: DashboardSummary['traffic_series']) {
+function buildChart(data: TrafficSeriesPoint[]) {
   const width = 640;
   const bottom = 205;
   if (data.length === 0) {
@@ -184,6 +201,7 @@ function buildChart(data: DashboardSummary['traffic_series']) {
   const yFor = (value: number) => bottom - (Number(value || 0) / max) * 180;
   const points = data.map((item, index) => ({
     name: item.name,
+    time: item.time || item.name,
     up: Number(item.up || 0),
     down: Number(item.down || 0),
     x: xFor(index),
@@ -195,6 +213,13 @@ function buildChart(data: DashboardSummary['traffic_series']) {
   const upLine = line('upY');
   const downLine = line('downY');
   return { points, upLine, downLine, upArea: area(upLine), downArea: area(downLine) };
+}
+
+function formatSeriesTime(value: string | undefined) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
 function ValidationSummary({ label, loading, valid, error, detail }: { label: string; loading: boolean; valid?: boolean; error: unknown; detail: string }) {
@@ -225,6 +250,19 @@ function validationSummary(data: { valid: boolean; inbounds?: number; outbounds?
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error || 'unknown');
+}
+
+function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
+  if (status === 'ok') return text('统计正常');
+  if (status === 'partial') return text('部分不可用');
+  if (status === 'unsupported') return text('暂不支持');
+  if (status === 'unavailable') return text('核心未运行');
+  return text('等待首次采样');
+}
+
+function engineStatusSummary(engines: Record<string, string> | undefined, text: (value: string) => string) {
+  if (!engines) return text('等待首次采样');
+  return Object.entries(engines).map(([engine, status]) => `${engine}: ${trafficStatusLabel(status, text)}`).join(' · ');
 }
 
 function refreshOverview(queries: Array<{ refetch: () => unknown }>) {

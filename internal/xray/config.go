@@ -156,10 +156,10 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 			xr.OutboundTag = rule.OutboundTag
 			if rule.ClientID > 0 {
 				client, ok := clientsByID[rule.ClientID]
-				if !ok || strings.TrimSpace(client.Email) == "" {
+				if !ok || strings.TrimSpace(clientStatsName(client)) == "" {
 					continue
 				}
-				xr.User = []string{strings.TrimSpace(client.Email)}
+				xr.User = []string{clientStatsName(client)}
 			}
 			if rule.InboundTag != "" {
 				if actual, ok := inboundTagAliases[rule.InboundTag]; ok {
@@ -200,8 +200,7 @@ func splitRuleValues(value string) []string {
 	return values
 }
 
-// enableUserStats returns a PolicyConfig that enables per-client traffic stats
-// in Xray. The stats are identified by client email addresses.
+// enableUserStats returns a PolicyConfig that enables per-client traffic stats.
 func enableStatsAPI() *APIConfig {
 	return &APIConfig{Tag: "api", Services: []string{"StatsService"}}
 }
@@ -366,7 +365,7 @@ func clientsAsIDEmail(clients []db.Client, flow string) []map[string]interface{}
 	for _, client := range clients {
 		entry := map[string]interface{}{
 			"id":    client.UUID,
-			"email": client.Email,
+			"email": clientStatsName(client),
 		}
 		if flow != "" {
 			entry["flow"] = flow
@@ -381,7 +380,7 @@ func clientsAsAlterIDEmail(clients []db.Client) []map[string]interface{} {
 	for _, client := range clients {
 		result = append(result, map[string]interface{}{
 			"id":      client.UUID,
-			"email":   client.Email,
+			"email":   clientStatsName(client),
 			"alterId": 0,
 		})
 	}
@@ -393,10 +392,17 @@ func clientsAsPasswordEmail(clients []db.Client) []map[string]interface{} {
 	for _, client := range clients {
 		result = append(result, map[string]interface{}{
 			"password": client.UUID,
-			"email":    client.Email,
+			"email":    clientStatsName(client),
 		})
 	}
 	return result
+}
+
+func clientStatsName(client db.Client) string {
+	if strings.TrimSpace(client.StatsKey) != "" {
+		return strings.TrimSpace(client.StatsKey)
+	}
+	return strings.TrimSpace(client.Email)
 }
 
 func buildStreamSettings(inbound db.Inbound) map[string]interface{} {

@@ -54,9 +54,20 @@ func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 			writeInactiveSubscription(w)
 			return
 		}
-		if client.TrafficLimit > 0 && (client.Up+client.Down) >= client.TrafficLimit {
-			writeInactiveSubscription(w)
-			return
+		if client.TrafficLimit > 0 {
+			usage, found, err := store.GetClientTrafficUsageForClient(r.Context(), client.ID)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "get_traffic_usage_failed")
+				return
+			}
+			used := client.Up + client.Down
+			if found {
+				used = usage.TotalUp + usage.TotalDown
+			}
+			if used >= client.TrafficLimit {
+				writeInactiveSubscription(w)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(shareLink(subscriptionRequestHost(cfg, r), inbound, client)))

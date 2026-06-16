@@ -20,6 +20,18 @@ func (c *flakyStatsClient) QueryAllStats(ctx context.Context) (map[string]*Clien
 	}, nil
 }
 
+func (c *flakyStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+	stats, err := c.QueryAllStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]TrafficStat, 0, len(stats))
+	for _, stat := range stats {
+		result = append(result, TrafficStat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
+	}
+	return result, nil
+}
+
 func (c *flakyStatsClient) Close() error { return nil }
 
 func TestStubStatsClientReturnsEmptyStats(t *testing.T) {
@@ -113,5 +125,33 @@ func TestParseCommandStatsQueryOutput(t *testing.T) {
 	got := stats["sam@example.com"]
 	if got == nil || got.Uplink != 60300000 || got.Downlink != 202400000 {
 		t.Fatalf("unexpected stats: %#v", got)
+	}
+}
+
+func TestParseTrafficStatsQueryOutputAllScopes(t *testing.T) {
+	raw := []byte(`{"stat":[
+		{"name":"user>>>c_stats>>>traffic>>>uplink","value":10},
+		{"name":"user>>>c_stats>>>traffic>>>downlink","value":20},
+		{"name":"inbound>>>inbound-1-vless>>>traffic>>>uplink","value":30},
+		{"name":"inbound>>>inbound-1-vless>>>traffic>>>downlink","value":40},
+		{"name":"outbound>>>direct>>>traffic>>>uplink","value":50},
+		{"name":"outbound>>>direct>>>traffic>>>downlink","value":60}
+	]}`)
+	stats, err := ParseTrafficStatsQueryOutput("xray", raw)
+	if err != nil {
+		t.Fatalf("parse traffic stats: %v", err)
+	}
+	byScope := map[string]TrafficStat{}
+	for _, stat := range stats {
+		byScope[stat.ScopeType+"/"+stat.ScopeKey] = stat
+	}
+	if got := byScope["client/c_stats"]; got.Uplink != 10 || got.Downlink != 20 {
+		t.Fatalf("unexpected client stats: %+v", got)
+	}
+	if got := byScope["inbound/inbound-1-vless"]; got.Uplink != 30 || got.Downlink != 40 {
+		t.Fatalf("unexpected inbound stats: %+v", got)
+	}
+	if got := byScope["outbound/direct"]; got.Uplink != 50 || got.Downlink != 60 {
+		t.Fatalf("unexpected outbound stats: %+v", got)
 	}
 }

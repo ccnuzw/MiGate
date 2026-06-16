@@ -124,3 +124,72 @@ CREATE TABLE routing_rules (
 		t.Fatalf("expected migrated client fields to default empty: %+v", rules[0])
 	}
 }
+
+func TestStoreMigratesLegacyClientsBeforeStatsKeyIndex(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-clients.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DROP TABLE clients`); err != nil {
+		t.Fatalf("drop clients: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO inbounds (id, uuid, remark, protocol, port, network, security, enabled, created_at) VALUES (1, 'legacy-inbound-uuid', 'legacy', 'vless', 443, 'tcp', 'none', 1, 'now')`); err != nil {
+		t.Fatalf("insert legacy inbound: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+CREATE TABLE clients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  inbound_id INTEGER NOT NULL,
+  uuid TEXT NOT NULL UNIQUE,
+  subscription_token TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  up INTEGER NOT NULL DEFAULT 0,
+  down INTEGER NOT NULL DEFAULT 0,
+  traffic_limit INTEGER NOT NULL DEFAULT 0,
+  expiry_at INTEGER NOT NULL DEFAULT 0
+)`); err != nil {
+		t.Fatalf("create legacy clients: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO clients (inbound_id, uuid, subscription_token, email, enabled, created_at, up, down, traffic_limit) VALUES (1, 'legacy-uuid', 'token', 'legacy@example.com', 1, 'now', 12, 34, 40)`); err != nil {
+		t.Fatalf("insert legacy client: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close legacy store: %v", err)
+	}
+
+	migrated, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer migrated.Close()
+	rows, err := migrated.db.QueryContext(ctx, `SELECT id, stats_key, up, down, traffic_limit FROM clients`)
+	if err != nil {
+		t.Fatalf("query migrated clients: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("expected migrated client row")
+	}
+	var id int64
+	var statsKey string
+	var up int64
+	var down int64
+	var trafficLimit int64
+	if err := rows.Scan(&id, &statsKey, &up, &down, &trafficLimit); err != nil {
+		t.Fatalf("scan migrated client: %v", err)
+	}
+	if statsKey == "" || up != 12 || down != 34 || trafficLimit != 40 {
+		t.Fatalf("unexpected migrated client stats_key=%q up=%d down=%d limit=%d", statsKey, up, down, trafficLimit)
+	}
+	usage, found, err := migrated.GetClientTrafficUsageForClient(ctx, id)
+	if err != nil {
+		t.Fatalf("legacy usage after migration: %v", err)
+	}
+	if !found || usage.TotalUp+usage.TotalDown < trafficLimit || usage.Engine != "migate" || usage.Status != "cumulative_only" {
+		t.Fatalf("expected migrated legacy usage to exceed limit, found=%v usage=%+v limit=%d", found, usage, trafficLimit)
+	}
+}

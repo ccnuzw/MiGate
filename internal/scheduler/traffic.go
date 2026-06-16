@@ -7,12 +7,15 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
 // Store is the subset of db.Store methods needed by the scheduler.
 type Store interface {
 	UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error
+	ApplyTrafficRawStats(ctx context.Context, stats []db.TrafficRawStat, observedAt time.Time) error
+	MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error
 }
 
 type batchTrafficStore interface {
@@ -21,13 +24,14 @@ type batchTrafficStore interface {
 
 // TrafficSyncScheduler periodically syncs traffic statistics from Xray to the database.
 type TrafficSyncScheduler struct {
-	store       Store
-	statsClient xray.StatsClient
-	interval    time.Duration
-	ctx         context.Context
-	cancel      context.CancelFunc
-	stopped     bool
-	mu          sync.Mutex
+	store              Store
+	statsClient        xray.StatsClient
+	singboxStatsClient singbox.StatsClient
+	interval           time.Duration
+	ctx                context.Context
+	cancel             context.CancelFunc
+	stopped            bool
+	mu                 sync.Mutex
 }
 
 // NewTrafficSyncScheduler creates a new scheduler.
@@ -38,6 +42,12 @@ func NewTrafficSyncScheduler(store Store, statsClient xray.StatsClient, interval
 		statsClient: statsClient,
 		interval:    interval,
 	}
+}
+
+func NewTrafficSyncSchedulerWithSingbox(store Store, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient, interval time.Duration) *TrafficSyncScheduler {
+	scheduler := NewTrafficSyncScheduler(store, statsClient, interval)
+	scheduler.singboxStatsClient = singboxStatsClient
+	return scheduler
 }
 
 // Start begins the periodic sync loop.
@@ -81,13 +91,44 @@ func (s *TrafficSyncScheduler) Stop() {
 func (s *TrafficSyncScheduler) sync() {
 	ctx, timeout := context.WithTimeout(context.Background(), 10*time.Second)
 	defer timeout()
+	observedAt := time.Now().UTC()
 
-	stats, err := s.statsClient.QueryAllStats(ctx)
-	if err != nil {
-		log.Printf("traffic sync: failed to query stats: %v", err)
+	rawStats := []db.TrafficRawStat{}
+	if s.statsClient != nil {
+		stats, err := s.statsClient.QueryTrafficStats(ctx)
+		if err != nil {
+			log.Printf("traffic sync: failed to query xray stats: %v", err)
+			_ = s.store.MarkTrafficUnavailable(ctx, "xray", "unavailable", err.Error(), observedAt)
+		} else {
+			rawStats = append(rawStats, convertRawStats(stats)...)
+		}
+	}
+	if s.singboxStatsClient != nil {
+		stats, err := s.singboxStatsClient.QueryTrafficStats(ctx)
+		if err != nil {
+			log.Printf("traffic sync: failed to query sing-box stats: %v", err)
+			_ = s.store.MarkTrafficUnavailable(ctx, "singbox", "unavailable", err.Error(), observedAt)
+		} else {
+			rawStats = append(rawStats, convertRawStats(stats)...)
+		}
+	}
+	if len(rawStats) > 0 {
+		if err := s.store.ApplyTrafficRawStats(ctx, rawStats, observedAt); err != nil {
+			log.Printf("traffic sync: failed to apply traffic states: %v", err)
+			return
+		}
+		log.Printf("traffic sync: applied %d traffic counters", len(rawStats))
 		return
 	}
 
+	if s.statsClient == nil {
+		return
+	}
+	stats, err := s.statsClient.QueryAllStats(ctx)
+	if err != nil {
+		log.Printf("traffic sync: failed to query legacy stats: %v", err)
+		return
+	}
 	if batchStore, ok := s.store.(batchTrafficStore); ok {
 		batch := make(map[string]db.ClientTrafficUpdate, len(stats))
 		for email, clientStats := range stats {
@@ -95,23 +136,17 @@ func (s *TrafficSyncScheduler) sync() {
 		}
 		if err := batchStore.UpdateClientTrafficBatch(ctx, batch); err != nil {
 			log.Printf("traffic sync: failed to batch update clients: %v", err)
-			return
 		}
-		if len(stats) > 0 {
-			log.Printf("traffic sync: updated %d clients", len(stats))
-		}
-		return
 	}
+}
 
-	for email, clientStats := range stats {
-		err := s.store.UpdateClientTraffic(ctx, email, clientStats.Uplink, clientStats.Downlink)
-		if err != nil {
-			log.Printf("traffic sync: failed to update client %s: %v", email, err)
-		}
+func convertRawStats(stats []xray.TrafficStat) []db.TrafficRawStat {
+	raw := make([]db.TrafficRawStat, 0, len(stats))
+	for _, stat := range stats {
+		raw = append(raw, db.TrafficRawStat{
+			Engine: stat.Engine, ScopeType: stat.ScopeType, ScopeKey: stat.ScopeKey,
+			RawUp: stat.Uplink, RawDown: stat.Downlink, Status: "ok",
+		})
 	}
-
-	if len(stats) == 0 {
-		return
-	}
-	log.Printf("traffic sync: updated %d clients", len(stats))
+	return raw
 }

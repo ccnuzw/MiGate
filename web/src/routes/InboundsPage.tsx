@@ -215,10 +215,10 @@ export default function InboundsPage() {
   const resetTraffic = useMutation({
     mutationFn: ({ inboundId, id }: { inboundId: number; id: number }) => api.resetClientTraffic(inboundId, id),
     onSuccess: () => {
-      showToast('流量已重置', 'success');
+      showToast('累计用量已重置', 'success');
       refresh();
     },
-    onError: (error) => showToast(errorMessage(error, '重置流量失败'), 'error'),
+    onError: (error) => showToast(errorMessage(error, '重置累计用量失败'), 'error'),
   });
 
   if (inbounds.isLoading) return <LoadingBlock />;
@@ -286,7 +286,8 @@ export default function InboundsPage() {
                 <MetaItem label={text('上行')} value={formatBytes(inbound.traffic_up)} />
                 <MetaItem label={text('下行')} value={formatBytes(inbound.traffic_down)} />
                 <MetaItem label={text('合计')} value={formatBytes(inbound.traffic_total)} />
-                <MetaItem label={text('统计源')} value={sourceLabel(inbound.traffic_stats_source, inbound.realtime_stats_source, text)} />
+                <MetaItem label={text('当前速率')} value={`${formatBytes(Number(inbound.rate_up || 0))}/s ↑ / ${formatBytes(Number(inbound.rate_down || 0))}/s ↓`} />
+                <MetaItem label={text('统计状态')} value={trafficStatusLabel(inbound.traffic_status, text)} />
               </div>
               <div className="mt-4 border-t border-panel-line pt-3">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -304,7 +305,7 @@ export default function InboundsPage() {
                       onCopyShare={() => copyShareLink(client, showToast)}
                       onToggle={() => toggleClient.mutate({ inboundId: inbound.id, client })}
                       onEdit={() => setEditingClient({ inbound, client })}
-                      onReset={async () => (await confirm({ title: '重置客户端流量？' })) && resetTraffic.mutate({ inboundId: inbound.id, id: client.id })}
+                      onReset={async () => (await confirm({ title: '重置累计用量？', description: '会清零 MiGate 维护的业务累计用量，并以当前核心计数作为新的基线。' })) && resetTraffic.mutate({ inboundId: inbound.id, id: client.id })}
                       onDelete={async () => (await confirm({ title: '删除客户端？', tone: 'danger' })) && deleteClient.mutate({ inboundId: inbound.id, id: client.id })}
                     />
                   ))}
@@ -356,14 +357,15 @@ function ClientRow({
           <MetaItem label={text('下行')} value={formatBytes(client.down)} />
           <MetaItem label={text('限额')} value={limit > 0 ? `${formatBytes(used)} / ${formatBytes(limit)}` : text('不限制')} />
           <MetaItem label={text('过期')} value={client.expiry_at ? new Date(client.expiry_at * 1000).toLocaleString() : text('不限制')} />
-          <MetaItem label={text('实时')} value={sourceLabel(client.traffic_stats_source, client.realtime_stats_source, text)} />
+          <MetaItem label={text('当前速率')} value={`${formatBytes(Number(client.rate_up || 0))}/s ↑ / ${formatBytes(Number(client.rate_down || 0))}/s ↓`} />
+          <MetaItem label={text('统计状态')} value={trafficStatusLabel(client.traffic_status, text)} />
         </div>
       </div>
       <div className="action-row">
         <button className="icon-button" onClick={onCopyShare} title="复制客户端分享链接"><Copy className="h-4 w-4" /></button>
         <button className={toggleButtonClass(client.enabled)} onClick={onToggle} title="启停"><Power className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onEdit} title="编辑"><Edit2 className="h-4 w-4" /></button>
-        <button className="icon-button" onClick={onReset} title="重置流量"><RotateCcw className="h-4 w-4" /></button>
+        <button className="icon-button" onClick={onReset} title="重置累计用量"><RotateCcw className="h-4 w-4" /></button>
         <button className="icon-button danger-text" onClick={onDelete} title="删除"><Trash2 className="h-4 w-4" /></button>
       </div>
     </div>
@@ -666,8 +668,12 @@ function mergeClientTraffic(inbound: Inbound, client: Client): Client {
     ...client,
     up: Number(live?.up ?? client.up ?? 0),
     down: Number(live?.down ?? client.down ?? 0),
+    rate_up: Number(live?.rate_up ?? client.rate_up ?? 0),
+    rate_down: Number(live?.rate_down ?? client.rate_down ?? 0),
     xray_up: Number(live?.xray_up ?? client.xray_up ?? 0),
     xray_down: Number(live?.xray_down ?? client.xray_down ?? 0),
+    traffic_status: live?.status || client.traffic_status || inbound.traffic_status,
+    traffic_message: live?.message || client.traffic_message || inbound.traffic_message,
     traffic_stats_source: live?.source || client.traffic_stats_source || inbound.traffic_stats_source,
     realtime_stats_source: live?.realtime_source || client.realtime_stats_source || inbound.realtime_stats_source,
   };
@@ -681,10 +687,14 @@ export function mergeInboundTraffic(current: Inbound[], traffic: Inbound[]): Inb
     return {
       ...inbound,
       enabled: update.enabled,
-      clients: mergeClients(inbound.clients || [], update.clients || []),
+      clients: mergeClients(inbound.clients || [], update.clients || [], update.client_traffic),
       traffic_up: update.traffic_up,
       traffic_down: update.traffic_down,
       traffic_total: update.traffic_total,
+      rate_up: update.rate_up,
+      rate_down: update.rate_down,
+      traffic_status: update.traffic_status,
+      traffic_message: update.traffic_message,
       traffic_stats_source: update.traffic_stats_source,
       realtime_stats_source: update.realtime_stats_source,
       client_traffic: update.client_traffic,
@@ -692,7 +702,7 @@ export function mergeInboundTraffic(current: Inbound[], traffic: Inbound[]): Inb
   });
 }
 
-function mergeClients(current: Client[], traffic: Client[]): Client[] {
+function mergeClients(current: Client[], traffic: Client[], clientTraffic?: Inbound['client_traffic']): Client[] {
   const byID = new Map(traffic.map((client) => [client.id, client]));
   return current.map((client) => {
     const update = byID.get(client.id);
@@ -702,6 +712,10 @@ function mergeClients(current: Client[], traffic: Client[]): Client[] {
       enabled: update.enabled,
       up: update.up,
       down: update.down,
+      rate_up: clientTraffic?.[String(client.id)]?.rate_up ?? update.rate_up,
+      rate_down: clientTraffic?.[String(client.id)]?.rate_down ?? update.rate_down,
+      traffic_status: clientTraffic?.[String(client.id)]?.status ?? update.traffic_status,
+      traffic_message: clientTraffic?.[String(client.id)]?.message ?? update.traffic_message,
       traffic_limit: update.traffic_limit,
       expiry_at: update.expiry_at,
     };
@@ -765,10 +779,13 @@ function formatLocalDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function sourceLabel(source: string | undefined, realtime: string | undefined, text: (value: string) => string) {
-  if (realtime === 'xray') return `Xray ${text('实时')}`;
-  if (source === 'unavailable') return text('不可用');
-  return source || 'db';
+function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
+  if (status === 'ok') return text('统计正常');
+  if (status === 'cumulative_only') return text('仅显示累计');
+  if (status === 'stale' || status === 'partial') return text('同步延迟');
+  if (status === 'unavailable') return text('核心未运行');
+  if (status === 'unsupported') return text('暂不支持');
+  return text('等待首次采样');
 }
 
 export function generatedProtocolCredential(protocol?: string) {
