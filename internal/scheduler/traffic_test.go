@@ -7,13 +7,17 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
 type mockStore struct {
-	traffic map[string]*xray.ClientStats
-	raw     []db.TrafficRawStat
-	unavail []db.TrafficRawStat
+	traffic         map[string]*xray.ClientStats
+	raw             []db.TrafficRawStat
+	scopeStatus     []db.TrafficStatusMarker
+	unavail         []db.TrafficRawStat
+	inbounds        []db.Inbound
+	listInboundsErr error
 }
 
 func (m *mockStore) UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error {
@@ -37,15 +41,28 @@ func (m *mockStore) ApplyTrafficRawStats(ctx context.Context, stats []db.Traffic
 	return nil
 }
 
+func (m *mockStore) MarkTrafficScopeStatus(ctx context.Context, stats []db.TrafficStatusMarker, observedAt time.Time) error {
+	m.scopeStatus = append(m.scopeStatus, stats...)
+	return nil
+}
+
 func (m *mockStore) MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error {
 	m.unavail = append(m.unavail, db.TrafficRawStat{Engine: engine, Status: status, Message: message})
 	return nil
+}
+
+func (m *mockStore) ListInbounds(ctx context.Context) ([]db.Inbound, error) {
+	if m.listInboundsErr != nil {
+		return nil, m.listInboundsErr
+	}
+	return m.inbounds, nil
 }
 
 type mockStatsClient struct {
 	stats map[string]*xray.ClientStats
 	raw   []xray.TrafficStat
 	err   error
+	calls int
 }
 
 func (m *mockStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.ClientStats, error) {
@@ -56,6 +73,7 @@ func (m *mockStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.C
 }
 
 func (m *mockStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+	m.calls++
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -151,5 +169,156 @@ func TestTrafficSyncSchedulerWritesSingboxEngineStats(t *testing.T) {
 		if stat.Engine != "singbox" || stat.Status != "ok" {
 			t.Fatalf("unexpected singbox stat: %+v", stat)
 		}
+	}
+}
+
+func TestTrafficSyncSchedulerSkipsSingboxQueryWhenNotConfigured(t *testing.T) {
+	store := &mockStore{}
+	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: "xray-client", Uplink: 100, Downlink: 200},
+	}}
+	disabled := singbox.NewDisabledStatsClient("not_configured", "")
+
+	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, disabled, nil, time.Minute)
+	scheduler.sync()
+
+	if len(store.raw) != 1 || store.raw[0].Engine != "xray" {
+		t.Fatalf("expected only xray stats to be applied, got raw=%+v", store.raw)
+	}
+	if len(store.scopeStatus) != 0 {
+		t.Fatalf("expected no scope markers without singbox inbound, got %+v", store.scopeStatus)
+	}
+	if len(store.unavail) != 1 || store.unavail[0].Engine != "singbox" || store.unavail[0].Status != "not_configured" {
+		t.Fatalf("expected singbox not_configured marker, got %+v", store.unavail)
+	}
+}
+
+func TestTrafficSyncSchedulerMarksUnsupportedSingboxInboundsWithoutQuery(t *testing.T) {
+	inbounds := []db.Inbound{{
+		ID: 1, Protocol: "hysteria2", Enabled: true,
+		Clients: []db.Client{
+			{ID: 2, StatsKey: "c_hy2", Enabled: true},
+			{ID: 3, Email: "fallback@example.com", Enabled: true},
+		},
+	}}
+	store := &mockStore{inbounds: inbounds}
+	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: "xray-client", Uplink: 100, Downlink: 200},
+	}}
+	disabled := singbox.NewDisabledStatsClient("unsupported", singbox.StatsUnsupportedMessage)
+
+	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, disabled, inbounds, time.Minute)
+	scheduler.sync()
+
+	if len(store.raw) != 1 {
+		t.Fatalf("expected only xray raw stat to be applied, got %+v", store.raw)
+	}
+	if store.raw[0].Engine != "xray" || store.raw[0].ScopeKey != "xray-client" || store.raw[0].Status != "ok" {
+		t.Fatalf("expected xray stat to remain applied, got %+v", store.raw)
+	}
+	if len(store.scopeStatus) != 3 {
+		t.Fatalf("expected singbox inbound/client scope markers, got %+v", store.scopeStatus)
+	}
+	foundUnsupported := false
+	foundEmailFallback := false
+	for _, stat := range store.scopeStatus {
+		if stat.Engine == "singbox" && stat.Status == "unsupported" && stat.Message == singbox.StatsUnsupportedMessage {
+			foundUnsupported = true
+		}
+		if stat.Engine == "singbox" && stat.ScopeType == "client" && stat.ScopeKey == "fallback@example.com" {
+			foundEmailFallback = true
+		}
+	}
+	if !foundUnsupported {
+		t.Fatalf("expected unsupported singbox marker, got %+v", store.scopeStatus)
+	}
+	if !foundEmailFallback {
+		t.Fatalf("expected singbox client marker to fall back to email, got %+v", store.scopeStatus)
+	}
+}
+
+func TestTrafficSyncSchedulerRefreshesSingboxClientAfterInboundAppears(t *testing.T) {
+	store := &mockStore{}
+	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
+	singboxClient := &mockStatsClient{raw: []xray.TrafficStat{
+		{Engine: "singbox", ScopeType: "client", ScopeKey: "c_hy2", Uplink: 10, Downlink: 20},
+	}}
+	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, singbox.NewDisabledStatsClient("not_configured", ""), nil, time.Minute)
+	scheduler.singboxCapability = func(ctx context.Context) singbox.Capability {
+		return singbox.Capability{V2RayAPIStats: true, Checked: true}
+	}
+	scheduler.newSingboxStats = func(ctx context.Context) (singbox.StatsClient, error) {
+		return singboxClient, nil
+	}
+
+	scheduler.sync()
+	if singboxClient.calls != 0 {
+		t.Fatalf("expected no singbox query before singbox inbound exists")
+	}
+
+	store.inbounds = []db.Inbound{{
+		ID: 1, Protocol: "hysteria2", Enabled: true,
+		Clients: []db.Client{{ID: 2, StatsKey: "c_hy2", Enabled: true}},
+	}}
+	scheduler.sync()
+
+	if singboxClient.calls != 1 {
+		t.Fatalf("expected refreshed singbox client to be queried once, got %d", singboxClient.calls)
+	}
+	found := false
+	for _, stat := range store.raw {
+		if stat.Engine == "singbox" && stat.ScopeKey == "c_hy2" && stat.Status == "ok" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected refreshed singbox stats to be applied, got %+v", store.raw)
+	}
+}
+
+func TestTrafficSyncSchedulerDoesNotWriteStaleMarkersWhenInboundRefreshFails(t *testing.T) {
+	staleInbounds := []db.Inbound{{
+		ID: 1, Protocol: "hysteria2", Enabled: true,
+		Clients: []db.Client{{ID: 2, StatsKey: "c_old", Enabled: true}},
+	}}
+	store := &mockStore{listInboundsErr: errors.New("database busy")}
+	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
+	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, singbox.NewDisabledStatsClient("unsupported", singbox.StatsUnsupportedMessage), staleInbounds, time.Minute)
+
+	scheduler.sync()
+
+	if len(store.scopeStatus) != 0 {
+		t.Fatalf("did not expect stale singbox marker when inbound refresh fails, got %+v", store.scopeStatus)
+	}
+	if len(store.unavail) != 1 || store.unavail[0].Status != "unsupported" {
+		t.Fatalf("expected engine-level unsupported marker, got %+v", store.unavail)
+	}
+}
+
+func TestTrafficSyncSchedulerDoesNotRefreshCapabilityWithoutSingboxInbound(t *testing.T) {
+	store := &mockStore{}
+	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
+	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, singbox.NewDisabledStatsClient("not_configured", ""), nil, time.Minute)
+	capabilityCalls := 0
+	scheduler.singboxCapability = func(ctx context.Context) singbox.Capability {
+		capabilityCalls++
+		return singbox.Capability{V2RayAPIStats: true, Checked: true}
+	}
+	builderCalls := 0
+	scheduler.newSingboxStats = func(ctx context.Context) (singbox.StatsClient, error) {
+		builderCalls++
+		return nil, errors.New("unexpected stats client build")
+	}
+
+	scheduler.sync()
+
+	if capabilityCalls != 0 {
+		t.Fatalf("expected no capability check without singbox inbound, got %d", capabilityCalls)
+	}
+	if builderCalls != 0 {
+		t.Fatalf("expected no singbox stats client build without singbox inbound, got %d", builderCalls)
+	}
+	if len(store.scopeStatus) != 0 {
+		t.Fatalf("expected no scope markers without singbox inbound, got %+v", store.scopeStatus)
 	}
 }

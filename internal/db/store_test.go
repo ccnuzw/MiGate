@@ -1885,6 +1885,102 @@ func TestSingboxResetBaselineDoesNotReboundOldTraffic(t *testing.T) {
 	}
 }
 
+func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2-status", Protocol: "hysteria2", Port: 28095, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-status@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	inboundKey := "hy2-inbound-28095"
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{
+			{Engine: "singbox", ScopeType: "inbound", ScopeKey: inboundKey, RawUp: up, RawDown: down, Status: "ok"},
+			{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"},
+		}
+	}
+	t0 := time.Unix(1000, 0)
+	if err := store.ApplyTrafficRawStats(ctx, raw(1000, 2000), t0); err != nil {
+		t.Fatalf("baseline sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1100, 2300), t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("increment sample: %v", err)
+	}
+	samples, err := store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples before marker: %v", err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("expected two client samples before marker, got %+v", samples)
+	}
+	markerAt := t0.Add(20 * time.Second)
+	if err := store.MarkTrafficScopeStatus(ctx, []db.TrafficStatusMarker{
+		{Engine: "singbox", ScopeType: "inbound", ScopeKey: inboundKey, Status: "unsupported", Message: "stats unsupported"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, Status: "unsupported", Message: "stats unsupported"},
+	}, markerAt); err != nil {
+		t.Fatalf("mark scope status: %v", err)
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	for _, scope := range []struct {
+		scopeType string
+		scopeKey  string
+	}{
+		{scopeType: "inbound", scopeKey: inboundKey},
+		{scopeType: "client", scopeKey: client.StatsKey},
+	} {
+		state := findTrafficState(states, "singbox", scope.scopeType, scope.scopeKey)
+		if state == nil {
+			t.Fatalf("missing traffic state for %s/%s", scope.scopeType, scope.scopeKey)
+		}
+		if state.TotalUp != 100 || state.TotalDown != 300 || state.LastRawUp != 1100 || state.LastRawDown != 2300 {
+			t.Fatalf("status marker polluted totals/raw for %s/%s: %+v", scope.scopeType, scope.scopeKey, state)
+		}
+		if state.Status != "unsupported" || state.Message != "stats unsupported" || state.LastSeenAt != markerAt.UTC().Format(time.RFC3339Nano) {
+			t.Fatalf("status marker did not update status fields for %s/%s: %+v", scope.scopeType, scope.scopeKey, state)
+		}
+		if state.RateUp != 0 || state.RateDown != 0 {
+			t.Fatalf("status marker should clear rates for %s/%s: %+v", scope.scopeType, scope.scopeKey, state)
+		}
+	}
+	samples, err = store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples after marker: %v", err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("status marker must not write traffic sample, got %+v", samples)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1200, 2600), t0.Add(30*time.Second)); err != nil {
+		t.Fatalf("recovered sample: %v", err)
+	}
+	states, err = store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states after recovery: %v", err)
+	}
+	state := findTrafficState(states, "singbox", "client", client.StatsKey)
+	if state == nil || state.TotalUp != 200 || state.TotalDown != 600 || state.LastRawUp != 1200 || state.LastRawDown != 2600 {
+		t.Fatalf("recovered raw should add only incremental delta, got %+v", state)
+	}
+	samples, err = store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples after recovery: %v", err)
+	}
+	if len(samples) != 3 {
+		t.Fatalf("expected one recovered client sample after marker, got %+v", samples)
+	}
+}
+
 func TestResetWithoutRawBaselineClearsExistingEngineAndUsesNextRawAsBaseline(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

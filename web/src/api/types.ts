@@ -192,6 +192,7 @@ export interface TrafficCoverage {
   ok?: number;
   partial?: number;
   unsupported?: number;
+  not_configured?: number;
   unavailable?: number;
   waiting?: number;
   engines?: Record<string, string>;

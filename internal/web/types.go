@@ -173,6 +173,7 @@ func (defaultXrayController) Version(ctx context.Context) string { return "" }
 type routerConfig struct {
 	store              Store
 	xrayController     XrayController
+	singboxRuntime     SingboxRuntime
 	authEnabled        bool
 	authUsername       string
 	authPassword       string
@@ -194,4 +195,33 @@ type routerConfig struct {
 	sessionTouches     map[string]time.Time
 	sessionTouchGC     time.Time
 	sessionTouchMu     sync.Mutex
+}
+
+type SingboxRuntime interface {
+	Capability(ctx context.Context) singbox.Capability
+}
+
+type defaultSingboxRuntime struct{}
+
+var defaultSingboxCapabilityCache = &cachedSingboxRuntime{}
+
+func (defaultSingboxRuntime) Capability(ctx context.Context) singbox.Capability {
+	return defaultSingboxCapabilityCache.Capability(ctx)
+}
+
+type cachedSingboxRuntime struct {
+	mu         sync.Mutex
+	capability singbox.Capability
+	checked    bool
+}
+
+func (r *cachedSingboxRuntime) Capability(ctx context.Context) singbox.Capability {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.checked {
+		return r.capability
+	}
+	r.capability = singbox.DetectCapability(ctx)
+	r.checked = true
+	return r.capability
 }

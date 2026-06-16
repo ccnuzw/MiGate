@@ -7,7 +7,16 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 )
+
+type fixedSingboxRuntime struct {
+	capability singbox.Capability
+}
+
+func (r fixedSingboxRuntime) Capability(ctx context.Context) singbox.Capability {
+	return r.capability
+}
 
 type countingSummaryStore struct {
 	inbounds          []db.Inbound
@@ -214,14 +223,15 @@ func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {
 		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
 	}
 	cache := newDashboardSummaryCache(5 * time.Second)
+	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
 	now := time.Unix(100, 0)
 	cache.now = func() time.Time { return now }
 
-	first, err := cache.get(context.Background(), store, nil)
+	first, err := cache.get(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("first summary: %v", err)
 	}
-	second, err := cache.get(context.Background(), store, nil)
+	second, err := cache.get(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("cached summary: %v", err)
 	}
@@ -233,7 +243,7 @@ func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {
 	}
 
 	now = now.Add(6 * time.Second)
-	if _, err := cache.get(context.Background(), store, nil); err != nil {
+	if _, err := cache.get(context.Background(), cfg); err != nil {
 		t.Fatalf("expired summary: %v", err)
 	}
 	if store.listInboundsCalls != 2 {
@@ -241,11 +251,12 @@ func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {
 	}
 
 	failing := &countingSummaryStore{listInboundsErr: errors.New("boom")}
+	failingCfg := &routerConfig{store: failing, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
 	failingCache := newDashboardSummaryCache(5 * time.Second)
-	if _, err := failingCache.get(context.Background(), failing, nil); err == nil {
+	if _, err := failingCache.get(context.Background(), failingCfg); err == nil {
 		t.Fatal("expected error from empty cache")
 	}
-	if _, err := failingCache.get(context.Background(), failing, nil); err == nil {
+	if _, err := failingCache.get(context.Background(), failingCfg); err == nil {
 		t.Fatal("expected retry to call failing store again")
 	}
 	if failing.listInboundsCalls != 2 {
@@ -337,6 +348,74 @@ func TestBuildTrafficCoverageAggregatesEngineStatusDeterministically(t *testing.
 		if coverage["overall"] != "partial" || engines["xray"] != "partial" || engines["singbox"] != "unsupported" {
 			t.Fatalf("unexpected coverage: %+v", coverage)
 		}
+	}
+}
+
+func TestBuildTrafficCoverageStatusSemantics(t *testing.T) {
+	coverage := buildTrafficCoverage(map[int64]inboundTrafficSummary{})
+	engines := coverage["engines"].(map[string]string)
+	if coverage["overall"] != "not_configured" || engines["xray"] != "not_configured" || engines["singbox"] != "not_configured" {
+		t.Fatalf("empty traffic coverage should be not_configured, got %+v", coverage)
+	}
+
+	coverage = buildTrafficCoverage(map[int64]inboundTrafficSummary{
+		1: {Engine: "singbox", Status: "not_configured"},
+	})
+	engines = coverage["engines"].(map[string]string)
+	if coverage["overall"] != "not_configured" || engines["singbox"] != "not_configured" || coverage["not_configured"] != 1 {
+		t.Fatalf("not_configured should remain distinct from waiting, got %+v", coverage)
+	}
+
+	coverage = buildTrafficCoverage(map[int64]inboundTrafficSummary{
+		1: {Engine: "xray", Status: "ok"},
+		2: {Engine: "singbox", Status: "not_configured"},
+	})
+	engines = coverage["engines"].(map[string]string)
+	if coverage["overall"] != "ok" || engines["xray"] != "ok" || engines["singbox"] != "not_configured" {
+		t.Fatalf("ok plus not_configured should not be partial or failed, got %+v", coverage)
+	}
+
+	coverage = buildTrafficCoverage(map[int64]inboundTrafficSummary{
+		1: {Engine: "xray", Status: "ok"},
+		2: {Engine: "singbox", Status: "unsupported"},
+	})
+	engines = coverage["engines"].(map[string]string)
+	if coverage["overall"] != "partial" || engines["xray"] != "ok" || engines["singbox"] != "unsupported" {
+		t.Fatalf("ok plus unsupported should be partial with singbox unsupported, got %+v", coverage)
+	}
+
+	coverage = buildTrafficCoverage(map[int64]inboundTrafficSummary{
+		1: {Engine: "xray", Status: "waiting"},
+		2: {Engine: "singbox", Status: "not_configured"},
+	})
+	engines = coverage["engines"].(map[string]string)
+	if coverage["overall"] != "waiting" || engines["xray"] != "waiting" || engines["singbox"] != "not_configured" {
+		t.Fatalf("waiting plus not_configured should remain waiting without core failure, got %+v", coverage)
+	}
+
+	coverage = buildTrafficCoverage(map[int64]inboundTrafficSummary{
+		1: {Engine: "singbox", Status: "unsupported"},
+		2: {Engine: "singbox", Status: "unsupported"},
+	})
+	if coverage["overall"] != "unsupported" {
+		t.Fatalf("all unsupported should be unsupported, got %+v", coverage)
+	}
+
+	coverage = buildTrafficCoverage(map[int64]inboundTrafficSummary{
+		1: {Engine: "xray", Status: "waiting"},
+		2: {Engine: "singbox", Status: "unsupported"},
+	})
+	engines = coverage["engines"].(map[string]string)
+	if coverage["overall"] != "unsupported" || engines["xray"] != "waiting" || engines["singbox"] != "unsupported" {
+		t.Fatalf("unsupported plus waiting should keep unsupported visible, got %+v", coverage)
+	}
+
+	coverage = buildTrafficCoverage(map[int64]inboundTrafficSummary{
+		1: {Engine: "xray", Status: "unavailable"},
+		2: {Engine: "singbox", Status: "not_configured"},
+	})
+	if coverage["overall"] != "unavailable" {
+		t.Fatalf("unavailable without ok should be unavailable, got %+v", coverage)
 	}
 }
 

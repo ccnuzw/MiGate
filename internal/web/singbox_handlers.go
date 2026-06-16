@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/singbox"
 )
 
@@ -45,7 +46,7 @@ func singboxStatusHandler() http.HandlerFunc {
 // singboxApplyHandler reads sing-box supported inbounds from the store, builds
 // a sing-box config, generates a self-signed cert if missing, writes
 // the config to disk and restarts the sing-box service.
-func singboxApplyHandler(store Store) http.HandlerFunc {
+func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -57,15 +58,20 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 			return
 		}
 
+		if cfg == nil || cfg.store == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+			return
+		}
+
 		// Read sing-box inbounds
-		inbounds, err := store.ListInbounds(r.Context())
+		inbounds, err := cfg.store.ListInbounds(r.Context())
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "list_failed", map[string]interface{}{"detail": err.Error()})
 			return
 		}
 
 		// Build config
-		cfg := singbox.BuildConfig(inbounds)
+		built := buildSingboxConfigForRuntime(r.Context(), cfg, inbounds)
 
 		// Ensure self-signed cert exists
 		if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
@@ -76,7 +82,7 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 		}
 
 		// Encode and write config
-		raw, err := json.MarshalIndent(cfg, "", "  ")
+		raw, err := json.MarshalIndent(built.config, "", "  ")
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "marshal_failed", map[string]interface{}{"detail": err.Error()})
 			return
@@ -92,7 +98,10 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 		result := map[string]interface{}{
 			"applied":     applyErr == nil,
 			"config_path": singbox.DefaultConfigPath,
-			"inbounds":    len(cfg.Inbounds),
+			"inbounds":    len(built.config.Inbounds),
+		}
+		if len(built.warnings) > 0 {
+			result["warnings"] = built.warnings
 		}
 		if applyErr != nil {
 			result["error"] = applyErr.Error()
@@ -103,39 +112,38 @@ func singboxApplyHandler(store Store) http.HandlerFunc {
 	}
 }
 
-func singboxValidateHandler(store Store) http.HandlerFunc {
+func singboxValidateHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
-		result := validateSingboxConfig(r.Context(), store)
+		result := validateSingboxConfig(r.Context(), cfg)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(result)
 	}
 }
 
-func validateSingboxConfig(ctx context.Context, store Store) configValidationResult {
+func validateSingboxConfig(ctx context.Context, cfg *routerConfig) configValidationResult {
 	result := configValidationResult{Target: "singbox", Valid: true, Warnings: []string{}}
-	if store == nil {
+	if cfg == nil || cfg.store == nil {
 		result.Valid = false
 		result.Error = "store_unavailable"
 		return result
 	}
-	inbounds, err := store.ListInbounds(ctx)
+	inbounds, err := cfg.store.ListInbounds(ctx)
 	if err != nil {
 		result.Valid = false
 		result.Error = "list_inbounds_failed"
 		return result
 	}
-	return validateSingboxConfigSnapshot(validationSnapshot{inbounds: inbounds})
+	return validateSingboxConfigSnapshotWithRuntime(ctx, validationSnapshot{inbounds: inbounds}, cfg)
 }
 
 func validateSingboxConfigSnapshot(snapshot validationSnapshot) configValidationResult {
 	result := configValidationResult{Target: "singbox", Valid: true, Warnings: []string{}}
-	inbounds := snapshot.inbounds
-	cfg := singbox.BuildConfig(inbounds)
+	cfg := singbox.BuildConfigWithOptions(snapshot.inbounds, singbox.BuildOptions{})
 	result.Inbounds = len(cfg.Inbounds)
 	if result.Inbounds == 0 {
 		result.Warnings = append(result.Warnings, "no_enabled_singbox_inbounds")
@@ -147,10 +155,56 @@ func validateSingboxConfigSnapshot(snapshot validationSnapshot) configValidation
 	return result
 }
 
+func validateSingboxConfigSnapshotWithRuntime(ctx context.Context, snapshot validationSnapshot, runtimeCfg *routerConfig) configValidationResult {
+	result := configValidationResult{Target: "singbox", Valid: true, Warnings: []string{}}
+	inbounds := snapshot.inbounds
+	built := buildSingboxConfigForRuntime(ctx, runtimeCfg, inbounds)
+	result.Inbounds = len(built.config.Inbounds)
+	if result.Inbounds == 0 {
+		result.Warnings = append(result.Warnings, "no_enabled_singbox_inbounds")
+	}
+	result.Warnings = append(result.Warnings, built.warnings...)
+	if _, err := json.Marshal(built.config); err != nil {
+		result.Valid = false
+		result.Error = err.Error()
+	}
+	return result
+}
+
+type builtSingboxConfig struct {
+	config   singbox.Config
+	warnings []string
+}
+
+func buildSingboxConfigForRuntime(ctx context.Context, cfg *routerConfig, inbounds []db.Inbound) builtSingboxConfig {
+	hasSingboxInbound := singbox.HasEnabledSingboxInbound(inbounds)
+	if !hasSingboxInbound {
+		return builtSingboxConfig{config: singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{})}
+	}
+	runtime := SingboxRuntime(defaultSingboxRuntime{})
+	if cfg != nil && cfg.singboxRuntime != nil {
+		runtime = cfg.singboxRuntime
+	}
+	capability := runtime.Capability(ctx)
+	result := builtSingboxConfig{
+		config: singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{EnableV2RayAPIStats: capability.V2RayAPIStats}),
+	}
+	if capability.Unsupported {
+		result.warnings = append(result.warnings, "singbox_stats_unsupported")
+	} else if !capability.V2RayAPIStats && strings.TrimSpace(capability.Message) != "" {
+		result.warnings = append(result.warnings, "singbox_stats_capability_check_failed")
+	}
+	return result
+}
+
 // tryApplySingbox reads sing-box supported inbounds from the store, builds
 // a sing-box config, writes it to disk and restarts sing-box. Errors are
 // silently returned (not panicked) to avoid blocking the caller.
 func tryApplySingbox(ctx context.Context, store Store) error {
+	return tryApplySingboxWithRuntime(ctx, store, defaultSingboxRuntime{})
+}
+
+func tryApplySingboxWithRuntime(ctx context.Context, store Store, runtime SingboxRuntime) error {
 	if !singbox.IsInstalled() {
 		return nil // sing-box not available, skip silently
 	}
@@ -158,7 +212,9 @@ func tryApplySingbox(ctx context.Context, store Store) error {
 	if err != nil {
 		return fmt.Errorf("list inbounds: %w", err)
 	}
-	cfg := singbox.BuildConfig(inbounds)
+	cfg := singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{
+		EnableV2RayAPIStats: singbox.HasEnabledSingboxInbound(inbounds) && runtime != nil && runtime.Capability(ctx).V2RayAPIStats,
+	})
 	if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
 		if err := singbox.GenerateSelfSignedCert(); err != nil {
 			return fmt.Errorf("generate cert: %w", err)
@@ -175,7 +231,7 @@ func tryApplySingbox(ctx context.Context, store Store) error {
 }
 
 // singboxConfigHandler returns the current sing-box config JSON.
-func singboxConfigHandler(store Store) http.HandlerFunc {
+func singboxConfigHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -184,13 +240,13 @@ func singboxConfigHandler(store Store) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		data, err := os.ReadFile(singbox.DefaultConfigPath)
 		if err != nil {
-			if os.IsNotExist(err) && store != nil {
-				inbounds, listErr := store.ListInbounds(r.Context())
+			if os.IsNotExist(err) && cfg != nil && cfg.store != nil {
+				inbounds, listErr := cfg.store.ListInbounds(r.Context())
 				if listErr != nil {
 					writeJSONError(w, http.StatusInternalServerError, "list_failed", map[string]interface{}{"detail": listErr.Error()})
 					return
 				}
-				writeJSON(w, http.StatusOK, singbox.BuildConfig(inbounds))
+				writeJSON(w, http.StatusOK, buildSingboxConfigForRuntime(r.Context(), cfg, inbounds).config)
 				return
 			}
 			writeJSONError(w, http.StatusNotFound, "read_failed", map[string]interface{}{"detail": err.Error()})

@@ -316,7 +316,7 @@ func TestUpdateAPIStartsInstallerUpdateWithoutBlockingResponse(t *testing.T) {
 	if post.Code != http.StatusOK {
 		t.Fatalf("expected POST /api/update 200, got %d: %s", post.Code, post.Body.String())
 	}
-	for _, want := range []string{`"status":"updating"`, `"command":"/usr/local/bin/migate-install --update"`} {
+	for _, want := range []string{`"status":"updating"`, `"command":"/usr/local/bin/migate-install --update --yes"`} {
 		if !strings.Contains(post.Body.String(), want) {
 			t.Fatalf("update response missing %q: %s", want, post.Body.String())
 		}
@@ -365,11 +365,34 @@ func TestUpdateStatusAPIReportsState(t *testing.T) {
 	}
 }
 
+func TestUpdateLogsAPIReportsRecentLogs(t *testing.T) {
+	router := web.NewRouter()
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/update/logs?lines=20", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected update logs 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	for _, want := range []string{`"logs"`, `"/var/log/migate-update.log"`} {
+		if !strings.Contains(resp.Body.String(), want) {
+			t.Fatalf("update logs response missing %q: %s", want, resp.Body.String())
+		}
+	}
+}
+
 func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
 	body := webPackageSource(t)
 	for _, want := range []string{
-		`exec.Command("systemd-run", "--wait", "--unit=migate-update", "--replace", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=180", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update")`,
+		`exec.Command("systemd-run"`,
+		`"--unit=migate-update"`,
+		`"--property=TimeoutSec=300"`,
+		`"--property=StandardOutput=append:/var/log/migate-update.log"`,
+		`"--property=StandardError=append:/var/log/migate-update.log"`,
+		`"/usr/local/bin/migate-install", "--update", "--yes"`,
 		`/var/log/migate-update.log`,
+		`func validateUpdaterAvailable() error`,
+		`os.Geteuid()`,
+		`exec.LookPath("systemd-run")`,
+		`os.Stat("/run/systemd/system")`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("update handler missing detached updater contract %q", want)

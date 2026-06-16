@@ -757,11 +757,32 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		xray.NewStubStatsClient(),
 	)
 	var singboxStatsClient singbox.StatsClient
-	singboxStatsClient, err = singbox.NewGRPCStatsClient(context.Background(), "127.0.0.1:10086")
-	if err != nil {
-		err = fmt.Errorf("build sing-box stats client: %w", err)
-		log.Printf("traffic sync: sing-box stats unavailable; scheduler will mark singbox unavailable: %v", err)
-		singboxStatsClient = singbox.NewUnavailableStatsClient(err)
+	singboxInbounds, listInboundsErr := store.ListInbounds(context.Background())
+	if listInboundsErr != nil {
+		log.Printf("traffic sync: failed to inspect sing-box inbounds: %v", listInboundsErr)
+	}
+	hasSingboxInbound := singbox.HasEnabledSingboxInbound(singboxInbounds)
+	if !hasSingboxInbound {
+		singboxStatsClient = singbox.NewDisabledStatsClient("not_configured", "")
+	} else {
+		capability := singbox.DetectCapability(context.Background())
+		switch {
+		case capability.V2RayAPIStats:
+			singboxStatsClient, err = singbox.NewGRPCStatsClient(context.Background(), "127.0.0.1:10086")
+			if err != nil {
+				err = fmt.Errorf("build sing-box stats client: %w", err)
+				log.Printf("traffic sync: sing-box stats unavailable; scheduler will mark singbox unavailable: %v", err)
+				singboxStatsClient = singbox.NewUnavailableStatsClient(err)
+			}
+		case capability.Unsupported:
+			singboxStatsClient = singbox.NewDisabledStatsClient("unsupported", singbox.StatsUnsupportedMessage)
+		default:
+			message := capability.Message
+			if message == "" {
+				message = "sing-box stats capability check failed"
+			}
+			singboxStatsClient = singbox.NewUnavailableStatsClient(fmt.Errorf("%s", message))
+		}
 	}
 	opts = append(opts, web.WithStatsClient(statsClient))
 	opts = append(opts, web.WithSingboxStatsClient(singboxStatsClient))
@@ -769,7 +790,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	// Create schedulers before building router (needed for options and cleanup wiring)
 	// Traffic sync scheduler keeps retrying Xray StatsService because Xray may
 	// become available only after the panel starts and applies generated config.
-	trafficSched := scheduler.NewTrafficSyncSchedulerWithSingbox(store, statsClient, singboxStatsClient, 1*time.Minute)
+	trafficSched := scheduler.NewTrafficSyncSchedulerWithSingboxConfig(store, statsClient, singboxStatsClient, singboxInbounds, 1*time.Minute)
 
 	router := web.NewRouter(opts...)
 

@@ -114,5 +114,6 @@ export const api = {
   serviceStatus: () => get<{ service: string; status: string; detail?: string }>('/api/service/status'),
   updateCheck: () => get<UpdateCheck>('/api/update/check'),
   updateStatus: () => get<UpdateStatus>('/api/update/status'),
+  updateLogs: () => get<{ logs?: string; lines?: string[]; path?: string }>('/api/update/logs?lines=160'),
   update: () => post<{ status: string; command: string; message?: string }>('/api/update', { confirm: true, allow_system_changes: true }),
 };
