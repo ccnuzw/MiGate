@@ -8,6 +8,7 @@ import { appPath } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Client, Inbound } from '../api/types';
 import { Field, FieldError, Modal, SpinnerButton, useToast } from '../components/ui';
+import { copyToClipboard } from '../lib/clipboard';
 import { useI18n } from '../lib/i18n';
 import {
   allowedInboundNetworks,
@@ -438,8 +439,7 @@ function subscriptionURL(client: Client) {
 
 async function copyText(value: string, title: string, errorTitle: string, showToast: (title: string, tone?: 'success' | 'error' | 'info') => void) {
   try {
-    if (!navigator.clipboard) throw new Error('clipboard_unavailable');
-    await navigator.clipboard.writeText(value);
+    await copyToClipboard(value);
     showToast(title, 'success');
   } catch {
     showToast(errorTitle, 'error');
