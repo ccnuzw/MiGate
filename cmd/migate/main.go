@@ -21,6 +21,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/scheduler"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -755,12 +756,14 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		xray.NewCommandStatsClient("/usr/local/bin/xray", "127.0.0.1:10085"),
 		xray.NewStubStatsClient(),
 	)
+	singboxStatsClient := singbox.NewCommandStatsClient("", "127.0.0.1:10086")
 	opts = append(opts, web.WithStatsClient(statsClient))
+	opts = append(opts, web.WithSingboxStatsClient(singboxStatsClient))
 
 	// Create schedulers before building router (needed for options and cleanup wiring)
 	// Traffic sync scheduler keeps retrying Xray StatsService because Xray may
 	// become available only after the panel starts and applies generated config.
-	trafficSched := scheduler.NewTrafficSyncScheduler(store, statsClient, 1*time.Minute)
+	trafficSched := scheduler.NewTrafficSyncSchedulerWithSingbox(store, statsClient, singboxStatsClient, 1*time.Minute)
 
 	router := web.NewRouter(opts...)
 

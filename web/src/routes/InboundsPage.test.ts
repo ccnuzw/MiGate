@@ -28,8 +28,9 @@ describe('inbound payload helpers', () => {
     traffic_up: 100,
     traffic_down: 200,
     traffic_total: 300,
-    traffic_stats_source: 'db',
-    realtime_stats_source: 'xray',
+    rate_up: 1,
+    rate_down: 2,
+    traffic_status: 'ok',
     client_traffic: {},
     ws_path: '/ws',
     ws_host: 'cdn.example.com',
@@ -334,9 +335,10 @@ describe('inbound payload helpers', () => {
       traffic_up: 12,
       traffic_down: 34,
       traffic_total: 46,
-      traffic_stats_source: 'xray',
-      realtime_stats_source: 'xray',
-      client_traffic: { '10': { up: 12, down: 34, source: 'xray', realtime_source: 'xray' } },
+      rate_up: 1,
+      rate_down: 2,
+      traffic_status: 'ok',
+      client_traffic: { '10': { up: 12, down: 34, rate_up: 1, rate_down: 2, status: 'ok' } },
     }];
 
     const [merged] = mergeInboundTraffic(current, traffic);
@@ -344,7 +346,8 @@ describe('inbound payload helpers', () => {
     expect(merged.enabled).toBe(false);
     expect(merged.reality_private_key).toBe('private-key');
     expect(merged.traffic_total).toBe(46);
-    expect(merged.clients?.[0]).toMatchObject({ email: 'sam@example.com', enabled: false, up: 12, down: 34, traffic_limit: 2000, expiry_at: 99 });
+    expect(merged).toMatchObject({ rate_up: 1, rate_down: 2, traffic_status: 'ok' });
+    expect(merged.clients?.[0]).toMatchObject({ email: 'sam@example.com', enabled: false, up: 12, down: 34, rate_up: 1, rate_down: 2, traffic_status: 'ok', traffic_limit: 2000, expiry_at: 99 });
   });
 });
 

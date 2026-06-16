@@ -439,7 +439,7 @@ func TestBuildConfigIncludesStatsAndPolicy(t *testing.T) {
 	config, err := xray.BuildConfig([]db.Inbound{{
 		ID: 1, UUID: "test-uuid", Remark: "test", Protocol: "vless",
 		Port: 10000, Network: "tcp", Security: "none", Enabled: true,
-		Clients: []db.Client{{UUID: "c1-uuid", Email: "client1@test.com", Enabled: true}},
+		Clients: []db.Client{{UUID: "c1-uuid", StatsKey: "c_stats_key", Email: "client1@test.com", Enabled: true}},
 	}})
 	if err != nil {
 		t.Fatalf("build config: %v", err)
@@ -457,6 +457,9 @@ func TestBuildConfigIncludesStatsAndPolicy(t *testing.T) {
 	}
 	if !strings.Contains(text, `"statsUserDownlink":true`) {
 		t.Fatalf("config missing statsUserDownlink: %s", text)
+	}
+	if !strings.Contains(text, `"email":"c_stats_key"`) || strings.Contains(text, `"email":"client1@test.com"`) {
+		t.Fatalf("config should use stats_key as traffic identity: %s", text)
 	}
 }
 

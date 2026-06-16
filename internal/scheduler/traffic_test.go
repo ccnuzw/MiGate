@@ -5,11 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
 type mockStore struct {
 	traffic map[string]*xray.ClientStats
+	raw     []db.TrafficRawStat
 }
 
 func (m *mockStore) UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error {
@@ -20,12 +22,37 @@ func (m *mockStore) UpdateClientTraffic(ctx context.Context, email string, uplin
 	return nil
 }
 
+func (m *mockStore) ApplyTrafficRawStats(ctx context.Context, stats []db.TrafficRawStat, observedAt time.Time) error {
+	m.raw = append(m.raw, stats...)
+	if m.traffic == nil {
+		m.traffic = make(map[string]*xray.ClientStats)
+	}
+	for _, stat := range stats {
+		if stat.ScopeType == "client" {
+			m.traffic[stat.ScopeKey] = &xray.ClientStats{Email: stat.ScopeKey, Uplink: stat.RawUp, Downlink: stat.RawDown}
+		}
+	}
+	return nil
+}
+
+func (m *mockStore) MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error {
+	return nil
+}
+
 type mockStatsClient struct {
 	stats map[string]*xray.ClientStats
 }
 
 func (m *mockStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.ClientStats, error) {
 	return m.stats, nil
+}
+
+func (m *mockStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+	result := make([]xray.TrafficStat, 0, len(m.stats))
+	for _, stat := range m.stats {
+		result = append(result, xray.TrafficStat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
+	}
+	return result, nil
 }
 
 func (m *mockStatsClient) Close() error {

@@ -160,6 +160,7 @@ type Client struct {
 	InboundID         int64  `json:"inbound_id"`
 	UUID              string `json:"uuid"`
 	SubscriptionToken string `json:"subscription_token,omitempty"`
+	StatsKey          string `json:"stats_key,omitempty"`
 	Email             string `json:"email"`
 	Enabled           bool   `json:"enabled"`
 	Up                int64  `json:"up"`
@@ -171,6 +172,56 @@ type Client struct {
 type ClientTrafficUpdate struct {
 	Up   int64
 	Down int64
+}
+
+type TrafficRawStat struct {
+	Engine    string
+	ScopeType string
+	ScopeKey  string
+	RawUp     int64
+	RawDown   int64
+	Status    string
+	Message   string
+}
+
+type TrafficState struct {
+	Engine      string  `json:"engine"`
+	ScopeType   string  `json:"scope_type"`
+	ScopeKey    string  `json:"scope_key"`
+	TotalUp     int64   `json:"total_up"`
+	TotalDown   int64   `json:"total_down"`
+	LastRawUp   int64   `json:"last_raw_up"`
+	LastRawDown int64   `json:"last_raw_down"`
+	RateUp      float64 `json:"rate_up"`
+	RateDown    float64 `json:"rate_down"`
+	LastSeenAt  string  `json:"last_seen_at"`
+	Status      string  `json:"status"`
+	Message     string  `json:"message,omitempty"`
+}
+
+type TrafficSample struct {
+	SampledAt string  `json:"sampled_at"`
+	Engine    string  `json:"engine"`
+	ScopeType string  `json:"scope_type"`
+	ScopeKey  string  `json:"scope_key"`
+	TotalUp   int64   `json:"total_up"`
+	TotalDown int64   `json:"total_down"`
+	RateUp    float64 `json:"rate_up"`
+	RateDown  float64 `json:"rate_down"`
+	Status    string  `json:"status"`
+}
+
+type ClientTrafficUsage struct {
+	ClientID   int64   `json:"client_id"`
+	StatsKey   string  `json:"stats_key"`
+	Engine     string  `json:"engine"`
+	TotalUp    int64   `json:"total_up"`
+	TotalDown  int64   `json:"total_down"`
+	RateUp     float64 `json:"rate_up"`
+	RateDown   float64 `json:"rate_down"`
+	Status     string  `json:"status"`
+	Message    string  `json:"message,omitempty"`
+	LastSeenAt string  `json:"last_seen_at,omitempty"`
 }
 
 type CreateInboundParams struct {
@@ -322,6 +373,7 @@ CREATE TABLE IF NOT EXISTS clients (
   inbound_id INTEGER NOT NULL REFERENCES inbounds(id) ON DELETE CASCADE,
   uuid TEXT NOT NULL UNIQUE,
   subscription_token TEXT NOT NULL DEFAULT '',
+  stats_key TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
@@ -361,6 +413,33 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
   expires_at TEXT NOT NULL,
   revoked INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS traffic_states (
+  engine TEXT NOT NULL,
+  scope_type TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  total_up INTEGER NOT NULL DEFAULT 0,
+  total_down INTEGER NOT NULL DEFAULT 0,
+  last_raw_up INTEGER NOT NULL DEFAULT 0,
+  last_raw_down INTEGER NOT NULL DEFAULT 0,
+  rate_up REAL NOT NULL DEFAULT 0,
+  rate_down REAL NOT NULL DEFAULT 0,
+  last_seen_at TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'waiting',
+  message TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (engine, scope_type, scope_key)
+);
+CREATE TABLE IF NOT EXISTS traffic_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sampled_at TEXT NOT NULL,
+  engine TEXT NOT NULL,
+  scope_type TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  total_up INTEGER NOT NULL DEFAULT 0,
+  total_down INTEGER NOT NULL DEFAULT 0,
+  rate_up REAL NOT NULL DEFAULT 0,
+  rate_down REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'waiting'
+);
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
 CREATE INDEX IF NOT EXISTS idx_inbounds_port ON inbounds(port);
@@ -368,6 +447,8 @@ CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
 CREATE INDEX IF NOT EXISTS idx_clients_inbound_email ON clients(inbound_id, email);
 CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at);
 CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked, expires_at, id);
+CREATE INDEX IF NOT EXISTS idx_traffic_states_scope ON traffic_states(scope_type, scope_key);
+CREATE INDEX IF NOT EXISTS idx_traffic_samples_lookup ON traffic_samples(scope_type, scope_key, sampled_at);
 `)
 	if err != nil {
 		return err
@@ -378,6 +459,7 @@ CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked
 	// Migration: add traffic/expiry columns (ignore errors if already exist)
 	for _, col := range []struct{ name, typ string }{
 		{"subscription_token", "TEXT NOT NULL DEFAULT ''"},
+		{"stats_key", "TEXT NOT NULL DEFAULT ''"},
 		{"up", "INTEGER NOT NULL DEFAULT 0"},
 		{"down", "INTEGER NOT NULL DEFAULT 0"},
 		{"traffic_limit", "INTEGER NOT NULL DEFAULT 0"},
@@ -386,6 +468,9 @@ CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE clients ADD COLUMN %s %s", col.name, col.typ))
 	}
 	if err := s.ensureClientSubscriptionTokens(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureClientStatsKeys(ctx); err != nil {
 		return err
 	}
 	// Migration: add transport columns to inbounds (ignore errors if already exist)
@@ -462,6 +547,38 @@ func (s *Store) ensureClientSubscriptionTokens(ctx context.Context) error {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE clients SET subscription_token=? WHERE id=?`, token, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureClientStatsKeys(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_stats_key ON clients(stats_key) WHERE stats_key <> ''`); err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM clients WHERE stats_key = '' OR stats_key IS NULL ORDER BY id ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		key, err := s.newStatsKey(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE clients SET stats_key=? WHERE id=?`, key, id); err != nil {
 			return err
 		}
 	}
@@ -973,6 +1090,10 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 	if err != nil {
 		return Client{}, err
 	}
+	statsKey, err := s.newStatsKey(ctx)
+	if err != nil {
+		return Client{}, err
+	}
 	enabled := true
 	if params.Enabled != nil {
 		enabled = *params.Enabled
@@ -982,9 +1103,9 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 		dbEnabled = 1
 	}
 	result, err := s.db.ExecContext(ctx, `
-INSERT INTO clients (inbound_id, uuid, subscription_token, email, enabled, created_at, traffic_limit, expiry_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, params.InboundID, uuid, subscriptionToken, email, dbEnabled, time.Now().UTC().Format(time.RFC3339), params.TrafficLimit, params.ExpiryAt)
+INSERT INTO clients (inbound_id, uuid, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, params.InboundID, uuid, subscriptionToken, statsKey, email, dbEnabled, time.Now().UTC().Format(time.RFC3339), params.TrafficLimit, params.ExpiryAt)
 	if err != nil {
 		return Client{}, err
 	}
@@ -992,7 +1113,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	if err != nil {
 		return Client{}, err
 	}
-	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, SubscriptionToken: subscriptionToken, Email: email, Enabled: enabled, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
+	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, SubscriptionToken: subscriptionToken, StatsKey: statsKey, Email: email, Enabled: enabled, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
 }
 
 func (s *Store) DeleteClient(ctx context.Context, id int64) error {
@@ -1205,10 +1326,10 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 			return Client{}, err
 		}
 	}
-	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1298,9 +1419,9 @@ func (s *Store) SetClientEnabled(ctx context.Context, inboundID int64, id int64,
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE inbound_id=? AND id=?`, inboundID, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE inbound_id=? AND id=?`, inboundID, id)
 	var client Client
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
@@ -1348,7 +1469,7 @@ ORDER BY id ASC
 	}
 
 	clientRows, err := s.db.QueryContext(ctx, `
-SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at
+SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at
 FROM clients
 ORDER BY id ASC
 `)
@@ -1359,7 +1480,7 @@ ORDER BY id ASC
 	for clientRows.Next() {
 		var client Client
 		var enabled int
-		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 			return nil, err
 		}
 		client.Enabled = enabled != 0
@@ -1402,7 +1523,7 @@ ORDER BY id ASC
 	}
 
 	clientRows, err := s.db.QueryContext(ctx, `
-SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at
+SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at
 FROM clients
 ORDER BY id ASC
 `)
@@ -1413,7 +1534,7 @@ ORDER BY id ASC
 	for clientRows.Next() {
 		var client Client
 		var enabled int
-		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 			return nil, err
 		}
 		client.Enabled = enabled != 0
@@ -1518,7 +1639,7 @@ SELECT i.id, i.uuid, i.remark, i.protocol, i.port, i.network, i.security, i.enab
   i.tuic_congestion_control, i.tuic_zero_rtt,
   i.wg_private_key, i.wg_address, i.wg_peer_public_key, i.wg_allowed_ips, i.wg_endpoint, i.wg_preshared_key, i.wg_mtu,
   i.shadowtls_version, i.shadowtls_password,
-  c.id, c.inbound_id, c.uuid, c.subscription_token, c.email, c.enabled, c.up, c.down, c.traffic_limit, c.expiry_at
+  c.id, c.inbound_id, c.uuid, c.subscription_token, c.stats_key, c.email, c.enabled, c.up, c.down, c.traffic_limit, c.expiry_at
 FROM clients c
 JOIN inbounds i ON i.id = c.inbound_id
 `
@@ -1545,7 +1666,7 @@ func (s *Store) getSubscriptionByClientRow(row *sql.Row) (Inbound, Client, bool,
 		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
 		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
 		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword,
-		&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &clientEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &clientEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		if err == sql.ErrNoRows {
 			return Inbound{}, Client{}, false, nil
 		}
@@ -1569,41 +1690,89 @@ func (s *Store) ResetClientTraffic(ctx context.Context, id int64) (Client, error
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
 	return client, nil
 }
 
-// UpdateClientTraffic updates traffic counters for all clients matching an
-// Xray stats email. MiGate permits the same email in different inbounds, and
-// Xray's legacy stat key does not include inbound_id here, so callers must not
-// assume this identifies one row globally.
 func (s *Store) UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE clients SET up=?, down=? WHERE email=?`, uplink, downlink, email)
+	key, ok, err := s.resolveLegacyTrafficKey(ctx, email)
 	if err != nil {
 		return err
 	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		// Client not found - may have been deleted, silently ignore
+	if !ok {
 		return nil
 	}
-	return nil
+	return s.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: key, RawUp: uplink, RawDown: downlink, Status: "ok"}}, time.Now().UTC())
 }
 
-// UpdateClientTrafficBatch updates all provided traffic counters in one write
-// transaction by Xray stats email. Unknown client emails are ignored, matching
-// UpdateClientTraffic. Duplicate emails across inbounds intentionally receive
-// the same counter until the scheduler has a stable per-inbound stats key.
 func (s *Store) UpdateClientTrafficBatch(ctx context.Context, stats map[string]ClientTrafficUpdate) error {
+	if len(stats) == 0 {
+		return nil
+	}
+	raw := make([]TrafficRawStat, 0, len(stats))
+	for key, traffic := range stats {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if !strings.HasPrefix(key, "c_") {
+			resolved, ok, err := s.resolveLegacyTrafficKey(ctx, key)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			key = resolved
+		}
+		raw = append(raw, TrafficRawStat{Engine: "xray", ScopeType: "client", ScopeKey: key, RawUp: traffic.Up, RawDown: traffic.Down, Status: "ok"})
+	}
+	return s.ApplyTrafficRawStats(ctx, raw, time.Now().UTC())
+}
+
+func (s *Store) resolveLegacyTrafficKey(ctx context.Context, key string) (string, bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false, nil
+	}
+	var statsKey string
+	if err := s.db.QueryRowContext(ctx, `SELECT stats_key FROM clients WHERE stats_key=? LIMIT 1`, key).Scan(&statsKey); err == nil {
+		return statsKey, true, nil
+	} else if err != sql.ErrNoRows {
+		return "", false, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT stats_key FROM clients WHERE email=? ORDER BY id ASC LIMIT 2`, key)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	keys := []string{}
+	for rows.Next() {
+		var candidate string
+		if err := rows.Scan(&candidate); err != nil {
+			return "", false, err
+		}
+		keys = append(keys, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, err
+	}
+	if len(keys) != 1 || strings.TrimSpace(keys[0]) == "" {
+		return "", false, nil
+	}
+	return keys[0], true, nil
+}
+
+func (s *Store) ApplyTrafficRawStats(ctx context.Context, stats []TrafficRawStat, observedAt time.Time) error {
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
 	if len(stats) == 0 {
 		return nil
 	}
@@ -1612,20 +1781,480 @@ func (s *Store) UpdateClientTrafficBatch(ctx context.Context, stats map[string]C
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `UPDATE clients SET up=?, down=? WHERE email=?`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for email, traffic := range stats {
-		if strings.TrimSpace(email) == "" {
+	seenClients := map[string]struct{}{}
+	for _, raw := range stats {
+		engine := normalizeTrafficToken(raw.Engine)
+		scopeType := normalizeTrafficToken(raw.ScopeType)
+		scopeKey := strings.TrimSpace(raw.ScopeKey)
+		if engine == "" || scopeType == "" || scopeKey == "" {
 			continue
 		}
-		if _, err := stmt.ExecContext(ctx, traffic.Up, traffic.Down, email); err != nil {
+		status := strings.TrimSpace(raw.Status)
+		if status == "" {
+			status = "ok"
+		}
+		var current TrafficState
+		row := tx.QueryRowContext(ctx, `SELECT total_up, total_down, last_raw_up, last_raw_down, last_seen_at, status, message FROM traffic_states WHERE engine=? AND scope_type=? AND scope_key=?`, engine, scopeType, scopeKey)
+		var lastSeen string
+		err := row.Scan(&current.TotalUp, &current.TotalDown, &current.LastRawUp, &current.LastRawDown, &lastSeen, &current.Status, &current.Message)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == sql.ErrNoRows && scopeType == "client" {
+			if legacyUp, legacyDown, ok, lookupErr := lookupClientLegacyTraffic(ctx, tx, scopeKey); lookupErr != nil {
+				return lookupErr
+			} else if ok {
+				current.TotalUp = legacyUp
+				current.TotalDown = legacyDown
+			}
+		}
+		var elapsed float64
+		if err == nil && lastSeen != "" {
+			if previous, parseErr := time.Parse(time.RFC3339Nano, lastSeen); parseErr == nil && observedAt.After(previous) {
+				elapsed = observedAt.Sub(previous).Seconds()
+			}
+		}
+		deltaUp := int64(0)
+		deltaDown := int64(0)
+		if err == sql.ErrNoRows || isResetWithoutRawBaseline(current) {
+			deltaUp = 0
+			deltaDown = 0
+		} else {
+			if raw.RawUp >= current.LastRawUp {
+				deltaUp = raw.RawUp - current.LastRawUp
+			}
+			if raw.RawDown >= current.LastRawDown {
+				deltaDown = raw.RawDown - current.LastRawDown
+			}
+		}
+		totalUp := current.TotalUp + deltaUp
+		totalDown := current.TotalDown + deltaDown
+		rateUp := 0.0
+		rateDown := 0.0
+		if elapsed > 0 {
+			rateUp = float64(deltaUp) / elapsed
+			rateDown = float64(deltaDown) / elapsed
+		}
+		seenAt := observedAt.UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
+  total_up=excluded.total_up,
+  total_down=excluded.total_down,
+  last_raw_up=excluded.last_raw_up,
+  last_raw_down=excluded.last_raw_down,
+  rate_up=excluded.rate_up,
+  rate_down=excluded.rate_down,
+  last_seen_at=excluded.last_seen_at,
+  status=excluded.status,
+  message=excluded.message
+`, engine, scopeType, scopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, rateUp, rateDown, seenAt, status, strings.TrimSpace(raw.Message)); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			seenAt, engine, scopeType, scopeKey, totalUp, totalDown, rateUp, rateDown, status); err != nil {
+			return err
+		}
+		if scopeType == "client" {
+			expectedEngine, ok, lookupErr := lookupClientExpectedTrafficEngine(ctx, tx, scopeKey)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if ok && expectedEngine == engine {
+				seenClients[engine+"\x00"+scopeKey] = struct{}{}
+			}
+		}
+	}
+	for clientKey := range seenClients {
+		parts := strings.SplitN(clientKey, "\x00", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		engine := parts[0]
+		statsKey := parts[1]
+		if _, err := tx.ExecContext(ctx, `
+UPDATE clients
+SET up = COALESCE((SELECT total_up FROM traffic_states WHERE engine=? AND scope_type='client' AND scope_key=clients.stats_key LIMIT 1), up),
+    down = COALESCE((SELECT total_down FROM traffic_states WHERE engine=? AND scope_type='client' AND scope_key=clients.stats_key LIMIT 1), down)
+WHERE stats_key = ?`, engine, engine, statsKey); err != nil {
 			return err
 		}
 	}
+	cutoff := observedAt.Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM traffic_samples WHERE sampled_at < ?`, cutoff); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func isResetWithoutRawBaseline(state TrafficState) bool {
+	return state.TotalUp == 0 && state.TotalDown == 0 &&
+		state.LastRawUp == 0 && state.LastRawDown == 0 &&
+		normalizeTrafficStatus(state.Status) == "unavailable" &&
+		strings.Contains(strings.ToLower(state.Message), "baseline unavailable")
+}
+
+func (s *Store) MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error {
+	engine = normalizeTrafficToken(engine)
+	if engine == "" {
+		return nil
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "unavailable"
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE traffic_states SET rate_up=0, rate_down=0, status=?, message=?, last_seen_at=? WHERE engine=?`,
+		status, strings.TrimSpace(message), observedAt.UTC().Format(time.RFC3339Nano), engine)
+	return err
+}
+
+func (s *Store) ResetClientTrafficBaseline(ctx context.Context, id int64, baselines []TrafficRawStat) (Client, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Client{}, err
+	}
+	defer tx.Rollback()
+	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	var client Client
+	var dbEnabled int
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		return Client{}, err
+	}
+	client.Enabled = dbEnabled != 0
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	existingEngines, err := trafficStateEnginesForClient(ctx, tx, client.StatsKey)
+	if err != nil {
+		return Client{}, err
+	}
+	expectedEngine, ok, err := clientExpectedTrafficEngineByID(ctx, tx, client.ID)
+	if err != nil {
+		return Client{}, err
+	}
+	if ok && expectedEngine != "" {
+		existingEngines[expectedEngine] = struct{}{}
+	}
+	baselineByEngine := map[string]TrafficRawStat{}
+	for _, raw := range baselines {
+		if normalizeTrafficToken(raw.ScopeType) != "client" || strings.TrimSpace(raw.ScopeKey) != client.StatsKey {
+			continue
+		}
+		engine := normalizeTrafficToken(raw.Engine)
+		if engine == "" {
+			continue
+		}
+		baselineByEngine[engine] = raw
+		existingEngines[engine] = struct{}{}
+	}
+	if len(existingEngines) == 0 {
+		existingEngines["migate"] = struct{}{}
+	}
+	for engine := range existingEngines {
+		raw, hasBaseline := baselineByEngine[engine]
+		status := "waiting"
+		message := "baseline reset"
+		lastRawUp := int64(0)
+		lastRawDown := int64(0)
+		if hasBaseline {
+			lastRawUp = raw.RawUp
+			lastRawDown = raw.RawDown
+		} else if engine != "migate" {
+			status = "unavailable"
+			message = "baseline unavailable during reset"
+		} else {
+			message = "waiting for first sample"
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
+VALUES (?, 'client', ?, 0, 0, ?, ?, 0, 0, ?, ?, ?)
+ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
+  total_up=0,
+  total_down=0,
+  last_raw_up=excluded.last_raw_up,
+  last_raw_down=excluded.last_raw_down,
+  rate_up=0,
+  rate_down=0,
+  last_seen_at=excluded.last_seen_at,
+  status=excluded.status,
+  message=excluded.message
+`, engine, client.StatsKey, lastRawUp, lastRawDown, now, status, message); err != nil {
+			return Client{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE clients SET up=0, down=0 WHERE id=?`, id); err != nil {
+		return Client{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Client{}, err
+	}
+	client.Up = 0
+	client.Down = 0
+	return client, nil
+}
+
+func (s *Store) ListTrafficStates(ctx context.Context) ([]TrafficState, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message FROM traffic_states ORDER BY engine, scope_type, scope_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	states := []TrafficState{}
+	for rows.Next() {
+		var state TrafficState
+		if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.RateUp, &state.RateDown, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
+}
+
+func (s *Store) ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]TrafficSample, error) {
+	scopeType = normalizeTrafficToken(scopeType)
+	if scopeType == "" {
+		scopeType = "core"
+	}
+	if limit <= 0 || limit > 2000 {
+		limit = 2000
+	}
+	sinceText := since.UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status
+FROM traffic_samples
+WHERE scope_type = ? AND sampled_at >= ?
+ORDER BY sampled_at ASC, engine ASC, scope_key ASC
+LIMIT ?`, scopeType, sinceText, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	samples := []TrafficSample{}
+	for rows.Next() {
+		var sample TrafficSample
+		if err := rows.Scan(&sample.SampledAt, &sample.Engine, &sample.ScopeType, &sample.ScopeKey, &sample.TotalUp, &sample.TotalDown, &sample.RateUp, &sample.RateDown, &sample.Status); err != nil {
+			return nil, err
+		}
+		samples = append(samples, sample)
+	}
+	return samples, rows.Err()
+}
+
+func (s *Store) GetClientTrafficUsage(ctx context.Context, statsKey string) (ClientTrafficUsage, bool, error) {
+	statsKey = strings.TrimSpace(statsKey)
+	if statsKey == "" {
+		return ClientTrafficUsage{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT c.id, c.stats_key, c.up, c.down, i.protocol
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+WHERE c.stats_key = ?
+LIMIT 1`, statsKey)
+	return s.getClientTrafficUsageFromRow(ctx, row)
+}
+
+func (s *Store) GetClientTrafficUsageForClient(ctx context.Context, clientID int64) (ClientTrafficUsage, bool, error) {
+	if clientID <= 0 {
+		return ClientTrafficUsage{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT c.id, c.stats_key, c.up, c.down, i.protocol
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+WHERE c.id = ?
+LIMIT 1`, clientID)
+	return s.getClientTrafficUsageFromRow(ctx, row)
+}
+
+func (s *Store) getClientTrafficUsageFromRow(ctx context.Context, row *sql.Row) (ClientTrafficUsage, bool, error) {
+	var clientID int64
+	var statsKey string
+	var legacyUp int64
+	var legacyDown int64
+	var protocol string
+	if err := row.Scan(&clientID, &statsKey, &legacyUp, &legacyDown, &protocol); err != nil {
+		if err == sql.ErrNoRows {
+			return ClientTrafficUsage{}, false, nil
+		}
+		return ClientTrafficUsage{}, false, err
+	}
+	states, err := s.trafficStatesForClient(ctx, statsKey)
+	if err != nil {
+		return ClientTrafficUsage{}, false, err
+	}
+	usage := chooseClientTrafficUsage(clientID, statsKey, expectedTrafficEngineForProtocol(protocol), states, legacyUp, legacyDown)
+	return usage, true, nil
+}
+
+func (s *Store) trafficStatesForClient(ctx context.Context, statsKey string) ([]TrafficState, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message
+FROM traffic_states
+WHERE scope_type='client' AND scope_key=?
+ORDER BY engine ASC`, statsKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	states := []TrafficState{}
+	for rows.Next() {
+		var state TrafficState
+		if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.RateUp, &state.RateDown, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
+}
+
+func chooseClientTrafficUsage(clientID int64, statsKey, expectedEngine string, states []TrafficState, legacyUp, legacyDown int64) ClientTrafficUsage {
+	byEngine := map[string]TrafficState{}
+	for _, state := range states {
+		if normalizeTrafficToken(state.ScopeType) != "client" || strings.TrimSpace(state.ScopeKey) != statsKey {
+			continue
+		}
+		engine := normalizeTrafficEngine(state.Engine)
+		if engine == "" {
+			continue
+		}
+		state.Engine = engine
+		state.Status = normalizeTrafficStatus(state.Status)
+		byEngine[engine] = state
+	}
+	if state, ok := byEngine[expectedEngine]; ok {
+		return usageFromTrafficState(clientID, statsKey, state)
+	}
+	for _, engine := range fallbackTrafficEngines(expectedEngine) {
+		if state, ok := byEngine[engine]; ok {
+			return usageFromTrafficState(clientID, statsKey, state)
+		}
+	}
+	if legacyUp > 0 || legacyDown > 0 {
+		return ClientTrafficUsage{
+			ClientID:  clientID,
+			StatsKey:  statsKey,
+			Engine:    "migate",
+			TotalUp:   legacyUp,
+			TotalDown: legacyDown,
+			Status:    "cumulative_only",
+		}
+	}
+	return ClientTrafficUsage{ClientID: clientID, StatsKey: statsKey, Engine: expectedEngine, Status: "waiting"}
+}
+
+func usageFromTrafficState(clientID int64, statsKey string, state TrafficState) ClientTrafficUsage {
+	return ClientTrafficUsage{
+		ClientID: clientID, StatsKey: statsKey, Engine: normalizeTrafficEngine(state.Engine),
+		TotalUp: state.TotalUp, TotalDown: state.TotalDown, RateUp: state.RateUp, RateDown: state.RateDown,
+		Status: normalizeTrafficStatus(state.Status), Message: state.Message, LastSeenAt: state.LastSeenAt,
+	}
+}
+
+func fallbackTrafficEngines(expectedEngine string) []string {
+	switch normalizeTrafficEngine(expectedEngine) {
+	case "singbox":
+		return []string{"xray", "migate"}
+	case "xray":
+		return []string{"singbox", "migate"}
+	default:
+		return []string{"xray", "singbox", "migate"}
+	}
+}
+
+func trafficStateEnginesForClient(ctx context.Context, tx *sql.Tx, statsKey string) (map[string]struct{}, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT engine FROM traffic_states WHERE scope_type='client' AND scope_key=? ORDER BY engine ASC`, statsKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	engines := map[string]struct{}{}
+	for rows.Next() {
+		var engine string
+		if err := rows.Scan(&engine); err != nil {
+			return nil, err
+		}
+		if engine = normalizeTrafficEngine(engine); engine != "" {
+			engines[engine] = struct{}{}
+		}
+	}
+	return engines, rows.Err()
+}
+
+func clientExpectedTrafficEngineByID(ctx context.Context, tx *sql.Tx, clientID int64) (string, bool, error) {
+	var protocol string
+	if err := tx.QueryRowContext(ctx, `
+SELECT i.protocol
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+WHERE c.id = ?
+LIMIT 1`, clientID).Scan(&protocol); err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return expectedTrafficEngineForProtocol(protocol), true, nil
+}
+
+func lookupClientExpectedTrafficEngine(ctx context.Context, tx *sql.Tx, statsKey string) (string, bool, error) {
+	var protocol string
+	if err := tx.QueryRowContext(ctx, `
+SELECT i.protocol
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+WHERE c.stats_key = ?
+LIMIT 1`, statsKey).Scan(&protocol); err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return expectedTrafficEngineForProtocol(protocol), true, nil
+}
+
+func expectedTrafficEngineForProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "hysteria2", "tuic", "shadowtls":
+		return "singbox"
+	default:
+		return "xray"
+	}
+}
+
+func normalizeTrafficEngine(engine string) string {
+	switch normalizeTrafficToken(engine) {
+	case "sing-box":
+		return "singbox"
+	default:
+		return normalizeTrafficToken(engine)
+	}
+}
+
+func normalizeTrafficStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return "waiting"
+	}
+	return status
+}
+
+func lookupClientLegacyTraffic(ctx context.Context, tx *sql.Tx, statsKey string) (int64, int64, bool, error) {
+	var up int64
+	var down int64
+	if err := tx.QueryRowContext(ctx, `SELECT up, down FROM clients WHERE stats_key=? LIMIT 1`, statsKey).Scan(&up, &down); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, err
+	}
+	return up, down, true, nil
+}
+
+func normalizeTrafficToken(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func newUUID() string {
@@ -1662,6 +2291,25 @@ func (s *Store) newSubscriptionToken(ctx context.Context) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("could not generate unique subscription token")
+}
+
+func (s *Store) newStatsKey(ctx context.Context) (string, error) {
+	for i := 0; i < 8; i++ {
+		token, err := randomHexToken(16)
+		if err != nil {
+			return "", err
+		}
+		key := "c_" + token
+		var existingID int64
+		err = s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE stats_key = ? LIMIT 1`, key).Scan(&existingID)
+		if err == sql.ErrNoRows {
+			return key, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("failed to generate unique stats key")
 }
 
 // AddToBlacklist inserts a token hash into the token_blacklist table or

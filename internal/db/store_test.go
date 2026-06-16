@@ -1619,20 +1619,29 @@ func TestStoreUpdateClientTrafficBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "a@example.com"}); err != nil {
+	clientA, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "a@example.com"})
+	if err != nil {
 		t.Fatalf("create client a: %v", err)
 	}
-	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "b@example.com"}); err != nil {
+	clientB, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "b@example.com"})
+	if err != nil {
 		t.Fatalf("create client b: %v", err)
 	}
 
 	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
-		"a@example.com":       {Up: 11, Down: 22},
-		"b@example.com":       {Up: 33, Down: 44},
+		clientA.StatsKey:      {Up: 11, Down: 22},
+		clientB.StatsKey:      {Up: 33, Down: 44},
 		"missing@example.com": {Up: 55, Down: 66},
 	})
 	if err != nil {
 		t.Fatalf("batch update traffic: %v", err)
+	}
+	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
+		clientA.StatsKey: {Up: 21, Down: 42},
+		clientB.StatsKey: {Up: 63, Down: 84},
+	})
+	if err != nil {
+		t.Fatalf("second batch update traffic: %v", err)
 	}
 
 	inbounds, err := store.ListInbounds(ctx)
@@ -1643,7 +1652,7 @@ func TestStoreUpdateClientTrafficBatch(t *testing.T) {
 	for _, client := range inbounds[0].Clients {
 		traffic[client.Email] = [2]int64{client.Up, client.Down}
 	}
-	if traffic["a@example.com"] != [2]int64{11, 22} || traffic["b@example.com"] != [2]int64{33, 44} {
+	if traffic["a@example.com"] != [2]int64{10, 20} || traffic["b@example.com"] != [2]int64{30, 40} {
 		t.Fatalf("unexpected traffic after batch update: %+v", traffic)
 	}
 }
@@ -1720,7 +1729,7 @@ func TestStoreCreatesAndLooksUpIndependentSubscriptionToken(t *testing.T) {
 	}
 }
 
-func TestStoreUpdateClientTrafficByEmailUpdatesDuplicateEmailsAcrossInbounds(t *testing.T) {
+func TestStoreUpdateClientTrafficByStatsKeyDoesNotPolluteDuplicateEmailsAcrossInbounds(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1736,14 +1745,19 @@ func TestStoreUpdateClientTrafficByEmailUpdatesDuplicateEmailsAcrossInbounds(t *
 	if err != nil {
 		t.Fatalf("create second inbound: %v", err)
 	}
-	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: first.ID, Email: "shared@example.com"}); err != nil {
+	firstClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: first.ID, Email: "shared@example.com"})
+	if err != nil {
 		t.Fatalf("create first shared client: %v", err)
 	}
-	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: second.ID, Email: "shared@example.com"}); err != nil {
+	secondClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: second.ID, Email: "shared@example.com"})
+	if err != nil {
 		t.Fatalf("create second shared client: %v", err)
 	}
 
-	if err := store.UpdateClientTraffic(ctx, "shared@example.com", 7, 9); err != nil {
+	if firstClient.StatsKey == "" || secondClient.StatsKey == "" || firstClient.StatsKey == secondClient.StatsKey {
+		t.Fatalf("expected unique stats keys, got first=%q second=%q", firstClient.StatsKey, secondClient.StatsKey)
+	}
+	if err := store.UpdateClientTraffic(ctx, firstClient.StatsKey, 7, 9); err != nil {
 		t.Fatalf("update duplicate email traffic: %v", err)
 	}
 	inbounds, err := store.ListInbounds(ctx)
@@ -1755,8 +1769,11 @@ func TestStoreUpdateClientTrafficByEmailUpdatesDuplicateEmailsAcrossInbounds(t *
 		for _, client := range inbound.Clients {
 			if client.Email == "shared@example.com" {
 				matched++
-				if client.Up != 7 || client.Down != 9 {
-					t.Fatalf("duplicate email client was not updated consistently: %+v", client)
+				if client.ID == firstClient.ID && (client.Up != 0 || client.Down != 0) {
+					t.Fatalf("first sample should establish baseline without usage delta: %+v", client)
+				}
+				if client.ID == secondClient.ID && (client.Up != 0 || client.Down != 0) {
+					t.Fatalf("duplicate email client should not be updated by another stats key: %+v", client)
 				}
 			}
 		}
@@ -1764,4 +1781,462 @@ func TestStoreUpdateClientTrafficByEmailUpdatesDuplicateEmailsAcrossInbounds(t *
 	if matched != 2 {
 		t.Fatalf("expected two duplicate-email clients, got %d", matched)
 	}
+}
+
+func TestTrafficRawIncrementRollbackAndResetBaseline(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "traffic", Protocol: "vless", Port: 28083, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "meter@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if client.StatsKey == "" || client.StatsKey == client.Email {
+		t.Fatalf("expected opaque stats key, got %+v", client)
+	}
+	t0 := time.Unix(100, 0)
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(100, 200), t0); err != nil {
+		t.Fatalf("baseline sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(160, 260), t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("increment sample: %v", err)
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	state := findTrafficState(states, "xray", "client", client.StatsKey)
+	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 || state.RateUp != 6 || state.RateDown != 6 {
+		t.Fatalf("unexpected increment state: %+v", state)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(10, 20), t0.Add(20*time.Second)); err != nil {
+		t.Fatalf("rollback sample: %v", err)
+	}
+	states, _ = store.ListTrafficStates(ctx)
+	state = findTrafficState(states, "xray", "client", client.StatsKey)
+	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 {
+		t.Fatalf("raw rollback should not reduce totals: %+v", state)
+	}
+	if _, err := store.ResetClientTrafficBaseline(ctx, client.ID, raw(10, 20)); err != nil {
+		t.Fatalf("reset baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(10, 20), t0.Add(30*time.Second)); err != nil {
+		t.Fatalf("same raw after reset: %v", err)
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	got := inbounds[0].Clients[0]
+	if got.Up != 0 || got.Down != 0 {
+		t.Fatalf("reset should not rebound on same raw baseline: %+v", got)
+	}
+}
+
+func TestSingboxResetBaselineDoesNotReboundOldTraffic(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28088, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "hy2@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	t0 := time.Unix(1000, 0)
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1000, 2000), t0); err != nil {
+		t.Fatalf("baseline sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1500, 2600), t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("increment sample: %v", err)
+	}
+	if _, err := store.ResetClientTrafficBaseline(ctx, client.ID, raw(1500, 2600)); err != nil {
+		t.Fatalf("reset baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1700, 2900), t0.Add(20*time.Second)); err != nil {
+		t.Fatalf("post-reset sample: %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !found || usage.Engine != "singbox" || usage.TotalUp != 200 || usage.TotalDown != 300 {
+		t.Fatalf("expected only post-reset singbox delta, got found=%v usage=%+v", found, usage)
+	}
+}
+
+func TestResetWithoutRawBaselineClearsExistingEngineAndUsesNextRawAsBaseline(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28089, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-wait@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(500, 700), time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(900, 1200), time.Unix(110, 0)); err != nil {
+		t.Fatalf("increment sample: %v", err)
+	}
+	if _, err := store.ResetClientTrafficBaseline(ctx, client.ID, nil); err != nil {
+		t.Fatalf("reset without baseline: %v", err)
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	state := findTrafficState(states, "singbox", "client", client.StatsKey)
+	if state == nil || state.TotalUp != 0 || state.TotalDown != 0 || state.Status != "unavailable" {
+		t.Fatalf("expected cleared unavailable singbox state, got %+v", state)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(950, 1300), time.Unix(120, 0)); err != nil {
+		t.Fatalf("first raw after missing baseline reset: %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !found || usage.TotalUp != 0 || usage.TotalDown != 0 || usage.Status != "ok" {
+		t.Fatalf("first raw after missing baseline should not rebound totals, got found=%v usage=%+v", found, usage)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1000, 1400), time.Unix(130, 0)); err != nil {
+		t.Fatalf("second raw after reset: %v", err)
+	}
+	usage, found, err = store.GetClientTrafficUsageForClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("usage after second raw: %v", err)
+	}
+	if !found || usage.TotalUp != 50 || usage.TotalDown != 100 {
+		t.Fatalf("expected only post-baseline delta, got found=%v usage=%+v", found, usage)
+	}
+}
+
+func TestFirstTrafficSamplePreservesLegacyClientTotals(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "legacy", Protocol: "vless", Port: 28084, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "legacy@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, client.StatsKey, 100, 100); err != nil {
+		t.Fatalf("baseline key sample: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, client.StatsKey, 150, 170); err != nil {
+		t.Fatalf("increment key sample: %v", err)
+	}
+	loaded, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if loaded[0].Clients[0].Up != 50 || loaded[0].Clients[0].Down != 70 {
+		t.Fatalf("expected prepared legacy totals, got %+v", loaded[0].Clients[0])
+	}
+	legacyClient := loaded[0].Clients[0]
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "singbox", ScopeType: "client", ScopeKey: legacyClient.StatsKey, RawUp: 5, RawDown: 6, Status: "ok"}}, time.Unix(200, 0)); err != nil {
+		t.Fatalf("first new engine sample: %v", err)
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	state := findTrafficState(states, "singbox", "client", legacyClient.StatsKey)
+	if state == nil || state.TotalUp != 50 || state.TotalDown != 70 {
+		t.Fatalf("first new state should preserve legacy totals: %+v", state)
+	}
+}
+
+func TestLegacyEmailTrafficFallbackOnlyForUniqueEmail(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	firstInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "first", Protocol: "vless", Port: 28085, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create first inbound: %v", err)
+	}
+	secondInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "second", Protocol: "vless", Port: 28086, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create second inbound: %v", err)
+	}
+	unique, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: firstInbound.ID, Email: "unique@example.com"})
+	if err != nil {
+		t.Fatalf("create unique client: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: firstInbound.ID, Email: "shared@example.com"}); err != nil {
+		t.Fatalf("create first shared client: %v", err)
+	}
+	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: secondInbound.ID, Email: "shared@example.com"}); err != nil {
+		t.Fatalf("create second shared client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, "unique@example.com", 10, 20); err != nil {
+		t.Fatalf("legacy unique baseline: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, "unique@example.com", 15, 30); err != nil {
+		t.Fatalf("legacy unique increment: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, "shared@example.com", 100, 200); err != nil {
+		t.Fatalf("legacy duplicate should be ignored without error: %v", err)
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	for _, inbound := range inbounds {
+		for _, client := range inbound.Clients {
+			if client.ID == unique.ID && (client.Up != 5 || client.Down != 10) {
+				t.Fatalf("unique legacy email should map to stats_key: %+v", client)
+			}
+			if client.Email == "shared@example.com" && (client.Up != 0 || client.Down != 0) {
+				t.Fatalf("duplicate legacy email should not be polluted: %+v", client)
+			}
+		}
+	}
+}
+
+func TestClientTrafficWritebackUsesCurrentEngineOnly(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "engine", Protocol: "vless", Port: 28087, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "engine@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	xrayRaw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	singboxRaw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	if err := store.ApplyTrafficRawStats(ctx, xrayRaw(100, 100), time.Unix(100, 0)); err != nil {
+		t.Fatalf("xray baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, xrayRaw(150, 160), time.Unix(110, 0)); err != nil {
+		t.Fatalf("xray increment: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, singboxRaw(1, 2), time.Unix(120, 0)); err != nil {
+		t.Fatalf("singbox baseline: %v", err)
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	got := inbounds[0].Clients[0]
+	if got.Up != 50 || got.Down != 60 {
+		t.Fatalf("singbox baseline must not overwrite xray client totals, got %+v", got)
+	}
+}
+
+func TestGetClientTrafficUsageSelectsExpectedEngineWithoutDoubleCounting(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	xrayInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 28090, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create xray inbound: %v", err)
+	}
+	singboxInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28091, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create singbox inbound: %v", err)
+	}
+	xrayClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: xrayInbound.ID, Email: "xray-usage"})
+	if err != nil {
+		t.Fatalf("create xray client: %v", err)
+	}
+	singboxClient, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: singboxInbound.ID, Email: "singbox-usage"})
+	if err != nil {
+		t.Fatalf("create singbox client: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 10, RawDown: 10, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 20, RawDown: 20, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 200, RawDown: 200, Status: "ok"},
+	}, time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline samples: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 15, RawDown: 16, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: xrayClient.StatsKey, RawUp: 140, RawDown: 150, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 25, RawDown: 26, Status: "ok"},
+		{Engine: "singbox", ScopeType: "client", ScopeKey: singboxClient.StatsKey, RawUp: 230, RawDown: 240, Status: "ok"},
+	}, time.Unix(110, 0)); err != nil {
+		t.Fatalf("increment samples: %v", err)
+	}
+	xrayUsage, found, err := store.GetClientTrafficUsageForClient(ctx, xrayClient.ID)
+	if err != nil {
+		t.Fatalf("xray usage: %v", err)
+	}
+	if !found || xrayUsage.Engine != "xray" || xrayUsage.TotalUp != 5 || xrayUsage.TotalDown != 6 {
+		t.Fatalf("expected xray usage only, got found=%v usage=%+v", found, xrayUsage)
+	}
+	singboxUsage, found, err := store.GetClientTrafficUsageForClient(ctx, singboxClient.ID)
+	if err != nil {
+		t.Fatalf("singbox usage: %v", err)
+	}
+	if !found || singboxUsage.Engine != "singbox" || singboxUsage.TotalUp != 30 || singboxUsage.TotalDown != 40 {
+		t.Fatalf("expected singbox usage only, got found=%v usage=%+v", found, singboxUsage)
+	}
+}
+
+func TestGetClientTrafficUsageUsesLegacyTotalsWhenNoTrafficState(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "legacy", Protocol: "vless", Port: 28092, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "legacy-usage"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"}}, time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 112, RawDown: 134, Status: "ok"}}, time.Unix(110, 0)); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	if err := store.DeleteClientTrafficStatesForTest(ctx, client.StatsKey); err != nil {
+		t.Fatalf("delete traffic states: %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !found || usage.Engine != "migate" || usage.Status != "cumulative_only" || usage.TotalUp != 12 || usage.TotalDown != 34 {
+		t.Fatalf("expected legacy cumulative usage, got found=%v usage=%+v", found, usage)
+	}
+}
+
+func TestGetClientTrafficUsageKeepsExpectedUnavailableOverFallbackOK(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28093, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-unavailable"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 1000, RawDown: 1000, Status: "ok"},
+	}, time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 110, RawDown: 120, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 1300, RawDown: 1400, Status: "ok"},
+	}, time.Unix(110, 0)); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	if err := store.MarkTrafficUnavailable(ctx, "singbox", "unavailable", "stats offline", time.Unix(120, 0)); err != nil {
+		t.Fatalf("mark unavailable: %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !found || usage.Engine != "singbox" || usage.Status != "unavailable" || usage.TotalUp != 10 || usage.TotalDown != 20 {
+		t.Fatalf("expected unavailable singbox usage, got found=%v usage=%+v", found, usage)
+	}
+}
+
+func TestGetClientTrafficUsageFallsBackWhenExpectedEngineMissing(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28094, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-fallback"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"}}, time.Unix(100, 0)); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 130, RawDown: 140, Status: "ok"}}, time.Unix(110, 0)); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !found || usage.Engine != "xray" || usage.Status != "ok" || usage.TotalUp != 30 || usage.TotalDown != 40 {
+		t.Fatalf("expected xray fallback usage, got found=%v usage=%+v", found, usage)
+	}
+}
+
+func findTrafficState(states []db.TrafficState, engine, scopeType, scopeKey string) *db.TrafficState {
+	for i := range states {
+		if states[i].Engine == engine && states[i].ScopeType == scopeType && states[i].ScopeKey == scopeKey {
+			return &states[i]
+		}
+	}
+	return nil
 }

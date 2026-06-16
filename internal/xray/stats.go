@@ -25,6 +25,8 @@ type StatsClient interface {
 	// QueryAllStats returns uplink and downlink bytes for each client email.
 	// Xray stat name format: "user>>{email}>>traffic>>{uplink|downlink}"
 	QueryAllStats(ctx context.Context) (map[string]*ClientStats, error)
+	// QueryTrafficStats returns raw core counters for all supported scopes.
+	QueryTrafficStats(ctx context.Context) ([]TrafficStat, error)
 	// Close releases any resources held by the client.
 	Close() error
 }
@@ -42,6 +44,14 @@ type ClientStats struct {
 	Email    string
 	Uplink   int64 // bytes uploaded
 	Downlink int64 // bytes downloaded
+}
+
+type TrafficStat struct {
+	Engine    string
+	ScopeType string
+	ScopeKey  string
+	Uplink    int64
+	Downlink  int64
 }
 
 // StubStatsClient is the default implementation that returns empty data.
@@ -94,6 +104,10 @@ func (c *StubStatsClient) QueryAllStats(ctx context.Context) (map[string]*Client
 	return make(map[string]*ClientStats), nil
 }
 
+func (c *StubStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+	return []TrafficStat{}, nil
+}
+
 // Close is a no-op for the stub client.
 func (c *StubStatsClient) Close() error {
 	return nil
@@ -105,6 +119,14 @@ func (c *CommandStatsClient) QueryAllStats(ctx context.Context) (map[string]*Cli
 		return nil, fmt.Errorf("xray statsquery: %w", err)
 	}
 	return ParseStatsQueryOutput(out)
+}
+
+func (c *CommandStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+	out, err := exec.CommandContext(ctx, c.BinaryPath, "api", "statsquery", "--server", c.Server, "-pattern", ">>>traffic>>>").Output()
+	if err != nil {
+		return nil, fmt.Errorf("xray statsquery: %w", err)
+	}
+	return ParseTrafficStatsQueryOutput("xray", out)
 }
 
 func (c *CommandStatsClient) Close() error { return nil }
@@ -135,6 +157,32 @@ func (c *ResilientStatsClient) QueryAllStats(ctx context.Context) (map[string]*C
 	return c.fallback.QueryAllStats(ctx)
 }
 
+func (c *ResilientStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.primary == nil {
+		return c.fallback.QueryTrafficStats(ctx)
+	}
+	stats, err := c.primary.QueryTrafficStats(ctx)
+	if err == nil {
+		if !c.ready {
+			log.Println("traffic sync: xray stats became available")
+			c.ready = true
+		}
+		return stats, nil
+	}
+	if c.ready {
+		log.Printf("traffic sync: xray stats became unavailable: %v", err)
+		c.ready = false
+		c.lastUnavailableLog = time.Now()
+	} else if time.Since(c.lastUnavailableLog) >= time.Minute {
+		log.Printf("traffic sync: xray stats unavailable, will retry: %v", err)
+		c.lastUnavailableLog = time.Now()
+	}
+	return c.fallback.QueryTrafficStats(ctx)
+}
+
 func (c *ResilientStatsClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -152,6 +200,27 @@ func (c *ResilientStatsClient) Close() error {
 }
 
 func ParseStatsQueryOutput(raw []byte) (map[string]*ClientStats, error) {
+	rawStats, err := ParseTrafficStatsQueryOutput("xray", raw)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]*ClientStats{}
+	for _, st := range rawStats {
+		if st.ScopeType != "client" {
+			continue
+		}
+		cs := result[st.ScopeKey]
+		if cs == nil {
+			cs = &ClientStats{Email: st.ScopeKey}
+			result[st.ScopeKey] = cs
+		}
+		cs.Uplink = st.Uplink
+		cs.Downlink = st.Downlink
+	}
+	return result, nil
+}
+
+func ParseTrafficStatsQueryOutput(engine string, raw []byte) ([]TrafficStat, error) {
 	var payload struct {
 		Stat []struct {
 			Name  string `json:"name"`
@@ -161,26 +230,45 @@ func ParseStatsQueryOutput(raw []byte) (map[string]*ClientStats, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
-	result := map[string]*ClientStats{}
+	byScope := map[string]*TrafficStat{}
 	for _, st := range payload.Stat {
 		parts := strings.Split(st.Name, ">>>")
-		if len(parts) != 4 || parts[0] != "user" || parts[2] != "traffic" {
+		if len(parts) != 4 || parts[2] != "traffic" {
 			continue
 		}
-		email := parts[1]
-		cs := result[email]
-		if cs == nil {
-			cs = &ClientStats{Email: email}
-			result[email] = cs
+		scopeType := normalizedScopeType(parts[0])
+		if scopeType == "" || strings.TrimSpace(parts[1]) == "" {
+			continue
+		}
+		key := engine + "\x00" + scopeType + "\x00" + parts[1]
+		current := byScope[key]
+		if current == nil {
+			current = &TrafficStat{Engine: engine, ScopeType: scopeType, ScopeKey: parts[1]}
+			byScope[key] = current
 		}
 		switch parts[3] {
 		case "uplink":
-			cs.Uplink = st.Value
+			current.Uplink = st.Value
 		case "downlink":
-			cs.Downlink = st.Value
+			current.Downlink = st.Value
 		}
 	}
+	result := make([]TrafficStat, 0, len(byScope))
+	for _, stat := range byScope {
+		result = append(result, *stat)
+	}
 	return result, nil
+}
+
+func normalizedScopeType(scope string) string {
+	switch scope {
+	case "user":
+		return "client"
+	case "inbound", "outbound", "core":
+		return scope
+	default:
+		return ""
+	}
 }
 
 // GRPCStatsClient uses gRPC to query real traffic stats from Xray.
@@ -226,6 +314,13 @@ func (c *GRPCStatsClient) QueryAllStats(ctx context.Context) (map[string]*Client
 	// Implementation requires google.golang.org/grpc
 	// See grpc_stats.go for the full implementation
 	return make(map[string]*ClientStats), fmt.Errorf("grpc implementation not available")
+}
+
+func (c *GRPCStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+	if !isGRPCEnabled() {
+		return nil, fmt.Errorf("grpc not enabled; cannot query stats")
+	}
+	return []TrafficStat{}, fmt.Errorf("grpc implementation not available")
 }
 
 // Close closes the gRPC connection.

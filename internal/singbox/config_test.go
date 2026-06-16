@@ -14,7 +14,7 @@ func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 			Hy2UpMbps: 100, Hy2DownMbps: 50,
 			Hy2Obfs: "salamander", Hy2ObfsPassword: "obfs-pass",
 			Clients: []db.Client{
-				{ID: 1, UUID: "client-pass-1", Email: "user1@test", Enabled: true},
+				{ID: 1, UUID: "client-pass-1", StatsKey: "c_hy2_stats", Email: "user1@test", Enabled: true},
 			},
 		},
 	}
@@ -54,6 +54,18 @@ func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 	}
 	if ib.Users[0].Password != "client-pass-1" {
 		t.Errorf("expected password client-pass-1, got %s", ib.Users[0].Password)
+	}
+	if ib.Users[0].Name != "c_hy2_stats" {
+		t.Fatalf("expected stats_key user name, got %q", ib.Users[0].Name)
+	}
+	if cfg.Experimental == nil || cfg.Experimental.V2RayAPI == nil || cfg.Experimental.V2RayAPI.Stats == nil || !cfg.Experimental.V2RayAPI.Stats.Enabled {
+		t.Fatal("expected sing-box experimental v2ray stats API to be enabled")
+	}
+	if len(cfg.Experimental.V2RayAPI.Stats.Inbounds) != 1 || cfg.Experimental.V2RayAPI.Stats.Inbounds[0] != "hy2-inbound-1" {
+		t.Fatalf("expected inbound stats list, got %+v", cfg.Experimental.V2RayAPI.Stats.Inbounds)
+	}
+	if len(cfg.Experimental.V2RayAPI.Stats.Users) != 1 || cfg.Experimental.V2RayAPI.Stats.Users[0] != "c_hy2_stats" {
+		t.Fatalf("expected user stats list with stats_key, got %+v", cfg.Experimental.V2RayAPI.Stats.Users)
 	}
 }
 

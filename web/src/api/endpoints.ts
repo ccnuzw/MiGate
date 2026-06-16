@@ -15,6 +15,10 @@ import type {
   CertStatus,
   ProxyPoolProxy,
   ProxyPoolResponse,
+  TrafficClient,
+  TrafficInbound,
+  TrafficSeriesPoint,
+  TrafficSummary,
   UpdateCheck,
   UpdateStatus,
   VersionResponse,
@@ -73,6 +77,17 @@ export const api = {
   deleteRoutingRule: (id: number) => del(`/api/routing-rules/${id}`),
   reorderRoutingRules: (ids: number[]) => post<{ status: string }>('/api/routing-rules/reorder', { ids }),
   dashboardSummary: () => get<DashboardSummary>('/api/dashboard/summary'),
+  trafficSummary: () => get<TrafficSummary>('/api/traffic/summary'),
+  trafficInbounds: () => get<{ inbounds: TrafficInbound[] }>('/api/traffic/inbounds'),
+  trafficClients: () => get<{ clients: TrafficClient[] }>('/api/traffic/clients'),
+  trafficSeries: (params: { scope_type?: 'client' | 'inbound' | 'outbound' | 'core'; since?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.scope_type) query.set('scope_type', params.scope_type);
+    if (params.since) query.set('since', params.since);
+    if (params.limit) query.set('limit', String(params.limit));
+    const suffix = query.toString();
+    return get<{ series: TrafficSeriesPoint[] }>(`/api/traffic/series${suffix ? `?${suffix}` : ''}`);
+  },
   stats: () => get<unknown>('/api/stats'),
   resources: () => get<Resources>('/api/system/resources'),
   xrayStatus: () => get<CoreStatus>('/api/xray/status'),

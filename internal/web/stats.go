@@ -17,7 +17,7 @@ import (
 )
 
 func isSingBoxProtocol(protocol string) bool {
-	switch protocol {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "hysteria2", "tuic", "shadowtls":
 		return true
 	default:
@@ -25,81 +25,247 @@ func isSingBoxProtocol(protocol string) bool {
 	}
 }
 
-func summarizeTraffic(ctx context.Context, inbounds []db.Inbound, statsClient xray.StatsClient) (map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary) {
-	liveStats := map[string]*xray.ClientStats{}
-	if statsClient != nil {
-		if stats, err := statsClient.QueryAllStats(ctx); err == nil {
-			liveStats = stats
+func expectedTrafficEngine(protocol string) string {
+	if isSingBoxProtocol(strings.ToLower(strings.TrimSpace(protocol))) {
+		return "singbox"
+	}
+	return "xray"
+}
+
+func normalizeTrafficEngine(engine string) string {
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	if engine == "sing-box" {
+		return "singbox"
+	}
+	return engine
+}
+
+func selectTrafficState(byEngine map[string]db.TrafficState, expectedEngine string) (db.TrafficState, bool) {
+	if len(byEngine) == 0 {
+		return db.TrafficState{}, false
+	}
+	expectedEngine = normalizeTrafficEngine(expectedEngine)
+	if state, ok := byEngine[expectedEngine]; ok {
+		return state, true
+	}
+	for _, engine := range fallbackTrafficEngines(expectedEngine) {
+		if state, ok := byEngine[engine]; ok {
+			return state, true
+		}
+	}
+	return db.TrafficState{}, false
+}
+
+func fallbackTrafficEngines(expectedEngine string) []string {
+	switch normalizeTrafficEngine(expectedEngine) {
+	case "singbox":
+		return []string{"xray", "migate"}
+	case "xray":
+		return []string{"singbox", "migate"}
+	default:
+		return []string{"xray", "singbox", "migate"}
+	}
+}
+
+func summarizeTraffic(ctx context.Context, store Store, inbounds []db.Inbound) (map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary) {
+	stateByScope := map[string]map[string]db.TrafficState{}
+	if store != nil {
+		if states, err := store.ListTrafficStates(ctx); err == nil {
+			for _, state := range states {
+				engine := normalizeTrafficEngine(state.Engine)
+				scopeType := strings.ToLower(strings.TrimSpace(state.ScopeType))
+				scopeKey := strings.TrimSpace(state.ScopeKey)
+				if engine == "" || scopeType == "" || scopeKey == "" {
+					continue
+				}
+				state.Engine = engine
+				state.ScopeType = scopeType
+				state.ScopeKey = scopeKey
+				key := scopeType + "\x00" + scopeKey
+				byEngine := stateByScope[key]
+				if byEngine == nil {
+					byEngine = map[string]db.TrafficState{}
+					stateByScope[key] = byEngine
+				}
+				current, ok := byEngine[engine]
+				if !ok || state.LastSeenAt > current.LastSeenAt {
+					byEngine[engine] = state
+				}
+			}
 		}
 	}
 	byInbound := map[int64]inboundTrafficSummary{}
 	byClient := map[int64]clientTrafficSummary{}
 	for _, inbound := range inbounds {
-		inboundSummary := inboundTrafficSummary{Source: "db"}
-		inboundSourceSet := false
-		if isSingBoxProtocol(inbound.Protocol) {
-			inboundSummary.Source = "unavailable"
+		expectedEngine := expectedTrafficEngine(inbound.Protocol)
+		inboundKey := inboundStatsKey(inbound)
+		inboundState, hasInboundState := selectTrafficState(stateByScope["inbound\x00"+inboundKey], expectedEngine)
+		inboundSummary := inboundTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
+		if hasInboundState {
+			inboundSummary.Up = inboundState.TotalUp
+			inboundSummary.Down = inboundState.TotalDown
+			inboundSummary.RateUp = inboundState.RateUp
+			inboundSummary.RateDown = inboundState.RateDown
+			inboundSummary.Status = stateStatus(inboundState)
+			inboundSummary.Message = inboundState.Message
+			inboundSummary.Engine = inboundState.Engine
 		}
 		for _, client := range inbound.Clients {
-			clientSummary := clientTrafficSummary{Up: client.Up, Down: client.Down, Source: "db"}
-			if isSingBoxProtocol(inbound.Protocol) {
-				clientSummary.Source = "unavailable"
-				clientSummary.Note = "sing-box realtime traffic stats are not yet wired"
-			} else if stats, ok := liveStats[client.Email]; ok {
-				clientSummary.Up = maxInt64(client.Up, stats.Uplink)
-				clientSummary.Down = maxInt64(client.Down, stats.Downlink)
-				clientSummary.XrayUp = stats.Uplink
-				clientSummary.XrayDown = stats.Downlink
-				clientSummary.Source = trafficSource(client.Up, client.Down, stats.Uplink, stats.Downlink)
-				clientSummary.RealtimeSource = "xray"
-				inboundSummary.RealtimeSource = "xray"
+			clientSummary := clientTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
+			if state, ok := selectTrafficState(stateByScope["client\x00"+client.StatsKey], expectedEngine); ok {
+				clientSummary.Up = state.TotalUp
+				clientSummary.Down = state.TotalDown
+				clientSummary.RateUp = state.RateUp
+				clientSummary.RateDown = state.RateDown
+				clientSummary.Status = stateStatus(state)
+				clientSummary.Message = state.Message
+				clientSummary.Engine = state.Engine
+				if state.Engine == "xray" {
+					clientSummary.XrayUp = state.LastRawUp
+					clientSummary.XrayDown = state.LastRawDown
+				}
+			} else if client.Up > 0 || client.Down > 0 {
+				clientSummary.Up = client.Up
+				clientSummary.Down = client.Down
+				clientSummary.Status = "cumulative_only"
 			}
-			if !inboundSourceSet {
-				inboundSummary.Source = clientSummary.Source
-				inboundSourceSet = true
-			} else {
-				inboundSummary.Source = combineTrafficSources(inboundSummary.Source, clientSummary.Source)
+			if !hasInboundState {
+				inboundSummary.Up += clientSummary.Up
+				inboundSummary.Down += clientSummary.Down
+				inboundSummary.RateUp += clientSummary.RateUp
+				inboundSummary.RateDown += clientSummary.RateDown
+				inboundSummary.Status = combineTrafficStatuses(inboundSummary.Status, clientSummary.Status)
+				inboundSummary.Engine = expectedEngine
 			}
 			byClient[client.ID] = clientSummary
-			inboundSummary.Up += clientSummary.Up
-			inboundSummary.Down += clientSummary.Down
 		}
 		inboundSummary.Total = inboundSummary.Up + inboundSummary.Down
+		if inboundSummary.Status == "waiting" && inboundSummary.Total > 0 {
+			inboundSummary.Status = "cumulative_only"
+		}
 		byInbound[inbound.ID] = inboundSummary
 	}
 	return byInbound, byClient
 }
 
-func trafficSource(dbUp, dbDown, xrayUp, xrayDown int64) string {
-	upSource := "db"
-	if xrayUp >= dbUp {
-		upSource = "xray"
+func inboundStatsKey(inbound db.Inbound) string {
+	switch strings.ToLower(strings.TrimSpace(inbound.Protocol)) {
+	case "hysteria2":
+		return fmt.Sprintf("hy2-inbound-%d", inbound.ID)
+	case "tuic":
+		return fmt.Sprintf("tuic-inbound-%d", inbound.ID)
+	case "shadowtls":
+		return fmt.Sprintf("shadowtls-inbound-%d", inbound.ID)
+	default:
+		return fmt.Sprintf("inbound-%d-%s", inbound.ID, strings.ToLower(strings.TrimSpace(inbound.Protocol)))
 	}
-	downSource := "db"
-	if xrayDown >= dbDown {
-		downSource = "xray"
-	}
-	if upSource == downSource {
-		return upSource
-	}
-	return "mixed"
 }
 
-func combineTrafficSources(current, next string) string {
-	if current == "" || current == next {
+func stateStatus(state db.TrafficState) string {
+	status := strings.TrimSpace(state.Status)
+	if status == "" {
+		return "waiting"
+	}
+	return status
+}
+
+func combineTrafficStatuses(current, next string) string {
+	if current == "" || current == "waiting" {
 		return next
 	}
-	if current == "unavailable" || next == "unavailable" {
+	if next == "" || next == "waiting" || current == next {
 		return current
 	}
-	return "mixed"
+	if current == "ok" && next == "ok" {
+		return "ok"
+	}
+	return "partial"
 }
 
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
+type trafficCoverageCounts struct {
+	total       int
+	ok          int
+	partial     int
+	unsupported int
+	unavailable int
+	waiting     int
+}
+
+func (counts *trafficCoverageCounts) add(status string) {
+	counts.total++
+	switch status {
+	case "ok":
+		counts.ok++
+	case "partial":
+		counts.partial++
+	case "unsupported":
+		counts.unsupported++
+	case "unavailable", "stale":
+		counts.unavailable++
+	case "waiting", "":
+		counts.waiting++
+	default:
+		counts.waiting++
 	}
-	return b
+}
+
+func (counts trafficCoverageCounts) status() string {
+	if counts.total == 0 {
+		return "waiting"
+	}
+	if counts.ok == counts.total {
+		return "ok"
+	}
+	if counts.partial > 0 || counts.ok > 0 {
+		return "partial"
+	}
+	if counts.unsupported == counts.total {
+		return "unsupported"
+	}
+	if counts.unavailable > 0 {
+		return "unavailable"
+	}
+	return "waiting"
+}
+
+func buildTrafficCoverage(byInbound map[int64]inboundTrafficSummary) map[string]interface{} {
+	counts := trafficCoverageCounts{}
+	countsByEngine := map[string]*trafficCoverageCounts{}
+	engines := map[string]string{"xray": "waiting", "singbox": "waiting"}
+	for _, summary := range byInbound {
+		counts.add(summary.Status)
+		if summary.Engine != "" {
+			engine := coverageEngineKey(summary.Engine)
+			engineCounts := countsByEngine[engine]
+			if engineCounts == nil {
+				engineCounts = &trafficCoverageCounts{}
+				countsByEngine[engine] = engineCounts
+			}
+			engineCounts.add(summary.Status)
+		}
+	}
+	for engine, engineCounts := range countsByEngine {
+		engines[engine] = engineCounts.status()
+	}
+	return map[string]interface{}{
+		"overall":     counts.status(),
+		"ok":          counts.ok,
+		"partial":     counts.partial,
+		"unsupported": counts.unsupported,
+		"unavailable": counts.unavailable,
+		"waiting":     counts.waiting,
+		"engines":     engines,
+	}
+}
+
+func coverageEngineKey(engine string) string {
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	switch engine {
+	case "sing-box":
+		return "singbox"
+	default:
+		return engine
+	}
 }
 
 func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
@@ -196,7 +362,7 @@ func buildStatsResponse(ctx context.Context, store Store, statsClient xray.Stats
 		}
 	}
 
-	trafficByInbound, trafficByClient := summarizeTraffic(ctx, inb, statsClient)
+	trafficByInbound, trafficByClient := summarizeTraffic(ctx, store, inb)
 	var totalUp int64
 	var totalDown int64
 	for _, traffic := range trafficByInbound {
@@ -235,9 +401,9 @@ func buildStatsResponse(ctx context.Context, store Store, statsClient xray.Stats
 				"traffic_limit":        c.TrafficLimit,
 				"expiry_at":            c.ExpiryAt,
 				"traffic_stats_source": clientTraffic.Source,
-			}
-			if clientTraffic.RealtimeSource != "" {
-				info["realtime_stats_source"] = clientTraffic.RealtimeSource
+				"rate_up":              clientTraffic.RateUp,
+				"rate_down":            clientTraffic.RateDown,
+				"traffic_status":       clientTraffic.Status,
 			}
 			if clientTraffic.Note != "" {
 				info["traffic_stats_note"] = clientTraffic.Note
@@ -314,6 +480,9 @@ func (c *dashboardSummaryCache) get(ctx context.Context, store Store, statsClien
 }
 
 func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.StatsClient) (map[string]interface{}, error) {
+	if store == nil {
+		return nil, fmt.Errorf("store_unavailable")
+	}
 	inbounds, err := store.ListInbounds(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list_inbounds_failed")
@@ -333,12 +502,14 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 	limitedClients := 0
 	enabledInbounds := 0
 	protocols := map[string]int{}
-	trafficSeries := make([]trafficSeriesPoint, 0, len(inbounds))
-	trafficByInbound, trafficByClient := summarizeTraffic(ctx, inbounds, statsClient)
+	trafficSeries := []trafficSeriesPoint{}
+	trafficByInbound, trafficByClient := summarizeTraffic(ctx, store, inbounds)
 	var totalUp int64
 	var totalDown int64
-	var realtimeUp int64
-	var realtimeDown int64
+	var xrayUp int64
+	var xrayDown int64
+	var rateUp float64
+	var rateDown float64
 	for _, inbound := range inbounds {
 		if inbound.Enabled {
 			enabledInbounds++
@@ -349,11 +520,8 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 		if traffic, ok := trafficByInbound[inbound.ID]; ok {
 			totalUp += traffic.Up
 			totalDown += traffic.Down
-			name := inbound.Remark
-			if strings.TrimSpace(name) == "" {
-				name = fmt.Sprintf("%s:%d", inbound.Protocol, inbound.Port)
-			}
-			trafficSeries = append(trafficSeries, trafficSeriesPoint{Name: name, Up: traffic.Up, Down: traffic.Down})
+			rateUp += traffic.RateUp
+			rateDown += traffic.RateDown
 		}
 		for _, client := range inbound.Clients {
 			clientCount++
@@ -370,9 +538,9 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 			if client.Enabled && !expired && !limited {
 				activeClients++
 			}
-			if traffic, ok := trafficByClient[client.ID]; ok {
-				realtimeUp += traffic.XrayUp
-				realtimeDown += traffic.XrayDown
+			if traffic, ok := trafficByClient[client.ID]; ok && traffic.Engine == "xray" {
+				xrayUp += traffic.Up
+				xrayDown += traffic.Down
 			}
 		}
 	}
@@ -387,6 +555,9 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 		if rule.Enabled {
 			enabledRules++
 		}
+	}
+	if samples, err := store.ListTrafficSamples(ctx, "client", time.Now().UTC().Add(-24*time.Hour), 240); err == nil {
+		trafficSeries = trafficSamplesToSeries(samples, "client", inbounds)
 	}
 	snapshot := validationSnapshot{inbounds: inbounds, outbounds: outbounds, rules: rules}
 	return map[string]interface{}{
@@ -407,10 +578,16 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 			"up":            totalUp,
 			"down":          totalDown,
 			"total":         totalUp + totalDown,
-			"xray_up":       realtimeUp,
-			"xray_down":     realtimeDown,
-			"xray_realtime": realtimeUp + realtimeDown,
+			"xray_up":       xrayUp,
+			"xray_down":     xrayDown,
+			"xray_realtime": xrayUp + xrayDown,
 		},
+		"traffic_rates": map[string]float64{
+			"rate_up":    rateUp,
+			"rate_down":  rateDown,
+			"rate_total": rateUp + rateDown,
+		},
+		"traffic_status": buildTrafficCoverage(trafficByInbound),
 		"protocols":      protocols,
 		"traffic_series": trafficSeries,
 		"validation": map[string]configValidationResult{

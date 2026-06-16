@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -85,7 +86,7 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 		}
 		inbounds = loaded
 	}
-	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), inbounds, statsClient)
+	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), store, inbounds)
 	if refreshTraffic {
 		views := make([]inboundTrafficView, 0, len(inbounds))
 		for _, inbound := range inbounds {
@@ -103,8 +104,11 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 				TrafficUp:      summary.Up,
 				TrafficDown:    summary.Down,
 				TrafficTotal:   summary.Total,
+				RateUp:         summary.RateUp,
+				RateDown:       summary.RateDown,
+				TrafficStatus:  summary.Status,
+				TrafficMessage: summary.Message,
 				TrafficSource:  summary.Source,
-				RealtimeSource: summary.RealtimeSource,
 				ClientTraffic:  map[int64]clientTrafficSummary{},
 			}
 			for _, client := range inbound.Clients {
@@ -126,8 +130,11 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 			TrafficUp:      summary.Up,
 			TrafficDown:    summary.Down,
 			TrafficTotal:   summary.Total,
+			RateUp:         summary.RateUp,
+			RateDown:       summary.RateDown,
+			TrafficStatus:  summary.Status,
+			TrafficMessage: summary.Message,
 			TrafficSource:  summary.Source,
-			RealtimeSource: summary.RealtimeSource,
 			ClientTraffic:  map[int64]clientTrafficSummary{},
 		}
 		for _, client := range inbound.Clients {
@@ -183,7 +190,7 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) bool {
 	return true
 }
 
-func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
+func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/inbounds/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -201,7 +208,7 @@ func inboundChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
-				if resetClientTraffic(w, r, store, inboundID, clientID) {
+				if resetClientTraffic(w, r, store, statsClient, singboxStatsClient, inboundID, clientID) {
 					applyCoreAsync(ctrl, store)
 				}
 			} else if len(parts) != 2 || parts[1] != "clients" {
@@ -443,12 +450,17 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 	return true
 }
 
-func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, inboundID, clientID int64) bool {
+func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient, inboundID, clientID int64) bool {
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return false
 	}
-	updated, err := store.ResetClientTraffic(r.Context(), clientID)
+	if !clientBelongsToInbound(r.Context(), store, inboundID, clientID) {
+		writeJSONError(w, http.StatusNotFound, "client_not_found")
+		return false
+	}
+	baselines := collectTrafficBaselines(r.Context(), store, statsClient, singboxStatsClient)
+	updated, err := store.ResetClientTrafficBaseline(r.Context(), clientID, baselines)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "reset_traffic_failed")
 		return false
@@ -456,6 +468,51 @@ func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, inb
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
 	return true
+}
+
+func clientBelongsToInbound(ctx context.Context, store Store, inboundID, clientID int64) bool {
+	if inboundID <= 0 || clientID <= 0 {
+		return false
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return false
+	}
+	for _, inbound := range inbounds {
+		if inbound.ID != inboundID {
+			continue
+		}
+		for _, client := range inbound.Clients {
+			if client.ID == clientID {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+func collectTrafficBaselines(ctx context.Context, store Store, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient) []db.TrafficRawStat {
+	baselines := []db.TrafficRawStat{}
+	appendStats := func(stats []xray.TrafficStat) {
+		for _, stat := range stats {
+			baselines = append(baselines, db.TrafficRawStat{
+				Engine: stat.Engine, ScopeType: stat.ScopeType, ScopeKey: stat.ScopeKey,
+				RawUp: stat.Uplink, RawDown: stat.Downlink, Status: "waiting",
+			})
+		}
+	}
+	if statsClient != nil {
+		if stats, err := statsClient.QueryTrafficStats(ctx); err == nil {
+			appendStats(stats)
+		}
+	}
+	if singboxStatsClient != nil {
+		if stats, err := singboxStatsClient.QueryTrafficStats(ctx); err == nil {
+			appendStats(stats)
+		}
+	}
+	return baselines
 }
 
 func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID int64) bool {
