@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { certIssuePayload, certSettingsPayload, isUpdateInProgress, isUpdateTerminal, settingsPayload, updateStatusRefetchInterval } from './SettingsPage';
+import { certIssuePayload, certSettingsPayload, formatUpdateLogs, isUpdateInProgress, isUpdateTerminal, settingsPayload, updateStatusRefetchInterval } from './SettingsPage';
 
 describe('settings helpers', () => {
   it('sends an empty password to preserve the existing backend password', () => {
@@ -40,5 +40,11 @@ describe('settings helpers', () => {
     expect(updateStatusRefetchInterval(undefined)).toBe(false);
     expect(isUpdateTerminal('failed')).toBe(true);
     expect(isUpdateTerminal('updating')).toBe(false);
+  });
+
+  it('formats update logs from API responses', () => {
+    expect(formatUpdateLogs(undefined, 'empty')).toBe('empty');
+    expect(formatUpdateLogs({ lines: ['a', 'b'] }, 'empty')).toBe('a\nb');
+    expect(formatUpdateLogs({ logs: 'raw log' }, 'empty')).toBe('raw log');
   });
 });

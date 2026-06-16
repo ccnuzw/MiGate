@@ -27,6 +27,7 @@ export default function SettingsPage() {
     refetchInterval: (query) => updateStatusRefetchInterval(query.state.data?.status, watchUpdateStatus),
     staleTime: 30_000,
   });
+  const updateLogs = useQuery({ queryKey: ['update-logs'], queryFn: api.updateLogs, enabled: false });
   const sessions = useQuery({ queryKey: ['sessions'], queryFn: api.sessions, retry: false, staleTime: 60_000 });
   const service = useQuery({ queryKey: ['service-status'], queryFn: api.serviceStatus, retry: false, staleTime: 30_000 });
   const form = useForm<Settings>({ values: settings.data || {} });
@@ -78,6 +79,8 @@ export default function SettingsPage() {
       setWatchUpdateStatus(true);
       showToast(text('更新命令已发送'), 'success');
       queryClient.invalidateQueries({ queryKey: ['update-status'] });
+      queryClient.invalidateQueries({ queryKey: ['update-logs'] });
+      updateLogs.refetch();
     },
     onError: (error) => showToast(errorMessage(error, text('启动更新失败')), 'error'),
   });
@@ -154,6 +157,7 @@ export default function SettingsPage() {
             <div className="flex flex-wrap gap-2">
               <button className="btn secondary" onClick={() => service.refetch()}><RefreshCw className="h-4 w-4" /> {text('刷新状态')}</button>
               <button className="btn secondary" onClick={() => updateCheck.refetch()}><RefreshCw className="h-4 w-4" /> {text('检查更新')}</button>
+              <button className="btn secondary" onClick={() => updateLogs.refetch()}><RefreshCw className="h-4 w-4" /> {text('加载更新日志')}</button>
               <SpinnerButton className="btn primary" loading={update.isPending} disabled={isUpdateInProgress(updateStatus.data?.status)} onClick={async () => (await confirm({ title: text('立即更新 MiGate？'), description: text('更新器将通过 systemd-run 在服务外执行。') })) && update.mutate()}><UploadCloud className="h-4 w-4" /> {text('立即更新')}</SpinnerButton>
             </div>
           </div>
@@ -170,8 +174,12 @@ export default function SettingsPage() {
               <div>{text('可更新')}：{text(updateCheck.data?.update_available ? '是' : '否')}</div>
               <div>{text('更新状态')}：{updateStatus.data?.status || '-'}</div>
               {updateStatus.data?.message ? <div>{text('消息')}：{updateStatus.data.message}</div> : null}
+              <div>{text('日志路径')}：{updateLogs.data?.path || '/var/log/migate-update.log'}</div>
               {updateCheck.data?.release_url ? <a className="inline-flex w-fit items-center gap-1 text-teal-700" href={updateCheck.data.release_url} target="_blank" rel="noreferrer">{text('发布说明')} <ExternalLink className="h-3 w-3" /></a> : null}
             </div>
+          </div>
+          <div className="mt-4">
+            <pre className="code-block core-code-block">{formatUpdateLogs(updateLogs.data, text('点击“加载更新日志”查看最近更新日志。'))}</pre>
           </div>
         </Card>
       </div>
@@ -251,4 +259,10 @@ export function isUpdateInProgress(status?: string) {
 
 export function isUpdateTerminal(status?: string) {
   return ['started', 'restarting', 'failed', 'completed', 'idle'].includes(String(status || '').toLowerCase());
+}
+
+export function formatUpdateLogs(data: { logs?: string; lines?: string[] } | undefined, emptyMessage: string): string {
+  if (!data) return emptyMessage;
+  if (Array.isArray(data.lines)) return data.lines.join('\n');
+  return data.logs || emptyMessage;
 }

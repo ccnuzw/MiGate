@@ -3,15 +3,19 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const defaultUpdateCheckURL = "https://api.github.com/repos/imzyb/MiGate/releases/latest"
+const updateLogPath = "/var/log/migate-update.log"
 
 type updateRuntimeStatus struct {
 	Status         string    `json:"status"`
@@ -124,6 +128,22 @@ func updateStatusHandler() http.HandlerFunc {
 	}
 }
 
+func updateLogsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		lines := clampUpdateLogLines(r.URL.Query().Get("lines"))
+		logs, err := readUpdateLogs(lines)
+		if err != nil {
+			logs = fmt.Sprintf("无法读取更新日志：%v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"logs": logs, "path": updateLogPath})
+	}
+}
+
 func updateHandler(version string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -137,12 +157,19 @@ func updateHandler(version string) http.HandlerFunc {
 		if current == "" {
 			current = "dev"
 		}
+		if !runningUnderGoTest() {
+			if err := validateUpdaterAvailable(); err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "updater_unavailable", map[string]interface{}{"detail": err.Error()})
+				return
+			}
+		}
 		status, started := globalUpdateState.start(current)
 		if !started {
 			writeJSON(w, http.StatusConflict, status)
 			return
 		}
-		command := "/usr/local/bin/migate-install --update"
+		command := "/usr/local/bin/migate-install --update --yes"
+		_ = appendUpdateLog(fmt.Sprintf("\n[%s] WebUI requested MiGate update from %s\n", time.Now().Format(time.RFC3339), current))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "updating", "command": command, "message": status.Message})
 		if f, ok := w.(http.Flusher); ok {
@@ -154,14 +181,101 @@ func updateHandler(version string) http.HandlerFunc {
 		}
 		go func() {
 			time.Sleep(500 * time.Millisecond)
-			err := exec.Command("systemd-run", "--wait", "--unit=migate-update", "--replace", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=180", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update").Run()
+			cmd := exec.Command("systemd-run", "--wait", "--unit=migate-update", "--replace", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=300", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update", "--yes")
+			out, err := cmd.CombinedOutput()
+			if len(out) > 0 {
+				_ = appendUpdateLog(string(out))
+			}
 			if err != nil {
-				globalUpdateState.finish("failed", err.Error())
+				message := strings.TrimSpace(string(out))
+				if recent, logErr := readUpdateLogs("20"); logErr == nil && strings.TrimSpace(recent) != "" {
+					message = strings.TrimSpace(recent)
+				}
+				if message == "" {
+					message = err.Error()
+				} else {
+					message = err.Error() + ": " + lastNonEmptyLine(message)
+				}
+				_ = appendUpdateLog(fmt.Sprintf("[%s] update failed: %s\n", time.Now().Format(time.RFC3339), message))
+				globalUpdateState.finish("failed", message)
 				return
 			}
-			globalUpdateState.finish("restarting", "update command started, MiGate will restart shortly")
+			globalUpdateState.finish("restarting", "update completed, MiGate should restart shortly")
 		}()
 	}
+}
+
+func validateUpdaterAvailable() error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("MiGate service must run as root to start the updater")
+	}
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		return fmt.Errorf("systemd-run not found: %w", err)
+	}
+	if _, err := os.Stat("/run/systemd/system"); err != nil {
+		return fmt.Errorf("systemd is not available: %w", err)
+	}
+	if info, err := os.Stat("/usr/local/bin/migate-install"); err != nil {
+		return fmt.Errorf("/usr/local/bin/migate-install not available: %w", err)
+	} else if info.IsDir() || info.Mode()&0111 == 0 {
+		return fmt.Errorf("/usr/local/bin/migate-install is not executable")
+	}
+	return nil
+}
+
+func readUpdateLogs(lines string) (string, error) {
+	if _, err := os.Stat(updateLogPath); err == nil {
+		out, err := exec.Command("tail", "-n", lines, updateLogPath).CombinedOutput()
+		if err == nil {
+			return string(out), nil
+		}
+		return string(out), err
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if _, err := exec.LookPath("journalctl"); err == nil {
+		out, journalErr := exec.Command("journalctl", "-u", "migate-update", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		if journalErr == nil {
+			return string(out), nil
+		}
+		return string(out), journalErr
+	}
+	return "", fmt.Errorf("%s 不存在，且 journalctl 不可用", updateLogPath)
+}
+
+func appendUpdateLog(entry string) error {
+	f, err := os.OpenFile(updateLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(entry)
+	return err
+}
+
+func clampUpdateLogLines(value string) string {
+	if value == "" {
+		return "120"
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		return "120"
+	}
+	if n > maxXrayLogLines {
+		return strconv.Itoa(maxXrayLogLines)
+	}
+	return strconv.Itoa(n)
+}
+
+func lastNonEmptyLine(text string) string {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func normalizeMiGateVersion(version string) string {

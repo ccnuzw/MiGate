@@ -57,6 +57,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/version", versionHandler(cfg.version))
 	mux.HandleFunc("/api/update/check", updateCheckHandler(&cfg))
 	mux.HandleFunc("/api/update/status", updateStatusHandler())
+	mux.HandleFunc("/api/update/logs", updateLogsHandler())
 	mux.HandleFunc("/api/update", updateHandler(cfg.version))
 	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
 	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(&cfg))
