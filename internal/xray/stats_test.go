@@ -3,6 +3,10 @@ package xray
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -105,14 +109,74 @@ func TestClientStatsStruct(t *testing.T) {
 	}
 }
 
-func TestGRPCStatsClientRequiresBuildTag(t *testing.T) {
-	// Without -tags grpc, NewGRPCStatsClient should return an error
-	client, err := NewGRPCStatsClient(context.Background(), "tcp:127.0.0.1:1080")
-	if err == nil {
-		t.Errorf("Expected error when grpc not enabled, got nil")
+func TestGRPCStatsClientQueriesStatsService(t *testing.T) {
+	addr, closeServer := startFakeStatsService(t, []TrafficStat{
+		{ScopeType: "client", ScopeKey: "sam@example.com", Uplink: 100, Downlink: 200},
+		{ScopeType: "inbound", ScopeKey: "inbound-1-vless", Uplink: 30, Downlink: 40},
+	})
+	defer closeServer()
+
+	client, err := NewGRPCStatsClient(context.Background(), addr)
+	if err != nil {
+		t.Fatalf("new grpc stats client: %v", err)
 	}
-	if client != nil {
-		t.Errorf("Expected nil client when grpc not enabled, got %v", client)
+	defer client.Close()
+
+	stats, err := client.QueryTrafficStats(context.Background())
+	if err != nil {
+		t.Fatalf("query grpc stats: %v", err)
+	}
+	byScope := map[string]TrafficStat{}
+	for _, stat := range stats {
+		byScope[stat.ScopeType+"/"+stat.ScopeKey] = stat
+	}
+	if got := byScope["client/sam@example.com"]; got.Engine != "xray" || got.Uplink != 100 || got.Downlink != 200 {
+		t.Fatalf("unexpected client stats: %+v", got)
+	}
+	if got := byScope["inbound/inbound-1-vless"]; got.Engine != "xray" || got.Uplink != 30 || got.Downlink != 40 {
+		t.Fatalf("unexpected inbound stats: %+v", got)
+	}
+}
+
+func TestGRPCStatsClientWithEngine(t *testing.T) {
+	addr, closeServer := startFakeStatsService(t, []TrafficStat{
+		{ScopeType: "client", ScopeKey: "c_singbox", Uplink: 10, Downlink: 20},
+	})
+	defer closeServer()
+
+	client, err := NewGRPCStatsClientWithEngine(context.Background(), addr, "singbox")
+	if err != nil {
+		t.Fatalf("new grpc stats client: %v", err)
+	}
+	defer client.Close()
+
+	stats, err := client.QueryTrafficStats(context.Background())
+	if err != nil {
+		t.Fatalf("query grpc stats: %v", err)
+	}
+	if len(stats) != 1 || stats[0].Engine != "singbox" || stats[0].ScopeKey != "c_singbox" || stats[0].Uplink != 10 || stats[0].Downlink != 20 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestGRPCStatsClientWithCustomServiceName(t *testing.T) {
+	addr, closeServer := startFakeStatsServiceAtPath(t, "/experimental.v2rayapi.StatsService/QueryStats", []TrafficStat{
+		{ScopeType: "client", ScopeKey: "c_singbox", Uplink: 10, Downlink: 20},
+	})
+	defer closeServer()
+
+	client, err := NewGRPCStatsClientWithEngineAndService(context.Background(), addr, "singbox", "experimental.v2rayapi.StatsService")
+	if err != nil {
+		t.Fatalf("new grpc stats client: %v", err)
+	}
+	defer client.Close()
+
+	stats, err := client.QueryTrafficStats(context.Background())
+	if err != nil {
+		t.Fatalf("query grpc stats: %v", err)
+	}
+	if len(stats) != 1 || stats[0].Engine != "singbox" || stats[0].ScopeKey != "c_singbox" {
+		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }
 
@@ -153,5 +217,52 @@ func TestParseTrafficStatsQueryOutputAllScopes(t *testing.T) {
 	}
 	if got := byScope["outbound/direct"]; got.Uplink != 50 || got.Downlink != 60 {
 		t.Fatalf("unexpected outbound stats: %+v", got)
+	}
+}
+
+func startFakeStatsService(t *testing.T, stats []TrafficStat) (string, func()) {
+	return startFakeStatsServiceAtPath(t, "/xray.app.stats.command.StatsService/QueryStats", stats)
+}
+
+func startFakeStatsServiceAtPath(t *testing.T, path string, stats []TrafficStat) (string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake stats service: %v", err)
+	}
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	server := &http.Server{
+		Protocols: protocols,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != path {
+				t.Errorf("unexpected stats service path: %s", r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read request body: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if !strings.Contains(string(body), ">>>traffic>>>") {
+				t.Errorf("request body missing traffic pattern: %x", body)
+				http.Error(w, "missing pattern", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Trailer", "Grpc-Status")
+			w.Header().Set("Content-Type", "application/grpc")
+			_, _ = w.Write(encodeGRPCFrame(encodeQueryStatsResponse(stats)))
+			w.Header().Set("Grpc-Status", "0")
+		}),
+	}
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			t.Errorf("fake stats service: %v", err)
+		}
+	}()
+	return listener.Addr().String(), func() {
+		_ = server.Close()
 	}
 }

@@ -452,6 +452,48 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 	}
 }
 
+func TestInstallerRepairServiceRefreshesSandboxPermissions(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system",
+		"repair_service_flow()",
+		"write_systemd_service",
+		"restart_migate_service",
+		"run_cmd systemctl daemon-reload",
+		"run_cmd systemctl restart migate",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("repair-service cannot refresh sandbox permission %q", want)
+		}
+	}
+	repairIdx := strings.Index(script, "repair_service_flow()")
+	writeIdx := strings.Index(script[repairIdx:], "write_systemd_service")
+	restartIdx := strings.Index(script[repairIdx:], "restart_migate_service")
+	if repairIdx < 0 || writeIdx < 0 || restartIdx < 0 || writeIdx > restartIdx {
+		t.Fatalf("repair-service must rewrite migate.service before restarting service")
+	}
+}
+
+func TestInstallerUpdateFlowRewritesServiceBeforeRestart(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	writeIdx := strings.Index(script, "write_systemd_service")
+	restartIdx := strings.Index(script, "section \"服务启动\"")
+	if writeIdx < 0 || restartIdx < 0 || writeIdx > restartIdx {
+		t.Fatalf("update/install flow must rewrite migate.service before service restart")
+	}
+	for _, want := range []string{
+		"install_release_flow()",
+		"write_systemd_service",
+		"restart_migate_service",
+		"run_cmd systemctl daemon-reload",
+		"run_cmd systemctl restart migate",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("update flow service refresh contract missing %q", want)
+		}
+	}
+}
+
 func TestInstallerUpdateSkipsCorePromptsUnlessExplicitlyRequested(t *testing.T) {
 	root := repoRoot(t)
 	cmd := exec.Command("bash", filepath.Join(root, "packaging", "install.sh"), "--upgrade", "--yes", "--dry-run")

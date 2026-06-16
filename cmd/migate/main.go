@@ -756,7 +756,13 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		xray.NewCommandStatsClient("/usr/local/bin/xray", "127.0.0.1:10085"),
 		xray.NewStubStatsClient(),
 	)
-	singboxStatsClient := singbox.NewCommandStatsClient("", "127.0.0.1:10086")
+	var singboxStatsClient singbox.StatsClient
+	singboxStatsClient, err = singbox.NewGRPCStatsClient(context.Background(), "127.0.0.1:10086")
+	if err != nil {
+		err = fmt.Errorf("build sing-box stats client: %w", err)
+		log.Printf("traffic sync: sing-box stats unavailable; scheduler will mark singbox unavailable: %v", err)
+		singboxStatsClient = singbox.NewUnavailableStatsClient(err)
+	}
 	opts = append(opts, web.WithStatsClient(statsClient))
 	opts = append(opts, web.WithSingboxStatsClient(singboxStatsClient))
 

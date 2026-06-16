@@ -1,6 +1,7 @@
 package singbox
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -67,6 +68,55 @@ func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 	if len(cfg.Experimental.V2RayAPI.Stats.Users) != 1 || cfg.Experimental.V2RayAPI.Stats.Users[0] != "c_hy2_stats" {
 		t.Fatalf("expected user stats list with stats_key, got %+v", cfg.Experimental.V2RayAPI.Stats.Users)
 	}
+}
+
+func TestBuildConfig_SerializesV2RayAPIStatsSchema(t *testing.T) {
+	inbounds := []db.Inbound{
+		{
+			ID: 1, Protocol: "hysteria2", Port: 40002, Enabled: true,
+			Clients: []db.Client{
+				{ID: 1, UUID: "client-pass-1", StatsKey: "c_hy2_stats", Email: "user1@test", Enabled: true},
+				{ID: 2, UUID: "disabled-pass", StatsKey: "disabled_stats", Email: "user2@test", Enabled: false},
+			},
+		},
+		{
+			ID: 2, Protocol: "tuic", Port: 40003, Enabled: true,
+			Clients: []db.Client{{ID: 3, UUID: "tuic-pass", Email: "tuic@test", Enabled: true}},
+		},
+		{
+			ID: 3, Protocol: "shadowtls", Port: 40004, Enabled: true,
+			Clients: []db.Client{{ID: 4, UUID: "shadow-pass", StatsKey: "c_shadow", Email: "shadow@test", Enabled: true}},
+		},
+	}
+
+	raw, err := json.Marshal(BuildConfig(inbounds))
+	if err != nil {
+		t.Fatalf("marshal sing-box config: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode sing-box config json: %v", err)
+	}
+	experimental, ok := decoded["experimental"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected experimental object: %s", raw)
+	}
+	api, ok := experimental["v2ray_api"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected experimental.v2ray_api object: %s", raw)
+	}
+	if api["listen"] != "127.0.0.1:10086" {
+		t.Fatalf("unexpected v2ray_api listen: %#v", api["listen"])
+	}
+	stats, ok := api["stats"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected v2ray_api.stats object: %s", raw)
+	}
+	if stats["enabled"] != true {
+		t.Fatalf("expected stats.enabled=true, got %#v", stats["enabled"])
+	}
+	assertJSONStrings(t, stats["inbounds"], []string{"hy2-inbound-1", "tuic-inbound-2", "shadowtls-inbound-3"})
+	assertJSONStrings(t, stats["users"], []string{"c_hy2_stats", "tuic@test", "c_shadow"})
 }
 
 func TestBuildConfig_Hysteria2TLSEnabledOnlyWhenRequested(t *testing.T) {
@@ -383,5 +433,21 @@ func TestBuildConfig_MixedSingBoxProtocols(t *testing.T) {
 	}
 	if types["vless"] || types["shadowsocks"] {
 		t.Error("non-sing-box protocols should be skipped")
+	}
+}
+
+func assertJSONStrings(t *testing.T, raw interface{}, want []string) {
+	t.Helper()
+	values, ok := raw.([]interface{})
+	if !ok {
+		t.Fatalf("expected JSON string array, got %#v", raw)
+	}
+	if len(values) != len(want) {
+		t.Fatalf("unexpected array length: got %#v want %#v", values, want)
+	}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("unexpected array value at %d: got %#v want %#v", i, values[i], want[i])
+		}
 	}
 }
