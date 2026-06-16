@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 type mockStore struct {
 	traffic map[string]*xray.ClientStats
 	raw     []db.TrafficRawStat
+	unavail []db.TrafficRawStat
 }
 
 func (m *mockStore) UpdateClientTraffic(ctx context.Context, email string, uplink, downlink int64) error {
@@ -36,18 +38,30 @@ func (m *mockStore) ApplyTrafficRawStats(ctx context.Context, stats []db.Traffic
 }
 
 func (m *mockStore) MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error {
+	m.unavail = append(m.unavail, db.TrafficRawStat{Engine: engine, Status: status, Message: message})
 	return nil
 }
 
 type mockStatsClient struct {
 	stats map[string]*xray.ClientStats
+	raw   []xray.TrafficStat
+	err   error
 }
 
 func (m *mockStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.ClientStats, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
 	return m.stats, nil
 }
 
 func (m *mockStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.raw != nil {
+		return m.raw, nil
+	}
 	result := make([]xray.TrafficStat, 0, len(m.stats))
 	for _, stat := range m.stats {
 		result = append(result, xray.TrafficStat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
@@ -95,5 +109,47 @@ func TestTrafficSyncSchedulerWithEmptyStats(t *testing.T) {
 
 	if len(store.traffic) != 0 {
 		t.Errorf("Expected 0 clients with empty stats, got %d", len(store.traffic))
+	}
+}
+
+func TestTrafficSyncSchedulerKeepsXrayWhenSingboxUnavailable(t *testing.T) {
+	store := &mockStore{}
+	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: "client1@test.com", Uplink: 1024, Downlink: 2048},
+	}}
+	singboxClient := &mockStatsClient{err: errors.New("connect 127.0.0.1:10086: connection refused")}
+
+	scheduler := NewTrafficSyncSchedulerWithSingbox(store, xrayClient, singboxClient, time.Minute)
+	scheduler.sync()
+
+	if len(store.raw) != 1 {
+		t.Fatalf("expected xray raw stat to be applied despite sing-box failure, got %+v", store.raw)
+	}
+	if store.raw[0].Engine != "xray" || store.raw[0].ScopeKey != "client1@test.com" {
+		t.Fatalf("unexpected raw stat: %+v", store.raw[0])
+	}
+	if len(store.unavail) != 1 || store.unavail[0].Engine != "singbox" || store.unavail[0].Status != "unavailable" {
+		t.Fatalf("expected singbox unavailable marker, got %+v", store.unavail)
+	}
+}
+
+func TestTrafficSyncSchedulerWritesSingboxEngineStats(t *testing.T) {
+	store := &mockStore{}
+	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
+	singboxClient := &mockStatsClient{raw: []xray.TrafficStat{
+		{Engine: "singbox", ScopeType: "client", ScopeKey: "c_singbox", Uplink: 10, Downlink: 20},
+		{Engine: "singbox", ScopeType: "inbound", ScopeKey: "hy2-inbound-1", Uplink: 30, Downlink: 40},
+	}}
+
+	scheduler := NewTrafficSyncSchedulerWithSingbox(store, xrayClient, singboxClient, time.Minute)
+	scheduler.sync()
+
+	if len(store.raw) != 2 {
+		t.Fatalf("expected singbox stats to be applied, got %+v", store.raw)
+	}
+	for _, stat := range store.raw {
+		if stat.Engine != "singbox" || stat.Status != "ok" {
+			t.Fatalf("unexpected singbox stat: %+v", stat)
+		}
 	}
 }
