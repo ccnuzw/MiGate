@@ -529,14 +529,14 @@ download_release_asset() {
   download_file "$CHECKSUM_URL" "$TMP/checksums.txt"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] grep "migate-linux-${ARCH}.tar.gz" %q > %q\n' "$TMP/checksums.txt" "$TMP/${ARTIFACT}.sha256"
-    printf '[DRY-RUN] tar -xzf %q -C %q\n' "$TMP/migate-linux-${ARCH}.tar.gz" "$TMP"
+    printf '[DRY-RUN] tar --no-same-owner -xzf %q -C %q\n' "$TMP/migate-linux-${ARCH}.tar.gz" "$TMP"
     return 0
   fi
   grep "migate-linux-${ARCH}.tar.gz" "$TMP/checksums.txt" > "$TMP/${ARTIFACT}.sha256"
   log_info "校验 Release 包 sha256"
   verify_sha256 "${ARTIFACT}.sha256" "$TMP"
   log_info "解压 Release 包"
-  tar -xzf "$TMP/migate-linux-${ARCH}.tar.gz" -C "$TMP"
+  tar --no-same-owner -xzf "$TMP/migate-linux-${ARCH}.tar.gz" -C "$TMP"
 }
 
 install_migate_binary_from_tmp() {
@@ -740,6 +740,7 @@ write_systemd_service() {
     printf '[DRY-RUN] write %q\n' "$SERVICE_PATH"
     return 0
   fi
+  mkdir -p "$CONFIG_DIR" "$INSTALL_DIR" /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system
   cat > "$SERVICE_PATH" <<UNIT
 [Unit]
 Description=MiGate Service
@@ -757,11 +758,9 @@ LimitNOFILE=1048576
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log
+ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-SystemCallFilter=@system-service
 StandardOutput=journal
 StandardError=journal
 LogRateLimitIntervalSec=30s
@@ -837,7 +836,7 @@ install_xray() {
   log_info "校验 Xray sha256"
   verify_sha256 "$xray_artifact.sha256" "$tmp_xray"
   log_info "解压并安装 Xray"
-  unzip -q "$tmp_xray/$xray_artifact" -d "$tmp_xray/xray"
+  unzip -oq "$tmp_xray/$xray_artifact" -d "$tmp_xray/xray"
   cp "$tmp_xray/xray/xray" /usr/local/bin/xray
   chmod +x /usr/local/bin/xray
   mkdir -p /usr/local/share/xray "$INSTALL_DIR" /usr/local/etc/xray
@@ -939,7 +938,7 @@ install_singbox() {
   log_info "校验 sing-box sha256"
   verify_sha256 "$sb_artifact.sha256" "$tmp_sb"
   log_info "解压并安装 sing-box"
-  tar -xzf "$tmp_sb/$sb_artifact" -C "$tmp_sb"
+  tar --no-same-owner -xzf "$tmp_sb/$sb_artifact" -C "$tmp_sb"
   cp "$tmp_sb"/sing-box-*/sing-box /usr/local/bin/sing-box
   chmod +x /usr/local/bin/sing-box
   rm -rf "$tmp_sb"

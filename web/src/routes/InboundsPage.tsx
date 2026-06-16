@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Columns2, Copy, Edit2, Link2, Plus, Power, RectangleHorizontal, RotateCcw, Trash2 } from 'lucide-react';
+import { Columns2, Copy, Edit2, Plus, Power, RectangleHorizontal, RotateCcw, Trash2 } from 'lucide-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ApiError, appPath } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CertStatus, Client, Inbound } from '../api/types';
 import { EmptyState, LoadingBlock, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
+import { copyToClipboard } from '../lib/clipboard';
 import { formatBytes, randomUUID } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { usePageVisible } from '../lib/visibility';
@@ -300,7 +301,6 @@ export default function InboundsPage() {
                       key={client.id}
                       inbound={inbound}
                       client={mergeClientTraffic(inbound, client)}
-                      onCopySub={() => copyText(subscriptionURL(client), '订阅链接已复制', showToast)}
                       onCopyShare={() => copyShareLink(client, showToast)}
                       onToggle={() => toggleClient.mutate({ inboundId: inbound.id, client })}
                       onEdit={() => setEditingClient({ inbound, client })}
@@ -326,7 +326,6 @@ export default function InboundsPage() {
 
 function ClientRow({
   client,
-  onCopySub,
   onCopyShare,
   onToggle,
   onEdit,
@@ -335,7 +334,6 @@ function ClientRow({
 }: {
   inbound: Inbound;
   client: Client;
-  onCopySub: () => void;
   onCopyShare: () => void;
   onToggle: () => void;
   onEdit: () => void;
@@ -362,7 +360,6 @@ function ClientRow({
         </div>
       </div>
       <div className="action-row">
-        <button className="icon-button" onClick={onCopySub} title="复制订阅链接"><Link2 className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onCopyShare} title="复制客户端分享链接"><Copy className="h-4 w-4" /></button>
         <button className={toggleButtonClass(client.enabled)} onClick={onToggle} title="启停"><Power className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onEdit} title="编辑"><Edit2 className="h-4 w-4" /></button>
@@ -789,13 +786,13 @@ function randomSecret(length: number) {
   return randomUUID().replace(/-/g, '').slice(0, length);
 }
 
-function subscriptionURL(client: Client) {
-  return `${window.location.origin}${appPath(`/sub/${subscriptionToken(client)}`)}`;
-}
-
 async function copyText(value: string, title: string, showToast: (title: string, tone?: 'success' | 'error' | 'info') => void) {
-  await navigator.clipboard?.writeText(value);
-  showToast(title, 'success');
+  try {
+    await copyToClipboard(value);
+    showToast(title, 'success');
+  } catch {
+    showToast('复制失败', 'error');
+  }
 }
 
 async function copyShareLink(client: Client, showToast: (title: string, tone?: 'success' | 'error' | 'info') => void) {
