@@ -782,10 +782,12 @@ function formatLocalDate(date: Date): string {
 function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
   if (status === 'ok') return text('统计正常');
   if (status === 'cumulative_only') return text('仅显示累计');
-  if (status === 'stale' || status === 'partial') return text('同步延迟');
-  if (status === 'unavailable') return text('核心未运行');
-  if (status === 'unsupported') return text('暂不支持');
-  return text('等待首次采样');
+  if (status === 'partial') return text('部分不可用');
+  if (status === 'stale') return text('统计状态过期');
+  if (status === 'unavailable') return text('统计接口不可用');
+  if (status === 'unsupported') return text('当前 sing-box 二进制不支持实时统计');
+  if (status === 'not_configured') return text('未配置对应核心入站');
+  return text('等待采样');
 }
 
 export function generatedProtocolCredential(protocol?: string) {

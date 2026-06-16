@@ -13,20 +13,12 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
-func isSingBoxProtocol(protocol string) bool {
-	switch strings.ToLower(strings.TrimSpace(protocol)) {
-	case "hysteria2", "tuic", "shadowtls":
-		return true
-	default:
-		return false
-	}
-}
-
 func expectedTrafficEngine(protocol string) string {
-	if isSingBoxProtocol(strings.ToLower(strings.TrimSpace(protocol))) {
+	if singbox.IsSingboxProtocol(strings.ToLower(strings.TrimSpace(protocol))) {
 		return "singbox"
 	}
 	return "xray"
@@ -183,12 +175,13 @@ func combineTrafficStatuses(current, next string) string {
 }
 
 type trafficCoverageCounts struct {
-	total       int
-	ok          int
-	partial     int
-	unsupported int
-	unavailable int
-	waiting     int
+	total         int
+	ok            int
+	partial       int
+	unsupported   int
+	notConfigured int
+	unavailable   int
+	waiting       int
 }
 
 func (counts *trafficCoverageCounts) add(status string) {
@@ -200,6 +193,8 @@ func (counts *trafficCoverageCounts) add(status string) {
 		counts.partial++
 	case "unsupported":
 		counts.unsupported++
+	case "not_configured":
+		counts.notConfigured++
 	case "unavailable", "stale":
 		counts.unavailable++
 	case "waiting", "":
@@ -211,15 +206,24 @@ func (counts *trafficCoverageCounts) add(status string) {
 
 func (counts trafficCoverageCounts) status() string {
 	if counts.total == 0 {
-		return "waiting"
+		return "not_configured"
+	}
+	if counts.notConfigured == counts.total {
+		return "not_configured"
 	}
 	if counts.ok == counts.total {
 		return "ok"
 	}
-	if counts.partial > 0 || counts.ok > 0 {
+	if counts.ok > 0 {
+		if counts.partial > 0 || counts.unsupported > 0 || counts.unavailable > 0 || counts.waiting > 0 {
+			return "partial"
+		}
+		return "ok"
+	}
+	if counts.partial > 0 {
 		return "partial"
 	}
-	if counts.unsupported == counts.total {
+	if counts.unsupported > 0 && counts.unavailable == 0 {
 		return "unsupported"
 	}
 	if counts.unavailable > 0 {
@@ -231,7 +235,7 @@ func (counts trafficCoverageCounts) status() string {
 func buildTrafficCoverage(byInbound map[int64]inboundTrafficSummary) map[string]interface{} {
 	counts := trafficCoverageCounts{}
 	countsByEngine := map[string]*trafficCoverageCounts{}
-	engines := map[string]string{"xray": "waiting", "singbox": "waiting"}
+	engines := map[string]string{"xray": "not_configured", "singbox": "not_configured"}
 	for _, summary := range byInbound {
 		counts.add(summary.Status)
 		if summary.Engine != "" {
@@ -248,13 +252,14 @@ func buildTrafficCoverage(byInbound map[int64]inboundTrafficSummary) map[string]
 		engines[engine] = engineCounts.status()
 	}
 	return map[string]interface{}{
-		"overall":     counts.status(),
-		"ok":          counts.ok,
-		"partial":     counts.partial,
-		"unsupported": counts.unsupported,
-		"unavailable": counts.unavailable,
-		"waiting":     counts.waiting,
-		"engines":     engines,
+		"overall":        counts.status(),
+		"ok":             counts.ok,
+		"partial":        counts.partial,
+		"unsupported":    counts.unsupported,
+		"not_configured": counts.notConfigured,
+		"unavailable":    counts.unavailable,
+		"waiting":        counts.waiting,
+		"engines":        engines,
 	}
 }
 
@@ -420,18 +425,18 @@ func queryBool(r *http.Request, name string) bool {
 	return value == "1" || value == "true" || value == "yes"
 }
 
-func dashboardSummaryHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
+func dashboardSummaryHandler(cfg *routerConfig) http.HandlerFunc {
 	cache := newDashboardSummaryCache(7 * time.Second)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
 			return
 		}
-		if store == nil {
+		if cfg == nil || cfg.store == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 			return
 		}
-		summary, err := cache.get(r.Context(), store, statsClient)
+		summary, err := cache.get(r.Context(), cfg)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -452,9 +457,9 @@ func newDashboardSummaryCache(ttl time.Duration) *dashboardSummaryCache {
 	return &dashboardSummaryCache{ttl: ttl, now: time.Now}
 }
 
-func (c *dashboardSummaryCache) get(ctx context.Context, store Store, statsClient xray.StatsClient) (map[string]interface{}, error) {
+func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
 	if c == nil || c.ttl <= 0 {
-		return buildDashboardSummary(ctx, store, statsClient)
+		return buildDashboardSummary(ctx, cfg)
 	}
 	now := c.now()
 	c.mu.Lock()
@@ -465,7 +470,7 @@ func (c *dashboardSummaryCache) get(ctx context.Context, store Store, statsClien
 	}
 	c.mu.Unlock()
 
-	summary, err := buildDashboardSummary(ctx, store, statsClient)
+	summary, err := buildDashboardSummary(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -479,10 +484,11 @@ func (c *dashboardSummaryCache) get(ctx context.Context, store Store, statsClien
 	return summary, nil
 }
 
-func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.StatsClient) (map[string]interface{}, error) {
-	if store == nil {
+func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
+	if cfg == nil || cfg.store == nil {
 		return nil, fmt.Errorf("store_unavailable")
 	}
+	store := cfg.store
 	inbounds, err := store.ListInbounds(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list_inbounds_failed")
@@ -592,7 +598,7 @@ func buildDashboardSummary(ctx context.Context, store Store, statsClient xray.St
 		"traffic_series": trafficSeries,
 		"validation": map[string]configValidationResult{
 			"xray":    validateXrayConfigSnapshot(snapshot),
-			"singbox": validateSingboxConfigSnapshot(snapshot),
+			"singbox": validateSingboxConfigSnapshotWithRuntime(ctx, snapshot, cfg),
 		},
 	}, nil
 }

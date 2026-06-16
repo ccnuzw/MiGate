@@ -3,6 +3,7 @@ package singbox
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/imzyb/MiGate/internal/db"
@@ -20,7 +21,7 @@ func TestBuildConfig_Hysteria2Inbound(t *testing.T) {
 		},
 	}
 
-	cfg := BuildConfig(inbounds)
+	cfg := BuildConfigWithOptions(inbounds, BuildOptions{EnableV2RayAPIStats: true})
 
 	if len(cfg.Inbounds) != 1 {
 		t.Fatalf("expected 1 inbound, got %d", len(cfg.Inbounds))
@@ -89,7 +90,7 @@ func TestBuildConfig_SerializesV2RayAPIStatsSchema(t *testing.T) {
 		},
 	}
 
-	raw, err := json.Marshal(BuildConfig(inbounds))
+	raw, err := json.Marshal(BuildConfigWithOptions(inbounds, BuildOptions{EnableV2RayAPIStats: true}))
 	if err != nil {
 		t.Fatalf("marshal sing-box config: %v", err)
 	}
@@ -117,6 +118,21 @@ func TestBuildConfig_SerializesV2RayAPIStatsSchema(t *testing.T) {
 	}
 	assertJSONStrings(t, stats["inbounds"], []string{"hy2-inbound-1", "tuic-inbound-2", "shadowtls-inbound-3"})
 	assertJSONStrings(t, stats["users"], []string{"c_hy2_stats", "tuic@test", "c_shadow"})
+}
+
+func TestBuildConfig_OmitsV2RayAPIStatsByDefault(t *testing.T) {
+	inbounds := []db.Inbound{{
+		ID: 1, Protocol: "hysteria2", Port: 40002, Enabled: true,
+		Clients: []db.Client{{ID: 1, UUID: "client-pass-1", StatsKey: "c_hy2_stats", Email: "user1@test", Enabled: true}},
+	}}
+
+	raw, err := json.Marshal(BuildConfig(inbounds))
+	if err != nil {
+		t.Fatalf("marshal sing-box config: %v", err)
+	}
+	if strings.Contains(string(raw), "v2ray_api") {
+		t.Fatalf("default config must not include experimental.v2ray_api: %s", raw)
+	}
 }
 
 func TestBuildConfig_Hysteria2TLSEnabledOnlyWhenRequested(t *testing.T) {

@@ -18,6 +18,11 @@ type UnavailableStatsClient struct {
 	Err error
 }
 
+type DisabledStatsClient struct {
+	Status  string
+	Message string
+}
+
 type GRPCStatsClient struct {
 	client *xray.GRPCStatsClient
 }
@@ -28,6 +33,10 @@ func NewStubStatsClient() *StubStatsClient {
 
 func NewUnavailableStatsClient(err error) *UnavailableStatsClient {
 	return &UnavailableStatsClient{Err: err}
+}
+
+func NewDisabledStatsClient(status, message string) *DisabledStatsClient {
+	return &DisabledStatsClient{Status: strings.TrimSpace(status), Message: strings.TrimSpace(message)}
 }
 
 func NewGRPCStatsClient(ctx context.Context, server string) (*GRPCStatsClient, error) {
@@ -55,6 +64,12 @@ func (c *UnavailableStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.
 }
 
 func (c *UnavailableStatsClient) Close() error { return nil }
+
+func (c *DisabledStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+	return []xray.TrafficStat{}, nil
+}
+
+func (c *DisabledStatsClient) Close() error { return nil }
 
 func (c *GRPCStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
 	stats, err := c.client.QueryTrafficStats(ctx)

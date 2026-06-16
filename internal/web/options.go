@@ -28,6 +28,14 @@ func WithXrayController(controller XrayController) Option {
 	}
 }
 
+func WithSingboxRuntime(runtime SingboxRuntime) Option {
+	return func(cfg *routerConfig) {
+		if runtime != nil {
+			cfg.singboxRuntime = runtime
+		}
+	}
+}
+
 func WithConfigDir(dir string) Option {
 	return func(cfg *routerConfig) {
 		cfg.configDir = dir

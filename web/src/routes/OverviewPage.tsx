@@ -64,7 +64,7 @@ export default function OverviewPage() {
         <Metric icon={Activity} tone="slate" label={text('路由规则')} value={String(counts.routing_rules)} sub={`${counts.routing_enabled} ${text('已启用')}`} />
         <Metric icon={Activity} tone={xray.data?.status === 'running' ? 'emerald' : 'rose'} label="Xray" value={text(serviceLabel(xray.data?.status))} sub={text(versionLabel(xray.data?.version))} />
         <Metric icon={Activity} tone={singbox.data?.status === 'running' ? 'emerald' : 'rose'} label="sing-box" value={text(serviceLabel(singbox.data?.status))} sub={text(versionLabel(singbox.data?.version))} />
-        <Metric icon={Activity} tone={trafficStatus?.overall === 'ok' ? 'emerald' : trafficStatus?.overall === 'partial' ? 'amber' : 'slate'} label={text('统计状态')} value={trafficStatusLabel(trafficStatus?.overall, text)} sub={engineStatusSummary(trafficStatus?.engines, text)} />
+        <Metric icon={Activity} tone={trafficStatusTone(trafficStatus?.overall)} label={text('统计状态')} value={trafficStatusLabel(trafficStatus?.overall, text)} sub={engineStatusSummary(trafficStatus?.engines, text)} />
       </div>
       <Card className="p-5">
         <h2 className="section-title mb-4">{text('最近生成状态')}</h2>
@@ -252,16 +252,26 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error || 'unknown');
 }
 
-function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
+export function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
   if (status === 'ok') return text('统计正常');
   if (status === 'partial') return text('部分不可用');
-  if (status === 'unsupported') return text('暂不支持');
-  if (status === 'unavailable') return text('核心未运行');
-  return text('等待首次采样');
+  if (status === 'unsupported') return text('当前 sing-box 二进制不支持实时统计');
+  if (status === 'not_configured') return text('未配置对应核心入站');
+  if (status === 'unavailable') return text('统计接口不可用');
+  if (status === 'stale') return text('统计状态过期');
+  if (status === 'cumulative_only') return text('仅显示累计');
+  return text('等待采样');
 }
 
-function engineStatusSummary(engines: Record<string, string> | undefined, text: (value: string) => string) {
-  if (!engines) return text('等待首次采样');
+function trafficStatusTone(status: string | undefined): MetricTone {
+  if (status === 'ok') return 'emerald';
+  if (status === 'partial' || status === 'unsupported') return 'amber';
+  if (status === 'unavailable' || status === 'stale') return 'rose';
+  return 'slate';
+}
+
+export function engineStatusSummary(engines: Record<string, string> | undefined, text: (value: string) => string) {
+  if (!engines) return text('等待采样');
   return Object.entries(engines).map(([engine, status]) => `${engine}: ${trafficStatusLabel(status, text)}`).join(' · ');
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/imzyb/MiGate/internal/db"
@@ -124,7 +123,7 @@ func validateXrayConfigSnapshot(snapshot validationSnapshot) configValidationRes
 		result.Rules = len(cfg.Routing.Rules)
 	}
 	for _, inbound := range inbounds {
-		if inbound.Enabled && isSingBoxProtocol(inbound.Protocol) {
+		if inbound.Enabled && singbox.IsSingboxProtocol(inbound.Protocol) {
 			result.Warnings = append(result.Warnings, inbound.Protocol+" is handled by sing-box")
 		}
 	}
@@ -137,7 +136,7 @@ func validateXrayConfigSnapshot(snapshot validationSnapshot) configValidationRes
 	return result
 }
 
-func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
+func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
@@ -155,8 +154,17 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 			writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{"commands_executed": []string{}})
 			return
 		}
-		if controller == nil {
-			controller = defaultXrayController{}
+		var controller XrayController = defaultXrayController{}
+		if cfg != nil && cfg.xrayController != nil {
+			controller = cfg.xrayController
+		}
+		var store Store
+		var singboxRuntime SingboxRuntime = defaultSingboxRuntime{}
+		if cfg != nil {
+			store = cfg.store
+			if cfg.singboxRuntime != nil {
+				singboxRuntime = cfg.singboxRuntime
+			}
 		}
 
 		// 1. Apply Xray config
@@ -170,26 +178,8 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 		if store != nil && singbox.IsInstalled() {
 			inbounds, err := store.ListInbounds(r.Context())
 			if err == nil {
-				hasSingboxInbound := false
-				for _, ib := range inbounds {
-					if ib.Enabled {
-						switch ib.Protocol {
-						case "hysteria2", "tuic", "wireguard", "shadowtls":
-							hasSingboxInbound = true
-							break
-						}
-					}
-				}
-				if hasSingboxInbound {
-					cfg := singbox.BuildConfig(inbounds)
-					if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
-						_ = singbox.GenerateSelfSignedCert()
-					}
-					raw, mErr := json.MarshalIndent(cfg, "", "  ")
-					if mErr == nil {
-						_ = os.WriteFile(singbox.DefaultConfigPath, raw, 0644)
-					}
-					applyErr := singbox.Apply()
+				if singbox.HasEnabledSingboxInbound(inbounds) {
+					applyErr := tryApplySingboxWithRuntime(r.Context(), store, singboxRuntime)
 					if applyErr != nil {
 						singboxResult = map[string]interface{}{
 							"applied": false,
@@ -198,7 +188,7 @@ func xrayApplyHandler(controller XrayController, store Store) http.HandlerFunc {
 					} else {
 						singboxResult = map[string]interface{}{
 							"applied":  true,
-							"inbounds": len(cfg.Inbounds),
+							"inbounds": len(singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{}).Inbounds),
 						}
 					}
 				}
