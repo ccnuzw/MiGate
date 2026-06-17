@@ -57,14 +57,21 @@ export interface Inbound {
 export interface InboundCapability {
   protocol: string;
   core: 'xray' | 'sing-box' | string;
+  template_id?: string;
+  template_label?: string;
+  template_summary?: string;
   networks: string[];
   securities: string[];
   default_network: string;
   default_security: string;
   security_by_network: Record<string, string[]>;
+  visible_fields?: string[];
+  auto_generate_fields?: string[];
+  expert_fields?: string[];
   advanced_fields?: string[];
   credential_type: 'none' | 'uuid' | 'password' | 'credential_id_password' | 'username_password' | string;
   subscription: 'none' | 'full' | string;
+  share_link?: boolean;
   local_proxy_inbound?: boolean;
   unsupported_reasons?: string[];
 }

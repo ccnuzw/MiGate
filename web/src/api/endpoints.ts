@@ -49,6 +49,7 @@ export const api = {
     const response = await get<{ capabilities?: InboundCapability[] }>('/api/inbound-capabilities');
     return response.capabilities || [];
   },
+  generateRealityKeypair: () => post<{ private_key: string; public_key: string }>('/api/reality/keypair', {}),
   inboundTraffic: async () => {
     const response = await get<Inbound[] | { inbounds?: Inbound[] }>('/api/inbounds?refresh=traffic');
     return Array.isArray(response) ? response : response.inbounds || [];

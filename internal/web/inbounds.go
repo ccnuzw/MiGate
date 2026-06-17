@@ -39,6 +39,20 @@ func inboundCapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"capabilities": db.InboundCapabilities()})
 }
 
+func realityKeypairHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	privateKey, publicKey, err := xray.GenerateRealityKey()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "generate_reality_keypair_failed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"private_key": privateKey, "public_key": publicKey})
+}
+
 func applyCoreAsync(ctrl XrayController, store Store) {
 	applyXrayAsync(ctrl)
 	applySingboxAsync(store)

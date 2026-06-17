@@ -29,6 +29,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/sessions/", sessionRevokeHandler(&cfg))
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbound-capabilities", inboundCapabilitiesHandler)
+	mux.HandleFunc("/api/reality/keypair", realityKeypairHandler)
 	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store, cfg.xrayController, cfg.statsClient))
 	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store, cfg.xrayController, cfg.statsClient, cfg.singboxStatsClient))
 	mux.HandleFunc("/api/outbounds", outboundsHandler(cfg.store, cfg.xrayController))

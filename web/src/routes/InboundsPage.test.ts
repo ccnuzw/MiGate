@@ -152,12 +152,12 @@ describe('inbound payload helpers', () => {
     expect(compatible.reality_short_id).toBe('');
   });
 
-  it('applies performance and simple templates with generated secrets', () => {
+  it('applies UDP fast and light templates with generated secrets', () => {
     const base = inboundFormValues(createDefaultInbound());
 
-    const performance = applyInboundTemplate(base, 'performance');
-    const performanceAgain = applyInboundTemplate(base, 'performance');
-    expect(performance).toMatchObject({
+    const udpFast = applyInboundTemplate(base, 'udp-fast');
+    const udpFastAgain = applyInboundTemplate(base, 'udp-fast');
+    expect(udpFast).toMatchObject({
       protocol: 'hysteria2',
       network: 'udp',
       security: 'tls',
@@ -168,28 +168,28 @@ describe('inbound payload helpers', () => {
       tls_sni: 'example.com',
       hy2_mport: '',
     });
-    expect(performance.uuid).toHaveLength(24);
-    expect(performance.hy2_obfs_password).toHaveLength(18);
-    expect(performanceAgain.hy2_obfs_password).toHaveLength(18);
-    expect(performanceAgain.hy2_obfs_password).not.toBe(performance.hy2_obfs_password);
+    expect(udpFast.uuid).toHaveLength(24);
+    expect(udpFast.hy2_obfs_password).toHaveLength(18);
+    expect(udpFastAgain.hy2_obfs_password).toHaveLength(18);
+    expect(udpFastAgain.hy2_obfs_password).not.toBe(udpFast.hy2_obfs_password);
 
-    const simple = applyInboundTemplate(base, 'simple');
-    expect(simple).toMatchObject({
+    const light = applyInboundTemplate(base, 'light');
+    expect(light).toMatchObject({
       protocol: 'shadowsocks',
       network: 'tcp',
       security: 'none',
       port: 0,
       ss_method: '2022-blake3-aes-128-gcm',
     });
-    expect(simple.uuid).toHaveLength(24);
-    expect(simple.hy2_obfs).toBe('');
-    expect(simple.hy2_obfs_password).toBe('');
-    expect(simple.hy2_mport).toBe('');
-    expect(simple.tls_sni).toBe('');
+    expect(light.uuid).toHaveLength(24);
+    expect(light.hy2_obfs).toBe('');
+    expect(light.hy2_obfs_password).toBe('');
+    expect(light.hy2_mport).toBe('');
+    expect(light.tls_sni).toBe('');
   });
 
   it('sanitizes protocol, transport, and security changes to supported combinations', () => {
-    const hy2 = applyInboundTemplate(inboundFormValues(createDefaultInbound()), 'performance');
+    const hy2 = applyInboundTemplate(inboundFormValues(createDefaultInbound()), 'udp-fast');
     const vless = sanitizeInboundFormValues(hy2, { protocol: 'vless' });
     expect(vless).toMatchObject({
       protocol: 'vless',
@@ -205,11 +205,13 @@ describe('inbound payload helpers', () => {
     const vmess = sanitizeInboundFormValues(reality, { protocol: 'vmess' });
     expect(vmess).toMatchObject({
       protocol: 'vmess',
-      network: 'tcp',
+      network: 'ws',
       security: 'tls',
       reality_dest: '',
       reality_server_names: '',
       reality_short_id: '',
+      ws_path: '',
+      ws_host: '',
       tls_fingerprint: 'chrome',
     });
 
@@ -263,6 +265,7 @@ describe('inbound payload helpers', () => {
         advanced_fields: ['tls_cert_file', 'tls_key_file', 'tls_sni', 'tuic_zero_rtt'],
         credential_type: 'credential_id_password',
         subscription: 'none',
+        share_link: false,
         local_proxy_inbound: false,
       },
       {
@@ -276,6 +279,7 @@ describe('inbound payload helpers', () => {
         advanced_fields: ['grpc_service_name', 'reality_dest', 'reality_server_names', 'reality_private_key', 'reality_public_key'],
         credential_type: 'uuid',
         subscription: 'full',
+        share_link: true,
       },
     ]);
 
@@ -291,6 +295,40 @@ describe('inbound payload helpers', () => {
     resetInboundCapabilitiesForTest();
     expect(inboundProtocolOptions()).toContain('shadowtls');
     expect(supportsInboundShareLink('tuic')).toBe(true);
+  });
+
+  it('uses share_link as the authoritative frontend share capability', () => {
+    applyInboundCapabilitiesFromAPI([
+      {
+        protocol: 'vless',
+        core: 'xray',
+        networks: ['tcp'],
+        securities: ['none'],
+        default_network: 'tcp',
+        default_security: 'none',
+        security_by_network: { default: ['none'] },
+        advanced_fields: [],
+        credential_type: 'uuid',
+        subscription: 'full',
+        share_link: false,
+      },
+      {
+        protocol: 'shadowtls',
+        core: 'sing-box',
+        networks: ['tcp'],
+        securities: ['none'],
+        default_network: 'tcp',
+        default_security: 'none',
+        security_by_network: { default: ['none'] },
+        advanced_fields: ['tls_sni', 'shadowtls_version'],
+        credential_type: 'password',
+        subscription: 'none',
+        share_link: true,
+      },
+    ]);
+
+    expect(supportsInboundShareLink('vless')).toBe(false);
+    expect(supportsInboundShareLink('shadowtls')).toBe(true);
   });
 
   it('falls back safely when API capability fields are incomplete', () => {
@@ -382,7 +420,7 @@ describe('inbound payload helpers', () => {
     });
   });
 
-  it('hides saved-client subscription and share actions for none-capability protocols', () => {
+  it('hides saved-client link actions for none-capability protocols', () => {
     expect(supportsInboundShareLink('socks')).toBe(false);
     expect(supportsInboundShareLink('http')).toBe(false);
     expect(supportsInboundShareLink('shadowtls')).toBe(false);
@@ -390,7 +428,7 @@ describe('inbound payload helpers', () => {
     expect(savedClientLinkActions('socks')).toEqual([]);
     expect(savedClientLinkActions('http')).toEqual([]);
     expect(savedClientLinkActions('shadowtls')).toEqual([]);
-    expect(savedClientLinkActions('vless')).toEqual(['subscription', 'share']);
+    expect(savedClientLinkActions('vless')).toEqual(['share']);
   });
 
   it('normalizes missing numeric advanced fields when editing a basic inbound', () => {
@@ -423,6 +461,36 @@ describe('inbound payload helpers', () => {
     const payload = buildFullInboundPayload(null, values);
 
     expect(payload.port).toBe(0);
+  });
+
+  it('attaches an initial client only for new node payloads', () => {
+    const values = inboundFormValues(createDefaultInbound());
+    const client = buildClientPayload(clientFormValues(createDefaultInbound()), values.protocol);
+    const created = buildFullInboundPayload(null, values, client);
+    const updated = buildFullInboundPayload(existing, values, client);
+
+    expect(created.initial_client).toMatchObject({ email: '默认客户端', enabled: true });
+    expect(updated).not.toHaveProperty('initial_client');
+  });
+
+  it('keeps VMess template as WS + TLS by default', () => {
+    const values = applyInboundTemplate(inboundFormValues(createDefaultInbound()), 'compatible');
+
+    expect(values).toMatchObject({
+      protocol: 'vmess',
+      network: 'ws',
+      security: 'tls',
+      ws_path: '/migate',
+      tls_sni: 'example.com',
+    });
+  });
+
+  it('creates a non-empty default client name for new node payloads', () => {
+    const inbound = createDefaultInbound();
+    const values = clientFormValues(inbound);
+
+    expect(values.email).toBe('默认客户端');
+    expect(buildClientPayload(values, inbound.protocol).email).toBe('默认客户端');
   });
 
   it('normalizes blank inbound ports to zero for backend auto-assignment', () => {

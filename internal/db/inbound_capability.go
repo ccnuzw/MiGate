@@ -19,14 +19,21 @@ const (
 type InboundCapability struct {
 	Protocol           string              `json:"protocol"`
 	Core               string              `json:"core"`
+	TemplateID         string              `json:"template_id,omitempty"`
+	TemplateLabel      string              `json:"template_label,omitempty"`
+	TemplateSummary    string              `json:"template_summary,omitempty"`
 	Networks           []string            `json:"networks"`
 	Securities         []string            `json:"securities"`
 	DefaultNetwork     string              `json:"default_network"`
 	DefaultSecurity    string              `json:"default_security"`
 	SecurityByNetwork  map[string][]string `json:"security_by_network"`
+	VisibleFields      []string            `json:"visible_fields,omitempty"`
+	AutoGenerateFields []string            `json:"auto_generate_fields,omitempty"`
+	ExpertFields       []string            `json:"expert_fields,omitempty"`
 	AdvancedFields     []string            `json:"advanced_fields"`
 	CredentialType     string              `json:"credential_type"`
 	Subscription       string              `json:"subscription"`
+	ShareLink          bool                `json:"share_link"`
 	LocalProxyInbound  bool                `json:"local_proxy_inbound,omitempty"`
 	UnsupportedReasons []string            `json:"unsupported_reasons,omitempty"`
 }
@@ -34,6 +41,9 @@ type InboundCapability struct {
 var inboundCapabilities = map[string]InboundCapability{
 	"vless": {
 		Protocol: "vless", Core: CoreXray,
+		TemplateID:      "recommended",
+		TemplateLabel:   "推荐节点",
+		TemplateSummary: "VLESS + TCP + REALITY",
 		Networks:       []string{"tcp", "ws", "grpc", "h2", "xhttp"},
 		Securities:     []string{"none", "tls", "reality"},
 		DefaultNetwork: "tcp", DefaultSecurity: "reality",
@@ -43,22 +53,34 @@ var inboundCapabilities = map[string]InboundCapability{
 			"grpc":    {"none", "tls", "reality"},
 			"xhttp":   {"none", "tls", "reality"},
 		},
-		AdvancedFields: []string{"ws_path", "ws_host", "grpc_service_name", "reality_dest", "reality_server_names", "reality_short_id", "reality_private_key", "reality_public_key", "tls_cert_file", "tls_key_file", "tls_sni", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
-		CredentialType: CredentialUUID, Subscription: SubscriptionFull,
+		VisibleFields:      []string{"remark", "port", "public_host", "reality_dest", "reality_server_names", "tls_certificate"},
+		AutoGenerateFields: []string{"uuid", "client_uuid", "reality_private_key", "reality_public_key", "reality_short_id"},
+		ExpertFields:       []string{"uuid", "ws_path", "ws_host", "grpc_service_name", "reality_short_id", "reality_private_key", "reality_public_key", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
+		AdvancedFields:     []string{"ws_path", "ws_host", "grpc_service_name", "reality_dest", "reality_server_names", "reality_short_id", "reality_private_key", "reality_public_key", "tls_cert_file", "tls_key_file", "tls_sni", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
+		CredentialType:     CredentialUUID, Subscription: SubscriptionFull, ShareLink: true,
 	},
 	"vmess": {
 		Protocol: "vmess", Core: CoreXray,
+		TemplateID:      "compatible",
+		TemplateLabel:   "兼容节点",
+		TemplateSummary: "VMess + WS + TLS",
 		Networks:       []string{"tcp", "ws", "grpc", "h2", "xhttp"},
 		Securities:     []string{"none", "tls"},
-		DefaultNetwork: "tcp", DefaultSecurity: "tls",
+		DefaultNetwork: "ws", DefaultSecurity: "tls",
 		SecurityByNetwork: map[string][]string{
 			"default": {"none", "tls"},
 		},
-		AdvancedFields: []string{"ws_path", "ws_host", "grpc_service_name", "tls_cert_file", "tls_key_file", "tls_sni", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
-		CredentialType: CredentialUUID, Subscription: SubscriptionFull,
+		VisibleFields:      []string{"remark", "port", "public_host", "tls_sni", "tls_certificate"},
+		AutoGenerateFields: []string{"uuid", "client_uuid"},
+		ExpertFields:       []string{"uuid", "ws_path", "ws_host", "grpc_service_name", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
+		AdvancedFields:     []string{"ws_path", "ws_host", "grpc_service_name", "tls_cert_file", "tls_key_file", "tls_sni", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
+		CredentialType:     CredentialUUID, Subscription: SubscriptionFull, ShareLink: true,
 	},
 	"trojan": {
 		Protocol: "trojan", Core: CoreXray,
+		TemplateID:      "password",
+		TemplateLabel:   "密码节点",
+		TemplateSummary: "Trojan + TLS",
 		Networks:       []string{"tcp", "ws", "grpc", "h2", "xhttp"},
 		Securities:     []string{"none", "tls", "reality"},
 		DefaultNetwork: "tcp", DefaultSecurity: "tls",
@@ -68,62 +90,101 @@ var inboundCapabilities = map[string]InboundCapability{
 			"grpc":    {"none", "tls", "reality"},
 			"xhttp":   {"none", "tls", "reality"},
 		},
-		AdvancedFields: []string{"ws_path", "ws_host", "grpc_service_name", "reality_dest", "reality_server_names", "reality_short_id", "reality_private_key", "reality_public_key", "tls_cert_file", "tls_key_file", "tls_sni", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
-		CredentialType: CredentialPassword, Subscription: SubscriptionFull,
+		VisibleFields:      []string{"remark", "port", "public_host", "tls_sni", "tls_certificate"},
+		AutoGenerateFields: []string{"uuid", "client_password", "reality_private_key", "reality_public_key", "reality_short_id"},
+		ExpertFields:       []string{"uuid", "ws_path", "ws_host", "grpc_service_name", "reality_dest", "reality_server_names", "reality_short_id", "reality_private_key", "reality_public_key", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
+		AdvancedFields:     []string{"ws_path", "ws_host", "grpc_service_name", "reality_dest", "reality_server_names", "reality_short_id", "reality_private_key", "reality_public_key", "tls_cert_file", "tls_key_file", "tls_sni", "tls_fingerprint", "tls_alpn", "xhttp_path", "xhttp_mode"},
+		CredentialType:     CredentialPassword, Subscription: SubscriptionFull, ShareLink: true,
 	},
 	"shadowsocks": {
 		Protocol: "shadowsocks", Core: CoreXray,
+		TemplateID:      "light",
+		TemplateLabel:   "轻量节点",
+		TemplateSummary: "Shadowsocks 2022",
 		Networks:       []string{"tcp"},
 		Securities:     []string{"none"},
 		DefaultNetwork: "tcp", DefaultSecurity: "none",
 		SecurityByNetwork: map[string][]string{"default": {"none"}},
-		AdvancedFields:    []string{"ss_method"},
-		CredentialType:    CredentialNone, Subscription: SubscriptionFull,
+		VisibleFields:      []string{"remark", "port", "public_host"},
+		AutoGenerateFields: []string{"uuid", "shadowsocks_password"},
+		ExpertFields:       []string{"uuid", "ss_method"},
+		AdvancedFields:     []string{"ss_method"},
+		CredentialType:     CredentialNone, Subscription: SubscriptionFull, ShareLink: true,
 	},
 	"socks": {
 		Protocol: "socks", Core: CoreXray,
+		TemplateID:      "local-socks",
+		TemplateLabel:   "本地代理",
+		TemplateSummary: "SOCKS",
 		Networks:       []string{"tcp"},
 		Securities:     []string{"none"},
 		DefaultNetwork: "tcp", DefaultSecurity: "none",
 		SecurityByNetwork: map[string][]string{"default": {"none"}},
-		CredentialType:    CredentialUsernamePassword, Subscription: SubscriptionNone,
-		LocalProxyInbound: true,
+		VisibleFields:      []string{"remark", "port"},
+		AutoGenerateFields: []string{"uuid", "username", "password"},
+		ExpertFields:       []string{"uuid"},
+		CredentialType:     CredentialUsernamePassword, Subscription: SubscriptionNone, ShareLink: false,
+		LocalProxyInbound:  true,
 	},
 	"http": {
 		Protocol: "http", Core: CoreXray,
+		TemplateID:      "local-http",
+		TemplateLabel:   "本地代理",
+		TemplateSummary: "HTTP",
 		Networks:       []string{"tcp"},
 		Securities:     []string{"none"},
 		DefaultNetwork: "tcp", DefaultSecurity: "none",
 		SecurityByNetwork: map[string][]string{"default": {"none"}},
-		CredentialType:    CredentialUsernamePassword, Subscription: SubscriptionNone,
-		LocalProxyInbound: true,
+		VisibleFields:      []string{"remark", "port"},
+		AutoGenerateFields: []string{"uuid", "username", "password"},
+		ExpertFields:       []string{"uuid"},
+		CredentialType:     CredentialUsernamePassword, Subscription: SubscriptionNone, ShareLink: false,
+		LocalProxyInbound:  true,
 	},
 	"hysteria2": {
 		Protocol: "hysteria2", Core: CoreSingbox,
+		TemplateID:      "udp-fast",
+		TemplateLabel:   "高速 UDP",
+		TemplateSummary: "Hysteria2",
 		Networks:       []string{"udp"},
 		Securities:     []string{"tls"},
 		DefaultNetwork: "udp", DefaultSecurity: "tls",
 		SecurityByNetwork: map[string][]string{"default": {"tls"}},
-		AdvancedFields:    []string{"tls_cert_file", "tls_key_file", "tls_sni", "hy2_up_mbps", "hy2_down_mbps", "hy2_obfs", "hy2_obfs_password"},
-		CredentialType:    CredentialPassword, Subscription: SubscriptionFull,
+		VisibleFields:      []string{"remark", "port", "public_host", "tls_sni", "tls_certificate"},
+		AutoGenerateFields: []string{"uuid", "client_password", "hy2_obfs_password"},
+		ExpertFields:       []string{"uuid", "hy2_up_mbps", "hy2_down_mbps", "hy2_obfs", "hy2_obfs_password"},
+		AdvancedFields:     []string{"tls_cert_file", "tls_key_file", "tls_sni", "hy2_up_mbps", "hy2_down_mbps", "hy2_obfs", "hy2_obfs_password"},
+		CredentialType:     CredentialPassword, Subscription: SubscriptionFull, ShareLink: true,
 	},
 	"tuic": {
 		Protocol: "tuic", Core: CoreSingbox,
+		TemplateID:      "low-latency",
+		TemplateLabel:   "高速低延迟",
+		TemplateSummary: "TUIC",
 		Networks:       []string{"udp"},
 		Securities:     []string{"tls"},
 		DefaultNetwork: "udp", DefaultSecurity: "tls",
 		SecurityByNetwork: map[string][]string{"default": {"tls"}},
-		AdvancedFields:    []string{"tls_cert_file", "tls_key_file", "tls_sni", "tuic_congestion_control", "tuic_zero_rtt"},
-		CredentialType:    CredentialIDPassword, Subscription: SubscriptionFull,
+		VisibleFields:      []string{"remark", "port", "public_host", "tls_sni", "tls_certificate"},
+		AutoGenerateFields: []string{"uuid", "tuic_uuid", "tuic_password"},
+		ExpertFields:       []string{"uuid", "tuic_congestion_control", "tuic_zero_rtt"},
+		AdvancedFields:     []string{"tls_cert_file", "tls_key_file", "tls_sni", "tuic_congestion_control", "tuic_zero_rtt"},
+		CredentialType:     CredentialIDPassword, Subscription: SubscriptionFull, ShareLink: true,
 	},
 	"shadowtls": {
 		Protocol: "shadowtls", Core: CoreSingbox,
+		TemplateID:      "handshake-mask",
+		TemplateLabel:   "伪装握手",
+		TemplateSummary: "ShadowTLS",
 		Networks:       []string{"tcp"},
 		Securities:     []string{"none"},
 		DefaultNetwork: "tcp", DefaultSecurity: "none",
 		SecurityByNetwork: map[string][]string{"default": {"none"}},
-		AdvancedFields:    []string{"tls_sni", "shadowtls_version"},
-		CredentialType:    CredentialPassword, Subscription: SubscriptionNone,
+		VisibleFields:      []string{"remark", "port", "tls_sni"},
+		AutoGenerateFields: []string{"uuid", "client_password"},
+		ExpertFields:       []string{"uuid", "shadowtls_version"},
+		AdvancedFields:     []string{"tls_sni", "shadowtls_version"},
+		CredentialType:     CredentialPassword, Subscription: SubscriptionNone, ShareLink: false,
 		UnsupportedReasons: []string{
 			"shadowtls share URI is not stable across clients; use manual configuration",
 		},
@@ -224,8 +285,12 @@ func InboundSecuritiesForNetwork(capability InboundCapability, network string) [
 }
 
 func InboundSupportsSubscription(protocol string) bool {
+	return InboundSupportsShareLink(protocol)
+}
+
+func InboundSupportsShareLink(protocol string) bool {
 	capability, ok := GetInboundCapability(protocol)
-	return ok && capability.Subscription == SubscriptionFull
+	return ok && capability.ShareLink
 }
 
 func ValidateClientCredential(protocol string, client Client) error {
