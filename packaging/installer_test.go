@@ -317,6 +317,8 @@ func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 	for _, want := range []string{
 		"MIGATE_VERSION:-latest",
 		"release_base_url()",
+		"latest_release_tag()",
+		"ensure_latest_release_version",
 		"releases/latest/download",
 		"releases/download/%s",
 		"CHECKSUM_URL",
@@ -441,6 +443,8 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 		"--check)",
 		"--version)",
 		"check_update()",
+		"skip_update_if_current",
+		"normalize_version",
 		"install_release_flow",
 		"download_release_asset",
 		"install_migate_binary_from_tmp",
