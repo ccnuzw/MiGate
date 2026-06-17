@@ -20,16 +20,18 @@ import {
   enabledInboundAdvancedFields,
   generatedProtocolCredential,
   hasAttachableSettingCert,
+  inboundCredentialType,
   inboundFormValues,
-  inboundProtocols,
+  inboundProtocolOptions,
   inboundSecurities,
   inboundTemplateOptions,
   sanitizeInboundFormValues,
+  supportsInboundShareLink,
 } from './InboundsPage';
 
 const inboundSchema = z.object({
   remark: z.string().min(1, '请输入名称'),
-  protocol: z.enum(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'shadowtls']),
+  protocol: z.enum(['vless', 'vmess', 'trojan', 'shadowsocks', 'socks', 'http', 'hysteria2', 'tuic', 'shadowtls']),
   port: z.preprocess((value) => (value === '' || value == null ? 0 : value), z.coerce.number().int().min(0).max(65535)),
   network: z.string().min(1),
   security: z.string().min(1),
@@ -64,7 +66,9 @@ const inboundSchema = z.object({
 
 const clientSchema = z.object({
   email: z.string().min(1, '请输入客户端名称'),
-  uuid: z.string().min(1, '请输入凭据'),
+  uuid: z.string().optional(),
+  credential_id: z.string().optional(),
+  password: z.string().optional(),
   enabled: z.boolean().default(true),
   traffic_limit_gb: z.coerce.number().min(0).optional(),
   expiry_mode: z.enum(['unlimited', '30d', '90d', 'custom']).default('unlimited'),
@@ -188,7 +192,7 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
               setSanitizedValues(sanitizeInboundFormValues(form.getValues() as InboundValues, { protocol: event.target.value as InboundValues['protocol'] }));
             }}
           >
-            {inboundProtocols.map((p) => <option key={p} value={p}>{p}</option>)}
+            {inboundProtocolOptions().map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
         <Field label={text('传输')}>
@@ -219,7 +223,7 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
             <Field label={text('REALITY 服务名')}><input {...form.register('reality_server_names')} placeholder="www.cloudflare.com" /></Field>
           </>
         ) : null}
-        {enabledAdvanced.has('tls_sni') ? <Field label={text('域名 / SNI')}><input {...form.register('tls_sni')} placeholder="example.com" /></Field> : null}
+        {enabledAdvanced.has('tls_sni') ? <Field label={text(protocol === 'shadowtls' ? '握手服务器' : '域名 / SNI')} help={protocol === 'shadowtls' ? text('ShadowTLS handshake.server，当前握手端口固定为 443。') : undefined}><input {...form.register('tls_sni')} placeholder="example.com" /></Field> : null}
         <div className="span-2">
           <button className="advanced-toggle" type="button" onClick={() => setAdvancedOpen((open) => !open)} aria-expanded={advancedOpen}>
             <ChevronDown className={advancedOpen ? 'h-4 w-4 rotate-180' : 'h-4 w-4'} />
@@ -326,11 +330,14 @@ export function ClientModal({ inbound, client, onClose, onSaved }: { inbound: In
     values,
   });
   const regenerateCredential = () => {
-    form.setValue('uuid', generatedProtocolCredential(inbound?.protocol), { shouldDirty: true, shouldValidate: true });
+    const generated = generatedClientCredentials(inbound?.protocol);
+    form.setValue('uuid', generated.uuid, { shouldDirty: true, shouldValidate: true });
+    form.setValue('credential_id', generated.credential_id, { shouldDirty: true, shouldValidate: true });
+    form.setValue('password', generated.password, { shouldDirty: true, shouldValidate: true });
   };
   const save = useMutation({
     mutationFn: async (values: ClientValues) => {
-      const payload = buildClientPayload(values);
+      const payload = buildClientPayload(values, inbound!.protocol);
       const response = client ? await api.updateClient(inbound!.id, client.id, { ...client, ...payload }) : await api.createClient(inbound!.id, payload);
       return { payload, response };
     },
@@ -342,6 +349,9 @@ export function ClientModal({ inbound, client, onClose, onSaved }: { inbound: In
     onError: (error) => showToast(errorMessage(error, text('保存客户端失败')), 'error'),
   });
   const expiryMode = form.watch('expiry_mode');
+  const credentialType = inboundCredentialType(inbound?.protocol || 'vless');
+  const shareSupported = supportsInboundShareLink(inbound?.protocol || 'vless');
+  const savedClientLinks = savedClient ? savedClientLinkActions(inbound?.protocol || 'vless') : [];
   useEffect(() => {
     if (!inbound) return;
     setCredentialOpen(false);
@@ -384,33 +394,124 @@ export function ClientModal({ inbound, client, onClose, onSaved }: { inbound: In
         </div>
         {credentialOpen ? (
           <div className="advanced-panel span-2">
-            <Field label={text('UUID / 密码 / 密钥')} help={text(client ? '现有凭据会反显，可手动修改。' : '默认自动生成，可在保存前手动修改。')}>
-              <div className="input-action-row">
-                <input {...form.register('uuid')} />
-                <button className="icon-button" type="button" onClick={regenerateCredential} title={text('重新生成')}>
-                  <RotateCcw className="h-4 w-4" />
-                </button>
-              </div>
-              <FieldError message={form.formState.errors.uuid?.message ? text(form.formState.errors.uuid.message) : undefined} />
-            </Field>
+            <CredentialFields credentialType={credentialType} form={form} regenerateCredential={regenerateCredential} text={text} client={client} />
           </div>
         ) : null}
         {savedClient ? (
           <div className="advanced-panel span-2">
-            <div className="mb-3 text-sm font-medium text-panel-text">{text('客户端已保存，可直接复制链接')}</div>
-            <div className="action-row justify-start">
-              <button className="btn secondary" type="button" onClick={() => copyText(subscriptionURL(savedClient), text('订阅链接已复制'), text('复制失败'), showToast)}>
-                <Copy className="h-4 w-4" /> {text('复制订阅链接')}
-              </button>
-              <button className="btn secondary" type="button" onClick={() => copyShareLink(savedClient, showToast, text)}>
-                <Copy className="h-4 w-4" /> {text('复制分享链接')}
-              </button>
-            </div>
+            <div className="mb-3 text-sm font-medium text-panel-text">{text(shareSupported ? '客户端已保存，可直接复制链接' : '客户端已保存，该协议不支持订阅/分享链接')}</div>
+            {shareSupported ? (
+              <div className="action-row justify-start">
+                {savedClientLinks.includes('subscription') ? (
+                  <button className="btn secondary" type="button" onClick={() => copyText(subscriptionURL(savedClient), text('订阅链接已复制'), text('复制失败'), showToast)}>
+                    <Copy className="h-4 w-4" /> {text('复制订阅链接')}
+                  </button>
+                ) : null}
+                {savedClientLinks.includes('share') ? (
+                  <button className="btn secondary" type="button" onClick={() => copyShareLink(savedClient, showToast, text)}>
+                    <Copy className="h-4 w-4" /> {text('复制分享链接')}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
     </Modal>
   );
+}
+
+export function savedClientLinkActions(protocol: string): Array<'subscription' | 'share'> {
+  return supportsInboundShareLink(protocol) ? ['subscription', 'share'] : [];
+}
+
+function CredentialFields({
+  credentialType,
+  form,
+  regenerateCredential,
+  text,
+  client,
+}: {
+  credentialType: ReturnType<typeof inboundCredentialType>;
+  form: ReturnType<typeof useForm<ClientInput, unknown, ClientValues>>;
+  regenerateCredential: () => void;
+  text: (value: string) => string;
+  client?: Client;
+}) {
+  const help = text(client ? '现有凭据会反显，可手动修改。' : '默认自动生成，可在保存前手动修改。');
+  const regenButton = (
+    <button className="icon-button" type="button" onClick={regenerateCredential} title={text('重新生成')}>
+      <RotateCcw className="h-4 w-4" />
+    </button>
+  );
+  if (credentialType === 'none') {
+    return <div className="advanced-note">{text('该协议使用入站级凭据，客户端不需要单独连接凭据。')}</div>;
+  }
+  if (credentialType === 'credential_id_password') {
+    return (
+      <>
+        <Field label="TUIC UUID" help={help}>
+          <div className="input-action-row">
+            <input {...form.register('credential_id')} />
+            {regenButton}
+          </div>
+        </Field>
+        <Field label={text('TUIC 密码')}><input {...form.register('password')} /></Field>
+      </>
+    );
+  }
+  if (credentialType === 'username_password') {
+    return (
+      <>
+        <Field label={text('用户名')} help={help}>
+          <div className="input-action-row">
+            <input {...form.register('credential_id')} />
+            {regenButton}
+          </div>
+        </Field>
+        <Field label={text('密码')}><input {...form.register('password')} /></Field>
+      </>
+    );
+  }
+  if (credentialType === 'password') {
+    return (
+      <Field label={text('密码')} help={help}>
+        <div className="input-action-row">
+          <input {...form.register('password')} />
+          {regenButton}
+        </div>
+      </Field>
+    );
+  }
+  return (
+    <Field label="UUID" help={help}>
+      <div className="input-action-row">
+        <input {...form.register('uuid')} />
+        {regenButton}
+      </div>
+      <FieldError message={form.formState.errors.uuid?.message ? text(form.formState.errors.uuid.message) : undefined} />
+    </Field>
+  );
+}
+
+function generatedClientCredentials(protocol?: string) {
+  const type = inboundCredentialType(protocol || 'vless');
+  if (type === 'credential_id_password') return { uuid: generatedProtocolCredential('vless'), credential_id: generatedProtocolCredential('vless'), password: formRandomSecret(24) };
+  if (type === 'username_password') {
+    const username = `user-${formRandomSecret(8)}`;
+    return { uuid: username, credential_id: username, password: formRandomSecret(24) };
+  }
+  if (type === 'password') {
+    const password = formRandomSecret(24);
+    return { uuid: password, credential_id: '', password };
+  }
+  if (type === 'none') return { uuid: formRandomSecret(24), credential_id: '', password: '' };
+  const uuid = generatedProtocolCredential('vless');
+  return { uuid, credential_id: uuid, password: '' };
+}
+
+function formRandomSecret(length: number) {
+  return generatedProtocolCredential('hysteria2').slice(0, length);
 }
 
 function extractClientResponse(response: unknown, fallback?: Client, payload?: ReturnType<typeof buildClientPayload>, inboundId = 0): Client | null {
@@ -422,6 +523,8 @@ function extractClientResponse(response: unknown, fallback?: Client, payload?: R
     inbound_id: fallback?.inbound_id || inboundId,
     email: payload.email,
     uuid: payload.uuid,
+    credential_id: payload.credential_id,
+    password: payload.password,
     subscription_token: fallback?.subscription_token,
     enabled: payload.enabled,
     traffic_limit: payload.traffic_limit,

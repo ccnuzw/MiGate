@@ -120,6 +120,27 @@ func TestBuildConfig_SerializesV2RayAPIStatsSchema(t *testing.T) {
 	assertJSONStrings(t, stats["users"], []string{"c_hy2_stats", "tuic@test", "c_shadow"})
 }
 
+func TestBuildConfig_TUICUsesCredentialIDAndPassword(t *testing.T) {
+	cfg := BuildConfig([]db.Inbound{{
+		ID: 2, Protocol: "tuic", Port: 40003, Enabled: true,
+		TuicCongestionControl: "cubic",
+		TuicZeroRTT:           true,
+		Clients: []db.Client{{
+			ID: 7, UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", CredentialID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Password: "tuic-secret", Email: "tuic@test", Enabled: true,
+		}},
+	}})
+	if len(cfg.Inbounds) != 1 {
+		t.Fatalf("expected 1 inbound, got %+v", cfg.Inbounds)
+	}
+	ib := cfg.Inbounds[0]
+	if ib.Type != "tuic" || ib.CongestionControl != "cubic" || !ib.ZeroRTTHandshake {
+		t.Fatalf("unexpected tuic inbound: %+v", ib)
+	}
+	if len(ib.Users) != 1 || ib.Users[0].UUID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" || ib.Users[0].Password != "tuic-secret" {
+		t.Fatalf("tuic user must use credential_id + password, got %+v", ib.Users)
+	}
+}
+
 func TestBuildConfig_OmitsV2RayAPIStatsByDefault(t *testing.T) {
 	inbounds := []db.Inbound{{
 		ID: 1, Protocol: "hysteria2", Port: 40002, Enabled: true,

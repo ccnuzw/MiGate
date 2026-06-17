@@ -123,6 +123,23 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 	}
 }
 
+func TestBuildConfigIncludesSocksAndHTTPInbounds(t *testing.T) {
+	config, err := xray.BuildConfig([]db.Inbound{
+		{ID: 21, Remark: "socks-in", Protocol: "socks", Port: 1080, Network: "tcp", Security: "none", Enabled: true, Clients: []db.Client{{UUID: "sam", CredentialID: "sam", Password: "secret", Email: "sam", Enabled: true}}},
+		{ID: 22, Remark: "http-in", Protocol: "http", Port: 8080, Network: "tcp", Security: "none", Enabled: true, Clients: []db.Client{{UUID: "ann", CredentialID: "ann", Password: "secret2", Email: "ann", Enabled: true}}},
+	})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	for _, want := range []string{`"protocol":"socks"`, `"protocol":"http"`, `"accounts"`, `"user":"sam"`, `"pass":"secret"`, `"user":"ann"`, `"pass":"secret2"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("socks/http inbound config missing %q: %s", want, text)
+		}
+	}
+}
+
 func TestBuildConfigWithOutboundsCompilesHTTPSToHTTPOutbound(t *testing.T) {
 	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
 		{ID: 14, Tag: "proxy-https", Protocol: "https", Address: "127.0.0.1", Port: 8443, Username: "sam", Password: "secret", Enabled: true},
@@ -425,7 +442,7 @@ func TestBuildConfigOmitsVisionFlowForVLESSXHTTPReality(t *testing.T) {
 	}
 }
 
-func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
+func TestBuildConfigDoesNotGenerateMissingRealityPrivateKey(t *testing.T) {
 	inbounds := []db.Inbound{
 		{
 			ID: 8, UUID: "88888888-8888-4888-8888-888888888888",
@@ -449,8 +466,8 @@ func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
 	if !strings.Contains(text, "realitySettings") {
 		t.Fatalf("auto-key inbound missing realitySettings: %s", text)
 	}
-	if !strings.Contains(text, "privateKey") {
-		t.Fatalf("auto-key inbound missing auto-generated privateKey: %s", text)
+	if strings.Contains(text, "privateKey") {
+		t.Fatalf("config generator must not create transient reality privateKey: %s", text)
 	}
 }
 

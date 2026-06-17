@@ -1,18 +1,31 @@
-import { describe, expect, it } from 'vitest';
-import type { Inbound } from '../api/types';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { Inbound, InboundCapability } from '../api/types';
 import {
+  allowedInboundNetworks,
+  allowedInboundSecurities,
+  applyInboundCapabilitiesFromAPI,
   applyInboundTemplate,
   buildClientPayload,
   buildFullInboundPayload,
   bytesToGB,
   clientFormValues,
   createDefaultInbound,
+  enabledInboundAdvancedFields,
   gbToBytes,
   hasAttachableSettingCert,
+  inboundCredentialType,
   inboundFormValues,
+  inboundProtocolOptions,
   mergeInboundTraffic,
+  resetInboundCapabilitiesForTest,
   sanitizeInboundFormValues,
+  supportsInboundShareLink,
 } from './InboundsPage';
+import { savedClientLinkActions } from './InboundsPageForms';
+
+afterEach(() => {
+  resetInboundCapabilitiesForTest();
+});
 
 describe('inbound payload helpers', () => {
   const existing: Inbound = {
@@ -214,6 +227,113 @@ describe('inbound payload helpers', () => {
     });
   });
 
+  it('keeps socks/http as local proxy inbounds and drops unsupported transports', () => {
+    const socks = sanitizeInboundFormValues(inboundFormValues(createDefaultInbound()), { protocol: 'socks' });
+    expect(socks).toMatchObject({ protocol: 'socks', network: 'tcp', security: 'none' });
+    expect(supportsInboundShareLink('socks')).toBe(false);
+    expect(supportsInboundShareLink('http')).toBe(false);
+    expect(supportsInboundShareLink('vless')).toBe(true);
+
+    const invalid = sanitizeInboundFormValues(inboundFormValues(createDefaultInbound()), { network: 'quic' });
+    expect(invalid.network).toBe('tcp');
+  });
+
+  it('uses API inbound capabilities as the active matrix with fallback reset', () => {
+    applyInboundCapabilitiesFromAPI([
+      {
+        protocol: 'mystery',
+        core: 'sing-box',
+        networks: ['udp'],
+        securities: ['tls'],
+        default_network: 'udp',
+        default_security: 'tls',
+        security_by_network: { default: ['tls'] },
+        advanced_fields: [],
+        credential_type: 'password',
+        subscription: 'none',
+      },
+      {
+        protocol: 'tuic',
+        core: 'sing-box',
+        networks: ['udp'],
+        securities: ['tls'],
+        default_network: 'udp',
+        default_security: 'tls',
+        security_by_network: { default: ['tls'] },
+        advanced_fields: ['tls_cert_file', 'tls_key_file', 'tls_sni', 'tuic_zero_rtt'],
+        credential_type: 'credential_id_password',
+        subscription: 'none',
+        local_proxy_inbound: false,
+      },
+      {
+        protocol: 'vless',
+        core: 'xray',
+        networks: ['grpc'],
+        securities: ['none', 'reality'],
+        default_network: 'grpc',
+        default_security: 'reality',
+        security_by_network: { default: ['none'], grpc: ['none', 'reality'] },
+        advanced_fields: ['grpc_service_name', 'reality_dest', 'reality_server_names', 'reality_private_key', 'reality_public_key'],
+        credential_type: 'uuid',
+        subscription: 'full',
+      },
+    ]);
+
+    expect(inboundProtocolOptions()).toEqual(['tuic', 'vless']);
+    expect(allowedInboundNetworks('vless')).toEqual(['grpc']);
+    expect(allowedInboundSecurities('vless', 'grpc')).toEqual(['none', 'reality']);
+    expect(inboundCredentialType('tuic')).toBe('credential_id_password');
+    expect(supportsInboundShareLink('tuic')).toBe(false);
+
+    const normalized = sanitizeInboundFormValues(inboundFormValues(createDefaultInbound()), { protocol: 'vless' });
+    expect(normalized).toMatchObject({ protocol: 'vless', network: 'grpc', security: 'reality' });
+
+    resetInboundCapabilitiesForTest();
+    expect(inboundProtocolOptions()).toContain('shadowtls');
+    expect(supportsInboundShareLink('tuic')).toBe(true);
+  });
+
+  it('falls back safely when API capability fields are incomplete', () => {
+    expect(() => applyInboundCapabilitiesFromAPI([
+      {
+        protocol: 'vless',
+        core: 'xray',
+        networks: undefined,
+        securities: undefined,
+        default_network: '',
+        default_security: '',
+        security_by_network: undefined,
+        advanced_fields: undefined,
+        credential_type: '',
+        subscription: '',
+      } as unknown as InboundCapability,
+    ])).not.toThrow();
+
+    expect(inboundProtocolOptions()).toEqual(['vless']);
+    expect(allowedInboundNetworks('vless')).toContain('tcp');
+    expect(allowedInboundSecurities('vless', 'tcp')).toContain('reality');
+    expect(supportsInboundShareLink('vless')).toBe(true);
+  });
+
+  it('keeps ShadowTLS tls_sni as a protocol handshake field from API capabilities', () => {
+    applyInboundCapabilitiesFromAPI([
+      {
+        protocol: 'shadowtls',
+        core: 'sing-box',
+        networks: ['tcp'],
+        securities: ['none'],
+        default_network: 'tcp',
+        default_security: 'none',
+        security_by_network: { default: ['none'] },
+        advanced_fields: ['tls_sni', 'shadowtls_version'],
+        credential_type: 'password',
+        subscription: 'none',
+      },
+    ]);
+
+    expect(enabledInboundAdvancedFields({ protocol: 'shadowtls', network: 'tcp', security: 'none' }).has('tls_sni')).toBe(true);
+  });
+
   it('removes invalid advanced fields from the submitted payload after manual switches', () => {
     const values = inboundFormValues(existing);
     values.protocol = 'vmess';
@@ -260,6 +380,17 @@ describe('inbound payload helpers', () => {
       shadowtls_version: 3,
       shadowtls_password: '',
     });
+  });
+
+  it('hides saved-client subscription and share actions for none-capability protocols', () => {
+    expect(supportsInboundShareLink('socks')).toBe(false);
+    expect(supportsInboundShareLink('http')).toBe(false);
+    expect(supportsInboundShareLink('shadowtls')).toBe(false);
+    expect(supportsInboundShareLink('vless')).toBe(true);
+    expect(savedClientLinkActions('socks')).toEqual([]);
+    expect(savedClientLinkActions('http')).toEqual([]);
+    expect(savedClientLinkActions('shadowtls')).toEqual([]);
+    expect(savedClientLinkActions('vless')).toEqual(['subscription', 'share']);
   });
 
   it('normalizes missing numeric advanced fields when editing a basic inbound', () => {
@@ -397,5 +528,38 @@ describe('client form helpers', () => {
       traffic_limit: 2 * 1024 ** 3,
       expiry_at: expectedExpiry,
     });
+  });
+
+  it('builds protocol-specific client credential payloads', () => {
+    const tuicValues = clientFormValues({ ...createDefaultInbound(), protocol: 'tuic', network: 'udp', security: 'tls' });
+    tuicValues.credential_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    tuicValues.password = 'tuic-secret';
+    expect(buildClientPayload(tuicValues, 'tuic')).toMatchObject({
+      uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      credential_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      password: 'tuic-secret',
+    });
+
+    const socksValues = clientFormValues({ ...createDefaultInbound(), protocol: 'socks', network: 'tcp', security: 'none' });
+    socksValues.credential_id = 'sam';
+    socksValues.password = 'secret';
+    expect(buildClientPayload(socksValues, 'socks')).toMatchObject({ uuid: 'sam', credential_id: 'sam', password: 'secret' });
+
+    const trojanValues = clientFormValues({ ...createDefaultInbound(), protocol: 'trojan', network: 'tcp', security: 'tls' });
+    trojanValues.uuid = 'old-internal-id';
+    trojanValues.credential_id = '';
+    trojanValues.password = 'trojan-secret';
+    expect(buildClientPayload(trojanValues, 'trojan')).toMatchObject({ uuid: 'trojan-secret', credential_id: '', password: 'trojan-secret' });
+
+    const editingTrojan = clientFormValues({ ...createDefaultInbound(), protocol: 'trojan', network: 'tcp', security: 'tls' }, {
+      id: 7,
+      inbound_id: 1,
+      email: 'trojan-user',
+      uuid: 'stored-password',
+      enabled: true,
+    });
+    expect(editingTrojan.password).toBe('stored-password');
+    expect(editingTrojan.credential_id).toBe('');
+    expect(buildClientPayload(editingTrojan, 'trojan')).toMatchObject({ uuid: 'stored-password', credential_id: '', password: 'stored-password' });
   });
 });

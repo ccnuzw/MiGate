@@ -205,7 +205,7 @@ func BuildConfigWithOptions(inbounds []db.Inbound, opts BuildOptions) Config {
 				name := UserStatsKey(client)
 				ib.Users = append(ib.Users, UserConfig{
 					Name:     name,
-					Password: client.UUID,
+					Password: client.PasswordValue(),
 				})
 				addStatsUser(name)
 			}
@@ -260,8 +260,8 @@ func BuildConfigWithOptions(inbounds []db.Inbound, opts BuildOptions) Config {
 				name := UserStatsKey(client)
 				ib.Users = append(ib.Users, UserConfig{
 					Name:     name,
-					UUID:     stableTUICUUID(client.UUID),
-					Password: client.UUID,
+					UUID:     stableTUICUUID(client.CredentialIDValue()),
+					Password: client.PasswordValue(),
 				})
 				addStatsUser(name)
 			}
@@ -294,7 +294,7 @@ func BuildConfigWithOptions(inbounds []db.Inbound, opts BuildOptions) Config {
 				Tag:        tag,
 				Listen:     "0.0.0.0",
 				ListenPort: port,
-				Version:    inbound.ShadowTLSVersion,
+				Version:    firstNonZero(inbound.ShadowTLSVersion, 3),
 				// NOTE: sing-box v1.13: inbound-level password + users conflicts.
 				// Put password on users only; omit inbound password entirely.
 				// Password: inbound.ShadowTLSPassword,
@@ -313,7 +313,7 @@ func BuildConfigWithOptions(inbounds []db.Inbound, opts BuildOptions) Config {
 				name := UserStatsKey(client)
 				ib.Users = append(ib.Users, UserConfig{
 					Name:     name,
-					Password: client.UUID,
+					Password: client.PasswordValue(),
 				})
 				addStatsUser(name)
 			}
@@ -576,4 +576,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }

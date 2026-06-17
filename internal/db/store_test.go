@@ -122,8 +122,18 @@ func TestStoreInfersInboundCoreByProtocol(t *testing.T) {
 		{"socks", db.CoreXray},
 	}
 	for i, tc := range cases {
+		network := "tcp"
+		security := "none"
+		if tc.protocol == "hysteria2" || tc.protocol == "tuic" {
+			network = "udp"
+			security = "tls"
+		}
+		tlsSNI := ""
+		if tc.protocol == "shadowtls" {
+			tlsSNI = "www.example.com"
+		}
 		inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
-			Remark: fmt.Sprintf("in-%s", tc.protocol), Protocol: tc.protocol, Port: 22000 + i, Network: "tcp", Security: "none",
+			Remark: fmt.Sprintf("in-%s", tc.protocol), Protocol: tc.protocol, Port: 22000 + i, Network: network, Security: security, TLSSNI: tlsSNI,
 		})
 		if err != nil {
 			t.Fatalf("create %s inbound: %v", tc.protocol, err)
@@ -867,6 +877,25 @@ func TestStoreAutoAssignsInboundPort(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsDuplicateInboundPort(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "first", Protocol: "vless", Port: 18450, Network: "tcp", Security: "none",
+	}); err != nil {
+		t.Fatalf("create first inbound: %v", err)
+	}
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "second", Protocol: "vmess", Port: 18450, Network: "ws", Security: "tls",
+	}); err == nil {
+		t.Fatal("expected duplicate inbound port to be rejected")
+	}
+}
+
 func TestStoreDeletesClient(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -1154,6 +1183,104 @@ func TestStoreUpdateInboundRejectsUnsupportedProtocol(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected unsupported protocol error for %q", protocol)
 		}
+	}
+}
+
+func TestStoreUpdateInboundRejectsProtocolChangeWithIncompatibleClients(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "edge", Protocol: "vless", Port: 18443, Network: "tcp", Security: "none",
+		InitialClient: &db.CreateClientParams{
+			Email: "uuid-only",
+			UUID:  "11111111-1111-4111-8111-111111111111",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	_, err = store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark: "edge", Protocol: "tuic", Port: 18443, Network: "udp", Security: "tls", Enabled: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "tuic") || !strings.Contains(err.Error(), "uuid-only") {
+		t.Fatalf("expected target protocol and client label in error, got %v", err)
+	}
+
+	for _, protocol := range []string{"socks", "http"} {
+		_, err = store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+			Remark: "edge", Protocol: protocol, Port: 18443, Network: "tcp", Security: "none", Enabled: true,
+		})
+		if err == nil || !strings.Contains(err.Error(), protocol) || !strings.Contains(err.Error(), "uuid-only") {
+			t.Fatalf("expected %s credential incompatibility, got %v", protocol, err)
+		}
+	}
+
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Protocol != "vless" {
+		t.Fatalf("protocol update should have been rejected without mutation: %+v", loaded)
+	}
+}
+
+func TestStoreUpdateInboundAllowsPasswordProtocolChangeWhenCredentialsMatch(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "password-edge", Protocol: "trojan", Port: 18444, Network: "tcp", Security: "tls",
+		InitialClient: &db.CreateClientParams{
+			Email:    "password-client",
+			UUID:     "secret-password",
+			Password: "secret-password",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	updated, err := store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark: "password-edge", Protocol: "hysteria2", Port: 18444, Network: "udp", Security: "tls", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("password protocol change should be allowed: %v", err)
+	}
+	if updated.Protocol != "hysteria2" {
+		t.Fatalf("unexpected protocol: %+v", updated)
+	}
+}
+
+func TestStoreUpdateInboundAllowsProtocolChangeWithoutClients(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "empty-edge", Protocol: "vless", Port: 18445, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	updated, err := store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark: "empty-edge", Protocol: "http", Port: 18445, Network: "tcp", Security: "none", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("protocol change without clients should be allowed: %v", err)
+	}
+	if updated.Protocol != "http" {
+		t.Fatalf("unexpected protocol: %+v", updated)
 	}
 }
 
@@ -1547,6 +1674,150 @@ func TestStoreCreateInboundWithInitialClient(t *testing.T) {
 	}
 	if len(inbounds) != 1 || len(inbounds[0].Clients) != 1 {
 		t.Fatalf("expected 1 inbound with 1 client, got %+v", inbounds)
+	}
+}
+
+func TestStoreCreateInboundInitialClientIgnoresInputInboundID(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	existing, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "existing", Protocol: "vless", Port: 18452, Network: "tcp", Security: "none",
+		InitialClient: &db.CreateClientParams{
+			Email: "same-email@test.com",
+			UUID:  "11111111-1111-4111-8111-111111111111",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create existing inbound: %v", err)
+	}
+
+	created, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "new", Protocol: "vless", Port: 18453, Network: "tcp", Security: "none",
+		InitialClient: &db.CreateClientParams{
+			InboundID: existing.ID,
+			Email:     "same-email@test.com",
+			UUID:      "22222222-2222-4222-8222-222222222222",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create inbound should ignore initial client inbound_id: %v", err)
+	}
+	if len(created.Clients) != 1 || created.Clients[0].InboundID != created.ID {
+		t.Fatalf("initial client was not attached to the new inbound: %+v", created)
+	}
+}
+
+func TestStoreCreateInboundWithInvalidInitialClientIsAtomic(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark:   "bad-init-client",
+		Protocol: "tuic",
+		Port:     18446,
+		Network:  "udp",
+		Security: "tls",
+		InitialClient: &db.CreateClientParams{
+			Email:        "bad-tuic@test.com",
+			CredentialID: "not-a-uuid",
+			Password:     "tuic-secret",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected invalid initial client to fail")
+	}
+
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 0 {
+		t.Fatalf("invalid initial client must not leave a half-created inbound: %+v", inbounds)
+	}
+}
+
+func TestStoreCreateInboundWithDuplicateInitialClientCredentialIDIsAtomic(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "first-trojan", Protocol: "trojan", Port: 18448, Network: "tcp", Security: "tls",
+		InitialClient: &db.CreateClientParams{
+			Email:        "first-trojan@test.com",
+			CredentialID: "shared-credential-id",
+			Password:     "first-secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create first inbound: %v", err)
+	}
+
+	_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "duplicate-trojan", Protocol: "trojan", Port: 18449, Network: "tcp", Security: "tls",
+		InitialClient: &db.CreateClientParams{
+			Email:        "duplicate-trojan@test.com",
+			CredentialID: "shared-credential-id",
+			Password:     "other-secret",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate client credential_id") {
+		t.Fatalf("expected duplicate credential_id error, got %v", err)
+	}
+
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].Remark != "first-trojan" {
+		t.Fatalf("duplicate initial client must not leave a half-created inbound: %+v", inbounds)
+	}
+}
+
+func TestStoreCreateInboundWithValidTUICInitialClientPersistsBoth(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark:   "tuic-init-client",
+		Protocol: "tuic",
+		Port:     18447,
+		Network:  "udp",
+		Security: "tls",
+		InitialClient: &db.CreateClientParams{
+			Email:        "tuic@test.com",
+			CredentialID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			Password:     "tuic-secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create tuic inbound with initial client: %v", err)
+	}
+	if inbound.Protocol != "tuic" || len(inbound.Clients) != 1 {
+		t.Fatalf("unexpected created inbound: %+v", inbound)
+	}
+	if inbound.Clients[0].CredentialID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" || inbound.Clients[0].Password != "tuic-secret" {
+		t.Fatalf("unexpected initial client credentials: %+v", inbound.Clients[0])
+	}
+
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || len(inbounds[0].Clients) != 1 {
+		t.Fatalf("expected inbound and client to persist together: %+v", inbounds)
 	}
 }
 

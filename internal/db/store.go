@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/curve25519"
 	_ "modernc.org/sqlite"
 )
 
@@ -17,18 +20,6 @@ const (
 	autoInboundPortMin = 20000
 	autoInboundPortMax = 60999
 )
-
-var supportedProtocols = map[string]bool{
-	"vless":       true,
-	"vmess":       true,
-	"trojan":      true,
-	"shadowsocks": true,
-	"socks":       true,
-	"http":        true,
-	"hysteria2":   true,
-	"tuic":        true,
-	"shadowtls":   true,
-}
 
 var supportedOutboundProtocols = map[string]bool{
 	"freedom":     true,
@@ -44,6 +35,8 @@ var supportedOutboundProtocols = map[string]bool{
 	"tuic":        true,
 	"shadowtls":   true,
 }
+
+var tableIdentifierForMigration = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type RoutingRule struct {
 	ID          int64  `json:"id"`
@@ -174,6 +167,8 @@ type Client struct {
 	ID                int64  `json:"id"`
 	InboundID         int64  `json:"inbound_id"`
 	UUID              string `json:"uuid"`
+	CredentialID      string `json:"credential_id,omitempty"`
+	Password          string `json:"password,omitempty"`
 	SubscriptionToken string `json:"subscription_token,omitempty"`
 	StatsKey          string `json:"stats_key,omitempty"`
 	Email             string `json:"email"`
@@ -187,6 +182,20 @@ type Client struct {
 type ClientTrafficUpdate struct {
 	Up   int64
 	Down int64
+}
+
+func (c Client) CredentialIDValue() string {
+	if strings.TrimSpace(c.CredentialID) != "" {
+		return strings.TrimSpace(c.CredentialID)
+	}
+	return strings.TrimSpace(c.UUID)
+}
+
+func (c Client) PasswordValue() string {
+	if strings.TrimSpace(c.Password) != "" {
+		return c.Password
+	}
+	return c.UUID
 }
 
 type TrafficRawStat struct {
@@ -292,6 +301,8 @@ type CreateInboundParams struct {
 type CreateClientParams struct {
 	InboundID    int64  `json:"inbound_id,omitempty"`
 	UUID         string `json:"uuid,omitempty"`
+	CredentialID string `json:"credential_id,omitempty"`
+	Password     string `json:"password,omitempty"`
 	Email        string `json:"email"`
 	Enabled      *bool  `json:"enabled,omitempty"`
 	TrafficLimit int64  `json:"traffic_limit,omitempty"`
@@ -342,6 +353,8 @@ type UpdateInboundParams struct {
 
 type UpdateClientParams struct {
 	UUID         string `json:"uuid,omitempty"`
+	CredentialID string `json:"credential_id,omitempty"`
+	Password     string `json:"password,omitempty"`
 	Email        string `json:"email"`
 	Enabled      bool   `json:"enabled"`
 	TrafficLimit int64  `json:"traffic_limit"`
@@ -396,6 +409,8 @@ CREATE TABLE IF NOT EXISTS clients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   inbound_id INTEGER NOT NULL REFERENCES inbounds(id) ON DELETE CASCADE,
   uuid TEXT NOT NULL UNIQUE,
+  credential_id TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
   subscription_token TEXT NOT NULL DEFAULT '',
   stats_key TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL,
@@ -467,7 +482,6 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
 );
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
-CREATE INDEX IF NOT EXISTS idx_inbounds_port ON inbounds(port);
 CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
 CREATE INDEX IF NOT EXISTS idx_clients_inbound_email ON clients(inbound_id, email);
 CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at);
@@ -481,8 +495,13 @@ CREATE INDEX IF NOT EXISTS idx_traffic_samples_lookup ON traffic_samples(scope_t
 	if err := s.seedDefaultOutbounds(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureUniqueInboundPortIndex(ctx); err != nil {
+		return err
+	}
 	// Migration: add traffic/expiry columns (ignore errors if already exist)
 	for _, col := range []struct{ name, typ string }{
+		{"credential_id", "TEXT NOT NULL DEFAULT ''"},
+		{"password", "TEXT NOT NULL DEFAULT ''"},
 		{"subscription_token", "TEXT NOT NULL DEFAULT ''"},
 		{"stats_key", "TEXT NOT NULL DEFAULT ''"},
 		{"up", "INTEGER NOT NULL DEFAULT 0"},
@@ -493,6 +512,12 @@ CREATE INDEX IF NOT EXISTS idx_traffic_samples_lookup ON traffic_samples(scope_t
 		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE clients ADD COLUMN %s %s", col.name, col.typ))
 	}
 	if err := s.ensureClientSubscriptionTokens(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE clients SET credential_id = uuid WHERE credential_id = '' OR credential_id IS NULL`); err != nil {
+		return err
+	}
+	if err := s.ensureUniqueCredentialIDIndex(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureClientStatsKeys(ctx); err != nil {
@@ -549,6 +574,49 @@ CREATE INDEX IF NOT EXISTS idx_traffic_samples_lookup ON traffic_samples(scope_t
 		return err
 	}
 	return nil
+}
+
+func (s *Store) ensureUniqueInboundPortIndex(ctx context.Context) error {
+	return s.ensureUniqueIndex(ctx, "inbounds", "idx_inbounds_port", `CREATE UNIQUE INDEX IF NOT EXISTS idx_inbounds_port ON inbounds(port)`)
+}
+
+func (s *Store) ensureUniqueCredentialIDIndex(ctx context.Context) error {
+	return s.ensureUniqueIndex(ctx, "clients", "idx_clients_credential_id", `CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_credential_id ON clients(credential_id) WHERE credential_id <> ''`)
+}
+
+func (s *Store) ensureUniqueIndex(ctx context.Context, table, indexName, createSQL string) error {
+	if !tableIdentifierForMigration.MatchString(table) || !tableIdentifierForMigration.MatchString(indexName) {
+		return fmt.Errorf("invalid index migration target: %s.%s", table, indexName)
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA index_list(%s)`, table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return err
+		}
+		if name == indexName && unique == 0 {
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`DROP INDEX %s`, indexName)); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, createSQL)
+	return err
 }
 
 func (s *Store) backfillCoreFields(ctx context.Context) error {
@@ -1107,8 +1175,8 @@ func (s *Store) ReorderRoutingRules(ctx context.Context, ids []int64) error {
 }
 
 func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (Inbound, error) {
-	protocol := strings.ToLower(strings.TrimSpace(params.Protocol))
-	if !supportedProtocols[protocol] {
+	protocol := NormalizeInboundProtocol(params.Protocol)
+	if !SupportedInboundProtocol(protocol) {
 		return Inbound{}, fmt.Errorf("unsupported protocol: %s", params.Protocol)
 	}
 	core := InferInboundCore(protocol)
@@ -1123,16 +1191,37 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 	if port <= 0 || port > 65535 {
 		return Inbound{}, fmt.Errorf("invalid port: %d", params.Port)
 	}
-	network := strings.ToLower(strings.TrimSpace(params.Network))
-	if network == "" {
-		network = "tcp"
+	network := NormalizeInboundNetwork(protocol, params.Network)
+	security := NormalizeInboundSecurity(protocol, params.Security)
+	if err := prepareCreateInboundRealityMaterial(security, &params); err != nil {
+		return Inbound{}, err
 	}
-	security := strings.ToLower(strings.TrimSpace(params.Security))
 	remark := strings.TrimSpace(params.Remark)
 	if remark == "" {
 		remark = protocol
 	}
-	id, uuid, err := s.insertInbound(ctx, params.UUID, remark, protocol, core, port, network, security,
+	candidate := Inbound{Remark: remark, Protocol: protocol, Core: core, Port: port, Network: network, Security: security,
+		RealityDest: params.RealityDest, RealityServerNames: params.RealityServerNames, RealityPrivateKey: params.RealityPrivateKey, RealityPublicKey: params.RealityPublicKey,
+		ShadowTLSVersion: params.ShadowTLSVersion, TLSSNI: params.TLSSNI}
+	if err := ValidateInboundCombination(candidate); err != nil {
+		return Inbound{}, err
+	}
+	var preparedClient *Client
+	if params.InitialClient != nil {
+		initialClient := *params.InitialClient
+		initialClient.InboundID = 0
+		client, err := s.prepareClientForCreate(ctx, Inbound{Protocol: protocol}, initialClient)
+		if err != nil {
+			return Inbound{}, err
+		}
+		preparedClient = &client
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Inbound{}, err
+	}
+	defer tx.Rollback()
+	id, uuid, err := s.insertInboundTx(ctx, tx, params.UUID, remark, protocol, core, port, network, security,
 		params.WsPath, params.WsHost, params.GrpcServiceName,
 		params.RealityDest, params.RealityServerNames, params.RealityShortID, params.RealityPrivateKey, params.RealityPublicKey,
 		params.SSMethod, params.TLSCertFile, params.TLSKeyFile, params.TLSSNI, params.TLSFingerprint, params.TLSALPN, params.XHTTPPath, params.XHTTPMode,
@@ -1144,13 +1233,16 @@ func (s *Store) CreateInbound(ctx context.Context, params CreateInboundParams) (
 		return Inbound{}, err
 	}
 	var clients []Client
-	if params.InitialClient != nil {
-		params.InitialClient.InboundID = id
-		createdClient, err := s.CreateClient(ctx, *params.InitialClient)
+	if preparedClient != nil {
+		preparedClient.InboundID = id
+		createdClient, err := s.insertClientTx(ctx, tx, *preparedClient)
 		if err != nil {
 			return Inbound{}, err
 		}
 		clients = []Client{createdClient}
+	}
+	if err := tx.Commit(); err != nil {
+		return Inbound{}, err
 	}
 	return Inbound{ID: id, UUID: uuid, Remark: remark, Protocol: protocol, Core: core, Port: port, Network: network, Security: security, Enabled: true,
 		WsPath: params.WsPath, WsHost: params.WsHost, GrpcServiceName: params.GrpcServiceName,
@@ -1183,6 +1275,24 @@ func (s *Store) insertInbound(ctx context.Context, inboundUUID, remark, protocol
 	tuicCongestionControl string, tuicZeroRTT bool,
 	wgPrivateKey, wgAddress, wgPeerPublicKey, wgAllowedIPs, wgEndpoint, wgPresharedKey string, wgMTU int,
 	shadowTLSVersion int, shadowTLSPassword string) (int64, string, error) {
+	return s.insertInboundTx(ctx, s.db, inboundUUID, remark, protocol, core, port, network, security,
+		wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, tlsSNI, tlsFingerprint, tlsALPN, xhttpPath, xhttpMode,
+		hy2UpMbps, hy2DownMbps, hy2Obfs, hy2ObfsPassword, hy2MPort,
+		tuicCongestionControl, tuicZeroRTT,
+		wgPrivateKey, wgAddress, wgPeerPublicKey, wgAllowedIPs, wgEndpoint, wgPresharedKey, wgMTU,
+		shadowTLSVersion, shadowTLSPassword)
+}
+
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+}
+
+func (s *Store) insertInboundTx(ctx context.Context, execer sqlExecer, inboundUUID, remark, protocol, core string, port int, network, security string,
+	wsPath, wsHost, grpcServiceName, realityDest, realityServerNames, realityShortID, realityPrivateKey, realityPublicKey, ssMethod, tlsCertFile, tlsKeyFile, tlsSNI, tlsFingerprint, tlsALPN, xhttpPath, xhttpMode string,
+	hy2UpMbps, hy2DownMbps int, hy2Obfs, hy2ObfsPassword, hy2MPort string,
+	tuicCongestionControl string, tuicZeroRTT bool,
+	wgPrivateKey, wgAddress, wgPeerPublicKey, wgAllowedIPs, wgEndpoint, wgPresharedKey string, wgMTU int,
+	shadowTLSVersion int, shadowTLSPassword string) (int64, string, error) {
 	uuid := strings.TrimSpace(inboundUUID)
 	if uuid == "" {
 		uuid = newUUID()
@@ -1191,7 +1301,7 @@ func (s *Store) insertInbound(ctx context.Context, inboundUUID, remark, protocol
 	if tuicZeroRTT {
 		tuicZeroRTTInt = 1
 	}
-	result, err := s.db.ExecContext(ctx, `
+	result, err := execer.ExecContext(ctx, `
 INSERT INTO inbounds (uuid, remark, protocol, core, port, network, security, enabled, created_at,
   ws_path, ws_host, grpc_service_name, reality_dest, reality_server_names, reality_short_id, reality_private_key, reality_public_key, ss_method, tls_cert_file, tls_key_file, tls_sni, tls_fingerprint, tls_alpn, xhttp_path, xhttp_mode,
   hy2_up_mbps, hy2_down_mbps, hy2_obfs, hy2_obfs_password, hy2_mport,
@@ -1224,13 +1334,26 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 	if params.InboundID <= 0 {
 		return Client{}, fmt.Errorf("invalid inbound id: %d", params.InboundID)
 	}
+	inbound, err := s.getInboundBasic(ctx, params.InboundID)
+	if err != nil {
+		return Client{}, err
+	}
+	client, err := s.prepareClientForCreate(ctx, inbound, params)
+	if err != nil {
+		return Client{}, err
+	}
+	return s.insertClientTx(ctx, s.db, client)
+}
+
+func (s *Store) prepareClientForCreate(ctx context.Context, inbound Inbound, params CreateClientParams) (Client, error) {
 	email := strings.TrimSpace(params.Email)
 	if email == "" {
 		email = "client"
 	}
-	uuid := strings.TrimSpace(params.UUID)
-	if uuid == "" {
-		uuid = newUUID()
+	uuid, credentialID, password := normalizeClientCredentials(inbound.Protocol, params.UUID, params.CredentialID, params.Password)
+	clientForValidation := Client{UUID: uuid, CredentialID: credentialID, Password: password}
+	if err := ValidateClientCredential(inbound.Protocol, clientForValidation); err != nil {
+		return Client{}, err
 	}
 	var existingID int64
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE inbound_id = ? AND email = ? LIMIT 1`, params.InboundID, email).Scan(&existingID); err == nil {
@@ -1242,6 +1365,13 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 		return Client{}, fmt.Errorf("duplicate client uuid: %s", uuid)
 	} else if err != sql.ErrNoRows {
 		return Client{}, err
+	}
+	if credentialID != "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE credential_id = ? LIMIT 1`, credentialID).Scan(&existingID); err == nil {
+			return Client{}, fmt.Errorf("duplicate client credential_id: %s", credentialID)
+		} else if err != sql.ErrNoRows {
+			return Client{}, err
+		}
 	}
 	subscriptionToken, err := s.newSubscriptionToken(ctx)
 	if err != nil {
@@ -1255,14 +1385,18 @@ func (s *Store) CreateClient(ctx context.Context, params CreateClientParams) (Cl
 	if params.Enabled != nil {
 		enabled = *params.Enabled
 	}
+	return Client{InboundID: params.InboundID, UUID: uuid, CredentialID: credentialID, Password: password, SubscriptionToken: subscriptionToken, StatsKey: statsKey, Email: email, Enabled: enabled, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
+}
+
+func (s *Store) insertClientTx(ctx context.Context, execer sqlExecer, client Client) (Client, error) {
 	dbEnabled := 0
-	if enabled {
+	if client.Enabled {
 		dbEnabled = 1
 	}
-	result, err := s.db.ExecContext(ctx, `
-INSERT INTO clients (inbound_id, uuid, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, params.InboundID, uuid, subscriptionToken, statsKey, email, dbEnabled, time.Now().UTC().Format(time.RFC3339), params.TrafficLimit, params.ExpiryAt)
+	result, err := execer.ExecContext(ctx, `
+INSERT INTO clients (inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, client.InboundID, client.UUID, client.CredentialID, client.Password, client.SubscriptionToken, client.StatsKey, client.Email, dbEnabled, time.Now().UTC().Format(time.RFC3339), client.TrafficLimit, client.ExpiryAt)
 	if err != nil {
 		return Client{}, err
 	}
@@ -1270,7 +1404,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	if err != nil {
 		return Client{}, err
 	}
-	return Client{ID: id, InboundID: params.InboundID, UUID: uuid, SubscriptionToken: subscriptionToken, StatsKey: statsKey, Email: email, Enabled: enabled, TrafficLimit: params.TrafficLimit, ExpiryAt: params.ExpiryAt}, nil
+	client.ID = id
+	return client, nil
 }
 
 func (s *Store) DeleteClient(ctx context.Context, id int64) error {
@@ -1303,6 +1438,189 @@ func (s *Store) DeleteInbound(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (s *Store) getInboundBasic(ctx context.Context, id int64) (Inbound, error) {
+	var inbound Inbound
+	if err := s.db.QueryRowContext(ctx, `SELECT id, uuid, remark, protocol, core, port, network, security, enabled FROM inbounds WHERE id=?`, id).Scan(
+		&inbound.ID, &inbound.UUID, &inbound.Remark, &inbound.Protocol, &inbound.Core, &inbound.Port, &inbound.Network, &inbound.Security, new(int),
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return Inbound{}, fmt.Errorf("inbound not found: %d", id)
+		}
+		return Inbound{}, err
+	}
+	if inbound.Core == "" {
+		inbound.Core = InferInboundCore(inbound.Protocol)
+	}
+	return inbound, nil
+}
+
+func normalizeClientCredentials(protocol, uuid, credentialID, password string) (string, string, string) {
+	protocol = NormalizeInboundProtocol(protocol)
+	uuid = strings.TrimSpace(uuid)
+	credentialID = strings.TrimSpace(credentialID)
+	password = strings.TrimSpace(password)
+	if credentialID == "" {
+		credentialID = uuid
+	}
+	capability, _ := GetInboundCapability(protocol)
+	switch capability.CredentialType {
+	case CredentialUUID:
+		if credentialID == "" {
+			credentialID = newUUID()
+		}
+		return credentialID, credentialID, ""
+	case CredentialPassword:
+		if password == "" {
+			password = uuid
+		}
+		if password == "" {
+			password = newSecret(24)
+		}
+		if credentialID == "" {
+			credentialID = newUUID()
+		}
+		return password, credentialID, password
+	case CredentialIDPassword:
+		if credentialID == "" {
+			credentialID = newUUID()
+		}
+		if password == "" {
+			password = newSecret(24)
+		}
+		return credentialID, credentialID, password
+	case CredentialUsernamePassword:
+		if credentialID == "" {
+			credentialID = "user-" + newSecret(8)
+		}
+		if password == "" {
+			password = newSecret(24)
+		}
+		return credentialID, credentialID, password
+	case CredentialNone:
+		if uuid == "" {
+			uuid = newSecret(24)
+		}
+		return uuid, uuid, ""
+	default:
+		if uuid == "" {
+			uuid = newUUID()
+		}
+		return uuid, uuid, password
+	}
+}
+
+func prepareCreateInboundRealityMaterial(security string, params *CreateInboundParams) error {
+	if strings.ToLower(strings.TrimSpace(security)) != "reality" {
+		return nil
+	}
+	if strings.TrimSpace(params.RealityDest) == "" {
+		params.RealityDest = "www.cloudflare.com:443"
+	}
+	if strings.TrimSpace(params.RealityServerNames) == "" {
+		params.RealityServerNames = "www.cloudflare.com"
+	}
+	if strings.TrimSpace(params.RealityPrivateKey) == "" {
+		privateKey, publicKey, err := generateRealityKeyPair()
+		if err != nil {
+			return err
+		}
+		params.RealityPrivateKey = privateKey
+		params.RealityPublicKey = publicKey
+	} else if strings.TrimSpace(params.RealityPublicKey) == "" {
+		publicKey, err := deriveRealityPublicKey(params.RealityPrivateKey)
+		if err == nil {
+			params.RealityPublicKey = publicKey
+		} else {
+			privateKey, publicKey, err := generateRealityKeyPair()
+			if err != nil {
+				return err
+			}
+			params.RealityPrivateKey = privateKey
+			params.RealityPublicKey = publicKey
+		}
+	}
+	if strings.TrimSpace(params.RealityShortID) == "" {
+		params.RealityShortID = newSecret(4)
+	}
+	return nil
+}
+
+func (s *Store) prepareUpdateInboundRealityMaterial(ctx context.Context, id int64, security string, params *UpdateInboundParams) error {
+	if strings.ToLower(strings.TrimSpace(security)) != "reality" {
+		return nil
+	}
+	if strings.TrimSpace(params.RealityDest) == "" {
+		params.RealityDest = "www.cloudflare.com:443"
+	}
+	if strings.TrimSpace(params.RealityServerNames) == "" {
+		params.RealityServerNames = "www.cloudflare.com"
+	}
+	var existingPrivateKey string
+	var existingPublicKey string
+	var existingShortID string
+	_ = s.db.QueryRowContext(ctx, `SELECT reality_private_key, reality_public_key, reality_short_id FROM inbounds WHERE id=?`, id).Scan(&existingPrivateKey, &existingPublicKey, &existingShortID)
+	if strings.TrimSpace(params.RealityPrivateKey) == "" {
+		params.RealityPrivateKey = existingPrivateKey
+	}
+	if strings.TrimSpace(params.RealityPublicKey) == "" {
+		params.RealityPublicKey = existingPublicKey
+	}
+	if strings.TrimSpace(params.RealityShortID) == "" {
+		params.RealityShortID = existingShortID
+	}
+	if strings.TrimSpace(params.RealityPrivateKey) == "" {
+		privateKey, publicKey, err := generateRealityKeyPair()
+		if err != nil {
+			return err
+		}
+		params.RealityPrivateKey = privateKey
+		params.RealityPublicKey = publicKey
+	} else if strings.TrimSpace(params.RealityPublicKey) == "" {
+		publicKey, err := deriveRealityPublicKey(params.RealityPrivateKey)
+		if err == nil {
+			params.RealityPublicKey = publicKey
+		} else {
+			privateKey, publicKey, err := generateRealityKeyPair()
+			if err != nil {
+				return err
+			}
+			params.RealityPrivateKey = privateKey
+			params.RealityPublicKey = publicKey
+		}
+	}
+	if strings.TrimSpace(params.RealityShortID) == "" {
+		params.RealityShortID = newSecret(4)
+	}
+	return nil
+}
+
+func generateRealityKeyPair() (string, string, error) {
+	privateBytes := make([]byte, curve25519.ScalarSize)
+	if _, err := rand.Read(privateBytes); err != nil {
+		return "", "", err
+	}
+	publicBytes, err := curve25519.X25519(privateBytes, curve25519.Basepoint)
+	if err != nil {
+		return "", "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(privateBytes), base64.RawURLEncoding.EncodeToString(publicBytes), nil
+}
+
+func deriveRealityPublicKey(privateKey string) (string, error) {
+	privateBytes, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(privateKey))
+	if err != nil {
+		return "", err
+	}
+	if len(privateBytes) != curve25519.ScalarSize {
+		return "", fmt.Errorf("invalid reality private key length: %d", len(privateBytes))
+	}
+	publicBytes, err := curve25519.X25519(privateBytes, curve25519.Basepoint)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(publicBytes), nil
+}
+
 func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboundParams) (Inbound, error) {
 	remark := strings.TrimSpace(params.Remark)
 	if remark == "" {
@@ -1319,19 +1637,25 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	if port <= 0 || port > 65535 {
 		return Inbound{}, fmt.Errorf("invalid port: %d", params.Port)
 	}
-	network := strings.ToLower(strings.TrimSpace(params.Network))
-	if network == "" {
-		network = "tcp"
-	}
-	security := strings.ToLower(strings.TrimSpace(params.Security))
-	protocol := strings.ToLower(strings.TrimSpace(params.Protocol))
+	protocol := NormalizeInboundProtocol(params.Protocol)
 	if protocol == "" {
 		protocol = "vless"
 	}
-	if !supportedProtocols[protocol] {
+	if !SupportedInboundProtocol(protocol) {
 		return Inbound{}, fmt.Errorf("unsupported protocol: %s", params.Protocol)
 	}
 	core := InferInboundCore(protocol)
+	network := NormalizeInboundNetwork(protocol, params.Network)
+	security := NormalizeInboundSecurity(protocol, params.Security)
+	if err := s.prepareUpdateInboundRealityMaterial(ctx, id, security, &params); err != nil {
+		return Inbound{}, err
+	}
+	candidate := Inbound{ID: id, UUID: params.UUID, Remark: remark, Protocol: protocol, Core: core, Port: port, Network: network, Security: security,
+		RealityDest: params.RealityDest, RealityServerNames: params.RealityServerNames, RealityPrivateKey: params.RealityPrivateKey, RealityPublicKey: params.RealityPublicKey,
+		ShadowTLSVersion: params.ShadowTLSVersion, TLSSNI: params.TLSSNI}
+	if err := ValidateInboundCombination(candidate); err != nil {
+		return Inbound{}, err
+	}
 	// Preserve existing UUID if not provided in update
 	uuid := params.UUID
 	if uuid == "" {
@@ -1361,6 +1685,11 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 			return Inbound{}, fmt.Errorf("inbound not found: %d", id)
 		}
 		return Inbound{}, err
+	}
+	if NormalizeInboundProtocol(oldProtocol) != protocol {
+		if err := validateExistingClientsForProtocolChange(ctx, tx, id, protocol); err != nil {
+			return Inbound{}, err
+		}
 	}
 	oldRemark = strings.TrimSpace(oldRemark)
 	oldRemarkMatches := 0
@@ -1435,6 +1764,32 @@ func (s *Store) UpdateInbound(ctx context.Context, id int64, params UpdateInboun
 	return inbound, nil
 }
 
+type sqlQuerier interface {
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+}
+
+func validateExistingClientsForProtocolChange(ctx context.Context, querier sqlQuerier, inboundID int64, targetProtocol string) error {
+	rows, err := querier.QueryContext(ctx, `SELECT id, uuid, credential_id, password, email FROM clients WHERE inbound_id=? ORDER BY id ASC`, inboundID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var client Client
+		if err := rows.Scan(&client.ID, &client.UUID, &client.CredentialID, &client.Password, &client.Email); err != nil {
+			return err
+		}
+		if err := ValidateClientCredential(targetProtocol, client); err != nil {
+			label := strings.TrimSpace(client.Email)
+			if label == "" {
+				label = fmt.Sprintf("client-%d", client.ID)
+			}
+			return fmt.Errorf("cannot change inbound protocol to %s: client %s has incompatible credentials: %w", targetProtocol, label, err)
+		}
+	}
+	return rows.Err()
+}
+
 func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientParams) (Client, error) {
 	email := strings.TrimSpace(params.Email)
 	if email == "" {
@@ -1446,13 +1801,36 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	}
 	var inboundID int64
 	var existingUUID string
+	var existingCredentialID string
+	var existingPassword string
 	var oldEmail string
-	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id, uuid, email FROM clients WHERE id = ?`, id).Scan(&inboundID, &existingUUID, &oldEmail); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT inbound_id, uuid, credential_id, password, email FROM clients WHERE id = ?`, id).Scan(&inboundID, &existingUUID, &existingCredentialID, &existingPassword, &oldEmail); err != nil {
 		return Client{}, err
 	}
-	uuid := strings.TrimSpace(params.UUID)
-	if uuid == "" {
-		uuid = existingUUID
+	inbound, err := s.getInboundBasic(ctx, inboundID)
+	if err != nil {
+		return Client{}, err
+	}
+	rawUUID := firstNonEmpty(params.UUID, existingUUID)
+	rawCredentialID := firstNonEmpty(params.CredentialID, existingCredentialID, rawUUID)
+	rawPassword := firstNonEmpty(params.Password, existingPassword)
+	if capability, ok := GetInboundCapability(inbound.Protocol); ok {
+		switch capability.CredentialType {
+		case CredentialUUID:
+			rawCredentialID = rawUUID
+		case CredentialPassword:
+			if strings.TrimSpace(params.Password) == "" && strings.TrimSpace(params.UUID) != "" {
+				rawPassword = params.UUID
+			}
+		case CredentialIDPassword, CredentialUsernamePassword:
+			if strings.TrimSpace(params.CredentialID) == "" && strings.TrimSpace(params.UUID) != "" {
+				rawCredentialID = params.UUID
+			}
+		}
+	}
+	uuid, credentialID, password := normalizeClientCredentials(inbound.Protocol, rawUUID, rawCredentialID, rawPassword)
+	if err := ValidateClientCredential(inbound.Protocol, Client{UUID: uuid, CredentialID: credentialID, Password: password}); err != nil {
+		return Client{}, err
 	}
 	var existingID int64
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE inbound_id = ? AND email = ? AND id <> ? LIMIT 1`, inboundID, email, id).Scan(&existingID); err == nil {
@@ -1465,13 +1843,20 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 	} else if err != sql.ErrNoRows {
 		return Client{}, err
 	}
+	if credentialID != "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE credential_id = ? AND id <> ? LIMIT 1`, credentialID, id).Scan(&existingID); err == nil {
+			return Client{}, fmt.Errorf("duplicate client credential_id: %s", credentialID)
+		} else if err != sql.ErrNoRows {
+			return Client{}, err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Client{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE clients SET uuid=?, email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
-		uuid, email, enabled, params.TrafficLimit, params.ExpiryAt, id)
+	result, err := tx.ExecContext(ctx, `UPDATE clients SET uuid=?, credential_id=?, password=?, email=?, enabled=?, traffic_limit=?, expiry_at=? WHERE id=?`,
+		uuid, credentialID, password, email, enabled, params.TrafficLimit, params.ExpiryAt, id)
 	if err != nil {
 		return Client{}, err
 	}
@@ -1487,10 +1872,10 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 			return Client{}, err
 		}
 	}
-	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.CredentialID, &client.Password, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1584,9 +1969,9 @@ func (s *Store) SetClientEnabled(ctx context.Context, inboundID int64, id int64,
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE inbound_id=? AND id=?`, inboundID, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE inbound_id=? AND id=?`, inboundID, id)
 	var client Client
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.CredentialID, &client.Password, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
@@ -1637,7 +2022,7 @@ ORDER BY id ASC
 	}
 
 	clientRows, err := s.db.QueryContext(ctx, `
-SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at
+SELECT id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at
 FROM clients
 ORDER BY id ASC
 `)
@@ -1648,7 +2033,7 @@ ORDER BY id ASC
 	for clientRows.Next() {
 		var client Client
 		var enabled int
-		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.CredentialID, &client.Password, &client.SubscriptionToken, &client.StatsKey, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 			return nil, err
 		}
 		client.Enabled = enabled != 0
@@ -1694,7 +2079,7 @@ ORDER BY id ASC
 	}
 
 	clientRows, err := s.db.QueryContext(ctx, `
-SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at
+SELECT id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at
 FROM clients
 ORDER BY id ASC
 `)
@@ -1705,7 +2090,7 @@ ORDER BY id ASC
 	for clientRows.Next() {
 		var client Client
 		var enabled int
-		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		if err := clientRows.Scan(&client.ID, &client.InboundID, &client.UUID, &client.CredentialID, &client.Password, &client.SubscriptionToken, &client.StatsKey, &client.Email, &enabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 			return nil, err
 		}
 		client.Enabled = enabled != 0
@@ -1813,7 +2198,7 @@ SELECT i.id, i.uuid, i.remark, i.protocol, i.core, i.port, i.network, i.security
   i.tuic_congestion_control, i.tuic_zero_rtt,
   i.wg_private_key, i.wg_address, i.wg_peer_public_key, i.wg_allowed_ips, i.wg_endpoint, i.wg_preshared_key, i.wg_mtu,
   i.shadowtls_version, i.shadowtls_password,
-  c.id, c.inbound_id, c.uuid, c.subscription_token, c.stats_key, c.email, c.enabled, c.up, c.down, c.traffic_limit, c.expiry_at
+  c.id, c.inbound_id, c.uuid, c.credential_id, c.password, c.subscription_token, c.stats_key, c.email, c.enabled, c.up, c.down, c.traffic_limit, c.expiry_at
 FROM clients c
 JOIN inbounds i ON i.id = c.inbound_id
 `
@@ -1840,7 +2225,7 @@ func (s *Store) getSubscriptionByClientRow(row *sql.Row) (Inbound, Client, bool,
 		&inbound.TuicCongestionControl, &inbound.TuicZeroRTT,
 		&inbound.WgPrivateKey, &inbound.WgAddress, &inbound.WgPeerPublicKey, &inbound.WgAllowedIPs, &inbound.WgEndpoint, &inbound.WgPresharedKey, &inbound.WgMTU,
 		&inbound.ShadowTLSVersion, &inbound.ShadowTLSPassword,
-		&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &clientEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+		&client.ID, &client.InboundID, &client.UUID, &client.CredentialID, &client.Password, &client.SubscriptionToken, &client.StatsKey, &client.Email, &clientEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		if err == sql.ErrNoRows {
 			return Inbound{}, Client{}, false, nil
 		}
@@ -1867,10 +2252,10 @@ func (s *Store) ResetClientTraffic(ctx context.Context, id int64) (Client, error
 	if n == 0 {
 		return Client{}, fmt.Errorf("client not found: %d", id)
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.CredentialID, &client.Password, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
@@ -2135,10 +2520,10 @@ func (s *Store) ResetClientTrafficBaseline(ctx context.Context, id int64, baseli
 		return Client{}, err
 	}
 	defer tx.Rollback()
-	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
+	row := tx.QueryRowContext(ctx, `SELECT id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, up, down, traffic_limit, expiry_at FROM clients WHERE id=?`, id)
 	var client Client
 	var dbEnabled int
-	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
+	if err := row.Scan(&client.ID, &client.InboundID, &client.UUID, &client.CredentialID, &client.Password, &client.SubscriptionToken, &client.StatsKey, &client.Email, &dbEnabled, &client.Up, &client.Down, &client.TrafficLimit, &client.ExpiryAt); err != nil {
 		return Client{}, err
 	}
 	client.Enabled = dbEnabled != 0
@@ -2490,6 +2875,14 @@ func randomHexToken(byteLen int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func newSecret(byteLen int) string {
+	token, err := randomHexToken(byteLen)
+	if err != nil {
+		panic(err)
+	}
+	return token
 }
 
 func (s *Store) newSubscriptionToken(ctx context.Context) (string, error) {

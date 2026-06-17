@@ -1,7 +1,7 @@
 package xray
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -261,14 +261,6 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 
 	clients := enabledClients(inbound.Clients)
 
-	// Auto-generate REALITY private key if security=reality but key is missing
-	if strings.ToLower(strings.TrimSpace(inbound.Security)) == "reality" && inbound.RealityPrivateKey == "" {
-		if privKey, pubKey, err := GenerateRealityKey(); err == nil {
-			inbound.RealityPrivateKey = privKey
-			inbound.RealityPublicKey = pubKey
-		}
-	}
-
 	base := InboundConfig{
 		Tag:            db.GeneratedInboundTag(inbound),
 		Listen:         "0.0.0.0",
@@ -300,11 +292,23 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 		if inbound.SSMethod != "" {
 			ssMethod = inbound.SSMethod
 		}
-		password := ss2022Key(ssMethod, inbound.UUID)
+		password := SSInboundPassword(ssMethod, inbound.UUID)
 		base.Settings = map[string]interface{}{
 			"method":   ssMethod,
 			"password": password,
 			// Xray Shadowsocks only supports single-user mode (no "clients" array)
+		}
+	case "socks":
+		base.StreamSettings = nil
+		base.Settings = map[string]interface{}{
+			"auth":     "password",
+			"accounts": clientsAsUserPass(clients),
+			"udp":      true,
+		}
+	case "http":
+		base.StreamSettings = nil
+		base.Settings = map[string]interface{}{
+			"accounts": clientsAsUserPass(clients),
 		}
 	default:
 		return InboundConfig{}, fmt.Errorf("unsupported protocol: %s", inbound.Protocol)
@@ -325,7 +329,7 @@ func enabledClients(clients []db.Client) []db.Client {
 // ss2022Key generates a proper base64-encoded key for SS 2022 ciphers.
 // For 2022-blake3-aes-128-gcm (16-byte key), for 2022-blake3-aes-256-gcm (32-byte key).
 // Non-2022 ciphers fall back to the inbound UUID.
-func ss2022Key(method string, fallback string) string {
+func SSInboundPassword(method string, fallback string) string {
 	if !strings.HasPrefix(method, "2022-blake3") {
 		return fallback
 	}
@@ -339,18 +343,23 @@ func ss2022Key(method string, fallback string) string {
 		// For unknown 2022 variants, default to 16 bytes
 		keySize = 16
 	}
-	key := make([]byte, keySize)
-	if _, err := rand.Read(key); err != nil {
+	seed := strings.TrimSpace(fallback)
+	if seed == "" {
 		return fallback
 	}
-	return base64.StdEncoding.EncodeToString(key)
+	sum := sha256.Sum256([]byte(method + ":" + seed))
+	return base64.StdEncoding.EncodeToString(sum[:keySize])
+}
+
+func ss2022Key(method string, fallback string) string {
+	return SSInboundPassword(method, fallback)
 }
 
 func clientsAsIDEmail(clients []db.Client, flow string) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(clients))
 	for _, client := range clients {
 		entry := map[string]interface{}{
-			"id":    client.UUID,
+			"id":    client.CredentialIDValue(),
 			"email": clientStatsName(client),
 		}
 		if flow != "" {
@@ -365,7 +374,7 @@ func clientsAsAlterIDEmail(clients []db.Client) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(clients))
 	for _, client := range clients {
 		result = append(result, map[string]interface{}{
-			"id":      client.UUID,
+			"id":      client.CredentialIDValue(),
 			"email":   clientStatsName(client),
 			"alterId": 0,
 		})
@@ -377,8 +386,19 @@ func clientsAsPasswordEmail(clients []db.Client) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(clients))
 	for _, client := range clients {
 		result = append(result, map[string]interface{}{
-			"password": client.UUID,
+			"password": client.PasswordValue(),
 			"email":    clientStatsName(client),
+		})
+	}
+	return result
+}
+
+func clientsAsUserPass(clients []db.Client) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(clients))
+	for _, client := range clients {
+		result = append(result, map[string]interface{}{
+			"user": client.CredentialIDValue(),
+			"pass": client.PasswordValue(),
 		})
 	}
 	return result
@@ -389,6 +409,18 @@ func clientStatsName(client db.Client) string {
 		return strings.TrimSpace(client.StatsKey)
 	}
 	return strings.TrimSpace(client.Email)
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
@@ -404,7 +436,7 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 		"network":  network,
 		"security": security,
 	}
-	if network == "ws" || network == "h2" {
+	if network == "ws" {
 		wsSettings := map[string]interface{}{"path": "/"}
 		if inbound.WsPath != "" {
 			wsSettings["path"] = inbound.WsPath
@@ -413,6 +445,16 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 			wsSettings["host"] = inbound.WsHost
 		}
 		settings["wsSettings"] = wsSettings
+	}
+	if network == "h2" {
+		httpSettings := map[string]interface{}{"path": "/"}
+		if inbound.WsPath != "" {
+			httpSettings["path"] = inbound.WsPath
+		}
+		if inbound.WsHost != "" {
+			httpSettings["host"] = splitCSV(inbound.WsHost)
+		}
+		settings["httpSettings"] = httpSettings
 	}
 	if network == "grpc" {
 		grpcSettings := map[string]interface{}{"serviceName": "migate"}
@@ -441,24 +483,18 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 		}
 		serverNames := []string{"www.cloudflare.com"}
 		if inbound.RealityServerNames != "" {
-			serverNames = strings.Split(inbound.RealityServerNames, ",")
+			serverNames = splitCSV(inbound.RealityServerNames)
 		}
 		shortIds := []string{""}
 		if inbound.RealityShortID != "" {
 			shortIds = []string{inbound.RealityShortID}
 		}
-		// Auto-generate a random shortId if none is set (REALITY requires non-empty hex shortIds)
-		if shortIds[0] == "" {
-			b := make([]byte, 4)
-			_, _ = rand.Read(b)
-			shortIds[0] = fmt.Sprintf("%x", b)
-		}
 		realitySettings := map[string]interface{}{
 			"show":        false,
 			"dest":        dest,
 			"serverNames": serverNames,
-			"shortIds":    shortIds,
 		}
+		realitySettings["shortIds"] = shortIds
 		if inbound.RealityPrivateKey != "" {
 			realitySettings["privateKey"] = inbound.RealityPrivateKey
 		}
@@ -484,14 +520,7 @@ func buildStreamSettings(inbound db.Inbound) map[string]interface{} {
 			tlsSettings["fingerprint"] = inbound.TLSFingerprint
 		}
 		if inbound.TLSALPN != "" {
-			alpnParts := strings.Split(inbound.TLSALPN, ",")
-			alpn := make([]string, 0, len(alpnParts))
-			for _, p := range alpnParts {
-				trimmed := strings.TrimSpace(p)
-				if trimmed != "" {
-					alpn = append(alpn, trimmed)
-				}
-			}
+			alpn := splitCSV(inbound.TLSALPN)
 			if len(alpn) > 0 {
 				tlsSettings["alpn"] = alpn
 			}

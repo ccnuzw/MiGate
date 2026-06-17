@@ -3,7 +3,7 @@ import { Columns2, Copy, Edit2, Plus, Power, RectangleHorizontal, RotateCcw, Tra
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ApiError, appPath } from '../api/client';
 import { api } from '../api/endpoints';
-import type { CertStatus, Client, Inbound } from '../api/types';
+import type { CertStatus, Client, Inbound, InboundCapability as ApiInboundCapability } from '../api/types';
 import { EmptyState, LoadingBlock, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { copyToClipboard } from '../lib/clipboard';
 import { coreLabel, inboundCore } from '../lib/cores';
@@ -52,7 +52,7 @@ export const numericAdvancedFields = new Set<(typeof advancedFields)[number]>([
   'shadowtls_version',
 ]);
 
-export const inboundProtocols = ['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'shadowtls'] as const;
+export const inboundProtocols = ['vless', 'vmess', 'trojan', 'shadowsocks', 'socks', 'http', 'hysteria2', 'tuic', 'shadowtls'] as const;
 export const inboundSecurities = ['none', 'tls', 'reality'] as const;
 
 type InboundProtocol = (typeof inboundProtocols)[number];
@@ -60,21 +60,26 @@ type InboundSecurity = (typeof inboundSecurities)[number];
 type InboundNetwork = string;
 
 type InboundCapability = {
+  core: 'xray' | 'sing-box';
   networks: InboundNetwork[];
   defaultNetwork: InboundNetwork;
   defaultSecurity: InboundSecurity;
   securityByNetwork: Partial<Record<InboundNetwork, InboundSecurity[]>> & { default: InboundSecurity[] };
   protocolAdvancedFields: InboundAdvancedField[];
   securityAdvancedFields: Partial<Record<InboundSecurity, InboundAdvancedField[]>>;
+  credentialType: 'none' | 'uuid' | 'password' | 'credential_id_password' | 'username_password';
+  subscription: 'none' | 'full';
+  localProxyInbound?: boolean;
 };
 
-const xrayNetworks = ['tcp', 'ws', 'grpc', 'h2', 'xhttp', 'quic', 'kcp'];
+const xrayNetworks = ['tcp', 'ws', 'grpc', 'h2', 'xhttp'];
 const realityFields: InboundAdvancedField[] = ['reality_dest', 'reality_server_names', 'reality_short_id', 'reality_private_key', 'reality_public_key', 'tls_fingerprint'];
 const xrayTlsFields: InboundAdvancedField[] = ['tls_cert_file', 'tls_key_file', 'tls_sni', 'tls_fingerprint', 'tls_alpn'];
 const singboxTlsFields: InboundAdvancedField[] = ['tls_cert_file', 'tls_key_file', 'tls_sni'];
 
 export const inboundCapabilities: Record<InboundProtocol, InboundCapability> = {
   vless: {
+    core: 'xray',
     networks: xrayNetworks,
     defaultNetwork: 'tcp',
     defaultSecurity: 'reality',
@@ -86,16 +91,22 @@ export const inboundCapabilities: Record<InboundProtocol, InboundCapability> = {
     },
     protocolAdvancedFields: [],
     securityAdvancedFields: { tls: xrayTlsFields, reality: realityFields },
+    credentialType: 'uuid',
+    subscription: 'full',
   },
   vmess: {
+    core: 'xray',
     networks: xrayNetworks,
     defaultNetwork: 'tcp',
     defaultSecurity: 'tls',
     securityByNetwork: { default: ['none', 'tls'] },
     protocolAdvancedFields: [],
     securityAdvancedFields: { tls: xrayTlsFields },
+    credentialType: 'uuid',
+    subscription: 'full',
   },
   trojan: {
+    core: 'xray',
     networks: xrayNetworks,
     defaultNetwork: 'tcp',
     defaultSecurity: 'tls',
@@ -107,40 +118,149 @@ export const inboundCapabilities: Record<InboundProtocol, InboundCapability> = {
     },
     protocolAdvancedFields: [],
     securityAdvancedFields: { tls: xrayTlsFields, reality: realityFields },
+    credentialType: 'password',
+    subscription: 'full',
   },
   shadowsocks: {
-    networks: xrayNetworks,
+    core: 'xray',
+    networks: ['tcp'],
     defaultNetwork: 'tcp',
     defaultSecurity: 'none',
-    securityByNetwork: { default: ['none', 'tls'] },
+    securityByNetwork: { default: ['none'] },
     protocolAdvancedFields: ['ss_method'],
-    securityAdvancedFields: { tls: xrayTlsFields },
+    securityAdvancedFields: {},
+    credentialType: 'none',
+    subscription: 'full',
+  },
+  socks: {
+    core: 'xray',
+    networks: ['tcp'],
+    defaultNetwork: 'tcp',
+    defaultSecurity: 'none',
+    securityByNetwork: { default: ['none'] },
+    protocolAdvancedFields: [],
+    securityAdvancedFields: {},
+    credentialType: 'username_password',
+    subscription: 'none',
+    localProxyInbound: true,
+  },
+  http: {
+    core: 'xray',
+    networks: ['tcp'],
+    defaultNetwork: 'tcp',
+    defaultSecurity: 'none',
+    securityByNetwork: { default: ['none'] },
+    protocolAdvancedFields: [],
+    securityAdvancedFields: {},
+    credentialType: 'username_password',
+    subscription: 'none',
+    localProxyInbound: true,
   },
   hysteria2: {
+    core: 'sing-box',
     networks: ['udp'],
     defaultNetwork: 'udp',
     defaultSecurity: 'tls',
     securityByNetwork: { default: ['tls'] },
     protocolAdvancedFields: ['hy2_up_mbps', 'hy2_down_mbps', 'hy2_obfs', 'hy2_obfs_password'],
     securityAdvancedFields: { tls: singboxTlsFields },
+    credentialType: 'password',
+    subscription: 'full',
   },
   tuic: {
+    core: 'sing-box',
     networks: ['udp'],
     defaultNetwork: 'udp',
     defaultSecurity: 'tls',
     securityByNetwork: { default: ['tls'] },
     protocolAdvancedFields: ['tuic_congestion_control', 'tuic_zero_rtt'],
     securityAdvancedFields: { tls: singboxTlsFields },
+    credentialType: 'credential_id_password',
+    subscription: 'full',
   },
   shadowtls: {
+    core: 'sing-box',
     networks: ['tcp'],
     defaultNetwork: 'tcp',
     defaultSecurity: 'none',
     securityByNetwork: { default: ['none'] },
     protocolAdvancedFields: ['shadowtls_version', 'tls_sni'],
     securityAdvancedFields: {},
+    credentialType: 'password',
+    subscription: 'none',
   },
 };
+
+let activeInboundCapabilities: Record<InboundProtocol, InboundCapability> = inboundCapabilities;
+let activeInboundProtocols: InboundProtocol[] = [...inboundProtocols];
+
+export function applyInboundCapabilitiesFromAPI(capabilities: ApiInboundCapability[] | undefined | null) {
+  const next: Partial<Record<InboundProtocol, InboundCapability>> = {};
+  const nextProtocols: InboundProtocol[] = [];
+  for (const item of capabilities || []) {
+    const protocol = String(item?.protocol || '').trim().toLowerCase() as InboundProtocol;
+    if (!inboundProtocols.includes(protocol)) continue;
+    nextProtocols.push(protocol);
+    next[protocol] = normalizeCapabilityFromAPI(item, inboundCapabilities[protocol]);
+  }
+  activeInboundCapabilities = nextProtocols.length > 0 ? { ...inboundCapabilities, ...next } : inboundCapabilities;
+  activeInboundProtocols = nextProtocols.length > 0 ? nextProtocols : [...inboundProtocols];
+}
+
+export function resetInboundCapabilitiesForTest() {
+  activeInboundCapabilities = inboundCapabilities;
+  activeInboundProtocols = [...inboundProtocols];
+}
+
+function normalizeCapabilityFromAPI(item: ApiInboundCapability, fallback: InboundCapability): InboundCapability {
+  const rawSecurityByNetwork = item.security_by_network && typeof item.security_by_network === 'object' ? item.security_by_network : {};
+  const rawDefaultSecurities = Array.isArray(rawSecurityByNetwork.default) ? rawSecurityByNetwork.default : fallback.securityByNetwork.default;
+  const securityByNetwork: InboundCapability['securityByNetwork'] = { ...fallback.securityByNetwork, default: normalizeSecurities(rawDefaultSecurities) };
+  for (const [network, securities] of Object.entries(rawSecurityByNetwork)) {
+    if (!Array.isArray(securities)) continue;
+    securityByNetwork[network] = normalizeSecurities(securities);
+  }
+  const rawAdvancedFields = Array.isArray(item.advanced_fields) ? item.advanced_fields : [];
+  const advanced = new Set(rawAdvancedFields.filter(isInboundAdvancedField));
+  const securityAdvancedFields: InboundCapability['securityAdvancedFields'] = {};
+  if (advanced.has('tls_cert_file')) {
+    securityAdvancedFields.tls = ['tls_cert_file', 'tls_key_file', 'tls_sni', 'tls_fingerprint', 'tls_alpn'].filter((field): field is InboundAdvancedField => advanced.has(field as InboundAdvancedField));
+  }
+  if (advanced.has('reality_dest')) {
+    securityAdvancedFields.reality = ['reality_dest', 'reality_server_names', 'reality_short_id', 'reality_private_key', 'reality_public_key', 'tls_fingerprint'].filter((field): field is InboundAdvancedField => advanced.has(field as InboundAdvancedField));
+  }
+  const securityFields = new Set(Object.values(fallback.securityAdvancedFields).flat());
+  const protocolAdvancedFields = Array.from(advanced).filter((field) => fallback.protocolAdvancedFields.includes(field) || !securityFields.has(field));
+  return {
+    core: item.core === 'sing-box' ? 'sing-box' : 'xray',
+    networks: Array.isArray(item.networks) && item.networks.length ? item.networks : fallback.networks,
+    defaultNetwork: item.default_network || fallback.defaultNetwork,
+    defaultSecurity: normalizeSecurity(item.default_security, fallback.defaultSecurity),
+    securityByNetwork,
+    protocolAdvancedFields,
+    securityAdvancedFields,
+    credentialType: normalizeCredentialType(item.credential_type, fallback.credentialType),
+    subscription: item.subscription === 'none' ? 'none' : 'full',
+    localProxyInbound: item.local_proxy_inbound,
+  };
+}
+
+function normalizeSecurities(values: string[]): InboundSecurity[] {
+  const securities = values.map((value) => normalizeSecurity(value, 'none'));
+  return securities.length ? securities : ['none'];
+}
+
+function normalizeSecurity(value: string, fallback: InboundSecurity): InboundSecurity {
+  return inboundSecurities.includes(value as InboundSecurity) ? value as InboundSecurity : fallback;
+}
+
+function normalizeCredentialType(value: string, fallback: InboundCapability['credentialType']): InboundCapability['credentialType'] {
+  return ['none', 'uuid', 'password', 'credential_id_password', 'username_password'].includes(value) ? value as InboundCapability['credentialType'] : fallback;
+}
+
+function isInboundAdvancedField(value: string): value is InboundAdvancedField {
+  return advancedFields.includes(value as InboundAdvancedField);
+}
 
 type SortKey = 'id' | 'port' | 'protocol' | 'clients';
 type InboundListColumns = 1 | 2;
@@ -157,6 +277,8 @@ export default function InboundsPage() {
   const [search, setSearch] = useState('');
   const [inboundColumns, setInboundColumns] = useState<InboundListColumns>(2);
   const [sort, setSort] = useState<SortKey>('id');
+  const [, setCapabilityVersion] = useState(0);
+  const capabilities = useQuery({ queryKey: ['inbound-capabilities'], queryFn: api.inboundCapabilities, staleTime: 300_000, retry: false });
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, staleTime: 30_000 });
   const inboundTraffic = useQuery({
     queryKey: ['inbounds', 'traffic'],
@@ -169,6 +291,15 @@ export default function InboundsPage() {
     if (!inboundTraffic.data) return;
     queryClient.setQueryData<Inbound[]>(['inbounds'], (current) => mergeInboundTraffic(current || [], inboundTraffic.data || []));
   }, [inboundTraffic.data, queryClient]);
+  useEffect(() => {
+    if (capabilities.data) {
+      applyInboundCapabilitiesFromAPI(capabilities.data);
+      setCapabilityVersion((version) => version + 1);
+    } else if (capabilities.isError) {
+      resetInboundCapabilitiesForTest();
+      setCapabilityVersion((version) => version + 1);
+    }
+  }, [capabilities.data, capabilities.isError]);
   const refresh = () => refreshInboundDependencies(queryClient);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -270,6 +401,7 @@ export default function InboundsPage() {
                     <span>:{inbound.port}</span>
                     <span>{inbound.network || 'tcp'} / {inbound.security || 'none'}</span>
                     <span>{(inbound.clients || []).length} 客户端</span>
+                    <span>{supportsInboundShareLink(inbound.protocol) ? '支持订阅/分享链接' : '不支持订阅/分享链接'}</span>
                   </div>
                 </div>
                 <div className="action-row">
@@ -305,6 +437,7 @@ export default function InboundsPage() {
                       inbound={inbound}
                       client={mergeClientTraffic(inbound, client)}
                       onCopyShare={() => copyShareLink(client, showToast)}
+                      shareSupported={supportsInboundShareLink(inbound.protocol)}
                       onToggle={() => toggleClient.mutate({ inboundId: inbound.id, client })}
                       onEdit={() => setEditingClient({ inbound, client })}
                       onReset={async () => (await confirm({ title: '重置累计用量？', description: '会清零 MiGate 维护的业务累计用量，并以当前核心计数作为新的基线。' })) && resetTraffic.mutate({ inboundId: inbound.id, id: client.id })}
@@ -334,6 +467,7 @@ function ClientRow({
   onEdit,
   onReset,
   onDelete,
+  shareSupported,
 }: {
   inbound: Inbound;
   client: Client;
@@ -342,6 +476,7 @@ function ClientRow({
   onEdit: () => void;
   onReset: () => void;
   onDelete: () => void;
+  shareSupported: boolean;
 }) {
   const { text } = useI18n();
   const used = Number(client.up || 0) + Number(client.down || 0);
@@ -364,7 +499,7 @@ function ClientRow({
         </div>
       </div>
       <div className="action-row">
-        <button className="icon-button" onClick={onCopyShare} title="复制客户端分享链接"><Copy className="h-4 w-4" /></button>
+        {shareSupported ? <button className="icon-button" onClick={onCopyShare} title="复制客户端分享链接"><Copy className="h-4 w-4" /></button> : null}
         <button className={toggleButtonClass(client.enabled)} onClick={onToggle} title="启停"><Power className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onEdit} title="编辑"><Edit2 className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onReset} title="重置累计用量"><RotateCcw className="h-4 w-4" /></button>
@@ -560,7 +695,7 @@ const templateAdvancedFields: Record<InboundTemplateId, InboundAdvancedField[]> 
 
 export function sanitizeInboundFormValues(values: InboundValues, changes: Partial<Pick<InboundValues, 'protocol' | 'network' | 'security'>> = {}): InboundValues {
   const changedProtocol = changes.protocol ? asInboundProtocol(changes.protocol) : undefined;
-  const protocolDefaults = changedProtocol ? inboundCapabilities[changedProtocol] : undefined;
+  const protocolDefaults = changedProtocol ? activeInboundCapabilities[changedProtocol] : undefined;
   const next = normalizeInboundCombination({
     ...values,
     ...changes,
@@ -579,8 +714,8 @@ export function sanitizeInboundFormValues(values: InboundValues, changes: Partia
 }
 
 export function normalizeInboundCombination(values: InboundValues): InboundValues {
-  const protocol = inboundProtocols.includes(values.protocol as InboundProtocol) ? values.protocol as InboundProtocol : 'vless';
-  const capability = inboundCapabilities[protocol];
+  const protocol = asInboundProtocol(values.protocol);
+  const capability = activeInboundCapabilities[protocol];
   const network = capability.networks.includes(values.network) ? values.network : capability.defaultNetwork;
   const securities = allowedInboundSecurities(protocol, network);
   const security = securities.includes(values.security as InboundSecurity) ? values.security as InboundSecurity : preferredInboundSecurity(capability, securities, values.security);
@@ -588,12 +723,20 @@ export function normalizeInboundCombination(values: InboundValues): InboundValue
 }
 
 export function allowedInboundNetworks(protocol: string): string[] {
-  return inboundCapabilities[asInboundProtocol(protocol)].networks;
+  return activeInboundCapabilities[asInboundProtocol(protocol)].networks;
 }
 
 export function allowedInboundSecurities(protocol: string, network: string): InboundSecurity[] {
-  const capability = inboundCapabilities[asInboundProtocol(protocol)];
+  const capability = activeInboundCapabilities[asInboundProtocol(protocol)];
   return capability.securityByNetwork[network] || capability.securityByNetwork.default;
+}
+
+export function supportsInboundShareLink(protocol: string): boolean {
+  return activeInboundCapabilities[asInboundProtocol(protocol)].subscription === 'full';
+}
+
+export function inboundCredentialType(protocol: string) {
+  return activeInboundCapabilities[asInboundProtocol(protocol)].credentialType;
 }
 
 export function isInboundAdvancedFieldEnabled(values: Pick<InboundValues, 'protocol' | 'network' | 'security'>, key: InboundAdvancedField): boolean {
@@ -603,7 +746,7 @@ export function isInboundAdvancedFieldEnabled(values: Pick<InboundValues, 'proto
 
 export function enabledInboundAdvancedFields(values: Pick<InboundValues, 'protocol' | 'network' | 'security'>): Set<InboundAdvancedField> {
   const protocol = asInboundProtocol(values.protocol);
-  const capability = inboundCapabilities[protocol];
+  const capability = activeInboundCapabilities[protocol];
   const fields = new Set<InboundAdvancedField>(capability.protocolAdvancedFields);
   const security = values.security as InboundSecurity;
   for (const key of capability.securityAdvancedFields[security] || []) fields.add(key);
@@ -620,7 +763,13 @@ export function enabledInboundAdvancedFields(values: Pick<InboundValues, 'protoc
 }
 
 function asInboundProtocol(protocol: string): InboundProtocol {
-  return inboundProtocols.includes(protocol as InboundProtocol) ? protocol as InboundProtocol : 'vless';
+  const normalized = String(protocol || '').toLowerCase() as InboundProtocol;
+  if (activeInboundProtocols.includes(normalized)) return normalized;
+  return inboundProtocols.includes(normalized) ? normalized : 'vless';
+}
+
+export function inboundProtocolOptions(): InboundProtocol[] {
+  return [...activeInboundProtocols];
 }
 
 function preferredInboundSecurity(capability: InboundCapability, securities: InboundSecurity[], current?: string): InboundSecurity {
@@ -725,19 +874,57 @@ function mergeClients(current: Client[], traffic: Client[], clientTraffic?: Inbo
 }
 
 export function clientFormValues(inbound: Inbound, client?: Client): ClientValues {
+  const generated = generatedClientCredentialValues(inbound.protocol);
+  const credentialType = inboundCredentialType(inbound.protocol);
+  let uuid = client?.uuid || generated.uuid;
+  let credentialID = client?.credential_id || generated.credential_id;
+  let password = client?.password || generated.password;
+  if (credentialType === 'uuid') {
+    credentialID = client?.credential_id || client?.uuid || generated.credential_id;
+    uuid = credentialID;
+  } else if (credentialType === 'password') {
+    password = client?.password || client?.uuid || generated.password;
+    uuid = password;
+    credentialID = client?.credential_id || '';
+  } else if (credentialType === 'credential_id_password' || credentialType === 'username_password') {
+    credentialID = client?.credential_id || client?.uuid || generated.credential_id;
+    uuid = credentialID;
+    password = client?.password || generated.password;
+  } else if (credentialType === 'none') {
+    credentialID = '';
+    password = '';
+  }
   return {
     email: client?.email || '',
-    uuid: client?.uuid || generatedProtocolCredential(inbound.protocol),
+    uuid,
+    credential_id: credentialID,
+    password,
     enabled: client?.enabled ?? true,
     traffic_limit_gb: bytesToGB(client?.traffic_limit || 0),
     ...expiryToForm(client?.expiry_at || 0),
   };
 }
 
-export function buildClientPayload(values: ClientValues): { email: string; uuid: string; enabled: boolean; traffic_limit: number; expiry_at: number } {
+export function buildClientPayload(values: ClientValues, protocol = 'vless'): { email: string; uuid: string; credential_id: string; password: string; enabled: boolean; traffic_limit: number; expiry_at: number } {
+  const type = inboundCredentialType(protocol);
+  const password = values.password || '';
+  let credentialID = values.credential_id || values.uuid || '';
+  let uuid = credentialID || password || '';
+  if (type === 'password') {
+    credentialID = values.credential_id || '';
+    uuid = password || values.uuid || '';
+  } else if (type === 'none') {
+    credentialID = '';
+    uuid = values.uuid || '';
+  } else if (type === 'credential_id_password' || type === 'username_password') {
+    credentialID = values.credential_id || values.uuid || '';
+    uuid = credentialID;
+  }
   return {
     email: values.email,
-    uuid: values.uuid,
+    uuid,
+    credential_id: credentialID,
+    password,
     enabled: values.enabled,
     traffic_limit: gbToBytes(values.traffic_limit_gb || 0),
     expiry_at: formExpiryToUnix(values),
@@ -795,6 +982,22 @@ function trafficStatusLabel(status: string | undefined, text: (value: string) =>
 export function generatedProtocolCredential(protocol?: string) {
   if (protocol === 'hysteria2' || protocol === 'tuic' || protocol === 'shadowtls') return randomUUID().replace(/-/g, '');
   return randomUUID();
+}
+
+function generatedClientCredentialValues(protocol?: string) {
+  const type = inboundCredentialType(protocol || 'vless');
+  if (type === 'credential_id_password') return { uuid: randomUUID(), credential_id: randomUUID(), password: randomSecret(24) };
+  if (type === 'username_password') {
+    const username = `user-${randomSecret(8)}`;
+    return { uuid: username, credential_id: username, password: randomSecret(24) };
+  }
+  if (type === 'password') {
+    const password = randomSecret(24);
+    return { uuid: password, credential_id: '', password };
+  }
+  if (type === 'none') return { uuid: randomSecret(24), credential_id: '', password: '' };
+  const uuid = randomUUID();
+  return { uuid, credential_id: uuid, password: '' };
 }
 
 function randomHex(bytes: number) {

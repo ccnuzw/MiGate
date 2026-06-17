@@ -11,6 +11,8 @@ export interface Client {
   inbound_id: number;
   email: string;
   uuid: string;
+  credential_id?: string;
+  password?: string;
   subscription_token?: string;
   enabled: boolean;
   up?: number;
@@ -50,6 +52,21 @@ export interface Inbound {
   realtime_stats_source?: string;
   client_traffic?: Record<string, { up: number; down: number; rate_up?: number; rate_down?: number; xray_up?: number; xray_down?: number; status?: string; message?: string; source?: string; realtime_source?: string; note?: string }>;
   [key: string]: unknown;
+}
+
+export interface InboundCapability {
+  protocol: string;
+  core: 'xray' | 'sing-box' | string;
+  networks: string[];
+  securities: string[];
+  default_network: string;
+  default_security: string;
+  security_by_network: Record<string, string[]>;
+  advanced_fields?: string[];
+  credential_type: 'none' | 'uuid' | 'password' | 'credential_id_password' | 'username_password' | string;
+  subscription: 'none' | 'full' | string;
+  local_proxy_inbound?: boolean;
+  unsupported_reasons?: string[];
 }
 
 export interface Outbound {

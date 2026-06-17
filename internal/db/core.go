@@ -72,8 +72,8 @@ func NormalizeCore(core string) string {
 }
 
 func InferInboundCore(protocol string) string {
-	if singboxInboundProtocols[strings.ToLower(strings.TrimSpace(protocol))] {
-		return CoreSingbox
+	if capability, ok := GetInboundCapability(protocol); ok {
+		return capability.Core
 	}
 	return CoreXray
 }
