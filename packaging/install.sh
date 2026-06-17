@@ -520,22 +520,20 @@ ensure_latest_release_version() {
   log_info "解析最新 Release：${VERSION}"
 }
 
-skip_update_if_current() {
+note_current_release_state() {
   if [ "$ACTION" != "upgrade" ] || [ "$DRY_RUN" -eq 1 ]; then
-    return 1
+    return 0
   fi
   local current latest
   current="$(current_migate_version)"
   if [ -z "$current" ] || [ "$current" = "unknown" ]; then
-    return 1
+    return 0
   fi
   ensure_latest_release_version
   latest="$VERSION"
   if [ -n "$latest" ] && [ "$(normalize_version "$current")" = "$(normalize_version "$latest")" ]; then
-    log_ok "MiGate 已是最新版本：${current}"
-    return 0
+    log_ok "MiGate 已是最新版本：${current}，将刷新安装器和服务配置。"
   fi
-  return 1
 }
 
 download_file() {
@@ -1107,9 +1105,7 @@ install_release_flow() {
   fi
 
   section "安装 MiGate"
-  if skip_update_if_current; then
-    return 0
-  fi
+  note_current_release_state
   download_release_asset
   if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
     run_cmd systemctl stop migate 2>/dev/null || true

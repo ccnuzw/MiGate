@@ -394,6 +394,7 @@ func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
 		`os.Geteuid()`,
 		`exec.LookPath("systemd-run")`,
 		`os.Stat("/run/systemd/system")`,
+		`"journalctl", "-u", "migate-update", "-u", "migate-update-*"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("update handler missing detached updater contract %q", want)

@@ -235,7 +235,7 @@ func readUpdateLogs(lines string) (string, error) {
 		return "", err
 	}
 	if _, err := exec.LookPath("journalctl"); err == nil {
-		out, journalErr := exec.Command("journalctl", "-u", "migate-update", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		out, journalErr := exec.Command("journalctl", "-u", "migate-update", "-u", "migate-update-*", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
 		if journalErr == nil {
 			return string(out), nil
 		}
