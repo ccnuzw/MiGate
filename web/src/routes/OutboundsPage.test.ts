@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Outbound } from '../api/types';
-import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundFormValues, outboundMetaParts, outboundRemarkLabel } from './OutboundsPage';
+import { outboundSupportedCores, outboundSupportLevel, outboundSupportLevelLabel } from '../lib/cores';
+import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundCredentialFields, outboundFormValues, outboundMetaParts, outboundPasswordLabel, outboundRemarkLabel, outboundUsernameLabel, sanitizeOutboundValues } from './OutboundsPage';
 
 describe('outbound helpers', () => {
   const outbounds: Outbound[] = [
@@ -70,6 +71,81 @@ describe('outbound helpers', () => {
       username: 'sam',
       password: 'secret',
       enabled: true,
+    });
+  });
+
+  it('labels constrained outbound credential fields by protocol', () => {
+    expect(outboundUsernameLabel('shadowsocks')).toBe('Shadowsocks 加密方法');
+    expect(outboundPasswordLabel('shadowtls')).toBe('ShadowTLS 密码');
+    expect(outboundUsernameLabel('tuic')).toBe('UUID');
+    expect(outboundUsernameLabel('vless')).toBe('UUID');
+    expect(outboundPasswordLabel('vless')).toBe('密码');
+  });
+
+  it('derives credential field visibility by protocol', () => {
+    expect(outboundCredentialFields('vless')).toEqual({ username: true, password: false });
+    expect(outboundCredentialFields('tuic')).toEqual({ username: true, password: true });
+    expect(outboundCredentialFields('shadowsocks')).toEqual({ username: true, password: true });
+    expect(outboundCredentialFields('trojan')).toEqual({ username: false, password: true });
+    expect(outboundCredentialFields('hysteria2')).toEqual({ username: false, password: true });
+    expect(outboundCredentialFields('shadowtls')).toEqual({ username: false, password: true });
+    expect(outboundCredentialFields('socks')).toEqual({ username: true, password: true });
+  });
+
+  it('derives outbound support level labels', () => {
+    expect(outboundSupportLevelLabel('builtin')).toBe('内置');
+    expect(outboundSupportLevelLabel('full')).toBe('完整');
+    expect(outboundSupportLevelLabel('basic')).toBe('基础');
+  });
+
+  it('keeps outbound core support and support level aligned with backend protocol matrix', () => {
+    const cases = [
+      ['freedom', 'builtin', ['xray', 'sing-box']],
+      ['blackhole', 'builtin', ['xray', 'sing-box']],
+      ['dns', 'builtin', ['xray', 'sing-box']],
+      ['direct', 'builtin', ['xray', 'sing-box']],
+      ['block', 'builtin', ['xray', 'sing-box']],
+      ['socks', 'full', ['xray', 'sing-box']],
+      ['socks5', 'full', ['xray', 'sing-box']],
+      ['http', 'full', ['xray', 'sing-box']],
+      ['https', 'full', ['xray', 'sing-box']],
+      ['vless', 'basic', ['xray', 'sing-box']],
+      ['trojan', 'basic', ['xray', 'sing-box']],
+      ['shadowsocks', 'basic', ['xray', 'sing-box']],
+      ['hysteria2', 'basic', ['sing-box']],
+      ['tuic', 'basic', ['sing-box']],
+      ['shadowtls', 'basic', ['sing-box']],
+      ['unknown', 'none', []],
+    ] as const;
+    cases.forEach(([protocol, level, cores]) => {
+      expect(outboundSupportLevel({ protocol })).toBe(level);
+      expect(outboundSupportedCores({ protocol })).toEqual(cores);
+    });
+  });
+
+  it('clears hidden credential fields before saving', () => {
+    expect(sanitizeOutboundValues({ protocol: 'vless', username: '11111111-1111-4111-8111-111111111111', password: 'unused' })).toMatchObject({
+      username: '11111111-1111-4111-8111-111111111111',
+      password: '',
+    });
+    expect(sanitizeOutboundValues({ protocol: 'trojan', username: 'unused', password: 'secret' })).toMatchObject({
+      username: '',
+      password: 'secret',
+    });
+  });
+
+  it('clears hidden connection fields for builtin outbound protocols', () => {
+    expect(sanitizeOutboundValues({ protocol: 'freedom', address: '127.0.0.1', port: 1080, username: 'unused', password: 'unused' })).toMatchObject({
+      address: '',
+      port: 0,
+      username: '',
+      password: '',
+    });
+    expect(sanitizeOutboundValues({ protocol: 'socks', address: '127.0.0.1', port: 1080, username: 'sam', password: 'secret' })).toMatchObject({
+      address: '127.0.0.1',
+      port: 1080,
+      username: 'sam',
+      password: 'secret',
     });
   });
 });

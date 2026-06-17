@@ -279,6 +279,9 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
 	router := web.NewRouter(web.WithStore(store))
 
 	list := httptest.NewRecorder()
@@ -292,7 +295,7 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 		}
 	}
 
-	payload := []byte(`{"tag":"proxy-socks","remark":"SOCKS代理","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret"}`)
+	payload := []byte(`{"tag":"proxy-socks","remark":"SOCKS代理","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret","supported_cores":["xray"]}`)
 	created := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -300,7 +303,7 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("expected 201 creating outbound, got %d: %s", created.Code, created.Body.String())
 	}
-	for _, want := range []string{`"tag":"proxy-socks"`, `"protocol":"socks"`, `"address":"127.0.0.1"`, `"port":1080`, `"enabled":true`} {
+	for _, want := range []string{`"tag":"proxy-socks"`, `"protocol":"socks"`, `"address":"127.0.0.1"`, `"port":1080`, `"enabled":true`, `"supported_cores":["xray","sing-box"]`} {
 		if !strings.Contains(created.Body.String(), want) {
 			t.Fatalf("create outbound response missing %q: %s", want, created.Body.String())
 		}
@@ -310,8 +313,11 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list outbounds: %v", err)
 	}
-	if len(outbounds) != 3 || outbounds[2].Tag != "proxy-socks" {
+	if len(outbounds) != 4 || outbounds[3].Tag != "proxy-socks" {
 		t.Fatalf("outbound was not persisted: %+v", outbounds)
+	}
+	if !db.SupportsCore(outbounds[3].SupportedCores, db.CoreXray) || !db.SupportsCore(outbounds[3].SupportedCores, db.CoreSingbox) {
+		t.Fatalf("request supported_cores should not narrow protocol-derived response cores: %+v", outbounds[3].SupportedCores)
 	}
 }
 
@@ -363,6 +369,9 @@ func TestUpdateOutboundAPIRejectsUnknownID(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
 	router := web.NewRouter(web.WithStore(store))
 	payload := []byte(`{"tag":"x","remark":"x","protocol":"socks","address":"1.1.1.1","port":80}`)
 	response := httptest.NewRecorder()
@@ -428,6 +437,9 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
 	router := web.NewRouter(web.WithStore(store))
 
 	// GET: empty list
@@ -1385,11 +1397,22 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 	}
 	seedClientTraffic(t, store, activeClient, 10, 20)
 	seedClientTraffic(t, store, limitedClient, 1, 0)
-	if _, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080}); err != nil {
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080})
+	if err != nil {
 		t.Fatalf("create outbound: %v", err)
 	}
 	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundTag: "proxy", Enabled: true}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(context.Background(), []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: db.GeneratedOutboundTag(db.CoreXray, outbound.ID, outbound.Tag), RawUp: 100, RawDown: 50, Status: "ok"},
+	}, time.Unix(100, 0)); err != nil {
+		t.Fatalf("seed outbound traffic baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(context.Background(), []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: db.GeneratedOutboundTag(db.CoreXray, outbound.ID, outbound.Tag), RawUp: 120, RawDown: 70, Status: "ok"},
+	}, time.Unix(110, 0)); err != nil {
+		t.Fatalf("seed outbound traffic increment: %v", err)
 	}
 
 	router := web.NewRouter(web.WithStore(store))
@@ -1405,11 +1428,13 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"clients_active":1`,
 		`"clients_expired":1`,
 		`"clients_limited":1`,
-		`"outbounds":3`,
+		`"outbounds":4`,
 		`"routing_rules":1`,
 		`"xray_realtime":31`,
 		`"protocols":{"vless":1}`,
 		`"traffic_series"`,
+		`"outbound_traffic"`,
+		`"tag":"proxy"`,
 		`"up":11`,
 		`"down":20`,
 		`"validation"`,
@@ -2561,7 +2586,7 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	_, err = store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
 		Tag: "test-socks-egress", Remark: "Test SOCKS", Protocol: "socks", Address: "10.255.239.2", Port: 21080,
 	})
 	if err != nil {
@@ -2595,7 +2620,8 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	if !strings.Contains(string(configBytes), `"protocol": "vless"`) {
 		t.Fatalf("config missing inbound: %s", string(configBytes))
 	}
-	for _, want := range []string{`"tag": "test-socks-egress"`, `"protocol": "socks"`, `"address": "10.255.239.2"`, `"outboundTag": "test-socks-egress"`, `"inboundTag": [
+	compiledTag := fmt.Sprintf("xray-out-%d", outbound.ID)
+	for _, want := range []string{fmt.Sprintf(`"tag": "%s"`, compiledTag), `"protocol": "socks"`, `"address": "10.255.239.2"`, fmt.Sprintf(`"outboundTag": "%s"`, compiledTag), `"inboundTag": [
           "inbound-1-vless"
         ]`} {
 		if !strings.Contains(string(configBytes), want) {

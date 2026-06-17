@@ -45,7 +45,7 @@ func TestBuildSingboxConfigUnsupportedStatsOmitsV2RayAPI(t *testing.T) {
 		}},
 	}
 
-	built := buildSingboxConfigForRuntime(context.Background(), cfg, inbounds)
+	built := buildSingboxConfigForRuntime(context.Background(), cfg, inbounds, nil, nil)
 	raw, err := json.Marshal(built.config)
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
@@ -69,7 +69,7 @@ func TestBuildSingboxConfigCapabilityFailureDoesNotWarnUnsupported(t *testing.T)
 		}},
 	}
 
-	built := buildSingboxConfigForRuntime(context.Background(), cfg, inbounds)
+	built := buildSingboxConfigForRuntime(context.Background(), cfg, inbounds, nil, nil)
 	if containsString(built.warnings, "singbox_stats_unsupported") {
 		t.Fatalf("capability check failure must not be reported as unsupported: %+v", built.warnings)
 	}
@@ -84,7 +84,7 @@ func TestBuildSingboxConfigSkipsCapabilityWhenNoSingboxInbound(t *testing.T) {
 		singboxRuntime: countingSingboxRuntime{calls: &calls},
 	}
 
-	built := buildSingboxConfigForRuntime(context.Background(), cfg, []db.Inbound{{ID: 1, Protocol: "vless", Enabled: true}})
+	built := buildSingboxConfigForRuntime(context.Background(), cfg, []db.Inbound{{ID: 1, Protocol: "vless", Enabled: true}}, nil, nil)
 	if len(built.warnings) != 0 {
 		t.Fatalf("expected no warnings without singbox inbound, got %+v", built.warnings)
 	}

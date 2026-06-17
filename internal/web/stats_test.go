@@ -19,14 +19,15 @@ func (r fixedSingboxRuntime) Capability(ctx context.Context) singbox.Capability 
 }
 
 type countingSummaryStore struct {
-	inbounds          []db.Inbound
-	outbounds         []db.Outbound
-	rules             []db.RoutingRule
-	states            []db.TrafficState
-	listInboundsErr   error
-	listOutboundsErr  error
-	listRulesErr      error
-	listInboundsCalls int
+	inbounds               []db.Inbound
+	outbounds              []db.Outbound
+	rules                  []db.RoutingRule
+	states                 []db.TrafficState
+	listInboundsErr        error
+	listOutboundsErr       error
+	listRulesErr           error
+	listInboundsCalls      int
+	listTrafficStatesCalls int
 }
 
 func (s *countingSummaryStore) ListInbounds(ctx context.Context) ([]db.Inbound, error) {
@@ -165,11 +166,111 @@ func (s *countingSummaryStore) GetClientTrafficUsageForClient(ctx context.Contex
 }
 
 func (s *countingSummaryStore) ListTrafficStates(ctx context.Context) ([]db.TrafficState, error) {
+	s.listTrafficStatesCalls++
 	return s.states, nil
 }
 
 func (s *countingSummaryStore) ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]db.TrafficSample, error) {
 	return nil, nil
+}
+
+func TestOutboundStatsByProfileIDMapsGeneratedCoreTags(t *testing.T) {
+	states := []db.TrafficState{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 10, TotalDown: 20, RateUp: 1, RateDown: 2, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+		{Engine: "sing-box", ScopeType: "outbound", ScopeKey: "singbox-out-42", TotalUp: 30, TotalDown: 40, RateUp: 3, RateDown: 4, Status: "ok", LastSeenAt: "2026-06-17T00:01:00Z"},
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-44-extra", TotalUp: 99, TotalDown: 99, LastSeenAt: "2026-06-17T00:02:00Z"},
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "direct", TotalUp: 88, TotalDown: 88, LastSeenAt: "2026-06-17T00:03:00Z"},
+	}
+	mapped := outboundStatsByProfileID(states)
+	if len(mapped) != 1 {
+		t.Fatalf("expected one generated outbound profile stat, got %+v", mapped)
+	}
+	if got := mapped[42]; got.Up != 40 || got.Down != 60 || got.RateUp != 4 || got.RateDown != 6 || got.LastSeenAt != "2026-06-17T00:01:00Z" || len(got.Engines) != 2 {
+		t.Fatalf("unexpected aggregated outbound profile mapping: %+v", got)
+	}
+}
+
+func TestOutboundTrafficDetailsUsesLogicalOutboundTags(t *testing.T) {
+	outbounds := []db.Outbound{{ID: 42, Tag: "proxy-a", Remark: "Proxy A", Protocol: "socks", Enabled: true}}
+	stats := outboundStatsByProfileID([]db.TrafficState{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 10, TotalDown: 20, RateUp: 1.5, RateDown: 2.5, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+	})
+	details := outboundTrafficDetails(outbounds, stats)
+	if len(details) != 1 {
+		t.Fatalf("expected one outbound detail, got %+v", details)
+	}
+	got := details[0]
+	if got["id"] != int64(42) || got["tag"] != "proxy-a" || got["traffic_up"] != int64(10) || got["traffic_down"] != int64(20) || got["traffic_engine"] != "xray" || got["traffic_last_seen_at"] != "2026-06-17T00:00:00Z" {
+		t.Fatalf("unexpected outbound traffic detail: %+v", got)
+	}
+}
+
+func TestOutboundTrafficDetailsShowsMixedEnginesForSharedProfile(t *testing.T) {
+	outbounds := []db.Outbound{{ID: 42, Tag: "proxy-a", Remark: "Proxy A", Protocol: "socks", Enabled: true}}
+	stats := outboundStatsByProfileID([]db.TrafficState{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 10, TotalDown: 20, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+		{Engine: "singbox", ScopeType: "outbound", ScopeKey: "singbox-out-42", TotalUp: 30, TotalDown: 40, Status: "ok", LastSeenAt: "2026-06-17T00:01:00Z"},
+	})
+	details := outboundTrafficDetails(outbounds, stats)
+	got := details[0]
+	if got["traffic_up"] != int64(40) || got["traffic_down"] != int64(60) || got["traffic_total"] != int64(100) || got["traffic_engine"] != "mixed" {
+		t.Fatalf("unexpected mixed outbound detail: %+v", got)
+	}
+	engines, ok := got["traffic_engines"].([]string)
+	if !ok || len(engines) != 2 || engines[0] != "xray" || engines[1] != "singbox" {
+		t.Fatalf("expected both engines in mixed outbound detail, got %+v", got["traffic_engines"])
+	}
+}
+
+func TestBuildStatsResponseLoadsTrafficStatesOnceForDetails(t *testing.T) {
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{{
+			ID:       1,
+			Protocol: "vless",
+			Clients:  []db.Client{{ID: 10, StatsKey: "c_state", Enabled: true}},
+		}},
+		outbounds: []db.Outbound{{ID: 42, Tag: "proxy-a", Protocol: "socks", Enabled: true}},
+		states: []db.TrafficState{
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+			{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 30, TotalDown: 40, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+		},
+	}
+	response, err := buildStatsResponse(context.Background(), store, nil, true)
+	if err != nil {
+		t.Fatalf("build stats response: %v", err)
+	}
+	if store.listTrafficStatesCalls != 1 {
+		t.Fatalf("expected detail response to load traffic states once, got %d", store.listTrafficStatesCalls)
+	}
+	if response["outbound_details"] == nil {
+		t.Fatalf("expected outbound details in detail response: %+v", response)
+	}
+}
+
+func TestBuildDashboardSummaryLoadsTrafficStatesOnce(t *testing.T) {
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{{
+			ID:       1,
+			Protocol: "vless",
+			Clients:  []db.Client{{ID: 10, StatsKey: "c_state", Enabled: true}},
+		}},
+		outbounds: []db.Outbound{{ID: 42, Tag: "proxy-a", Protocol: "socks", Enabled: true}},
+		states: []db.TrafficState{
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+			{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 30, TotalDown: 40, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+		},
+	}
+	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
+	summary, err := buildDashboardSummary(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("build dashboard summary: %v", err)
+	}
+	if store.listTrafficStatesCalls != 1 {
+		t.Fatalf("expected dashboard summary to load traffic states once, got %d", store.listTrafficStatesCalls)
+	}
+	if summary["outbound_traffic"] == nil {
+		t.Fatalf("expected outbound traffic in dashboard summary: %+v", summary)
+	}
 }
 
 func (s *countingSummaryStore) ApplyTrafficRawStats(ctx context.Context, stats []db.TrafficRawStat, observedAt time.Time) error {

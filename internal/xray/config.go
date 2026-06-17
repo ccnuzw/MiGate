@@ -80,7 +80,7 @@ func BuildConfig(inbounds []db.Inbound) (Config, error) {
 		Log:      LogConfig{LogLevel: "warning"},
 		Inbounds: []InboundConfig{},
 		Outbounds: []OutboundConfig{{
-			Tag:      "direct",
+			Tag:      "xray-out-0",
 			Protocol: "freedom",
 			Settings: map[string]interface{}{},
 		}},
@@ -109,7 +109,7 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 		return Config{}, err
 	}
 	for _, ob := range outbounds {
-		if !ob.Enabled {
+		if !ob.Enabled || !db.OutboundSupportsCore(ob, db.CoreXray) {
 			continue
 		}
 		built, err := buildOutbound(ob)
@@ -120,7 +120,7 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 	}
 	if len(config.Outbounds) == 0 {
 		config.Outbounds = append(config.Outbounds, OutboundConfig{
-			Tag: "direct", Protocol: "freedom", Settings: map[string]interface{}{},
+			Tag: "xray-out-0", Protocol: "freedom", Settings: map[string]interface{}{},
 		})
 	}
 	if len(routingRules) > 0 {
@@ -130,12 +130,10 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 			if !inbound.Enabled {
 				continue
 			}
-			switch strings.ToLower(strings.TrimSpace(inbound.Protocol)) {
-			case "hysteria2", "tuic", "shadowtls", "wireguard":
+			if db.InboundCore(inbound) != db.CoreXray {
 				continue
 			}
-			protocol := strings.ToLower(strings.TrimSpace(inbound.Protocol))
-			actualTag := fmt.Sprintf("inbound-%d-%s", inbound.ID, protocol)
+			actualTag := db.GeneratedInboundTag(inbound)
 			if strings.TrimSpace(inbound.Remark) != "" {
 				inboundTagAliases[strings.TrimSpace(inbound.Remark)] = actualTag
 			}
@@ -152,8 +150,18 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 			if !rule.Enabled {
 				continue
 			}
+			if !db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreXray) {
+				continue
+			}
+			outbound, ok := db.ResolveRuleOutbound(rule, outbounds)
+			if !ok {
+				return Config{}, fmt.Errorf("routing rule %d targets missing outbound profile", rule.ID)
+			}
+			if !db.OutboundSupportsCore(outbound, db.CoreXray) {
+				return Config{}, fmt.Errorf("routing rule %d targets outbound %q that does not support xray", rule.ID, outbound.Tag)
+			}
 			xr := RoutingRule{}
-			xr.OutboundTag = rule.OutboundTag
+			xr.OutboundTag = db.GeneratedOutboundTag(db.CoreXray, outbound.ID, rule.OutboundTag)
 			if rule.ClientID > 0 {
 				client, ok := clientsByID[rule.ClientID]
 				if !ok || strings.TrimSpace(clientStatsName(client)) == "" {
@@ -233,10 +241,7 @@ func appendInbounds(config Config, inbounds []db.Inbound) (Config, error) {
 		if !inbound.Enabled {
 			continue
 		}
-		protocol := strings.ToLower(strings.TrimSpace(inbound.Protocol))
-		// Skip sing-box protocols — handled by dual kernel
-		switch protocol {
-		case "hysteria2", "tuic", "shadowtls", "wireguard":
+		if db.InboundCore(inbound) != db.CoreXray {
 			continue
 		}
 		built, err := buildInbound(inbound)
@@ -265,7 +270,7 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 	}
 
 	base := InboundConfig{
-		Tag:            fmt.Sprintf("inbound-%d-%s", inbound.ID, protocol),
+		Tag:            db.GeneratedInboundTag(inbound),
 		Listen:         "0.0.0.0",
 		Port:           inbound.Port,
 		Protocol:       protocol,
@@ -301,25 +306,6 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 			"password": password,
 			// Xray Shadowsocks only supports single-user mode (no "clients" array)
 		}
-	case "hysteria2":
-		settings := map[string]interface{}{
-			"clients": clientsAsPasswordEmail(clients),
-		}
-		if inbound.Hy2UpMbps > 0 {
-			settings["up_mbps"] = inbound.Hy2UpMbps
-		}
-		if inbound.Hy2DownMbps > 0 {
-			settings["down_mbps"] = inbound.Hy2DownMbps
-		}
-		if inbound.Hy2Obfs != "" {
-			settings["obfs"] = inbound.Hy2Obfs
-			if inbound.Hy2ObfsPassword != "" {
-				settings["obfs_password"] = inbound.Hy2ObfsPassword
-			}
-		}
-		base.Settings = settings
-		// Hysteria2 uses its own QUIC transport; build stream settings without network field
-		base.StreamSettings = buildHy2StreamSettings(inbound)
 	default:
 		return InboundConfig{}, fmt.Errorf("unsupported protocol: %s", inbound.Protocol)
 	}
@@ -562,12 +548,28 @@ func buildHy2StreamSettings(inbound db.Inbound) map[string]interface{} {
 }
 
 func buildOutbound(ob db.Outbound) (OutboundConfig, error) {
-	protocol := strings.ToLower(strings.TrimSpace(ob.Protocol))
+	protocol := db.NormalizeOutboundProtocol(ob.Protocol)
+	tag := db.GeneratedOutboundTag(db.CoreXray, ob.ID, ob.Tag)
+	if err := db.ValidateOutboundProfile(ob); err != nil {
+		return OutboundConfig{}, err
+	}
 	switch protocol {
-	case "freedom", "blackhole":
+	case "freedom":
 		return OutboundConfig{
-			Tag:      ob.Tag,
-			Protocol: protocol,
+			Tag:      tag,
+			Protocol: "freedom",
+			Settings: map[string]interface{}{},
+		}, nil
+	case "blackhole":
+		return OutboundConfig{
+			Tag:      tag,
+			Protocol: "blackhole",
+			Settings: map[string]interface{}{},
+		}, nil
+	case "dns":
+		return OutboundConfig{
+			Tag:      tag,
+			Protocol: "dns",
 			Settings: map[string]interface{}{},
 		}, nil
 	case "socks":
@@ -589,11 +591,11 @@ func buildOutbound(ob db.Outbound) (OutboundConfig, error) {
 			servers[0]["users"] = users
 		}
 		return OutboundConfig{
-			Tag:      ob.Tag,
+			Tag:      tag,
 			Protocol: protocol,
 			Settings: map[string]interface{}{"servers": servers},
 		}, nil
-	case "http":
+	case "http", "https":
 		users := []map[string]interface{}{}
 		user := strings.TrimSpace(ob.Username)
 		pass := ob.Password
@@ -612,11 +614,45 @@ func buildOutbound(ob db.Outbound) (OutboundConfig, error) {
 			servers[0]["users"] = users
 		}
 		return OutboundConfig{
-			Tag:      ob.Tag,
-			Protocol: protocol,
+			Tag:      tag,
+			Protocol: "http",
 			Settings: map[string]interface{}{"servers": servers},
 		}, nil
+	case "vless":
+		vnext := []map[string]interface{}{{
+			"address": ob.Address,
+			"port":    ob.Port,
+			"users": []map[string]interface{}{{
+				"id":         strings.TrimSpace(ob.Username),
+				"encryption": "none",
+			}},
+		}}
+		return OutboundConfig{Tag: tag, Protocol: "vless", Settings: map[string]interface{}{"vnext": vnext}}, nil
+	case "trojan":
+		servers := []map[string]interface{}{{
+			"address":  ob.Address,
+			"port":     ob.Port,
+			"password": firstNonEmpty(ob.Password, ob.Username),
+		}}
+		return OutboundConfig{Tag: tag, Protocol: "trojan", Settings: map[string]interface{}{"servers": servers}}, nil
+	case "shadowsocks":
+		servers := []map[string]interface{}{{
+			"address":  ob.Address,
+			"port":     ob.Port,
+			"method":   firstNonEmpty(ob.Username, "aes-128-gcm"),
+			"password": ob.Password,
+		}}
+		return OutboundConfig{Tag: tag, Protocol: "shadowsocks", Settings: map[string]interface{}{"servers": servers}}, nil
 	default:
 		return OutboundConfig{}, fmt.Errorf("unsupported outbound protocol: %s", ob.Protocol)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

@@ -23,14 +23,17 @@ func TestStoreCreatesAndListsOutboundsWithDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list default outbounds: %v", err)
 	}
-	if len(outbounds) != 2 {
-		t.Fatalf("expected direct and blocked defaults, got %+v", outbounds)
+	if len(outbounds) != 3 {
+		t.Fatalf("expected direct, blocked and dns defaults, got %+v", outbounds)
 	}
 	if outbounds[0].Tag != "direct" || outbounds[0].Protocol != "freedom" || outbounds[0].Sort != 0 {
 		t.Fatalf("unexpected first default outbound: %+v", outbounds[0])
 	}
 	if outbounds[1].Tag != "blocked" || outbounds[1].Protocol != "blackhole" || outbounds[1].Sort != 1 {
 		t.Fatalf("unexpected second default outbound: %+v", outbounds[1])
+	}
+	if outbounds[2].Tag != "dns" || outbounds[2].Protocol != "dns" || outbounds[2].Sort != 2 {
+		t.Fatalf("unexpected third default outbound: %+v", outbounds[2])
 	}
 
 	created, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
@@ -52,7 +55,7 @@ func TestStoreCreatesAndListsOutboundsWithDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list after create: %v", err)
 	}
-	if len(outbounds) != 3 || outbounds[2].Tag != "proxy-socks" || outbounds[2].Sort != 2 {
+	if len(outbounds) != 4 || outbounds[3].Tag != "proxy-socks" || outbounds[3].Sort != 3 {
 		t.Fatalf("created outbound not appended after defaults: %+v", outbounds)
 	}
 }
@@ -97,7 +100,206 @@ func TestStoreUpdatesOutboundFields(t *testing.T) {
 	}
 }
 
-func TestStoreUpdateOutboundCascadesRoutingRuleTag(t *testing.T) {
+func TestStoreInfersInboundCoreByProtocol(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	cases := []struct {
+		protocol string
+		core     string
+	}{
+		{"hysteria2", db.CoreSingbox},
+		{"tuic", db.CoreSingbox},
+		{"shadowtls", db.CoreSingbox},
+		{"vless", db.CoreXray},
+		{"vmess", db.CoreXray},
+		{"trojan", db.CoreXray},
+		{"shadowsocks", db.CoreXray},
+		{"http", db.CoreXray},
+		{"socks", db.CoreXray},
+	}
+	for i, tc := range cases {
+		inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+			Remark: fmt.Sprintf("in-%s", tc.protocol), Protocol: tc.protocol, Port: 22000 + i, Network: "tcp", Security: "none",
+		})
+		if err != nil {
+			t.Fatalf("create %s inbound: %v", tc.protocol, err)
+		}
+		if inbound.Core != tc.core {
+			t.Fatalf("%s expected core %s, got %+v", tc.protocol, tc.core, inbound)
+		}
+	}
+}
+
+func TestStoreInfersOutboundSupportedCores(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	sharedProtocols := []string{"socks", "http", "vless"}
+	for i, protocol := range sharedProtocols {
+		params := db.CreateOutboundParams{Tag: "shared-" + protocol, Protocol: protocol, Address: "127.0.0.1", Port: 10000 + i, Password: "secret"}
+		if protocol == "vless" {
+			params.Username = "11111111-1111-4111-8111-111111111111"
+		}
+		outbound, err := store.CreateOutbound(context.Background(), params)
+		if err != nil {
+			t.Fatalf("create shared outbound %s: %v", protocol, err)
+		}
+		if !db.SupportsCore(outbound.SupportedCores, db.CoreXray) || !db.SupportsCore(outbound.SupportedCores, db.CoreSingbox) {
+			t.Fatalf("expected shared cores for %s, got %+v", protocol, outbound.SupportedCores)
+		}
+	}
+	for i, protocol := range []string{"hysteria2", "tuic", "shadowtls"} {
+		params := db.CreateOutboundParams{Tag: "sb-" + protocol, Protocol: protocol, Address: "127.0.0.1", Port: 11000 + i, Password: "secret"}
+		if protocol == "tuic" {
+			params.Username = "11111111-1111-4111-8111-111111111111"
+		}
+		outbound, err := store.CreateOutbound(context.Background(), params)
+		if err != nil {
+			t.Fatalf("create sing-box outbound %s: %v", protocol, err)
+		}
+		if db.SupportsCore(outbound.SupportedCores, db.CoreXray) || !db.SupportsCore(outbound.SupportedCores, db.CoreSingbox) {
+			t.Fatalf("expected sing-box only cores for %s, got %+v", protocol, outbound.SupportedCores)
+		}
+	}
+}
+
+func TestStoreDoesNotPersistOutboundSupportedCores(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	columns := store.TableColumnsForTest(t, "outbounds")
+	for _, column := range columns {
+		if column.Name == "supported_cores" {
+			t.Fatalf("supported_cores should not be persisted in outbounds schema: %+v", columns)
+		}
+	}
+
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "schema-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1080})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	if !db.SupportsCore(outbound.SupportedCores, db.CoreXray) || !db.SupportsCore(outbound.SupportedCores, db.CoreSingbox) {
+		t.Fatalf("expected API output supported_cores to be inferred, got %+v", outbound.SupportedCores)
+	}
+	singboxInbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "sb-in", Protocol: "hysteria2", Port: 23012, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create sing-box inbound: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(singboxInbound), OutboundID: outbound.ID, Enabled: true}); err != nil {
+		t.Fatalf("expected sing-box inbound to route to protocol-derived shared socks outbound: %v", err)
+	}
+}
+
+func TestOutboundProtocolSupportLevelDocumentsBoundaries(t *testing.T) {
+	cases := []struct {
+		protocol string
+		level    string
+		cores    []string
+	}{
+		{"freedom", db.OutboundSupportBuiltin, []string{db.CoreXray, db.CoreSingbox}},
+		{"blackhole", db.OutboundSupportBuiltin, []string{db.CoreXray, db.CoreSingbox}},
+		{"dns", db.OutboundSupportBuiltin, []string{db.CoreXray, db.CoreSingbox}},
+		{"direct", db.OutboundSupportBuiltin, []string{db.CoreXray, db.CoreSingbox}},
+		{"block", db.OutboundSupportBuiltin, []string{db.CoreXray, db.CoreSingbox}},
+		{"socks", db.OutboundSupportFull, []string{db.CoreXray, db.CoreSingbox}},
+		{"socks5", db.OutboundSupportFull, []string{db.CoreXray, db.CoreSingbox}},
+		{"http", db.OutboundSupportFull, []string{db.CoreXray, db.CoreSingbox}},
+		{"https", db.OutboundSupportFull, []string{db.CoreXray, db.CoreSingbox}},
+		{"vless", db.OutboundSupportBasic, []string{db.CoreXray, db.CoreSingbox}},
+		{"trojan", db.OutboundSupportBasic, []string{db.CoreXray, db.CoreSingbox}},
+		{"shadowsocks", db.OutboundSupportBasic, []string{db.CoreXray, db.CoreSingbox}},
+		{"hysteria2", db.OutboundSupportBasic, []string{db.CoreSingbox}},
+		{"tuic", db.OutboundSupportBasic, []string{db.CoreSingbox}},
+		{"shadowtls", db.OutboundSupportBasic, []string{db.CoreSingbox}},
+		{"unknown", db.OutboundSupportNone, []string{}},
+	}
+	for _, tc := range cases {
+		if got := db.OutboundProtocolSupportLevel(tc.protocol); got != tc.level {
+			t.Fatalf("expected %s support level %s, got %s", tc.protocol, tc.level, got)
+		}
+		gotCores := db.OutboundProtocolSupportedCores(tc.protocol)
+		if len(gotCores) != len(tc.cores) {
+			t.Fatalf("expected %s cores %+v, got %+v", tc.protocol, tc.cores, gotCores)
+		}
+		for i := range gotCores {
+			if gotCores[i] != tc.cores[i] {
+				t.Fatalf("expected %s cores %+v, got %+v", tc.protocol, tc.cores, gotCores)
+			}
+		}
+	}
+}
+
+func TestGeneratedOutboundTagMapsBackToOutboundProfile(t *testing.T) {
+	for _, tc := range []struct {
+		core string
+		tag  string
+	}{
+		{db.CoreXray, db.GeneratedOutboundTag(db.CoreXray, 42, "proxy")},
+		{db.CoreSingbox, db.GeneratedOutboundTag(db.CoreSingbox, 42, "proxy")},
+	} {
+		id, ok := db.OutboundProfileIDFromGeneratedTag(tc.core, tc.tag)
+		if !ok || id != 42 {
+			t.Fatalf("expected %s generated tag %q to map to profile 42, got id=%d ok=%v", tc.core, tc.tag, id, ok)
+		}
+	}
+	if _, ok := db.OutboundProfileIDFromGeneratedTag(db.CoreXray, "direct"); ok {
+		t.Fatal("logical direct tag should not parse as generated outbound profile tag")
+	}
+	if _, ok := db.OutboundProfileIDFromGeneratedTag(db.CoreXray, "xray-out-42-extra"); ok {
+		t.Fatal("generated outbound tag parser should reject trailing garbage")
+	}
+}
+
+func TestRoutingRuleOutboundResolutionUsesIDBeforeTagFallback(t *testing.T) {
+	outbounds := []db.Outbound{
+		{ID: 1, Tag: "old-tag", Protocol: "hysteria2", Enabled: true},
+		{ID: 42, Tag: "new-tag", Protocol: "socks", Enabled: true},
+	}
+	rule := db.RoutingRule{OutboundID: 42, OutboundTag: "old-tag"}
+	outbound, ok := db.ResolveRuleOutbound(rule, outbounds)
+	if !ok || outbound.ID != 42 {
+		t.Fatalf("expected outbound_id to win over tag fallback, got outbound=%+v ok=%v", outbound, ok)
+	}
+	if got := db.EffectiveRuleOutboundID(rule, outbounds); got != 42 {
+		t.Fatalf("expected effective outbound id 42, got %d", got)
+	}
+	if !db.RuleTargetSupportsCore(rule, outbounds, db.CoreXray) || !db.RuleTargetSupportsCore(rule, outbounds, db.CoreSingbox) {
+		t.Fatalf("shared socks target should support both cores")
+	}
+
+	fallbackRule := db.RoutingRule{OutboundTag: "old-tag"}
+	fallback, ok := db.ResolveRuleOutbound(fallbackRule, outbounds)
+	if !ok || fallback.ID != 1 {
+		t.Fatalf("expected tag fallback to resolve old-tag, got outbound=%+v ok=%v", fallback, ok)
+	}
+	if db.RuleTargetSupportsCore(fallbackRule, outbounds, db.CoreXray) || !db.RuleTargetSupportsCore(fallbackRule, outbounds, db.CoreSingbox) {
+		t.Fatalf("hysteria2 target should support sing-box only")
+	}
+}
+
+func TestRoutingRuleAppliesToCoreSkipsUnknownInboundTag(t *testing.T) {
+	inbounds := []db.Inbound{{ID: 1, Remark: "edge", Protocol: "vless", Core: db.CoreXray, Enabled: true}}
+	rule := db.RoutingRule{InboundTag: "deleted-inbound", OutboundTag: "hy2-out", Enabled: true}
+	if db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreXray) || db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreSingbox) {
+		t.Fatal("unknown inbound_tag should not apply to any core")
+	}
+	valid := db.RoutingRule{InboundTag: db.GeneratedInboundTag(inbounds[0]), OutboundTag: "direct", Enabled: true}
+	if !db.RoutingRuleAppliesToCore(valid, inbounds, db.CoreXray) || db.RoutingRuleAppliesToCore(valid, inbounds, db.CoreSingbox) {
+		t.Fatal("known xray inbound_tag should apply only to xray")
+	}
+}
+
+func TestStoreUpdateOutboundKeepsRoutingRuleTagSnapshot(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -128,8 +330,47 @@ func TestStoreUpdateOutboundCascadesRoutingRuleTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list routing rules: %v", err)
 	}
-	if len(rules) != 1 || rules[0].ID != rule.ID || rules[0].OutboundTag != "proxy-new" {
-		t.Fatalf("routing rule outbound tag was not cascaded: %+v", rules)
+	if len(rules) != 1 || rules[0].ID != rule.ID || rules[0].OutboundID != ob.ID || rules[0].OutboundTag != "proxy-old" {
+		t.Fatalf("routing rule should keep outbound_id target and original tag snapshot: %+v", rules)
+	}
+}
+
+func TestStoreUpdateOutboundKeepsIDTargetForIDBasedRoutingRule(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "proxy-before", Protocol: "http", Address: "10.0.0.1", Port: 8080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundID: ob.ID,
+		Domain:     "geosite:netflix",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+	if rule.OutboundID != ob.ID || rule.OutboundTag != "proxy-before" {
+		t.Fatalf("expected id-based rule to store id target and tag snapshot: %+v", rule)
+	}
+
+	if _, err := store.UpdateOutbound(context.Background(), ob.ID, db.UpdateOutboundParams{
+		Tag: "proxy-after", Protocol: "http", Address: "10.0.0.2", Port: 8081, Enabled: true,
+	}); err != nil {
+		t.Fatalf("update outbound: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != rule.ID || rules[0].OutboundID != ob.ID || rules[0].OutboundTag != "proxy-before" {
+		t.Fatalf("id-based routing rule should keep stable id target and original tag snapshot: %+v", rules)
 	}
 }
 
@@ -193,10 +434,10 @@ func TestStoreReorderOutboundsUpdatesSortOrder(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	// After seeding: direct=1, blocked=2
+	// After seeding: direct=1, blocked=2, dns=3
 	o1, _ := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "p1", Protocol: "socks", Address: "10.0.0.1", Port: 1080})
 	o2, _ := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "p2", Protocol: "http", Address: "10.0.0.2", Port: 3128})
-	// Current order: direct(1), blocked(2), p1(3), p2(4)
+	// Current order: direct(1), blocked(2), dns(3), p1(4), p2(5)
 	// Swap: p2, p1
 	err = store.ReorderOutbounds(context.Background(), []int64{o2.ID, o1.ID})
 	if err != nil {
@@ -206,15 +447,15 @@ func TestStoreReorderOutboundsUpdatesSortOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list after reorder: %v", err)
 	}
-	if len(list) != 4 {
-		t.Fatalf("expected 4 outbounds, got %d", len(list))
+	if len(list) != 5 {
+		t.Fatalf("expected 5 outbounds, got %d", len(list))
 	}
-	// Defaults stay first (sort 0-1), then reordered custom outbounds (sort 2-3)
-	if list[0].ID != 1 || list[1].ID != 2 || list[2].ID != o2.ID || list[3].ID != o1.ID {
-		t.Fatalf("expected defaults then reordered custom: got %d,%d,%d,%d", list[0].ID, list[1].ID, list[2].ID, list[3].ID)
+	// Defaults stay first (sort 0-2), then reordered custom outbounds (sort 3-4)
+	if list[0].ID != 1 || list[1].ID != 2 || list[2].ID != 3 || list[3].ID != o2.ID || list[4].ID != o1.ID {
+		t.Fatalf("expected defaults then reordered custom: got %+v", list)
 	}
-	if list[0].Sort != 0 || list[1].Sort != 1 || list[2].Sort != 2 || list[3].Sort != 3 {
-		t.Fatalf("expected sequential sort values: got %d,%d,%d,%d", list[0].Sort, list[1].Sort, list[2].Sort, list[3].Sort)
+	if list[0].Sort != 0 || list[1].Sort != 1 || list[2].Sort != 2 || list[3].Sort != 3 || list[4].Sort != 4 {
+		t.Fatalf("expected sequential sort values: got %+v", list)
 	}
 }
 
@@ -276,6 +517,10 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
 	updated, err := store.UpdateRoutingRule(context.Background(), rule.ID, db.UpdateRoutingRuleParams{
 		InboundTag:  "socks-in",
 		OutboundTag: "direct",
@@ -288,7 +533,7 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.InboundTag != "socks-in" || updated.OutboundTag != "direct" || updated.Domain != "geosite:netflix" || updated.IP != "8.8.8.8" || updated.RuleSet != "geoip-cn" || updated.Protocol != "dns" || updated.Enabled {
+	if updated.InboundTag != inbound.Remark || updated.OutboundTag != "direct" || updated.Domain != "geosite:netflix" || updated.IP != "8.8.8.8" || updated.RuleSet != "geoip-cn" || updated.Protocol != "dns" || updated.Enabled {
 		t.Fatalf("unexpected updated rule: %+v", updated)
 	}
 
@@ -352,6 +597,44 @@ func TestStoreRoutingRuleClientFields(t *testing.T) {
 	}
 	if len(rules) != 1 || rules[0].ClientID != client.ID || rules[0].ClientEmail != "alice@example.com" {
 		t.Fatalf("client fields not persisted: %+v", rules)
+	}
+}
+
+func TestStoreRejectsRoutingRuleWithUnsupportedOutboundCore(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	xrayInbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray-in", Protocol: "vless", Port: 23001, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create xray inbound: %v", err)
+	}
+	singboxInbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "sb-in", Protocol: "hysteria2", Port: 23002, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create sing-box inbound: %v", err)
+	}
+	singboxOnly, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "hy2-out", Protocol: "hysteria2", Address: "127.0.0.1", Port: 443, Password: "secret"})
+	if err != nil {
+		t.Fatalf("create sing-box outbound: %v", err)
+	}
+	shared, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "shared-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1080})
+	if err != nil {
+		t.Fatalf("create shared outbound: %v", err)
+	}
+
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(xrayInbound), OutboundID: singboxOnly.ID, Enabled: true}); err == nil {
+		t.Fatal("expected xray inbound to reject sing-box-only outbound")
+	}
+	if !db.SupportsCore(shared.SupportedCores, db.CoreSingbox) {
+		t.Fatalf("shared protocol should be derived as sing-box capable: %+v", shared.SupportedCores)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(singboxInbound), OutboundID: shared.ID, Enabled: true}); err != nil {
+		t.Fatalf("expected sing-box inbound to accept shared outbound: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(singboxInbound), OutboundID: singboxOnly.ID, Enabled: true}); err != nil {
+		t.Fatalf("expected sing-box inbound to accept sing-box outbound: %v", err)
 	}
 }
 
@@ -545,7 +828,7 @@ func TestStoreRejectsUnsupportedProtocol(t *testing.T) {
 	}
 	defer store.Close()
 
-	for _, protocol := range []string{"http", "wireguard"} {
+	for _, protocol := range []string{"wireguard"} {
 		_, err = store.CreateInbound(context.Background(), db.CreateInboundParams{
 			Protocol: protocol,
 			Port:     8080,

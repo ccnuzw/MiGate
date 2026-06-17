@@ -1,6 +1,8 @@
 # MiGate
 
-MiGate is a **Go single-binary** lightweight VPS panel that uses local SQLite and embedded WebUI to manage Xray inbounds and clients.
+MiGate is a **Go single-binary** lightweight VPS panel that uses local SQLite
+and embedded WebUI to manage Xray and sing-box inbounds, clients, shared
+outbound profiles, routing, and generated core configs.
 
 Currently suitable for users familiar with VPS/Xray for testing.
 
@@ -9,7 +11,7 @@ Currently suitable for users familiar with VPS/Xray for testing.
 - Single binary deployment, no Python/Node runtime required
 - React WebUI for inbounds, clients, outbounds, SOCKS5 pool import, routing, Xray/sing-box core config, TLS certificates, settings, sessions, and updates
 - Local SQLite database
-- Generate and apply Xray configuration
+- Generate and apply Xray and sing-box configuration from shared panel resources
 - Supported inbound protocols: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, ShadowTLS
 - systemd service management
 
@@ -138,7 +140,9 @@ the backend on `http://127.0.0.1:9999`, and starts the WebUI on
 
 Node/npm are only build-time tools for contributors and release automation. The one-click installer and VPS runtime continue to use the Go single binary only.
 
-See `docs/frontend-refactor.md` for the split architecture and route compatibility details.
+See `docs/frontend-refactor.md` for the split frontend/backend architecture and
+`docs/dual-core-outbound-model.md` for the dual-core inbound and shared outbound
+model.
 
 ## Note
 

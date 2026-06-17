@@ -281,4 +281,50 @@ describe('topology graph helpers', () => {
 
     expect(graph.edges.some((edge) => edge.data?.kind === 'default-direct')).toBe(false);
   });
+
+  it('marks routing edges invalid when outbound profile does not support the source core', () => {
+    const mixedInbounds: Inbound[] = [
+      { id: 1, remark: 'xray-edge', protocol: 'vless', core: 'xray', port: 443, network: 'tcp', security: 'none', enabled: true, clients: [] },
+      { id: 2, remark: 'sb-edge', protocol: 'hysteria2', core: 'sing-box', port: 8443, network: 'udp', security: 'tls', enabled: true, clients: [] },
+    ];
+    const mixedOutbounds: Outbound[] = [
+      { id: 1, tag: 'direct', protocol: 'freedom', enabled: true },
+      { id: 2, tag: 'hy2-out', protocol: 'hysteria2', supported_cores: ['sing-box'], enabled: true },
+      { id: 3, tag: 'shared-socks', protocol: 'socks', supported_cores: ['xray', 'sing-box'], enabled: true },
+    ];
+    const graph = buildTopologyGraph(mixedInbounds, mixedOutbounds, [
+      { id: 81, inbound_tag: 'inbound-1-vless', outbound_tag: 'hy2-out', enabled: true },
+      { id: 82, inbound_tag: 'inbound-2-hysteria2', outbound_tag: 'shared-socks', enabled: true },
+    ]);
+
+    expect(graph.nodes.find((node) => node.id === 'inbound:1')?.data.meta).toContainEqual({ label: '内核', value: 'xray' });
+    expect(graph.nodes.find((node) => node.id === 'outbound:hy2-out')?.data.meta).toContainEqual({ label: '内核', value: 'sing-box' });
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-81-1'))?.data).toMatchObject({
+      enabled: false,
+      invalidTarget: true,
+    });
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-82-2'))?.data).toMatchObject({
+      enabled: true,
+      invalidTarget: false,
+    });
+  });
+
+  it('resolves routing target by outbound profile id before falling back to tag', () => {
+    const graph = buildTopologyGraph(inbounds, [
+      { id: 1, tag: 'direct', protocol: 'freedom', enabled: true },
+      { id: 42, tag: 'renamed-proxy', protocol: 'socks', supported_cores: ['xray', 'sing-box'], enabled: true },
+    ], [
+      { id: 91, inbound_tag: 'inbound-7-vless', outbound_id: 42, outbound_tag: 'old-proxy-tag', enabled: true },
+    ]);
+
+    expect(graph.nodes.find((node) => node.id === 'outbound:old-proxy-tag')).toBeUndefined();
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-91-7'))).toMatchObject({
+      source: 'inbound:7',
+      target: 'outbound:renamed-proxy',
+      data: {
+        missingTarget: false,
+        invalidTarget: false,
+      },
+    });
+  });
 });

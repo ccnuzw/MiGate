@@ -8,6 +8,7 @@ import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Inbound, Outbound, ProxyPoolProxy, ProxyPoolResponse, RoutingRule } from '../api/types';
 import { EmptyState, Field, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
+import { coreLabel, inboundCore, outboundSupportedCores, outboundSupportsCore } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
 import { generatedInboundTag } from '../lib/routing';
 import { PageTitle } from './OverviewPage';
@@ -21,6 +22,7 @@ const schema = z.object({
   rule_set: z.string().optional(),
   protocol: z.string().optional(),
   outbound_tag: z.string().min(1, '请选择出站'),
+  outbound_id: z.coerce.number().optional(),
   enabled: z.boolean().default(true),
 });
 type InputValues = z.input<typeof schema>;
@@ -127,7 +129,7 @@ function RoutingModal({ rule, outbounds, inbounds, proxyLookup, onClose, onSaved
   const { showToast } = useToast();
   const { text } = useI18n();
   const inboundOptions = useMemo(() => inboundSelectionOptions(inbounds), [inbounds]);
-  const outboundOptions = useMemo(() => outboundSelectionOptions(outbounds, proxyLookup), [outbounds, proxyLookup]);
+  const initialOutboundOptions = useMemo(() => outboundSelectionOptions(outbounds, proxyLookup), [outbounds, proxyLookup]);
   const form = useForm<InputValues, unknown, Values>({
     resolver: zodResolver(schema),
     values: rule
@@ -139,18 +141,21 @@ function RoutingModal({ rule, outbounds, inbounds, proxyLookup, onClose, onSaved
           ip: rule.ip || '',
           rule_set: rule.rule_set || '',
           protocol: rule.protocol || '',
-          outbound_tag: rule.outbound_tag || outboundOptions[0]?.tag || 'direct',
+          outbound_tag: rule.outbound_tag || initialOutboundOptions[0]?.tag || 'direct',
+          outbound_id: rule.outbound_id || initialOutboundOptions[0]?.id || 0,
           enabled: rule.enabled ?? true,
         }
       : undefined,
   });
   const watchedInboundTag = form.watch('inbound_tag') || '';
   const watchedClientID = Number(form.watch('client_id') || 0);
+  const outboundOptions = useMemo(() => outboundSelectionOptions(outbounds, proxyLookup, inbounds, watchedInboundTag, watchedClientID), [outbounds, proxyLookup, inbounds, watchedInboundTag, watchedClientID]);
   const watchedOutboundTag = form.watch('outbound_tag') || outboundOptions[0]?.tag || 'direct';
+  const watchedOutboundID = Number(form.watch('outbound_id') || 0);
   const clientOptions = useMemo(() => clientSelectionOptions(inbounds, watchedInboundTag, rule || undefined), [inbounds, watchedInboundTag, rule]);
   const selectedInboundOption = inboundOptions.find((option) => inboundOptionMatches(option, watchedInboundTag));
   const selectedClientOption = clientOptions.find((option) => option.id === watchedClientID);
-  const selectedOutboundOption = outboundOptions.find((option) => option.tag === watchedOutboundTag);
+  const selectedOutboundOption = outboundOptions.find((option) => (watchedOutboundID > 0 && option.id === watchedOutboundID) || option.tag === watchedOutboundTag);
   const save = useMutation({
     mutationFn: (values: Values) => {
       const payload = routingPayload(values);
@@ -198,7 +203,11 @@ function RoutingModal({ rule, outbounds, inbounds, proxyLookup, onClose, onSaved
           <OutboundPicker
             options={outboundOptions}
             value={watchedOutboundTag}
-            onChange={(value) => form.setValue('outbound_tag', value, { shouldDirty: true })}
+            onChange={(option) => {
+              if (option.disabled) return;
+              form.setValue('outbound_tag', option.tag, { shouldDirty: true });
+              form.setValue('outbound_id', option.id, { shouldDirty: true });
+            }}
           />
         </div>
         <section className="routing-match-panel">
@@ -329,7 +338,7 @@ function ClientPicker({ options, value, missingLabel, onChange }: { options: Cli
   );
 }
 
-function OutboundPicker({ options, value, onChange }: { options: OutboundOption[]; value: string; onChange: (value: string) => void }) {
+function OutboundPicker({ options, value, onChange }: { options: OutboundOption[]; value: string; onChange: (option: OutboundOption) => void }) {
   const { text } = useI18n();
   const [query, setQuery] = useState('');
   const filtered = filterOutboundOptions(options, query);
@@ -348,11 +357,12 @@ function OutboundPicker({ options, value, onChange }: { options: OutboundOption[
       </div>
       <div className="choice-list" role="radiogroup" aria-label={text('目标出站')}>
         {filtered.map((option) => (
-          <button key={option.tag} type="button" className={option.tag === value ? 'choice-row choice-row-active outbound-choice-row' : 'choice-row outbound-choice-row'} onClick={() => onChange(option.tag)} role="radio" aria-checked={option.tag === value}>
+          <button key={`${option.id}-${option.tag}`} type="button" disabled={option.disabled} className={`${option.tag === value ? 'choice-row choice-row-active outbound-choice-row' : 'choice-row outbound-choice-row'}${option.disabled ? ' opacity-50' : ''}`} onClick={() => onChange(option)} role="radio" aria-checked={option.tag === value}>
             <span className="choice-row-main">
               <span className="choice-row-title-line">
                 <span className="choice-row-title">{option.tag}</span>
                 <span className={`protocol-badge choice-protocol-badge outbound-protocol-${option.protocolType || 'default'}`}>{option.protocolLabel}</span>
+                {option.cores.map((core) => <span key={core} className="choice-type-badge">{coreLabel(core)}</span>)}
               </span>
               {option.remark ? <span className="choice-row-sub">{option.remark}</span> : null}
               <span className="choice-row-meta-grid">
@@ -371,7 +381,7 @@ function moveRule(items: RoutingRule[], index: number, delta: number, save: (ids
   save(movedRoutingRuleIds(items, index, delta));
 }
 
-export function routingPayload(values: Pick<RoutingRule, 'inbound_tag' | 'client_id' | 'client_email' | 'domain' | 'ip' | 'rule_set' | 'protocol' | 'outbound_tag' | 'enabled'>): Record<string, unknown> {
+export function routingPayload(values: Pick<RoutingRule, 'inbound_tag' | 'client_id' | 'client_email' | 'domain' | 'ip' | 'rule_set' | 'protocol' | 'outbound_tag' | 'outbound_id' | 'enabled'>): Record<string, unknown> {
   return {
     inbound_tag: values.inbound_tag || '',
     client_id: Number(values.client_id || 0),
@@ -380,6 +390,7 @@ export function routingPayload(values: Pick<RoutingRule, 'inbound_tag' | 'client
     ip: values.ip || '',
     rule_set: values.rule_set || '',
     protocol: values.protocol || '',
+    outbound_id: Number(values.outbound_id || 0),
     outbound_tag: values.outbound_tag,
     enabled: values.enabled,
   };
@@ -423,11 +434,14 @@ type ClientOption = {
 };
 
 type OutboundOption = {
+  id: number;
   tag: string;
   protocolType: string;
   protocolLabel: string;
   remark: string;
   meta: ChoiceMeta[];
+  cores: ReturnType<typeof outboundSupportedCores>;
+  disabled?: boolean;
   search: string;
 };
 
@@ -472,10 +486,11 @@ export function inboundSelectionOptions(inbounds: Inbound[]): InboundOption[] {
       typeLabel: '入站',
       meta: [
         { label: '协议：', value: `${item.protocol || '-'} ${item.port ? `:${item.port}` : ''}`.trim() },
+        { label: '内核：', value: coreLabel(inboundCore(item)) },
         { label: '传输：', value: `${item.network || 'tcp'} / ${item.security || 'none'}` },
         { label: '客户端：', value: String(clientCount) },
       ].filter(Boolean) as ChoiceMeta[],
-      search: [generated, remark, item.protocol, item.port, item.network, item.security].filter(Boolean).join(' ').toLowerCase(),
+      search: [generated, remark, item.protocol, inboundCore(item), item.port, item.network, item.security].filter(Boolean).join(' ').toLowerCase(),
     });
   });
   const seen = new Set<string>();
@@ -543,7 +558,7 @@ export function clientSelectionOptions(inbounds: Inbound[], inboundTag: string, 
   return options;
 }
 
-export function outboundSelectionOptions(outbounds: Outbound[], proxyLookup = new Map<string, ProxyPoolProxy>()): OutboundOption[] {
+export function outboundSelectionOptions(outbounds: Outbound[], proxyLookup = new Map<string, ProxyPoolProxy>(), inbounds: Inbound[] = [], inboundTag = '', clientID = 0): OutboundOption[] {
   const values = outbounds.length
     ? outbounds
     : [
@@ -563,20 +578,39 @@ export function outboundSelectionOptions(outbounds: Outbound[], proxyLookup = ne
       const remark = item.remark || '';
       const rawProtocolType = outboundPoolType(item) || item.protocol || 'default';
       const protocolType = protocolSlug(rawProtocolType);
+      const cores = outboundSupportedCores(item);
+      const requiredCores = requiredRouteCores(inbounds, inboundTag, clientID);
+      const disabled = requiredCores.length > 0 && requiredCores.some((core) => !outboundSupportsCore(item, core));
       const meta = [
         item.address ? { label: '地址：', value: `${item.address}:${item.port || ''}` } : null,
+        { label: '内核：', value: cores.map(coreLabel).join(' / ') || '-' },
+        disabled ? { label: '状态：', value: '当前来源内核不支持', translateValue: true } : null,
         country && (!remark || !remark.includes(country)) ? { label: '国家/地区：', value: country } : null,
         item.enabled === false ? { label: '状态：', value: '禁用', translateValue: true } : null,
       ].filter(Boolean) as ChoiceMeta[];
       return {
+        id: item.id,
         tag: item.tag,
         protocolType,
         protocolLabel: protocolLabel(rawProtocolType),
         remark,
         meta,
-        search: [item.tag, item.remark, item.protocol, rawProtocolType, protocolType, protocolLabel(rawProtocolType), item.address, item.port, country].filter(Boolean).join(' ').toLowerCase(),
+        cores,
+        disabled,
+        search: [item.tag, item.remark, item.protocol, rawProtocolType, protocolType, protocolLabel(rawProtocolType), cores.join(' '), item.address, item.port, country].filter(Boolean).join(' ').toLowerCase(),
       };
     });
+}
+
+function requiredRouteCores(inbounds: Inbound[], inboundTag: string, clientID: number) {
+  if (clientID > 0) {
+    const found = findClientById(inbounds, clientID);
+    return found ? [inboundCore(found.inbound)] : [];
+  }
+  const lookup = buildInboundLookup(inbounds);
+  const selected = inboundTag ? lookup.get(inboundTag) : undefined;
+  const sourceInbounds = selected ? [selected] : inboundTag ? [] : inbounds;
+  return Array.from(new Set(sourceInbounds.map(inboundCore)));
 }
 
 function filterInboundOptions(options: InboundOption[], query: string) {

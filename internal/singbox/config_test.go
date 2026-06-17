@@ -222,6 +222,104 @@ func TestBuildConfig_HasDirectOutbound(t *testing.T) {
 	}
 }
 
+func TestBuildConfigWithOutboundsUsesSupportedProfilesAndGeneratedTags(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds(nil, []db.Outbound{
+		{ID: 10, Tag: "socks-shared", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Enabled: true},
+		{ID: 11, Tag: "vless-shared", Protocol: "vless", Address: "127.0.0.1", Port: 443, Username: "11111111-1111-4111-8111-111111111111", Enabled: true},
+		{ID: 12, Tag: "hy2-sb", Protocol: "hysteria2", Address: "127.0.0.1", Port: 8443, Password: "secret", Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 1, OutboundID: 10, OutboundTag: "socks-shared", Domain: "example.com", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with outbounds: %v", err)
+	}
+	raw, _ := json.Marshal(cfg)
+	text := string(raw)
+	for _, want := range []string{`"tag":"singbox-out-10"`, `"type":"socks"`, `"tag":"singbox-out-11"`, `"type":"vless"`, `"tag":"singbox-out-12"`, `"type":"hysteria2"`, `"outbound":"singbox-out-10"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("sing-box config missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestBuildConfigWithOutboundsCompilesHTTPSOutbound(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds(nil, []db.Outbound{
+		{ID: 14, Tag: "proxy-https", Protocol: "https", Address: "127.0.0.1", Port: 8443, Username: "sam", Password: "secret", Enabled: true},
+	}, nil)
+	if err != nil {
+		t.Fatalf("build config with https outbound: %v", err)
+	}
+	raw, _ := json.Marshal(cfg)
+	text := string(raw)
+	for _, want := range []string{`"tag":"singbox-out-14"`, `"type":"http"`, `"server":"127.0.0.1"`, `"server_port":8443`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("https outbound config missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestBuildConfigWithOutboundsSkipsXrayRoutingRulesBeforeValidatingOutbound(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 1, Remark: "edge", Protocol: "vless", Core: db.CoreXray, Port: 443, Enabled: true,
+	}}, []db.Outbound{
+		{ID: 11, Tag: "shared-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 91, InboundTag: "inbound-1-vless", OutboundID: 11, OutboundTag: "shared-socks", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("sing-box should skip xray routing rule before validating outbound: %v", err)
+	}
+	if cfg.Route != nil && len(cfg.Route.Rules) > 0 {
+		t.Fatalf("xray route leaked into sing-box routing: %+v", cfg.Route.Rules)
+	}
+}
+
+func TestBuildConfigWithOutboundsSkipsStaleInboundTagBeforeValidatingOutbound(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 2, Remark: "hy2", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 8443, Enabled: true,
+	}}, []db.Outbound{
+		{ID: 11, Tag: "shared-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 94, InboundTag: "deleted-xray-in", OutboundID: 11, OutboundTag: "shared-socks", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("sing-box should skip stale inbound_tag before validating outbound: %v", err)
+	}
+	if cfg.Route != nil && len(cfg.Route.Rules) > 0 {
+		t.Fatalf("stale route leaked into sing-box routing: %+v", cfg.Route.Rules)
+	}
+}
+
+func TestBuildConfigWithOutboundsReportsMissingOutboundProfileForApplicableRule(t *testing.T) {
+	_, err := BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 2, Remark: "hy2", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 8443, Enabled: true,
+	}}, []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}}, []db.RoutingRule{
+		{ID: 92, InboundTag: "inbound-2-hysteria2", OutboundID: 99, OutboundTag: "missing", Enabled: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing outbound profile") {
+		t.Fatalf("expected clear missing outbound error, got %v", err)
+	}
+}
+
+func TestBuildConfigWithOutboundsValidatesBasicOutboundCredentials(t *testing.T) {
+	cases := []db.Outbound{
+		{ID: 21, Tag: "missing-vless-uuid", Protocol: "vless", Address: "127.0.0.1", Port: 443, Enabled: true},
+		{ID: 26, Tag: "invalid-vless-uuid", Protocol: "vless", Address: "127.0.0.1", Port: 443, Username: "not-a-uuid", Enabled: true},
+		{ID: 22, Tag: "missing-trojan-password", Protocol: "trojan", Address: "127.0.0.1", Port: 443, Enabled: true},
+		{ID: 23, Tag: "missing-ss-method", Protocol: "shadowsocks", Address: "127.0.0.1", Port: 8388, Password: "secret", Enabled: true},
+		{ID: 24, Tag: "missing-tuic-uuid", Protocol: "tuic", Address: "127.0.0.1", Port: 443, Password: "secret", Enabled: true},
+		{ID: 25, Tag: "missing-shadowtls-password", Protocol: "shadowtls", Address: "127.0.0.1", Port: 443, Enabled: true},
+	}
+	for _, outbound := range cases {
+		t.Run(outbound.Protocol, func(t *testing.T) {
+			_, err := BuildConfigWithOutbounds(nil, []db.Outbound{outbound}, nil)
+			if err == nil {
+				t.Fatalf("expected %s outbound validation error", outbound.Protocol)
+			}
+		})
+	}
+}
+
 func TestBuildConfig_PortAllocation(t *testing.T) {
 	inbounds := []db.Inbound{}
 	for i := 0; i < 3; i++ {

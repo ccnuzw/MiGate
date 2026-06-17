@@ -2,8 +2,11 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestStoreCreatesTrafficLookupIndexes(t *testing.T) {
@@ -33,6 +36,47 @@ func TestStoreCreatesTrafficLookupIndexes(t *testing.T) {
 		if !indexes[name] {
 			t.Fatalf("expected index %s to exist, got %#v", name, indexes)
 		}
+	}
+}
+
+func TestMigrateOldOutboundSchemaBeforeSeedingDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	_, err = raw.Exec(`
+CREATE TABLE outbounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tag TEXT NOT NULL UNIQUE,
+  remark TEXT NOT NULL,
+  protocol TEXT NOT NULL,
+  address TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL DEFAULT 0,
+  username TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+)`)
+	if err != nil {
+		t.Fatalf("create old outbounds table: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("migrate old schema: %v", err)
+	}
+	defer store.Close()
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list outbounds after migration: %v", err)
+	}
+	if len(outbounds) < 3 || outbounds[0].Tag != "direct" || len(outbounds[0].SupportedCores) == 0 {
+		t.Fatalf("defaults were not seeded with supported cores: %+v", outbounds)
 	}
 }
 

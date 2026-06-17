@@ -1,5 +1,6 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { Client, Inbound, Outbound, RoutingRule } from '../api/types';
+import { coreLabel, inboundCore, outboundSupportedCores, outboundSupportsCore } from '../lib/cores';
 import { formatBytes } from '../lib/format';
 import { generatedInboundTag } from '../lib/routing';
 
@@ -12,6 +13,7 @@ export type TopologyNodeData = {
   subtitle?: string;
   enabled: boolean;
   missing?: boolean;
+  invalid?: boolean;
   meta: Array<{ label: string; value: string }>;
 };
 
@@ -21,6 +23,7 @@ export type TopologyEdgeData = {
   enabled: boolean;
   ruleId?: number;
   missingTarget?: boolean;
+  invalidTarget?: boolean;
 };
 
 export type TopologyGraph = {
@@ -49,6 +52,7 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
   const edges: Array<Edge<TopologyEdgeData>> = [];
   const inboundByTag = buildInboundTagLookup(inbounds);
   const outboundByTag = buildOutboundTagLookup(outbounds);
+  const outboundById = buildOutboundIdLookup(outbounds);
   const missingInboundTags = new Set<string>();
   const missingClientRules: Array<{ rule: RoutingRule; source: RoutingSource }> = [];
   const missingOutboundTags = new Set<string>();
@@ -79,9 +83,14 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
   const outboundCount = outbounds.length;
   routingRules.forEach((rule) => {
     const inboundTag = normalizedInboundTag(rule);
-    const targetId = outboundNodeId(rule.outbound_tag);
-    const outbound = outboundByTag.get(rule.outbound_tag);
+    const outbound = resolveRuleOutbound(rule, outboundById, outboundByTag);
+    const targetTag = outbound?.tag || rule.outbound_tag;
+    const targetId = outboundNodeId(targetTag);
     const missingTarget = !outbound;
+    const invalidTarget = !missingTarget && sourcesForCoreCheck(rule, inbounds, inboundByTag).some((source) => {
+      const inbound = source.inboundId == null ? undefined : inbounds.find((item) => item.id === source.inboundId);
+      return inbound ? !outboundSupportsCore(outbound, inboundCore(inbound)) : false;
+    });
     if (missingTarget) {
       missingOutboundTags.add(rule.outbound_tag);
     }
@@ -95,13 +104,15 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
       if (source.missingClient) {
         missingClientRules.push({ rule, source });
       }
-      if (source.clientId != null && isActiveRoutingSource(rule, source, missingTarget, outboundEnabled)) {
+      const sourceInbound = source.inboundId == null ? undefined : inbounds.find((item) => item.id === source.inboundId);
+      const sourceInvalidTarget = sourceInbound ? !missingTarget && !outboundSupportsCore(outbound, inboundCore(sourceInbound)) : invalidTarget;
+      if (source.clientId != null && isActiveRoutingSource(rule, source, missingTarget, outboundEnabled, sourceInvalidTarget)) {
         explicitlyRoutedClientIds.add(source.clientId);
       }
-      if (isActiveRoutingSource(rule, source, missingTarget, outboundEnabled) && source.inboundId != null && source.clientId == null) {
+      if (isActiveRoutingSource(rule, source, missingTarget, outboundEnabled, sourceInvalidTarget) && source.inboundId != null && source.clientId == null) {
         routedInboundIds.add(source.inboundId);
       }
-      edges.push(buildRoutingEdge(rule, source, targetId, index, missingTarget, outboundEnabled, Boolean(inboundTag)));
+      edges.push(buildRoutingEdge(rule, source, targetId, index, missingTarget, outboundEnabled, Boolean(inboundTag), sourceInvalidTarget));
     });
   });
 
@@ -147,6 +158,16 @@ export function buildInboundTagLookup(inbounds: Inbound[]): Map<string, Inbound>
 
 function buildOutboundTagLookup(outbounds: Outbound[]): Map<string, Outbound> {
   return new Map(outbounds.filter((item) => item.tag).map((item) => [item.tag, item]));
+}
+
+function buildOutboundIdLookup(outbounds: Outbound[]): Map<number, Outbound> {
+  return new Map(outbounds.filter((item) => item.id).map((item) => [item.id, item]));
+}
+
+function resolveRuleOutbound(rule: Pick<RoutingRule, 'outbound_id' | 'outbound_tag'>, outboundById: Map<number, Outbound>, outboundByTag: Map<string, Outbound>) {
+  const outboundID = Number(rule.outbound_id || 0);
+  if (outboundID > 0) return outboundById.get(outboundID);
+  return outboundByTag.get(rule.outbound_tag);
 }
 
 function normalizedInboundTag(rule: Pick<RoutingRule, 'inbound_tag'>) {
@@ -216,6 +237,7 @@ function buildInboundNode(inbound: Inbound, y: number): Node<TopologyNodeData> {
       enabled: inbound.enabled !== false,
       meta: [
         { label: '协议', value: inbound.protocol || '-' },
+        { label: '内核', value: coreLabel(inboundCore(inbound)) },
         { label: '端口', value: inbound.port ? String(inbound.port) : '-' },
         { label: '传输', value: inbound.network || 'tcp' },
         { label: '安全', value: inbound.security || 'none' },
@@ -256,6 +278,7 @@ function buildOutboundNode(outbound: Outbound, y: number): Node<TopologyNodeData
       enabled: outbound.enabled !== false,
       meta: [
         { label: '协议', value: outbound.protocol || '-' },
+        { label: '内核', value: outboundSupportedCores(outbound).map(coreLabel).join(' / ') || '-' },
         { label: '地址', value: outbound.address || '-' },
         { label: '端口', value: outbound.port ? String(outbound.port) : '-' },
       ],
@@ -390,8 +413,8 @@ function buildClientDefaultDirectEdge(client: Client, directEnabled: boolean): E
   };
 }
 
-function buildRoutingEdge(rule: RoutingRule, source: RoutingSource, targetId: string, index: number, missingTarget: boolean, outboundEnabled: boolean, explicitInbound: boolean): Edge<TopologyEdgeData> {
-  const enabled = isActiveRoutingSource(rule, source, missingTarget, outboundEnabled);
+function buildRoutingEdge(rule: RoutingRule, source: RoutingSource, targetId: string, index: number, missingTarget: boolean, outboundEnabled: boolean, explicitInbound: boolean, invalidTarget: boolean): Edge<TopologyEdgeData> {
+  const enabled = isActiveRoutingSource(rule, source, missingTarget, outboundEnabled, invalidTarget);
   const kind: TopologyEdgeKind = source.clientId != null ? 'client-routing' : explicitInbound ? 'routing' : 'all-inbounds-routing';
   return {
     id: `rule-${rule.id}-${source.edgeKey}-${index}`,
@@ -406,17 +429,22 @@ function buildRoutingEdge(rule: RoutingRule, source: RoutingSource, targetId: st
       enabled,
       ruleId: rule.id,
       missingTarget,
+      invalidTarget,
     },
     style: {
-      stroke: missingTarget ? '#dc2626' : enabled ? '#0f766e' : '#94a3b8',
+      stroke: missingTarget || invalidTarget ? '#dc2626' : enabled ? '#0f766e' : '#94a3b8',
       strokeDasharray: enabled ? undefined : '6 5',
       opacity: enabled ? 0.82 : 0.36,
     },
   };
 }
 
-function isActiveRoutingSource(rule: Pick<RoutingRule, 'enabled'>, source: RoutingSource, missingTarget: boolean, outboundEnabled: boolean) {
-  return rule.enabled !== false && source.enabled && outboundEnabled && !missingTarget;
+function isActiveRoutingSource(rule: Pick<RoutingRule, 'enabled'>, source: RoutingSource, missingTarget: boolean, outboundEnabled: boolean, invalidTarget = false) {
+  return rule.enabled !== false && source.enabled && outboundEnabled && !missingTarget && !invalidTarget;
+}
+
+function sourcesForCoreCheck(rule: RoutingRule, inbounds: Inbound[], inboundByTag: Map<string, Inbound>) {
+  return routingSourcesForRule(rule, inbounds, inboundByTag).filter((source) => source.inboundId != null);
 }
 
 function routeEdgeLabel(rule: RoutingRule, explicitInbound: boolean) {

@@ -32,6 +32,7 @@ export interface Inbound {
   id: number;
   remark: string;
   protocol: string;
+  core?: 'xray' | 'sing-box' | string;
   port: number;
   network: string;
   security: string;
@@ -60,6 +61,7 @@ export interface Outbound {
   port?: number;
   username?: string;
   password?: string;
+  supported_cores?: Array<'xray' | 'sing-box' | string>;
   enabled: boolean;
   sort?: number;
   [key: string]: unknown;
@@ -76,6 +78,7 @@ export interface RoutingRule {
   ip?: string;
   rule_set?: string;
   protocol?: string;
+  outbound_id?: number;
   outbound_tag: string;
   enabled: boolean;
   sort_order?: number;

@@ -59,31 +59,42 @@ func fallbackTrafficEngines(expectedEngine string) []string {
 	}
 }
 
+func loadTrafficStates(ctx context.Context, store Store) []db.TrafficState {
+	if store == nil {
+		return nil
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		return nil
+	}
+	return states
+}
+
 func summarizeTraffic(ctx context.Context, store Store, inbounds []db.Inbound) (map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary) {
+	return summarizeTrafficFromStates(loadTrafficStates(ctx, store), inbounds)
+}
+
+func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound) (map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary) {
 	stateByScope := map[string]map[string]db.TrafficState{}
-	if store != nil {
-		if states, err := store.ListTrafficStates(ctx); err == nil {
-			for _, state := range states {
-				engine := normalizeTrafficEngine(state.Engine)
-				scopeType := strings.ToLower(strings.TrimSpace(state.ScopeType))
-				scopeKey := strings.TrimSpace(state.ScopeKey)
-				if engine == "" || scopeType == "" || scopeKey == "" {
-					continue
-				}
-				state.Engine = engine
-				state.ScopeType = scopeType
-				state.ScopeKey = scopeKey
-				key := scopeType + "\x00" + scopeKey
-				byEngine := stateByScope[key]
-				if byEngine == nil {
-					byEngine = map[string]db.TrafficState{}
-					stateByScope[key] = byEngine
-				}
-				current, ok := byEngine[engine]
-				if !ok || state.LastSeenAt > current.LastSeenAt {
-					byEngine[engine] = state
-				}
-			}
+	for _, state := range states {
+		engine := normalizeTrafficEngine(state.Engine)
+		scopeType := strings.ToLower(strings.TrimSpace(state.ScopeType))
+		scopeKey := strings.TrimSpace(state.ScopeKey)
+		if engine == "" || scopeType == "" || scopeKey == "" {
+			continue
+		}
+		state.Engine = engine
+		state.ScopeType = scopeType
+		state.ScopeKey = scopeKey
+		key := scopeType + "\x00" + scopeKey
+		byEngine := stateByScope[key]
+		if byEngine == nil {
+			byEngine = map[string]db.TrafficState{}
+			stateByScope[key] = byEngine
+		}
+		current, ok := byEngine[engine]
+		if !ok || state.LastSeenAt > current.LastSeenAt {
+			byEngine[engine] = state
 		}
 	}
 	byInbound := map[int64]inboundTrafficSummary{}
@@ -151,6 +162,99 @@ func inboundStatsKey(inbound db.Inbound) string {
 	default:
 		return fmt.Sprintf("inbound-%d-%s", inbound.ID, strings.ToLower(strings.TrimSpace(inbound.Protocol)))
 	}
+}
+
+type outboundTrafficSummary struct {
+	Up         int64
+	Down       int64
+	RateUp     float64
+	RateDown   float64
+	Status     string
+	LastSeenAt string
+	Engines    []string
+}
+
+func outboundStatsByProfileID(states []db.TrafficState) map[int64]outboundTrafficSummary {
+	result := map[int64]outboundTrafficSummary{}
+	for _, state := range states {
+		if strings.ToLower(strings.TrimSpace(state.ScopeType)) != "outbound" {
+			continue
+		}
+		engine := normalizeTrafficEngine(state.Engine)
+		id, ok := db.OutboundProfileIDFromGeneratedTag(engine, state.ScopeKey)
+		if !ok {
+			continue
+		}
+		current := result[id]
+		current.Up += state.TotalUp
+		current.Down += state.TotalDown
+		current.RateUp += state.RateUp
+		current.RateDown += state.RateDown
+		current.Status = combineTrafficStatuses(current.Status, stateStatus(state))
+		if state.LastSeenAt > current.LastSeenAt {
+			current.LastSeenAt = state.LastSeenAt
+		}
+		current.Engines = appendUniqueString(current.Engines, engine)
+		result[id] = current
+	}
+	return result
+}
+
+func outboundTrafficDetails(outbounds []db.Outbound, stats map[int64]outboundTrafficSummary) []map[string]interface{} {
+	details := make([]map[string]interface{}, 0, len(outbounds))
+	for _, outbound := range outbounds {
+		state, ok := stats[outbound.ID]
+		up := int64(0)
+		down := int64(0)
+		rateUp := float64(0)
+		rateDown := float64(0)
+		status := "waiting"
+		engine := ""
+		engines := []string{}
+		if ok {
+			up = state.Up
+			down = state.Down
+			rateUp = state.RateUp
+			rateDown = state.RateDown
+			status = state.Status
+			engines = state.Engines
+			if len(engines) == 1 {
+				engine = engines[0]
+			} else if len(engines) > 1 {
+				engine = "mixed"
+			}
+		}
+		details = append(details, map[string]interface{}{
+			"id":                   outbound.ID,
+			"tag":                  outbound.Tag,
+			"remark":               outbound.Remark,
+			"protocol":             outbound.Protocol,
+			"enabled":              outbound.Enabled,
+			"traffic_up":           up,
+			"traffic_down":         down,
+			"traffic_total":        up + down,
+			"rate_up":              rateUp,
+			"rate_down":            rateDown,
+			"traffic_status":       status,
+			"traffic_engine":       engine,
+			"traffic_engines":      engines,
+			"traffic_last_seen_at": state.LastSeenAt,
+		})
+	}
+	return details
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func stateStatus(state db.TrafficState) string {
@@ -367,7 +471,8 @@ func buildStatsResponse(ctx context.Context, store Store, statsClient xray.Stats
 		}
 	}
 
-	trafficByInbound, trafficByClient := summarizeTraffic(ctx, store, inb)
+	states := loadTrafficStates(ctx, store)
+	trafficByInbound, trafficByClient := summarizeTrafficFromStates(states, inb)
 	var totalUp int64
 	var totalDown int64
 	for _, traffic := range trafficByInbound {
@@ -417,6 +522,8 @@ func buildStatsResponse(ctx context.Context, store Store, statsClient xray.Stats
 		}
 	}
 	response["client_details"] = clientList
+	outboundStats := outboundStatsByProfileID(states)
+	response["outbound_details"] = outboundTrafficDetails(obs, outboundStats)
 	return response, nil
 }
 
@@ -509,7 +616,9 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 	enabledInbounds := 0
 	protocols := map[string]int{}
 	trafficSeries := []trafficSeriesPoint{}
-	trafficByInbound, trafficByClient := summarizeTraffic(ctx, store, inbounds)
+	states := loadTrafficStates(ctx, store)
+	trafficByInbound, trafficByClient := summarizeTrafficFromStates(states, inbounds)
+	outboundStats := outboundStatsByProfileID(states)
 	var totalUp int64
 	var totalDown int64
 	var xrayUp int64
@@ -593,9 +702,10 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 			"rate_down":  rateDown,
 			"rate_total": rateUp + rateDown,
 		},
-		"traffic_status": buildTrafficCoverage(trafficByInbound),
-		"protocols":      protocols,
-		"traffic_series": trafficSeries,
+		"traffic_status":   buildTrafficCoverage(trafficByInbound),
+		"protocols":        protocols,
+		"traffic_series":   trafficSeries,
+		"outbound_traffic": outboundTrafficDetails(outbounds, outboundStats),
 		"validation": map[string]configValidationResult{
 			"xray":    validateXrayConfigSnapshot(snapshot),
 			"singbox": validateSingboxConfigSnapshotWithRuntime(ctx, snapshot, cfg),

@@ -6,6 +6,7 @@ import { api } from '../api/endpoints';
 import type { CertStatus, Client, Inbound } from '../api/types';
 import { EmptyState, LoadingBlock, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { copyToClipboard } from '../lib/clipboard';
+import { coreLabel, inboundCore } from '../lib/cores';
 import { formatBytes, randomUUID } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { usePageVisible } from '../lib/visibility';
@@ -171,7 +172,7 @@ export default function InboundsPage() {
   const refresh = () => refreshInboundDependencies(queryClient);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const list = (inbounds.data || []).filter((item) => !q || [item.remark, item.protocol, String(item.port), item.network, item.security].join(' ').toLowerCase().includes(q));
+    const list = (inbounds.data || []).filter((item) => !q || [item.remark, item.protocol, inboundCore(item), String(item.port), item.network, item.security].join(' ').toLowerCase().includes(q));
     return [...list].sort((a, b) => {
       if (sort === 'port') return a.port - b.port;
       if (sort === 'protocol') return a.protocol.localeCompare(b.protocol);
@@ -262,6 +263,7 @@ export default function InboundsPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="truncate text-base font-semibold">{inbound.remark || `${inbound.protocol}:${inbound.port}`}</h2>
                     <ProtocolBadge protocol={inbound.protocol} />
+                    <span className="rounded bg-panel-soft px-2 py-1 text-xs text-panel-muted">{coreLabel(inboundCore(inbound))}</span>
                     <StatusBadge enabled={inbound.enabled} />
                   </div>
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">

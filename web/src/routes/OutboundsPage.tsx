@@ -8,13 +8,14 @@ import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Outbound, PingResult, ProxyPoolProxy, ProxyPoolResponse } from '../api/types';
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
+import { coreLabel, outboundSupportedCores, outboundSupportLevel, outboundSupportLevelLabel } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
 
 const schema = z.object({
   tag: z.string().min(1, '请输入 tag'),
   remark: z.string().optional(),
-  protocol: z.enum(['socks', 'http', 'freedom', 'blackhole']),
+  protocol: z.enum(['socks', 'http', 'https', 'vless', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'shadowtls', 'freedom', 'blackhole', 'dns']),
   address: z.string().optional(),
   port: z.coerce.number().min(0).max(65535).optional(),
   username: z.string().optional(),
@@ -135,6 +136,7 @@ export default function OutboundsPage() {
                   <h2 className="truncate text-base font-semibold">{item.tag}</h2>
                   <StatusBadge enabled={item.enabled} />
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs text-panel-muted">{text('默认')}</span>
+                  <CoreBadges item={item} text={text} />
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
                   {outboundMetaParts(item, text, proxyLookup.get(outboundLookupKey(item))).map((part) => <span key={part}>{part}</span>)}
@@ -155,6 +157,7 @@ export default function OutboundsPage() {
                   <span className="rounded bg-panel-soft px-2 py-1 text-xs">#{index + 1}</span>
                   <h2 className="truncate text-base font-semibold">{item.tag}</h2>
                   <OutboundProtocolBadge item={item} />
+                  <CoreBadges item={item} text={text} />
                   <StatusBadge enabled={item.enabled} />
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
@@ -191,9 +194,13 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
     form.reset(outboundFormValues(outbound));
   }, [form, outbound]);
   const protocol = form.watch('protocol');
+  const supportLevel = outboundSupportLevel({ protocol });
+  const supportedCores = outboundSupportedCores({ protocol });
+  const credentialFields = outboundCredentialFields(protocol);
   const save = useMutation({
     mutationFn: (values: Values) => {
-      const payload = outbound ? { ...outbound, ...values } : values;
+      const payload = outbound ? { ...outbound, ...sanitizeOutboundValues(values) } : sanitizeOutboundValues(values);
+      delete (payload as Partial<Outbound>).supported_cores;
       return outbound?.id ? api.updateOutbound(outbound.id, payload) : api.createOutbound(payload);
     },
     onSuccess: () => {
@@ -208,13 +215,36 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
       <div className="form-grid">
         <Field label={text('标签')}><input {...form.register('tag')} /><FieldError message={form.formState.errors.tag?.message ? text(form.formState.errors.tag.message) : undefined} /></Field>
         <Field label={text('备注')}><input {...form.register('remark')} /></Field>
-        <Field label={text('协议')}><select {...form.register('protocol')}><option value="socks">SOCKS5</option><option value="http">HTTP</option><option value="freedom">freedom</option><option value="blackhole">blackhole</option></select></Field>
-        {protocol === 'socks' || protocol === 'http' ? (
+        <Field label={text('协议')}>
+          <select {...form.register('protocol')}>
+            <option value="socks">SOCKS5</option>
+            <option value="http">HTTP</option>
+            <option value="https">HTTPS</option>
+            <option value="vless">VLESS</option>
+            <option value="trojan">Trojan</option>
+            <option value="shadowsocks">Shadowsocks</option>
+            <option value="hysteria2">Hysteria2</option>
+            <option value="tuic">TUIC</option>
+            <option value="shadowtls">ShadowTLS</option>
+            <option value="freedom">freedom</option>
+            <option value="blackhole">blackhole</option>
+            <option value="dns">dns</option>
+          </select>
+        </Field>
+        {supportLevel !== 'none' || supportedCores.length ? (
+          <div className="span-2 flex flex-wrap items-center gap-2 text-xs text-panel-muted">
+            {supportLevel !== 'none' ? <span className="rounded bg-panel-soft px-2 py-1">{text(outboundSupportLevelLabel(supportLevel))}</span> : null}
+            {supportedCores.length ? <span>{text('可用于')}</span> : null}
+            {supportedCores.map((core) => <span key={core} className="rounded bg-panel-soft px-2 py-1">{coreLabel(core)}</span>)}
+          </div>
+        ) : null}
+        {supportLevel === 'basic' ? <div className="span-2 text-xs text-panel-muted">{text('仅保存基础连接参数，暂不包含传输层/TLS/REALITY 等高级字段。')}</div> : null}
+        {requiresOutboundAddress(protocol) ? (
           <>
             <Field label={text('地址')}><input {...form.register('address')} /></Field>
             <Field label={text('端口')}><input type="number" {...form.register('port')} /></Field>
-            <Field label={text('用户名')}><input {...form.register('username')} /></Field>
-            <Field label={text('密码')}><input type="password" {...form.register('password')} /></Field>
+            {credentialFields.username ? <Field label={text(outboundUsernameLabel(protocol))}><input {...form.register('username')} /></Field> : null}
+            {credentialFields.password ? <Field label={text(outboundPasswordLabel(protocol))}><input type="password" {...form.register('password')} /></Field> : null}
           </>
         ) : null}
         <label className="checkbox-field"><input type="checkbox" {...form.register('enabled')} /> {text('已启用')}</label>
@@ -343,11 +373,11 @@ function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose:
 }
 
 export function isFixedDefaultOutbound(item: Outbound) {
-  return (item.tag === 'direct' && item.protocol === 'freedom') || (item.tag === 'blocked' && item.protocol === 'blackhole');
+  return (item.tag === 'direct' && item.protocol === 'freedom') || (item.tag === 'blocked' && item.protocol === 'blackhole') || (item.tag === 'dns' && item.protocol === 'dns');
 }
 
 export function isReorderableOutbound(item: Outbound) {
-  return item.protocol !== 'freedom' && item.protocol !== 'blackhole';
+  return item.protocol !== 'freedom' && item.protocol !== 'blackhole' && item.protocol !== 'dns';
 }
 
 function formatLatency(result: PingResult | undefined, text: (value: string) => string) {
@@ -376,6 +406,78 @@ function OutboundProtocolBadge({ item }: { item: Outbound }) {
   const type = outboundPoolType(item) || item.protocol || 'unknown';
   const label = type === 'socks5' ? 'SOCKS5' : type.toUpperCase();
   return <span className={`protocol-badge outbound-protocol-${type || 'default'}`}>{label}</span>;
+}
+
+function CoreBadges({ item, text }: { item: Outbound; text: (value: string) => string }) {
+  const cores = outboundSupportedCores(item);
+  const level = outboundSupportLevel(item);
+  if (level === 'none' && cores.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-xs text-panel-muted">
+      {level !== 'none' ? <span className="rounded bg-panel-soft px-2 py-1 text-xs text-panel-muted">{text(outboundSupportLevelLabel(level))}</span> : null}
+      {cores.length ? <span>{text('可用于')}</span> : null}
+      {cores.map((core) => <span key={core} className="rounded bg-panel-soft px-2 py-1 text-xs text-panel-muted">{coreLabel(core)}</span>)}
+    </div>
+  );
+}
+
+function requiresOutboundAddress(protocol: string | undefined) {
+  return !['freedom', 'blackhole', 'dns'].includes(String(protocol || '').trim().toLowerCase());
+}
+
+export function outboundUsernameLabel(protocol: string | undefined) {
+  switch (String(protocol || '').trim().toLowerCase()) {
+    case 'vless':
+    case 'tuic':
+      return 'UUID';
+    case 'shadowsocks':
+      return 'Shadowsocks 加密方法';
+    default:
+      return '用户名';
+  }
+}
+
+export function outboundPasswordLabel(protocol: string | undefined) {
+  switch (String(protocol || '').trim().toLowerCase()) {
+    case 'shadowtls':
+      return 'ShadowTLS 密码';
+    default:
+      return '密码';
+  }
+}
+
+export function outboundCredentialFields(protocol: string | undefined) {
+  switch (String(protocol || '').trim().toLowerCase()) {
+    case 'vless':
+      return { username: true, password: false };
+    case 'trojan':
+    case 'hysteria2':
+    case 'shadowtls':
+      return { username: false, password: true };
+    case 'tuic':
+    case 'shadowsocks':
+    case 'socks':
+    case 'socks5':
+    case 'http':
+    case 'https':
+      return { username: true, password: true };
+    default:
+      return { username: false, password: false };
+  }
+}
+
+export function sanitizeOutboundValues<T extends Pick<Values, 'protocol' | 'username' | 'password'> & Partial<Pick<Values, 'address' | 'port'>>>(values: T): T {
+  const fields = outboundCredentialFields(values.protocol);
+  const sanitized = {
+    ...values,
+    username: fields.username ? values.username : '',
+    password: fields.password ? values.password : '',
+  };
+  if (!requiresOutboundAddress(values.protocol)) {
+    sanitized.address = '';
+    sanitized.port = 0;
+  }
+  return sanitized;
 }
 
 function proxyKey(proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) {

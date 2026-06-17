@@ -70,8 +70,23 @@ func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 
+		outbounds, err := cfg.store.ListOutbounds(r.Context())
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed", map[string]interface{}{"detail": err.Error()})
+			return
+		}
+		rules, err := cfg.store.ListRoutingRules(r.Context())
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "list_routing_rules_failed", map[string]interface{}{"detail": err.Error()})
+			return
+		}
+
 		// Build config
-		built := buildSingboxConfigForRuntime(r.Context(), cfg, inbounds)
+		built := buildSingboxConfigForRuntime(r.Context(), cfg, inbounds, outbounds, rules)
+		if built.err != nil {
+			writeJSONError(w, http.StatusBadRequest, "build_failed", map[string]interface{}{"detail": built.err.Error()})
+			return
+		}
 
 		// Ensure self-signed cert exists
 		if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
@@ -138,12 +153,29 @@ func validateSingboxConfig(ctx context.Context, cfg *routerConfig) configValidat
 		result.Error = "list_inbounds_failed"
 		return result
 	}
-	return validateSingboxConfigSnapshotWithRuntime(ctx, validationSnapshot{inbounds: inbounds}, cfg)
+	outbounds, err := cfg.store.ListOutbounds(ctx)
+	if err != nil {
+		result.Valid = false
+		result.Error = "list_outbounds_failed"
+		return result
+	}
+	rules, err := cfg.store.ListRoutingRules(ctx)
+	if err != nil {
+		result.Valid = false
+		result.Error = "list_routing_rules_failed"
+		return result
+	}
+	return validateSingboxConfigSnapshotWithRuntime(ctx, validationSnapshot{inbounds: inbounds, outbounds: outbounds, rules: rules}, cfg)
 }
 
 func validateSingboxConfigSnapshot(snapshot validationSnapshot) configValidationResult {
 	result := configValidationResult{Target: "singbox", Valid: true, Warnings: []string{}}
-	cfg := singbox.BuildConfigWithOptions(snapshot.inbounds, singbox.BuildOptions{})
+	cfg, err := singbox.BuildConfigWithOutbounds(snapshot.inbounds, snapshot.outbounds, snapshot.rules)
+	if err != nil {
+		result.Valid = false
+		result.Error = err.Error()
+		return result
+	}
 	result.Inbounds = len(cfg.Inbounds)
 	if result.Inbounds == 0 {
 		result.Warnings = append(result.Warnings, "no_enabled_singbox_inbounds")
@@ -158,12 +190,21 @@ func validateSingboxConfigSnapshot(snapshot validationSnapshot) configValidation
 func validateSingboxConfigSnapshotWithRuntime(ctx context.Context, snapshot validationSnapshot, runtimeCfg *routerConfig) configValidationResult {
 	result := configValidationResult{Target: "singbox", Valid: true, Warnings: []string{}}
 	inbounds := snapshot.inbounds
-	built := buildSingboxConfigForRuntime(ctx, runtimeCfg, inbounds)
+	built := buildSingboxConfigForRuntime(ctx, runtimeCfg, inbounds, snapshot.outbounds, snapshot.rules)
 	result.Inbounds = len(built.config.Inbounds)
+	result.Outbounds = len(built.config.Outbounds)
+	if built.config.Route != nil {
+		result.Rules = len(built.config.Route.Rules)
+	}
 	if result.Inbounds == 0 {
 		result.Warnings = append(result.Warnings, "no_enabled_singbox_inbounds")
 	}
 	result.Warnings = append(result.Warnings, built.warnings...)
+	if built.err != nil {
+		result.Valid = false
+		result.Error = built.err.Error()
+		return result
+	}
 	if _, err := json.Marshal(built.config); err != nil {
 		result.Valid = false
 		result.Error = err.Error()
@@ -174,20 +215,34 @@ func validateSingboxConfigSnapshotWithRuntime(ctx context.Context, snapshot vali
 type builtSingboxConfig struct {
 	config   singbox.Config
 	warnings []string
+	err      error
 }
 
-func buildSingboxConfigForRuntime(ctx context.Context, cfg *routerConfig, inbounds []db.Inbound) builtSingboxConfig {
+func buildSingboxConfigForRuntime(ctx context.Context, cfg *routerConfig, inbounds []db.Inbound, outbounds []db.Outbound, rules []db.RoutingRule) builtSingboxConfig {
 	hasSingboxInbound := singbox.HasEnabledSingboxInbound(inbounds)
 	if !hasSingboxInbound {
-		return builtSingboxConfig{config: singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{})}
+		built, err := singbox.BuildConfigWithOutbounds(inbounds, outbounds, rules)
+		return builtSingboxConfig{config: built, err: err}
 	}
 	runtime := SingboxRuntime(defaultSingboxRuntime{})
 	if cfg != nil && cfg.singboxRuntime != nil {
 		runtime = cfg.singboxRuntime
 	}
 	capability := runtime.Capability(ctx)
+	built, err := singbox.BuildConfigWithOutbounds(inbounds, outbounds, rules)
 	result := builtSingboxConfig{
-		config: singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{EnableV2RayAPIStats: capability.V2RayAPIStats}),
+		config: built,
+		err:    err,
+	}
+	if result.config.Experimental == nil && capability.V2RayAPIStats {
+		result.config = singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{EnableV2RayAPIStats: true})
+		withOutbounds, buildErr := singbox.BuildConfigWithOutbounds(inbounds, outbounds, rules)
+		if buildErr != nil {
+			result.err = buildErr
+		} else {
+			withOutbounds.Experimental = result.config.Experimental
+			result.config = withOutbounds
+		}
 	}
 	if capability.Unsupported {
 		result.warnings = append(result.warnings, "singbox_stats_unsupported")
@@ -212,9 +267,19 @@ func tryApplySingboxWithRuntime(ctx context.Context, store Store, runtime Singbo
 	if err != nil {
 		return fmt.Errorf("list inbounds: %w", err)
 	}
-	cfg := singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{
-		EnableV2RayAPIStats: singbox.HasEnabledSingboxInbound(inbounds) && runtime != nil && runtime.Capability(ctx).V2RayAPIStats,
-	})
+	outbounds, err := store.ListOutbounds(ctx)
+	if err != nil {
+		return fmt.Errorf("list outbounds: %w", err)
+	}
+	rules, err := store.ListRoutingRules(ctx)
+	if err != nil {
+		return fmt.Errorf("list routing rules: %w", err)
+	}
+	built := buildSingboxConfigForRuntime(ctx, &routerConfig{singboxRuntime: runtime}, inbounds, outbounds, rules)
+	if built.err != nil {
+		return fmt.Errorf("build config: %w", built.err)
+	}
+	cfg := built.config
 	if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
 		if err := singbox.GenerateSelfSignedCert(); err != nil {
 			return fmt.Errorf("generate cert: %w", err)
@@ -246,7 +311,22 @@ func singboxConfigHandler(cfg *routerConfig) http.HandlerFunc {
 					writeJSONError(w, http.StatusInternalServerError, "list_failed", map[string]interface{}{"detail": listErr.Error()})
 					return
 				}
-				writeJSON(w, http.StatusOK, buildSingboxConfigForRuntime(r.Context(), cfg, inbounds).config)
+				outbounds, outErr := cfg.store.ListOutbounds(r.Context())
+				if outErr != nil {
+					writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed", map[string]interface{}{"detail": outErr.Error()})
+					return
+				}
+				rules, rulesErr := cfg.store.ListRoutingRules(r.Context())
+				if rulesErr != nil {
+					writeJSONError(w, http.StatusInternalServerError, "list_routing_rules_failed", map[string]interface{}{"detail": rulesErr.Error()})
+					return
+				}
+				built := buildSingboxConfigForRuntime(r.Context(), cfg, inbounds, outbounds, rules)
+				if built.err != nil {
+					writeJSONError(w, http.StatusBadRequest, "build_failed", map[string]interface{}{"detail": built.err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, built.config)
 				return
 			}
 			writeJSONError(w, http.StatusNotFound, "read_failed", map[string]interface{}{"detail": err.Error()})

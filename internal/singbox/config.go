@@ -22,6 +22,7 @@ type Config struct {
 	Log          LogConfig           `json:"log"`
 	Inbounds     []InboundConfig     `json:"inbounds"`
 	Outbounds    []OutboundConfig    `json:"outbounds"`
+	Route        *RouteConfig        `json:"route,omitempty"`
 	Experimental *ExperimentalConfig `json:"experimental,omitempty"`
 }
 
@@ -91,8 +92,34 @@ type TLSConfig struct {
 
 // OutboundConfig is a sing-box outbound configuration.
 type OutboundConfig struct {
-	Type string `json:"type"`
-	Tag  string `json:"tag"`
+	Type       string           `json:"type"`
+	Tag        string           `json:"tag"`
+	Server     string           `json:"server,omitempty"`
+	ServerPort int              `json:"server_port,omitempty"`
+	Username   string           `json:"username,omitempty"`
+	Password   string           `json:"password,omitempty"`
+	Method     string           `json:"method,omitempty"`
+	UUID       string           `json:"uuid,omitempty"`
+	TLS        *TLSConfig       `json:"tls,omitempty"`
+	Transport  *TransportConfig `json:"transport,omitempty"`
+}
+
+type TransportConfig struct {
+	Type string `json:"type,omitempty"`
+	Path string `json:"path,omitempty"`
+	Host string `json:"host,omitempty"`
+}
+
+type RouteConfig struct {
+	Rules []RouteRule `json:"rules,omitempty"`
+}
+
+type RouteRule struct {
+	Inbound  []string `json:"inbound,omitempty"`
+	Domain   []string `json:"domain,omitempty"`
+	IPCIDR   []string `json:"ip_cidr,omitempty"`
+	Protocol []string `json:"protocol,omitempty"`
+	Outbound string   `json:"outbound"`
 }
 
 type ExperimentalConfig struct {
@@ -148,6 +175,9 @@ func BuildConfigWithOptions(inbounds []db.Inbound, opts BuildOptions) Config {
 
 	for i, inbound := range inbounds {
 		if !inbound.Enabled {
+			continue
+		}
+		if db.InboundCore(inbound) != db.CoreSingbox {
 			continue
 		}
 		protocol := inbound.Protocol
@@ -298,6 +328,75 @@ func BuildConfigWithOptions(inbounds []db.Inbound, opts BuildOptions) Config {
 	return cfg
 }
 
+func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, routingRules []db.RoutingRule) (Config, error) {
+	cfg := BuildConfigWithOptions(inbounds, BuildOptions{})
+	cfg.Outbounds = []OutboundConfig{}
+	for _, outbound := range outbounds {
+		if !outbound.Enabled || !db.OutboundSupportsCore(outbound, db.CoreSingbox) {
+			continue
+		}
+		built, err := buildOutbound(outbound)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.Outbounds = append(cfg.Outbounds, built)
+	}
+	if len(cfg.Outbounds) == 0 {
+		cfg.Outbounds = append(cfg.Outbounds, OutboundConfig{Type: "direct", Tag: "singbox-out-0"})
+	}
+	if len(routingRules) > 0 {
+		inboundAliases := map[string]string{}
+		for _, inbound := range inbounds {
+			if !inbound.Enabled || db.InboundCore(inbound) != db.CoreSingbox {
+				continue
+			}
+			tag := InboundStatsTag(inbound)
+			inboundAliases[db.GeneratedInboundTag(inbound)] = tag
+			if strings.TrimSpace(inbound.Remark) != "" {
+				inboundAliases[strings.TrimSpace(inbound.Remark)] = tag
+			}
+		}
+		route := &RouteConfig{}
+		for _, rule := range routingRules {
+			if !rule.Enabled {
+				continue
+			}
+			if !db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreSingbox) {
+				continue
+			}
+			outbound, ok := db.ResolveRuleOutbound(rule, outbounds)
+			if !ok {
+				return Config{}, fmt.Errorf("routing rule %d targets missing outbound profile", rule.ID)
+			}
+			if !db.OutboundSupportsCore(outbound, db.CoreSingbox) {
+				return Config{}, fmt.Errorf("routing rule %d targets outbound %q that does not support sing-box", rule.ID, outbound.Tag)
+			}
+			sr := RouteRule{Outbound: db.GeneratedOutboundTag(db.CoreSingbox, outbound.ID, rule.OutboundTag)}
+			if strings.TrimSpace(rule.InboundTag) != "" {
+				if actual, ok := inboundAliases[strings.TrimSpace(rule.InboundTag)]; ok {
+					sr.Inbound = []string{actual}
+				} else {
+					continue
+				}
+			}
+			if strings.TrimSpace(rule.Domain) != "" {
+				sr.Domain = splitRuleValues(rule.Domain)
+			}
+			if strings.TrimSpace(rule.IP) != "" {
+				sr.IPCIDR = splitRuleValues(rule.IP)
+			}
+			if strings.TrimSpace(rule.Protocol) != "" {
+				sr.Protocol = splitRuleValues(rule.Protocol)
+			}
+			route.Rules = append(route.Rules, sr)
+		}
+		if len(route.Rules) > 0 {
+			cfg.Route = route
+		}
+	}
+	return cfg, nil
+}
+
 // GenerateSelfSignedCert generates a self-signed TLS certificate and key
 // saved to CertFile and KeyFile paths.
 func GenerateSelfSignedCert() error {
@@ -420,4 +519,61 @@ func isUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+func buildOutbound(outbound db.Outbound) (OutboundConfig, error) {
+	protocol := db.NormalizeOutboundProtocol(outbound.Protocol)
+	tag := db.GeneratedOutboundTag(db.CoreSingbox, outbound.ID, outbound.Tag)
+	if err := db.ValidateOutboundProfile(outbound); err != nil {
+		return OutboundConfig{}, err
+	}
+	switch protocol {
+	case "freedom":
+		return OutboundConfig{Type: "direct", Tag: tag}, nil
+	case "blackhole":
+		return OutboundConfig{Type: "block", Tag: tag}, nil
+	case "dns":
+		return OutboundConfig{Type: "dns", Tag: tag}, nil
+	case "socks":
+		return OutboundConfig{Type: "socks", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Username: strings.TrimSpace(outbound.Username), Password: outbound.Password}, nil
+	case "http", "https":
+		return OutboundConfig{Type: "http", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Username: strings.TrimSpace(outbound.Username), Password: outbound.Password}, nil
+	case "vless":
+		return OutboundConfig{Type: "vless", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, UUID: strings.TrimSpace(outbound.Username)}, nil
+	case "trojan":
+		return OutboundConfig{Type: "trojan", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Password: firstNonEmpty(outbound.Password, outbound.Username)}, nil
+	case "shadowsocks":
+		return OutboundConfig{Type: "shadowsocks", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Method: firstNonEmpty(outbound.Username, "aes-128-gcm"), Password: outbound.Password}, nil
+	case "hysteria2":
+		return OutboundConfig{Type: "hysteria2", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Password: firstNonEmpty(outbound.Password, outbound.Username)}, nil
+	case "tuic":
+		return OutboundConfig{Type: "tuic", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, UUID: strings.TrimSpace(outbound.Username), Password: outbound.Password}, nil
+	case "shadowtls":
+		return OutboundConfig{Type: "shadowtls", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Password: firstNonEmpty(outbound.Password, outbound.Username)}, nil
+	default:
+		return OutboundConfig{}, fmt.Errorf("unsupported outbound protocol: %s", outbound.Protocol)
+	}
+}
+
+func splitRuleValues(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t'
+	})
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
