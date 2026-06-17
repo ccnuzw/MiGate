@@ -1060,7 +1060,7 @@ textarea:focus {
   font-weight: 700;
 }
 
-.qr-modal-panel {
+.modal-panel.qr-modal-panel {
   width: min(420px, calc(100vw - 36px));
 }
 

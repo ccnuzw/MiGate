@@ -8,15 +8,17 @@ import { I18nProvider } from '../lib/i18n';
 import { createDefaultInbound } from './InboundsPage';
 import { ClientModal, InboundModal } from './InboundsPageForms';
 
+const apiMock = vi.hoisted(() => ({
+  certStatus: vi.fn(async () => ({ issued: false, cert_path: '', key_path: '', domain: '' })),
+  generateRealityKeypair: vi.fn(async () => ({ private_key: 'private', public_key: 'public' })),
+  createInbound: vi.fn(async (body) => ({ inbound: { id: 99, clients: [], ...body } })),
+  updateInbound: vi.fn(async (_id, body) => ({ inbound: body })),
+  createClient: vi.fn(async (_inboundId, body) => ({ client: { id: 7, inbound_id: _inboundId, ...body } })),
+  updateClient: vi.fn(async (_inboundId, id, body) => ({ client: { id, inbound_id: _inboundId, ...body } })),
+}));
+
 vi.mock('../api/endpoints', () => ({
-  api: {
-    certStatus: vi.fn(async () => ({ issued: false, cert_path: '', key_path: '', domain: '' })),
-    generateRealityKeypair: vi.fn(async () => ({ private_key: 'private', public_key: 'public' })),
-    createInbound: vi.fn(async (body) => ({ inbound: { id: 99, clients: [], ...body } })),
-    updateInbound: vi.fn(async (_id, body) => ({ inbound: body })),
-    createClient: vi.fn(async (_inboundId, body) => ({ client: { id: 7, inbound_id: _inboundId, ...body } })),
-    updateClient: vi.fn(async (_inboundId, id, body) => ({ client: { id, inbound_id: _inboundId, ...body } })),
-  },
+  api: apiMock,
 }));
 
 let root: Root | null = null;
@@ -69,6 +71,19 @@ describe('inbound and client modal credential behavior', () => {
 
     expect(inputByLabel('TUIC UUID').value).not.toBe(initial);
     expect(inputByLabel('TUIC 密码').value).not.toBe('');
+  });
+
+  it('uses parsed default client values when creating a node', async () => {
+    apiMock.createInbound.mockClear();
+    renderModal(<InboundModal inbound={createDefaultInbound()} onClose={() => undefined} onSaved={() => undefined} />);
+
+    changeValue(inputByLabel('名称'), 'edge');
+    changeValue(inputByLabel('流量限额'), '1.5');
+    clickButtonByText('保存');
+
+    await vi.waitFor(() => expect(apiMock.createInbound).toHaveBeenCalled());
+    const payload = apiMock.createInbound.mock.calls[0][0];
+    expect(payload.initial_client.traffic_limit).toBe(Math.round(1.5 * 1024 ** 3));
   });
 });
 
@@ -132,7 +147,10 @@ function clickButtonByTitle(title: string) {
 
 function changeValue(input: HTMLInputElement | HTMLSelectElement, value: string) {
   act(() => {
-    input.value = value;
+    const prototype = input instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
