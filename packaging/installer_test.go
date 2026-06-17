@@ -471,9 +471,13 @@ func TestInstallerRepairServiceRefreshesSandboxPermissions(t *testing.T) {
 		}
 	}
 	repairIdx := strings.Index(script, "repair_service_flow()")
-	writeIdx := strings.Index(script[repairIdx:], "write_systemd_service")
-	restartIdx := strings.Index(script[repairIdx:], "restart_migate_service")
-	if repairIdx < 0 || writeIdx < 0 || restartIdx < 0 || writeIdx > restartIdx {
+	if repairIdx < 0 {
+		t.Fatalf("repair-service must define repair_service_flow")
+	}
+	repairBody := script[repairIdx:]
+	writeIdx := strings.Index(repairBody, "write_systemd_service")
+	restartIdx := strings.Index(repairBody, "restart_migate_service")
+	if writeIdx < 0 || restartIdx < 0 || writeIdx > restartIdx {
 		t.Fatalf("repair-service must rewrite migate.service before restarting service")
 	}
 }

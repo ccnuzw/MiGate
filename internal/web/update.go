@@ -230,10 +230,17 @@ func readUpdateLogs(lines string) (string, error) {
 		if err == nil {
 			return string(out), nil
 		}
+		if journalOut, journalErr := readUpdateJournalLogs(lines); journalErr == nil {
+			return journalOut, nil
+		}
 		return string(out), err
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
+	return readUpdateJournalLogs(lines)
+}
+
+func readUpdateJournalLogs(lines string) (string, error) {
 	if _, err := exec.LookPath("journalctl"); err == nil {
 		out, journalErr := exec.Command("journalctl", "-u", "migate-update", "-u", "migate-update-*", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
 		if journalErr == nil {
