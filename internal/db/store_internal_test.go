@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -38,7 +39,7 @@ func TestStoreCreatesTrafficLookupIndexes(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("index rows: %v", err)
 	}
-	for _, name := range []string{"idx_clients_inbound_email", "idx_clients_credential_id", "idx_inbounds_port"} {
+	for _, name := range []string{"idx_clients_inbound_email", "idx_clients_credential_id", "idx_inbounds_port", "idx_traffic_samples_sampled_at"} {
 		if !indexes[name] {
 			t.Fatalf("expected index %s to exist, got %#v", name, indexes)
 		}
@@ -46,6 +47,74 @@ func TestStoreCreatesTrafficLookupIndexes(t *testing.T) {
 	for _, name := range []string{"idx_clients_credential_id", "idx_inbounds_port"} {
 		if !uniqueIndexes[name] {
 			t.Fatalf("expected index %s to be unique, got %#v", name, uniqueIndexes)
+		}
+	}
+}
+
+func TestTrafficSamplesCleanupIsThrottled(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, CreateInboundParams{Remark: "cleanup", Protocol: "vless", Port: 28096, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, CreateClientParams{InboundID: inbound.ID, Email: "cleanup@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	oldAt := time.Unix(100, 0)
+	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 100, RawDown: 100, Status: "ok"}}, oldAt); err != nil {
+		t.Fatalf("old baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 110, RawDown: 110, Status: "ok"}}, oldAt.Add(10*time.Second)); err != nil {
+		t.Fatalf("old increment: %v", err)
+	}
+	newAt := oldAt.Add(8 * 24 * time.Hour)
+	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 120, RawDown: 120, Status: "ok"}}, newAt); err != nil {
+		t.Fatalf("new cleanup trigger: %v", err)
+	}
+	samples, err := store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples after cleanup trigger: %v", err)
+	}
+	if len(samples) != 1 || samples[0].SampledAt != newAt.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("expected first new sample to prune old samples, got %+v", samples)
+	}
+	staleAt := newAt.Add(-8 * 24 * time.Hour)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, 'xray', 'client', ?, 1, 1, 0, 0, 'ok')`, staleAt.UTC().Format(time.RFC3339Nano), client.StatsKey); err != nil {
+		t.Fatalf("insert manual stale sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 130, RawDown: 130, Status: "ok"}}, newAt.Add(30*time.Minute)); err != nil {
+		t.Fatalf("within throttle sample: %v", err)
+	}
+	samples, err = store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples after throttled write: %v", err)
+	}
+	foundManualStale := false
+	for _, sample := range samples {
+		if sample.SampledAt == staleAt.UTC().Format(time.RFC3339Nano) {
+			foundManualStale = true
+		}
+	}
+	if !foundManualStale {
+		t.Fatalf("expected stale manual sample to remain until cleanup throttle expires, got %+v", samples)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 140, RawDown: 140, Status: "ok"}}, newAt.Add(2*time.Hour)); err != nil {
+		t.Fatalf("post-throttle sample: %v", err)
+	}
+	samples, err = store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples after cleanup expiry: %v", err)
+	}
+	for _, sample := range samples {
+		if sample.SampledAt == staleAt.UTC().Format(time.RFC3339Nano) {
+			t.Fatalf("expected stale manual sample to be pruned after throttle expiry, got %+v", samples)
 		}
 	}
 }

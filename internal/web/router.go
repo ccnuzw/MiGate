@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"strings"
+	"time"
 )
 
 func NewRouter(options ...Option) http.Handler {
@@ -20,6 +21,7 @@ func NewRouter(options ...Option) http.Handler {
 		option(&cfg)
 	}
 	mux := http.NewServeMux()
+	trafficCache := newTrafficViewCache(2 * time.Second)
 	mux.Handle("/assets/", staticAssetsHandler())
 	mux.HandleFunc("/login", loginPageHandler(&cfg))
 	mux.HandleFunc("/api/login", loginHandler(&cfg))
@@ -37,9 +39,9 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/routing-rules", routingRulesHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/routing-rules/", routingRuleChildrenHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/stats", statsHandler(cfg.store, cfg.statsClient))
-	mux.HandleFunc("/api/traffic/summary", trafficSummaryHandler(cfg.store))
-	mux.HandleFunc("/api/traffic/inbounds", trafficInboundsHandler(cfg.store))
-	mux.HandleFunc("/api/traffic/clients", trafficClientsHandler(cfg.store))
+	mux.HandleFunc("/api/traffic/summary", trafficSummaryHandler(cfg.store, trafficCache))
+	mux.HandleFunc("/api/traffic/inbounds", trafficInboundsHandler(cfg.store, trafficCache))
+	mux.HandleFunc("/api/traffic/clients", trafficClientsHandler(cfg.store, trafficCache))
 	mux.HandleFunc("/api/traffic/series", trafficSeriesHandler(cfg.store))
 	mux.HandleFunc("/api/dashboard/summary", dashboardSummaryHandler(&cfg))
 	mux.HandleFunc("/api/system/resources", systemResourcesHandler())

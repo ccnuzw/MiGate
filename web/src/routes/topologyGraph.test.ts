@@ -327,4 +327,58 @@ describe('topology graph helpers', () => {
       },
     });
   });
+
+  it('builds large multi-inbound client routing graphs without changing edge semantics', () => {
+    const largeInbounds: Inbound[] = Array.from({ length: 40 }, (_, inboundIndex) => ({
+      id: inboundIndex + 1,
+      remark: `edge-${inboundIndex + 1}`,
+      protocol: inboundIndex % 2 === 0 ? 'vless' : 'hysteria2',
+      core: inboundIndex % 2 === 0 ? 'xray' : 'sing-box',
+      port: 20000 + inboundIndex,
+      network: inboundIndex % 2 === 0 ? 'tcp' : 'udp',
+      security: 'none',
+      enabled: true,
+      clients: Array.from({ length: 12 }, (_, clientIndex) => ({
+        id: (inboundIndex + 1) * 1000 + clientIndex + 1,
+        inbound_id: inboundIndex + 1,
+        email: `user-${inboundIndex + 1}-${clientIndex + 1}@example.com`,
+        uuid: `uuid-${inboundIndex + 1}-${clientIndex + 1}`,
+        enabled: true,
+      })),
+    }));
+    const largeOutbounds: Outbound[] = [
+      { id: 1, tag: 'direct', protocol: 'freedom', enabled: true },
+      { id: 2, tag: 'shared', protocol: 'socks', supported_cores: ['xray', 'sing-box'], enabled: true },
+      { id: 3, tag: 'singbox-only', protocol: 'hysteria2', supported_cores: ['sing-box'], enabled: true },
+    ];
+    const rules = [
+      ...largeInbounds.slice(0, 20).map((inbound) => ({ id: 1000 + inbound.id, inbound_tag: `edge-${inbound.id}`, outbound_tag: 'shared', enabled: true })),
+      ...largeInbounds.slice(20).map((inbound) => ({ id: 2000 + inbound.id, inbound_tag: `inbound-${inbound.id}-${inbound.protocol.toLowerCase()}`, outbound_tag: 'direct', enabled: true })),
+      ...largeInbounds.map((inbound) => ({
+        id: 3000 + inbound.id,
+        inbound_tag: `edge-${inbound.id}`,
+        client_id: inbound.clients?.[5]?.id,
+        client_email: inbound.clients?.[5]?.email,
+        outbound_tag: 'shared',
+        enabled: true,
+      })),
+      { id: 9991, inbound_tag: '', outbound_tag: 'direct', enabled: false },
+      { id: 9992, inbound_tag: 'deleted-inbound', outbound_tag: 'missing-outbound', enabled: true },
+      { id: 9993, inbound_tag: 'edge-1', client_id: 999999, client_email: 'deleted@example.com', outbound_tag: 'direct', enabled: true },
+    ];
+
+    const graph = buildTopologyGraph(largeInbounds, largeOutbounds, rules);
+
+    expect(graph.nodes.filter((node) => node.data.kind === 'inbound')).toHaveLength(40);
+    expect(graph.nodes.filter((node) => node.data.kind === 'client')).toHaveLength(480);
+    expect(graph.edges.filter((edge) => edge.data?.kind === 'client-routing')).toHaveLength(41);
+    expect(graph.edges.filter((edge) => edge.data?.kind === 'all-inbounds-routing')).toHaveLength(40);
+    expect(graph.nodes.find((node) => node.id === 'inbound-missing:deleted-inbound')?.data.missing).toBe(true);
+    expect(graph.nodes.find((node) => node.id === 'outbound:missing-outbound')?.data.missing).toBe(true);
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-3001-client-1006'))).toMatchObject({
+      source: 'client:1006',
+      target: 'outbound:shared',
+      data: { kind: 'client-routing', enabled: true },
+    });
+  });
 });

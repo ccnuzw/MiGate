@@ -40,6 +40,15 @@ type RoutingSource = {
   missingClient?: boolean;
 };
 
+type TopologyLookup = {
+  inboundById: Map<number, Inbound>;
+  inboundByTag: Map<string, Inbound>;
+  outboundByTag: Map<string, Outbound>;
+  outboundById: Map<number, Outbound>;
+  clientsByInboundId: Map<number, Map<number, Client>>;
+  clientInboundById: Map<number, Inbound>;
+};
+
 const inboundX = 0;
 const clientX = 360;
 const outboundX = 760;
@@ -50,9 +59,7 @@ const outboundGap = 132;
 export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], routingRules: RoutingRule[]): TopologyGraph {
   const nodes: Array<Node<TopologyNodeData>> = [];
   const edges: Array<Edge<TopologyEdgeData>> = [];
-  const inboundByTag = buildInboundTagLookup(inbounds);
-  const outboundByTag = buildOutboundTagLookup(outbounds);
-  const outboundById = buildOutboundIdLookup(outbounds);
+  const lookup = buildTopologyLookup(inbounds, outbounds);
   const missingInboundTags = new Set<string>();
   const missingClientRules: Array<{ rule: RoutingRule; source: RoutingSource }> = [];
   const missingOutboundTags = new Set<string>();
@@ -83,28 +90,28 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
   const outboundCount = outbounds.length;
   routingRules.forEach((rule) => {
     const inboundTag = normalizedInboundTag(rule);
-    const outbound = resolveRuleOutbound(rule, outboundById, outboundByTag);
+    const outbound = resolveRuleOutbound(rule, lookup.outboundById, lookup.outboundByTag);
     const targetTag = outbound?.tag || rule.outbound_tag;
     const targetId = outboundNodeId(targetTag);
     const missingTarget = !outbound;
-    const invalidTarget = !missingTarget && sourcesForCoreCheck(rule, inbounds, inboundByTag).some((source) => {
-      const inbound = source.inboundId == null ? undefined : inbounds.find((item) => item.id === source.inboundId);
+    const invalidTarget = !missingTarget && sourcesForCoreCheck(rule, inbounds, lookup).some((source) => {
+      const inbound = source.inboundId == null ? undefined : lookup.inboundById.get(source.inboundId);
       return inbound ? !outboundSupportsCore(outbound, inboundCore(inbound)) : false;
     });
     if (missingTarget) {
       missingOutboundTags.add(rule.outbound_tag);
     }
-    if (inboundTag && !inboundByTag.has(inboundTag)) {
+    if (inboundTag && !lookup.inboundByTag.has(inboundTag)) {
       missingInboundTags.add(inboundTag);
     }
 
-    const sources = routingSourcesForRule(rule, inbounds, inboundByTag);
+    const sources = routingSourcesForRule(rule, inbounds, lookup);
     sources.forEach((source, index) => {
       const outboundEnabled = outbound?.enabled !== false;
       if (source.missingClient) {
         missingClientRules.push({ rule, source });
       }
-      const sourceInbound = source.inboundId == null ? undefined : inbounds.find((item) => item.id === source.inboundId);
+      const sourceInbound = source.inboundId == null ? undefined : lookup.inboundById.get(source.inboundId);
       const sourceInvalidTarget = sourceInbound ? !missingTarget && !outboundSupportsCore(outbound, inboundCore(sourceInbound)) : invalidTarget;
       if (source.clientId != null && isActiveRoutingSource(rule, source, missingTarget, outboundEnabled, sourceInvalidTarget)) {
         explicitlyRoutedClientIds.add(source.clientId);
@@ -116,7 +123,7 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
     });
   });
 
-  const directOutbound = outboundByTag.get('direct');
+  const directOutbound = lookup.outboundByTag.get('direct');
   if (directOutbound) {
     inbounds
       .filter((inbound) => !routedInboundIds.has(inbound.id))
@@ -156,6 +163,29 @@ export function buildInboundTagLookup(inbounds: Inbound[]): Map<string, Inbound>
   return lookup;
 }
 
+function buildTopologyLookup(inbounds: Inbound[], outbounds: Outbound[]): TopologyLookup {
+  const inboundById = new Map<number, Inbound>();
+  const clientsByInboundId = new Map<number, Map<number, Client>>();
+  const clientInboundById = new Map<number, Inbound>();
+  inbounds.forEach((inbound) => {
+    inboundById.set(inbound.id, inbound);
+    const clients = new Map<number, Client>();
+    (inbound.clients || []).forEach((client) => {
+      clients.set(client.id, client);
+      clientInboundById.set(client.id, inbound);
+    });
+    clientsByInboundId.set(inbound.id, clients);
+  });
+  return {
+    inboundById,
+    inboundByTag: buildInboundTagLookup(inbounds),
+    outboundByTag: buildOutboundTagLookup(outbounds),
+    outboundById: buildOutboundIdLookup(outbounds),
+    clientsByInboundId,
+    clientInboundById,
+  };
+}
+
 function buildOutboundTagLookup(outbounds: Outbound[]): Map<string, Outbound> {
   return new Map(outbounds.filter((item) => item.tag).map((item) => [item.tag, item]));
 }
@@ -174,7 +204,7 @@ function normalizedInboundTag(rule: Pick<RoutingRule, 'inbound_tag'>) {
   return String(rule.inbound_tag || '').trim();
 }
 
-function inboundSourcesForRule(inboundTag: string, inbounds: Inbound[], inboundByTag: Map<string, Inbound>): RoutingSource[] {
+function inboundSourcesForRule(inboundTag: string, inbounds: Inbound[], lookup: TopologyLookup): RoutingSource[] {
   if (!inboundTag) {
     return inbounds.map((inbound) => ({
       nodeId: inboundNodeId(inbound),
@@ -183,7 +213,7 @@ function inboundSourcesForRule(inboundTag: string, inbounds: Inbound[], inboundB
       inboundId: inbound.id,
     }));
   }
-  const inbound = inboundByTag.get(inboundTag);
+  const inbound = lookup.inboundByTag.get(inboundTag);
   return inbound
     ? [{
         nodeId: inboundNodeId(inbound),
@@ -198,14 +228,28 @@ function inboundSourcesForRule(inboundTag: string, inbounds: Inbound[], inboundB
     }];
 }
 
-function routingSourcesForRule(rule: RoutingRule, inbounds: Inbound[], inboundByTag: Map<string, Inbound>): RoutingSource[] {
+function routingSourcesForRule(rule: RoutingRule, inbounds: Inbound[], lookup: TopologyLookup): RoutingSource[] {
   const clientID = Number(rule.client_id || 0);
-  if (!clientID) return inboundSourcesForRule(normalizedInboundTag(rule), inbounds, inboundByTag);
+  if (!clientID) return inboundSourcesForRule(normalizedInboundTag(rule), inbounds, lookup);
   const inboundTag = normalizedInboundTag(rule);
-  const sourceInbounds = inboundTag ? [inboundByTag.get(inboundTag)].filter(Boolean) as Inbound[] : inbounds;
-  for (const inbound of sourceInbounds) {
-    const client = (inbound.clients || []).find((item) => item.id === clientID);
-    if (client) {
+  if (!inboundTag) {
+    const inbound = lookup.clientInboundById.get(clientID);
+    if (inbound) {
+      const client = lookup.clientsByInboundId.get(inbound.id)?.get(clientID);
+      if (client) {
+        return [{
+          nodeId: clientNodeId(client),
+          edgeKey: `client-${client.id}`,
+          enabled: inbound.enabled !== false && client.enabled !== false,
+          inboundId: inbound.id,
+          clientId: client.id,
+        }];
+      }
+    }
+  } else {
+    const inbound = lookup.inboundByTag.get(inboundTag);
+    const client = inbound ? lookup.clientsByInboundId.get(inbound.id)?.get(clientID) : undefined;
+    if (inbound && client) {
       return [{
         nodeId: clientNodeId(client),
         edgeKey: `client-${client.id}`,
@@ -443,8 +487,8 @@ function isActiveRoutingSource(rule: Pick<RoutingRule, 'enabled'>, source: Routi
   return rule.enabled !== false && source.enabled && outboundEnabled && !missingTarget && !invalidTarget;
 }
 
-function sourcesForCoreCheck(rule: RoutingRule, inbounds: Inbound[], inboundByTag: Map<string, Inbound>) {
-  return routingSourcesForRule(rule, inbounds, inboundByTag).filter((source) => source.inboundId != null);
+function sourcesForCoreCheck(rule: RoutingRule, inbounds: Inbound[], lookup: TopologyLookup) {
+  return routingSourcesForRule(rule, inbounds, lookup).filter((source) => source.inboundId != null);
 }
 
 function routeEdgeLabel(rule: RoutingRule, explicitInbound: boolean) {

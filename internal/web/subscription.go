@@ -95,6 +95,9 @@ func subscriptionRequestHost(cfg *routerConfig, r *http.Request) string {
 }
 
 func shareLink(host string, inbound db.Inbound, client db.Client) (string, error) {
+	if !db.InboundSupportsShareLink(inbound.Protocol) {
+		return "", fmt.Errorf("%s inbound does not support share links", inbound.Protocol)
+	}
 	host = subscriptionHost(host)
 	switch inbound.Protocol {
 	case "vless":
@@ -109,8 +112,6 @@ func shareLink(host string, inbound db.Inbound, client db.Client) (string, error
 		return hysteria2ShareLink(host, inbound, client), nil
 	case "tuic":
 		return tuicShareLink(host, inbound, client), nil
-	case "socks", "http", "shadowtls":
-		return "", fmt.Errorf("%s inbound does not support share links", inbound.Protocol)
 	default:
 		return "", fmt.Errorf("unsupported share link protocol: %s", inbound.Protocol)
 	}

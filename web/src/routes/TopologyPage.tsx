@@ -16,7 +16,6 @@ import {
   useEdgesState,
   useNodesState,
 } from '@xyflow/react';
-import ELK from 'elkjs/lib/elk.bundled.js';
 import { AlertTriangle, Boxes, Network, Route, Shield, Users } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 import clsx from 'clsx';
@@ -26,11 +25,12 @@ import { useI18n } from '../lib/i18n';
 import { PageTitle } from './OverviewPage';
 import { buildTopologyGraph, type TopologyEdgeData, type TopologyNodeData } from './topologyGraph';
 
-const elk = new ELK();
 const nodeWidth = 270;
 const nodeHeight = 128;
 const clientNodeHeight = 116;
 const nodeTypes = { topologyNode: TopologyNode };
+let layoutRequestId = 0;
+let layoutWorker: Worker | undefined;
 
 export default function TopologyPage() {
   const { text } = useI18n();
@@ -147,32 +147,59 @@ function TopologyMetric({ icon: Icon, tone, label, value, sub }: { icon: typeof 
 
 async function layoutGraph(nodes: Array<Node<TopologyNodeData>>, edges: Array<Edge<TopologyEdgeData>>) {
   if (nodes.length === 0) return { nodes, edges };
-  const elkGraph = {
-    id: 'root',
-    layoutOptions: {
-      'elk.algorithm': 'layered',
-      'elk.direction': 'RIGHT',
-      'elk.spacing.nodeNode': '42',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '86',
-      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-    },
-    children: nodes.map((node) => ({
-      id: node.id,
-      width: nodeWidth,
-      height: node.data.kind === 'client' ? clientNodeHeight : nodeHeight,
-    })),
-    edges: edges.map((edge) => ({
-      id: edge.id,
-      sources: [edge.source],
-      targets: [edge.target],
-    })),
-  };
-  const layout = await elk.layout(elkGraph);
-  const positions = new Map((layout.children || []).map((node) => [node.id, { x: node.x || 0, y: node.y || 0 }]));
+  const layoutNodes = nodes.map((node) => ({
+    id: node.id,
+    width: nodeWidth,
+    height: node.data.kind === 'client' ? clientNodeHeight : nodeHeight,
+  }));
+  const layoutEdges = edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+  }));
+  const positions = await layoutInWorker(layoutNodes, layoutEdges).catch((error) => {
+    console.warn('Topology layout worker failed; using initial graph positions.', error);
+    return new Map<string, { x: number; y: number }>();
+  });
   return {
     nodes: nodes.map((node) => ({ ...node, position: positions.get(node.id) || node.position })),
     edges,
   };
+}
+
+type LayoutNode = { id: string; width: number; height: number };
+type LayoutEdge = { id: string; source: string; target: string };
+
+function layoutInWorker(nodes: LayoutNode[], edges: LayoutEdge[]) {
+  if (typeof Worker === 'undefined') return Promise.reject(new Error('worker_unavailable'));
+  if (!layoutWorker) {
+    layoutWorker = new Worker(new URL('./topologyLayout.worker.ts', import.meta.url), { type: 'module' });
+  }
+  const requestId = ++layoutRequestId;
+  return new Promise<Map<string, { x: number; y: number }>>((resolve, reject) => {
+    const cleanup = () => {
+      layoutWorker?.removeEventListener('message', onMessage);
+      layoutWorker?.removeEventListener('error', onError);
+    };
+    const onMessage = (event: MessageEvent<{ id: number; positions?: Record<string, { x: number; y: number }>; error?: string }>) => {
+      if (event.data.id !== requestId) return;
+      cleanup();
+      if (event.data.error) {
+        reject(new Error(event.data.error));
+        return;
+      }
+      resolve(new Map(Object.entries(event.data.positions || {})));
+    };
+    const onError = (event: ErrorEvent) => {
+      cleanup();
+      layoutWorker?.terminate();
+      layoutWorker = undefined;
+      reject(event.error || new Error(event.message));
+    };
+    layoutWorker?.addEventListener('message', onMessage);
+    layoutWorker?.addEventListener('error', onError);
+    layoutWorker?.postMessage({ id: requestId, nodes, edges });
+  });
 }
 
 function withEdgeDefaults(edge: Edge<TopologyEdgeData>): Edge<TopologyEdgeData> {

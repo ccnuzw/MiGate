@@ -10,6 +10,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -37,6 +38,15 @@ var supportedOutboundProtocols = map[string]bool{
 }
 
 var tableIdentifierForMigration = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+const sqliteVariableChunkSize = 900
+
+func placeholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.TrimRight(strings.Repeat("?,", count), ",")
+}
 
 type RoutingRule struct {
 	ID          int64  `json:"id"`
@@ -80,7 +90,9 @@ type UpdateRoutingRuleParams struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db                        *sql.DB
+	trafficCleanupMu          sync.Mutex
+	nextTrafficSamplesCleanup time.Time
 }
 
 type Inbound struct {
@@ -488,6 +500,7 @@ CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(exp
 CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked, expires_at, id);
 CREATE INDEX IF NOT EXISTS idx_traffic_states_scope ON traffic_states(scope_type, scope_key);
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_lookup ON traffic_samples(scope_type, scope_key, sampled_at);
+CREATE INDEX IF NOT EXISTS idx_traffic_samples_sampled_at ON traffic_samples(sampled_at);
 `)
 	if err != nil {
 		return err
@@ -2335,7 +2348,8 @@ func (s *Store) ApplyTrafficRawStats(ctx context.Context, stats []TrafficRawStat
 	if observedAt.IsZero() {
 		observedAt = time.Now().UTC()
 	}
-	if len(stats) == 0 {
+	normalizedStats := normalizeTrafficRawStats(stats)
+	if len(normalizedStats) == 0 {
 		return nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2343,42 +2357,34 @@ func (s *Store) ApplyTrafficRawStats(ctx context.Context, stats []TrafficRawStat
 		return err
 	}
 	defer tx.Rollback()
-	seenClients := map[string]struct{}{}
-	for _, raw := range stats {
-		engine := normalizeTrafficToken(raw.Engine)
-		scopeType := normalizeTrafficToken(raw.ScopeType)
-		scopeKey := strings.TrimSpace(raw.ScopeKey)
-		if engine == "" || scopeType == "" || scopeKey == "" {
-			continue
-		}
-		status := strings.TrimSpace(raw.Status)
-		if status == "" {
-			status = "ok"
-		}
-		var current TrafficState
-		row := tx.QueryRowContext(ctx, `SELECT total_up, total_down, last_raw_up, last_raw_down, last_seen_at, status, message FROM traffic_states WHERE engine=? AND scope_type=? AND scope_key=?`, engine, scopeType, scopeKey)
-		var lastSeen string
-		err := row.Scan(&current.TotalUp, &current.TotalDown, &current.LastRawUp, &current.LastRawDown, &lastSeen, &current.Status, &current.Message)
-		if err != nil && err != sql.ErrNoRows {
-			return err
-		}
-		if err == sql.ErrNoRows && scopeType == "client" {
-			if legacyUp, legacyDown, ok, lookupErr := lookupClientLegacyTraffic(ctx, tx, scopeKey); lookupErr != nil {
-				return lookupErr
-			} else if ok {
-				current.TotalUp = legacyUp
-				current.TotalDown = legacyDown
+	currentStates, err := prefetchTrafficStates(ctx, tx, normalizedStats)
+	if err != nil {
+		return err
+	}
+	clientInfo, err := prefetchTrafficClientInfo(ctx, tx, normalizedStats)
+	if err != nil {
+		return err
+	}
+	seenClients := map[string]trafficClientInfo{}
+	seenAt := observedAt.UTC().Format(time.RFC3339Nano)
+	for _, raw := range normalizedStats {
+		stateKey := trafficStateKey(raw.Engine, raw.ScopeType, raw.ScopeKey)
+		current, hasCurrent := currentStates[stateKey]
+		if !hasCurrent && raw.ScopeType == "client" {
+			if info, ok := clientInfo[raw.ScopeKey]; ok {
+				current.TotalUp = info.Up
+				current.TotalDown = info.Down
 			}
 		}
 		var elapsed float64
-		if err == nil && lastSeen != "" {
-			if previous, parseErr := time.Parse(time.RFC3339Nano, lastSeen); parseErr == nil && observedAt.After(previous) {
+		if hasCurrent && current.LastSeenAt != "" {
+			if previous, parseErr := time.Parse(time.RFC3339Nano, current.LastSeenAt); parseErr == nil && observedAt.After(previous) {
 				elapsed = observedAt.Sub(previous).Seconds()
 			}
 		}
 		deltaUp := int64(0)
 		deltaDown := int64(0)
-		if err == sql.ErrNoRows || isResetWithoutRawBaseline(current) {
+		if !hasCurrent || isResetWithoutRawBaseline(current) {
 			deltaUp = 0
 			deltaDown = 0
 		} else {
@@ -2397,7 +2403,6 @@ func (s *Store) ApplyTrafficRawStats(ctx context.Context, stats []TrafficRawStat
 			rateUp = float64(deltaUp) / elapsed
 			rateDown = float64(deltaDown) / elapsed
 		}
-		seenAt := observedAt.UTC().Format(time.RFC3339Nano)
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2411,43 +2416,209 @@ ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
   last_seen_at=excluded.last_seen_at,
   status=excluded.status,
   message=excluded.message
-`, engine, scopeType, scopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, rateUp, rateDown, seenAt, status, strings.TrimSpace(raw.Message)); err != nil {
+`, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, rateUp, rateDown, seenAt, raw.Status, strings.TrimSpace(raw.Message)); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			seenAt, engine, scopeType, scopeKey, totalUp, totalDown, rateUp, rateDown, status); err != nil {
+			seenAt, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, rateUp, rateDown, raw.Status); err != nil {
 			return err
 		}
-		if scopeType == "client" {
-			expectedEngine, ok, lookupErr := lookupClientExpectedTrafficEngine(ctx, tx, scopeKey)
-			if lookupErr != nil {
-				return lookupErr
-			}
-			if ok && expectedEngine == engine {
-				seenClients[engine+"\x00"+scopeKey] = struct{}{}
+		current.Engine = raw.Engine
+		current.ScopeType = raw.ScopeType
+		current.ScopeKey = raw.ScopeKey
+		current.TotalUp = totalUp
+		current.TotalDown = totalDown
+		current.LastRawUp = raw.RawUp
+		current.LastRawDown = raw.RawDown
+		current.RateUp = rateUp
+		current.RateDown = rateDown
+		current.LastSeenAt = seenAt
+		current.Status = raw.Status
+		current.Message = strings.TrimSpace(raw.Message)
+		currentStates[stateKey] = current
+		if raw.ScopeType == "client" {
+			if info, ok := clientInfo[raw.ScopeKey]; ok && info.ExpectedEngine == raw.Engine {
+				info.Up = totalUp
+				info.Down = totalDown
+				seenClients[raw.ScopeKey] = info
 			}
 		}
 	}
-	for clientKey := range seenClients {
-		parts := strings.SplitN(clientKey, "\x00", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		engine := parts[0]
-		statsKey := parts[1]
+	for statsKey, info := range seenClients {
 		if _, err := tx.ExecContext(ctx, `
 UPDATE clients
-SET up = COALESCE((SELECT total_up FROM traffic_states WHERE engine=? AND scope_type='client' AND scope_key=clients.stats_key LIMIT 1), up),
-    down = COALESCE((SELECT total_down FROM traffic_states WHERE engine=? AND scope_type='client' AND scope_key=clients.stats_key LIMIT 1), down)
-WHERE stats_key = ?`, engine, engine, statsKey); err != nil {
+SET up = ?, down = ?
+WHERE stats_key = ?`, info.Up, info.Down, statsKey); err != nil {
 			return err
 		}
 	}
-	cutoff := observedAt.Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM traffic_samples WHERE sampled_at < ?`, cutoff); err != nil {
+	rollbackCleanup, err := s.cleanupTrafficSamples(ctx, tx, observedAt)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		rollbackCleanup()
+		return err
+	}
+	return nil
+}
+
+func normalizeTrafficRawStats(stats []TrafficRawStat) []TrafficRawStat {
+	normalized := make([]TrafficRawStat, 0, len(stats))
+	for _, raw := range stats {
+		raw.Engine = normalizeTrafficEngine(raw.Engine)
+		raw.ScopeType = normalizeTrafficToken(raw.ScopeType)
+		raw.ScopeKey = strings.TrimSpace(raw.ScopeKey)
+		raw.Status = strings.TrimSpace(raw.Status)
+		raw.Message = strings.TrimSpace(raw.Message)
+		if raw.Status == "" {
+			raw.Status = "ok"
+		}
+		if raw.Engine == "" || raw.ScopeType == "" || raw.ScopeKey == "" {
+			continue
+		}
+		normalized = append(normalized, raw)
+	}
+	return normalized
+}
+
+func trafficStateKey(engine, scopeType, scopeKey string) string {
+	return engine + "\x00" + scopeType + "\x00" + scopeKey
+}
+
+func prefetchTrafficStates(ctx context.Context, tx *sql.Tx, stats []TrafficRawStat) (map[string]TrafficState, error) {
+	keys := make([]string, 0, len(stats))
+	seen := map[string]struct{}{}
+	for _, raw := range stats {
+		key := trafficStateKey(raw.Engine, raw.ScopeType, raw.ScopeKey)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	states := map[string]TrafficState{}
+	for start := 0; start < len(keys); start += sqliteVariableChunkSize / 3 {
+		end := start + sqliteVariableChunkSize/3
+		if end > len(keys) {
+			end = len(keys)
+		}
+		conditions := make([]string, 0, end-start)
+		args := make([]interface{}, 0, (end-start)*3)
+		for _, key := range keys[start:end] {
+			parts := strings.SplitN(key, "\x00", 3)
+			conditions = append(conditions, "(engine=? AND scope_type=? AND scope_key=?)")
+			args = append(args, parts[0], parts[1], parts[2])
+		}
+		rows, err := tx.QueryContext(ctx, `
+SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message
+FROM traffic_states
+WHERE `+strings.Join(conditions, " OR "), args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var state TrafficState
+			if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.RateUp, &state.RateDown, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			state.Engine = normalizeTrafficEngine(state.Engine)
+			state.ScopeType = normalizeTrafficToken(state.ScopeType)
+			state.ScopeKey = strings.TrimSpace(state.ScopeKey)
+			states[trafficStateKey(state.Engine, state.ScopeType, state.ScopeKey)] = state
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return states, nil
+}
+
+type trafficClientInfo struct {
+	ExpectedEngine string
+	Up             int64
+	Down           int64
+}
+
+func prefetchTrafficClientInfo(ctx context.Context, tx *sql.Tx, stats []TrafficRawStat) (map[string]trafficClientInfo, error) {
+	keys := make([]string, 0, len(stats))
+	seen := map[string]struct{}{}
+	for _, raw := range stats {
+		if raw.ScopeType != "client" {
+			continue
+		}
+		if _, ok := seen[raw.ScopeKey]; ok {
+			continue
+		}
+		seen[raw.ScopeKey] = struct{}{}
+		keys = append(keys, raw.ScopeKey)
+	}
+	info := map[string]trafficClientInfo{}
+	for start := 0; start < len(keys); start += sqliteVariableChunkSize {
+		end := start + sqliteVariableChunkSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		placeholders := placeholders(len(keys[start:end]))
+		args := make([]interface{}, 0, end-start)
+		for _, key := range keys[start:end] {
+			args = append(args, key)
+		}
+		rows, err := tx.QueryContext(ctx, `
+SELECT c.stats_key, c.up, c.down, i.protocol
+FROM clients c
+JOIN inbounds i ON i.id = c.inbound_id
+WHERE c.stats_key IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var statsKey string
+			var protocol string
+			var item trafficClientInfo
+			if err := rows.Scan(&statsKey, &item.Up, &item.Down, &protocol); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			item.ExpectedEngine = expectedTrafficEngineForProtocol(protocol)
+			info[statsKey] = item
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return info, nil
+}
+
+const trafficSamplesCleanupInterval = time.Hour
+
+func (s *Store) cleanupTrafficSamples(ctx context.Context, tx *sql.Tx, observedAt time.Time) (func(), error) {
+	s.trafficCleanupMu.Lock()
+	if !s.nextTrafficSamplesCleanup.IsZero() && observedAt.Before(s.nextTrafficSamplesCleanup) {
+		s.trafficCleanupMu.Unlock()
+		return func() {}, nil
+	}
+	previousCleanup := s.nextTrafficSamplesCleanup
+	nextCleanup := observedAt.Add(trafficSamplesCleanupInterval)
+	s.nextTrafficSamplesCleanup = nextCleanup
+	s.trafficCleanupMu.Unlock()
+	cutoff := observedAt.Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM traffic_samples WHERE sampled_at < ?`, cutoff); err != nil {
+		s.trafficCleanupMu.Lock()
+		if s.nextTrafficSamplesCleanup.Equal(nextCleanup) {
+			s.nextTrafficSamplesCleanup = previousCleanup
+		}
+		s.trafficCleanupMu.Unlock()
+		return func() {}, err
+	}
+	return func() {
+		s.trafficCleanupMu.Lock()
+		if s.nextTrafficSamplesCleanup.Equal(nextCleanup) {
+			s.nextTrafficSamplesCleanup = previousCleanup
+		}
+		s.trafficCleanupMu.Unlock()
+	}, nil
 }
 
 func isResetWithoutRawBaseline(state TrafficState) bool {
