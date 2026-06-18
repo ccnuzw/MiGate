@@ -43,7 +43,6 @@ type RoutingSource = {
 type TopologyLookup = {
   inboundById: Map<number, Inbound>;
   inboundByTag: Map<string, Inbound>;
-  outboundByTag: Map<string, Outbound>;
   outboundById: Map<number, Outbound>;
   clientsByInboundId: Map<number, Map<number, Client>>;
   clientInboundById: Map<number, Inbound>;
@@ -60,9 +59,9 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
   const nodes: Array<Node<TopologyNodeData>> = [];
   const edges: Array<Edge<TopologyEdgeData>> = [];
   const lookup = buildTopologyLookup(inbounds, outbounds);
-  const missingInboundTags = new Set<string>();
+  const missingInboundTargets = new Map<string, { title: string; subtitle?: string }>();
   const missingClientRules: Array<{ rule: RoutingRule; source: RoutingSource }> = [];
-  const missingOutboundTags = new Set<string>();
+  const missingOutboundTargets = new Map<string, { subtitle?: string }>();
   const routedInboundIds = new Set<number>();
   const explicitlyRoutedClientIds = new Set<number>();
 
@@ -89,20 +88,28 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
 
   const outboundCount = outbounds.length;
   routingRules.forEach((rule) => {
-    const inboundTag = normalizedInboundTag(rule);
-    const outbound = resolveRuleOutbound(rule, lookup.outboundById, lookup.outboundByTag);
-    const targetTag = outbound?.tag || rule.outbound_tag;
-    const targetId = outboundNodeId(targetTag);
+    const outbound = resolveRuleOutbound(rule, lookup.outboundById);
     const missingTarget = !outbound;
+    const targetTag = outbound?.tag || missingOutboundTargetKey(rule);
+    const targetId = outboundNodeId(targetTag);
     const invalidTarget = !missingTarget && sourcesForCoreCheck(rule, inbounds, lookup).some((source) => {
       const inbound = source.inboundId == null ? undefined : lookup.inboundById.get(source.inboundId);
       return inbound ? !outboundSupportsCore(outbound, inboundCore(inbound)) : false;
     });
     if (missingTarget) {
-      missingOutboundTags.add(rule.outbound_tag);
+      missingOutboundTargets.set(targetTag, {
+        subtitle: rule.outbound_id ? String(rule.outbound_tag || '').trim() || undefined : '缺少 outbound_id',
+      });
     }
-    if (inboundTag && !lookup.inboundByTag.has(inboundTag)) {
-      missingInboundTags.add(inboundTag);
+    const inboundTag = normalizedInboundTag(rule);
+    const inboundID = Number(rule.inbound_id || 0);
+    if (inboundID > 0 && !lookup.inboundById.has(inboundID)) {
+      missingInboundTargets.set(`id:${inboundID}`, {
+        title: `id:${inboundID}`,
+        subtitle: String(rule.inbound_tag || '').trim() || undefined,
+      });
+    } else if (inboundID <= 0 && inboundTag && !lookup.inboundByTag.has(inboundTag)) {
+      missingInboundTargets.set(inboundTag, { title: inboundTag });
     }
 
     const sources = routingSourcesForRule(rule, inbounds, lookup);
@@ -119,11 +126,11 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
       if (isActiveRoutingSource(rule, source, missingTarget, outboundEnabled, sourceInvalidTarget) && source.inboundId != null && source.clientId == null) {
         routedInboundIds.add(source.inboundId);
       }
-      edges.push(buildRoutingEdge(rule, source, targetId, index, missingTarget, outboundEnabled, Boolean(inboundTag), sourceInvalidTarget));
+      edges.push(buildRoutingEdge(rule, source, targetId, index, missingTarget, outboundEnabled, ruleHasSpecificInbound(rule), sourceInvalidTarget));
     });
   });
 
-  const directOutbound = lookup.outboundByTag.get('direct');
+  const directOutbound = outbounds.find((outbound) => outbound.tag === 'direct');
   if (directOutbound) {
     inbounds
       .filter((inbound) => !routedInboundIds.has(inbound.id))
@@ -137,16 +144,16 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
       });
   }
 
-  Array.from(missingInboundTags).sort().forEach((tag, index) => {
-    nodes.push(buildMissingInboundNode(tag, missingInboundStartY + index * rowGap));
+  Array.from(missingInboundTargets.entries()).sort(([left], [right]) => left.localeCompare(right)).forEach(([key, target], index) => {
+    nodes.push(buildMissingInboundNode(key, target.title, missingInboundStartY + index * rowGap, target.subtitle));
   });
 
   missingClientRules.forEach(({ rule, source }, index) => {
-    nodes.push(buildMissingClientNode(rule, source, missingInboundStartY + (missingInboundTags.size + index) * rowGap));
+    nodes.push(buildMissingClientNode(rule, source, missingInboundStartY + (missingInboundTargets.size + index) * rowGap));
   });
 
-  Array.from(missingOutboundTags).sort().forEach((tag, index) => {
-    nodes.push(buildMissingOutboundNode(tag, (outboundCount + index) * outboundGap));
+  Array.from(missingOutboundTargets.entries()).sort(([left], [right]) => left.localeCompare(right)).forEach(([tag, target], index) => {
+    nodes.push(buildMissingOutboundNode(tag, (outboundCount + index) * outboundGap, target.subtitle));
   });
 
   return { nodes, edges };
@@ -179,32 +186,50 @@ function buildTopologyLookup(inbounds: Inbound[], outbounds: Outbound[]): Topolo
   return {
     inboundById,
     inboundByTag: buildInboundTagLookup(inbounds),
-    outboundByTag: buildOutboundTagLookup(outbounds),
     outboundById: buildOutboundIdLookup(outbounds),
     clientsByInboundId,
     clientInboundById,
   };
 }
 
-function buildOutboundTagLookup(outbounds: Outbound[]): Map<string, Outbound> {
-  return new Map(outbounds.filter((item) => item.tag).map((item) => [item.tag, item]));
-}
-
 function buildOutboundIdLookup(outbounds: Outbound[]): Map<number, Outbound> {
   return new Map(outbounds.filter((item) => item.id).map((item) => [item.id, item]));
 }
 
-function resolveRuleOutbound(rule: Pick<RoutingRule, 'outbound_id' | 'outbound_tag'>, outboundById: Map<number, Outbound>, outboundByTag: Map<string, Outbound>) {
+function resolveRuleOutbound(rule: Pick<RoutingRule, 'outbound_id'>, outboundById: Map<number, Outbound>) {
   const outboundID = Number(rule.outbound_id || 0);
   if (outboundID > 0) return outboundById.get(outboundID);
-  return outboundByTag.get(rule.outbound_tag);
+  return undefined;
+}
+
+function missingOutboundTargetKey(rule: Pick<RoutingRule, 'outbound_id' | 'outbound_tag'>) {
+  const outboundID = Number(rule.outbound_id || 0);
+  if (outboundID > 0) return `id:${outboundID}`;
+  return 'missing-outbound-id';
 }
 
 function normalizedInboundTag(rule: Pick<RoutingRule, 'inbound_tag'>) {
   return String(rule.inbound_tag || '').trim();
 }
 
-function inboundSourcesForRule(inboundTag: string, inbounds: Inbound[], lookup: TopologyLookup): RoutingSource[] {
+function inboundSourcesForRule(rule: Pick<RoutingRule, 'inbound_id' | 'inbound_tag'>, inbounds: Inbound[], lookup: TopologyLookup): RoutingSource[] {
+  const inboundID = Number(rule.inbound_id || 0);
+  if (inboundID > 0) {
+    const inbound = lookup.inboundById.get(inboundID);
+    return inbound
+      ? [{
+          nodeId: inboundNodeId(inbound),
+          edgeKey: String(inbound.id),
+          enabled: inbound.enabled !== false,
+          inboundId: inbound.id,
+        }]
+      : [{
+          nodeId: missingInboundNodeId(`id:${inboundID}`),
+          edgeKey: `missing-id-${inboundID}`,
+          enabled: false,
+        }];
+  }
+  const inboundTag = normalizedInboundTag(rule);
   if (!inboundTag) {
     return inbounds.map((inbound) => ({
       nodeId: inboundNodeId(inbound),
@@ -230,7 +255,29 @@ function inboundSourcesForRule(inboundTag: string, inbounds: Inbound[], lookup: 
 
 function routingSourcesForRule(rule: RoutingRule, inbounds: Inbound[], lookup: TopologyLookup): RoutingSource[] {
   const clientID = Number(rule.client_id || 0);
-  if (!clientID) return inboundSourcesForRule(normalizedInboundTag(rule), inbounds, lookup);
+  if (!clientID) return inboundSourcesForRule(rule, inbounds, lookup);
+  const inboundID = Number(rule.inbound_id || 0);
+  if (inboundID > 0) {
+    const inbound = lookup.inboundById.get(inboundID);
+    const client = inbound ? lookup.clientsByInboundId.get(inbound.id)?.get(clientID) : undefined;
+    if (inbound && client) {
+      return [{
+        nodeId: clientNodeId(client),
+        edgeKey: `client-${client.id}`,
+        enabled: inbound.enabled !== false && client.enabled !== false,
+        inboundId: inbound.id,
+        clientId: client.id,
+      }];
+    }
+    return [{
+      nodeId: missingClientNodeId(rule),
+      edgeKey: `missing-client-${clientID}`,
+      enabled: false,
+      inboundId: inbound?.id,
+      clientId: clientID,
+      missingClient: true,
+    }];
+  }
   const inboundTag = normalizedInboundTag(rule);
   if (!inboundTag) {
     const inbound = lookup.clientInboundById.get(clientID);
@@ -266,6 +313,10 @@ function routingSourcesForRule(rule: RoutingRule, inbounds: Inbound[], lookup: T
     clientId: clientID,
     missingClient: true,
   }];
+}
+
+function ruleHasSpecificInbound(rule: Pick<RoutingRule, 'inbound_id' | 'inbound_tag'>) {
+  return Number(rule.inbound_id || 0) > 0 || normalizedInboundTag(rule) !== '';
 }
 
 function buildInboundNode(inbound: Inbound, y: number): Node<TopologyNodeData> {
@@ -330,15 +381,15 @@ function buildOutboundNode(outbound: Outbound, y: number): Node<TopologyNodeData
   };
 }
 
-function buildMissingInboundNode(tag: string, y: number): Node<TopologyNodeData> {
+function buildMissingInboundNode(key: string, title: string, y: number, subtitle?: string): Node<TopologyNodeData> {
   return {
-    id: missingInboundNodeId(tag),
+    id: missingInboundNodeId(key),
     type: 'topologyNode',
     position: { x: inboundX, y },
     data: {
       kind: 'missing-inbound',
-      title: tag || '未知入站',
-      subtitle: '路由引用的入站不存在',
+      title: title || '未知入站',
+      subtitle: subtitle ? `路由引用的入站不存在 · ${subtitle}` : '路由引用的入站不存在',
       enabled: false,
       missing: true,
       meta: [
@@ -373,7 +424,7 @@ function buildMissingClientNode(rule: RoutingRule, source: RoutingSource, y: num
   };
 }
 
-function buildMissingOutboundNode(tag: string, y: number): Node<TopologyNodeData> {
+function buildMissingOutboundNode(tag: string, y: number, subtitle?: string): Node<TopologyNodeData> {
   return {
     id: outboundNodeId(tag),
     type: 'topologyNode',
@@ -381,7 +432,7 @@ function buildMissingOutboundNode(tag: string, y: number): Node<TopologyNodeData
     data: {
       kind: 'missing-outbound',
       title: tag || '未知出站',
-      subtitle: '路由引用的出站不存在',
+      subtitle: subtitle ? `路由引用的出站不存在 · ${subtitle}` : '路由引用的出站不存在',
       enabled: false,
       missing: true,
       meta: [

@@ -346,6 +346,24 @@ func TestBuildConfigWithOutboundsSkipsStaleInboundTagBeforeValidatingOutbound(t 
 	}
 }
 
+func TestBuildConfigWithOutboundsTrimsInboundTagBeforeAliasLookup(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 2, Remark: "hy2", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 8443, Enabled: true,
+	}}, []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}}, []db.RoutingRule{
+		{ID: 98, InboundTag: " inbound-2-hysteria2 ", OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true},
+		{ID: 99, InboundTag: " missing-inbound ", OutboundID: 1, OutboundTag: "direct", Domain: "missing.example", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with padded inbound_tag: %v", err)
+	}
+	if cfg.Route == nil || len(cfg.Route.Rules) != 1 {
+		t.Fatalf("expected only padded known inbound_tag route, got %+v", cfg.Route)
+	}
+	if got := cfg.Route.Rules[0].Inbound; len(got) != 1 || got[0] != "hy2-inbound-2" {
+		t.Fatalf("expected trimmed inbound tag restriction, got %+v", got)
+	}
+}
+
 func TestBuildConfigWithOutboundsReportsMissingOutboundProfileForApplicableRule(t *testing.T) {
 	_, err := BuildConfigWithOutbounds([]db.Inbound{{
 		ID: 2, Remark: "hy2", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 8443, Enabled: true,
@@ -354,6 +372,30 @@ func TestBuildConfigWithOutboundsReportsMissingOutboundProfileForApplicableRule(
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing outbound profile") {
 		t.Fatalf("expected clear missing outbound error, got %v", err)
+	}
+}
+
+func TestBuildConfigWithOutboundsUsesInboundIDBeforeTagSnapshot(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds([]db.Inbound{
+		{ID: 2, Remark: "hy2-a", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 8443, Enabled: true},
+		{ID: 3, Remark: "hy2-b", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 9443, Enabled: true},
+		{ID: 4, Remark: "hy2-disabled", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 10443, Enabled: false},
+	}, []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}}, []db.RoutingRule{
+		{ID: 95, InboundID: 3, InboundTag: "hy2-a", OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true},
+		{ID: 96, InboundID: 2, InboundTag: "", OutboundID: 1, OutboundTag: "direct", Domain: "example.org", Enabled: true},
+		{ID: 97, InboundID: 4, OutboundID: 1, OutboundTag: "direct", Domain: "disabled.example", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with inbound_id routing rules: %v", err)
+	}
+	if cfg.Route == nil || len(cfg.Route.Rules) != 2 {
+		t.Fatalf("expected two route rules, got %+v", cfg.Route)
+	}
+	if got := cfg.Route.Rules[0].Inbound; len(got) != 1 || got[0] != "hy2-inbound-3" {
+		t.Fatalf("expected inbound_id to override stale inbound_tag, got %+v", got)
+	}
+	if got := cfg.Route.Rules[1].Inbound; len(got) != 1 || got[0] != "hy2-inbound-2" {
+		t.Fatalf("expected inbound_id to work without inbound_tag snapshot, got %+v", got)
 	}
 }
 

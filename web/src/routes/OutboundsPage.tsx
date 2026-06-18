@@ -11,6 +11,7 @@ import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, Stat
 import { coreLabel, outboundSupportedCores, outboundSupportLevel, outboundSupportLevelLabel } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
 import { showCoreApplyWarning } from '../lib/coreApply';
+import { refreshTopologyDependencies } from '../lib/queryInvalidation';
 import { PageTitle } from './OverviewPage';
 
 const schema = z.object({
@@ -287,10 +288,7 @@ export function outboundFormValues(outbound: Outbound | null): InputValues {
 }
 
 function refreshOutboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.invalidateQueries({ queryKey: ['outbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
-  queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
-  queryClient.invalidateQueries({ queryKey: ['inbounds'] });
+  refreshTopologyDependencies(queryClient);
 }
 
 function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {

@@ -207,6 +207,25 @@ func TestBuildConfigSkipsStaleInboundTagBeforeValidatingOutbound(t *testing.T) {
 	}
 }
 
+func TestBuildConfigTrimsInboundTagBeforeAliasLookup(t *testing.T) {
+	config, err := xray.BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 1, Remark: "edge", Protocol: "vless", Core: db.CoreXray, Port: 443, Enabled: true,
+	}}, []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}}, []db.RoutingRule{
+		{ID: 95, InboundTag: " inbound-1-vless ", OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true},
+		{ID: 96, InboundTag: " missing-inbound ", OutboundID: 1, OutboundTag: "direct", Domain: "missing.example", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with padded inbound_tag: %v", err)
+	}
+	userRules := userRoutingRulesForTest(config.Routing.Rules)
+	if len(userRules) != 1 {
+		t.Fatalf("expected only padded known inbound_tag rule, got %+v", userRules)
+	}
+	if got := userRules[0].InboundTag; len(got) != 1 || got[0] != "inbound-1-vless" {
+		t.Fatalf("expected trimmed inbound tag restriction, got %+v", got)
+	}
+}
+
 func TestBuildConfigReportsMissingOutboundProfileForApplicableRule(t *testing.T) {
 	_, err := xray.BuildConfigWithOutbounds([]db.Inbound{{
 		ID: 1, Remark: "edge", Protocol: "vless", Core: db.CoreXray, Port: 443, Enabled: true,
@@ -274,6 +293,34 @@ func TestBuildConfigWithRoutingRulesUsesOutboundIDAfterTagRename(t *testing.T) {
 	}
 	if got := userRules[0].OutboundTag; got != "xray-out-42" {
 		t.Fatalf("expected generated tag to use outbound_id, got %s", got)
+	}
+}
+
+func TestBuildConfigWithRoutingRulesUsesInboundIDBeforeTagSnapshot(t *testing.T) {
+	inbounds := []db.Inbound{
+		{ID: 7, Remark: "edge-a", Protocol: "vless", Core: db.CoreXray, Port: 10443, Enabled: true},
+		{ID: 8, Remark: "edge-b", Protocol: "vless", Core: db.CoreXray, Port: 11443, Enabled: true},
+		{ID: 9, Remark: "disabled", Protocol: "vless", Core: db.CoreXray, Port: 12443, Enabled: false},
+	}
+	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+		{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 50, InboundID: 8, InboundTag: "edge-a", OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true},
+		{ID: 51, InboundID: 7, InboundTag: "", OutboundID: 1, OutboundTag: "direct", Domain: "example.org", Enabled: true},
+		{ID: 52, InboundID: 9, OutboundID: 1, OutboundTag: "direct", Domain: "disabled.example", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with inbound_id routing rules: %v", err)
+	}
+	userRules := userRoutingRulesForTest(config.Routing.Rules)
+	if len(userRules) != 2 {
+		t.Fatalf("expected two user routing rules, got %+v", userRules)
+	}
+	if got := userRules[0].InboundTag; len(got) != 1 || got[0] != "inbound-8-vless" {
+		t.Fatalf("expected inbound_id to override stale inbound_tag, got %+v", got)
+	}
+	if got := userRules[1].InboundTag; len(got) != 1 || got[0] != "inbound-7-vless" {
+		t.Fatalf("expected inbound_id to work without inbound_tag snapshot, got %+v", got)
 	}
 }
 

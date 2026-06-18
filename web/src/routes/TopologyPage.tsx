@@ -1,6 +1,6 @@
 import '@xyflow/react/dist/style.css';
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Background,
   BackgroundVariant,
@@ -22,6 +22,7 @@ import clsx from 'clsx';
 import { api } from '../api/endpoints';
 import { Card, EmptyState, LoadingBlock, StatusBadge } from '../components/ui';
 import { useI18n } from '../lib/i18n';
+import { refetchTopologyDependencies } from '../lib/queryInvalidation';
 import { PageTitle } from './OverviewPage';
 import { buildTopologyGraph, type TopologyEdgeData, type TopologyNodeData } from './topologyGraph';
 
@@ -36,6 +37,7 @@ let layoutWorker: Worker | undefined;
 
 export default function TopologyPage() {
   const { text } = useI18n();
+  const queryClient = useQueryClient();
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, staleTime: 30_000 });
   const outbounds = useQuery({ queryKey: ['outbounds'], queryFn: api.outbounds, staleTime: 30_000 });
   const routingRules = useQuery({ queryKey: ['routing-rules'], queryFn: api.routingRules, staleTime: 30_000 });
@@ -49,6 +51,10 @@ export default function TopologyPage() {
   const hasData = (inbounds.data?.length || 0) > 0 || (outbounds.data?.length || 0) > 0 || (routingRules.data?.length || 0) > 0;
   const stats = useMemo(() => topologyStats(graph.nodes, graph.edges), [graph]);
   const styledEdges = useMemo(() => edges.map(withEdgeDefaults), [edges]);
+
+  useEffect(() => {
+    void refetchTopologyDependencies(queryClient);
+  }, [queryClient]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,7 +81,7 @@ export default function TopologyPage() {
       </div>
       <Card className="topology-legend">
         <div className="topology-legend-item"><span className="legend-line legend-line-real" /> {text('实线路由：RoutingRule 入站/客户端 -> 出站')}</div>
-        <div className="topology-legend-item"><span className="legend-line legend-line-all" /> {text('全部入站：规则未指定 inbound_tag，展开到所有入站')}</div>
+        <div className="topology-legend-item"><span className="legend-line legend-line-all" /> {text('全部入站：规则未指定 inbound_id，展开到所有入站')}</div>
         <div className="topology-legend-item"><span className="legend-line legend-line-default" /> {text('默认出站：未命中启用路由时兜底到 direct，不是真实 RoutingRule')}</div>
         <div className="topology-legend-item"><span className="legend-line legend-line-client" /> {text('虚线客户端：仅表示附属/继承入站，不是真实客户端路由规则')}</div>
       </Card>

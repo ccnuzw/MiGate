@@ -10,6 +10,7 @@ import { inboundCore } from '../lib/cores';
 import { formatBytes, randomUUID } from '../lib/format';
 import { useI18n } from '../lib/i18n';
 import { showCoreApplyWarning } from '../lib/coreApply';
+import { refreshTopologyDependencies } from '../lib/queryInvalidation';
 import { usePageVisible } from '../lib/visibility';
 import { PageTitle } from './OverviewPage';
 import type { ClientValues, InboundValues } from './InboundsPageForms';
@@ -647,10 +648,7 @@ function MetaItem({ label, value }: { label: string; value: string }) {
 }
 
 function refreshInboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.invalidateQueries({ queryKey: ['inbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
-  queryClient.invalidateQueries({ queryKey: ['outbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
+  refreshTopologyDependencies(queryClient);
 }
 
 const protocolBadgeClasses: Record<string, string> = {

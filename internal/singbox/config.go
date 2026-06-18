@@ -345,12 +345,14 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 		cfg.Outbounds = append(cfg.Outbounds, OutboundConfig{Type: "direct", Tag: "singbox-out-0"})
 	}
 	if len(routingRules) > 0 {
+		inboundTagsByID := map[int64]string{}
 		inboundAliases := map[string]string{}
 		for _, inbound := range inbounds {
 			if !inbound.Enabled || db.InboundCore(inbound) != db.CoreSingbox {
 				continue
 			}
 			tag := InboundStatsTag(inbound)
+			inboundTagsByID[inbound.ID] = tag
 			inboundAliases[db.GeneratedInboundTag(inbound)] = tag
 			if strings.TrimSpace(inbound.Remark) != "" {
 				inboundAliases[strings.TrimSpace(inbound.Remark)] = tag
@@ -375,8 +377,14 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 				continue
 			}
 			sr := RouteRule{Outbound: db.GeneratedOutboundTag(db.CoreSingbox, outbound.ID, rule.OutboundTag)}
-			if strings.TrimSpace(rule.InboundTag) != "" {
-				if actual, ok := inboundAliases[strings.TrimSpace(rule.InboundTag)]; ok {
+			if rule.InboundID > 0 {
+				if actual, ok := inboundTagsByID[rule.InboundID]; ok {
+					sr.Inbound = []string{actual}
+				} else {
+					continue
+				}
+			} else if inboundTag := strings.TrimSpace(rule.InboundTag); inboundTag != "" {
+				if actual, ok := inboundAliases[inboundTag]; ok {
 					sr.Inbound = []string{actual}
 				} else {
 					continue

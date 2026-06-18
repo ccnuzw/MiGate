@@ -15,29 +15,31 @@ type XrayStatusStore interface {
 }
 
 type clientTrafficSummary struct {
-	Up       int64   `json:"up"`
-	Down     int64   `json:"down"`
-	RateUp   float64 `json:"rate_up"`
-	RateDown float64 `json:"rate_down"`
-	Status   string  `json:"status"`
-	Message  string  `json:"message,omitempty"`
-	Engine   string  `json:"engine,omitempty"`
-	XrayUp   int64   `json:"xray_up,omitempty"`
-	XrayDown int64   `json:"xray_down,omitempty"`
-	Source   string  `json:"source,omitempty"`
-	Note     string  `json:"note,omitempty"`
+	Up            int64   `json:"up"`
+	Down          int64   `json:"down"`
+	RateUp        float64 `json:"rate_up"`
+	RateDown      float64 `json:"rate_down"`
+	Status        string  `json:"status"`
+	Message       string  `json:"message,omitempty"`
+	Engine        string  `json:"engine,omitempty"`
+	XrayUp        int64   `json:"xray_up,omitempty"`
+	XrayDown      int64   `json:"xray_down,omitempty"`
+	LastSampledAt string  `json:"last_sampled_at,omitempty"`
+	Source        string  `json:"source,omitempty"`
+	Note          string  `json:"note,omitempty"`
 }
 
 type inboundTrafficSummary struct {
-	Up       int64   `json:"up"`
-	Down     int64   `json:"down"`
-	Total    int64   `json:"total"`
-	RateUp   float64 `json:"rate_up"`
-	RateDown float64 `json:"rate_down"`
-	Status   string  `json:"status"`
-	Message  string  `json:"message,omitempty"`
-	Engine   string  `json:"engine,omitempty"`
-	Source   string  `json:"source,omitempty"`
+	Up            int64   `json:"up"`
+	Down          int64   `json:"down"`
+	Total         int64   `json:"total"`
+	RateUp        float64 `json:"rate_up"`
+	RateDown      float64 `json:"rate_down"`
+	Status        string  `json:"status"`
+	Message       string  `json:"message,omitempty"`
+	Engine        string  `json:"engine,omitempty"`
+	LastSampledAt string  `json:"last_sampled_at,omitempty"`
+	Source        string  `json:"source,omitempty"`
 }
 
 type trafficSeriesPoint struct {

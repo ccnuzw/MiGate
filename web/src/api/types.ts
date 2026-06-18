@@ -152,6 +152,7 @@ export interface Outbound {
 export interface RoutingRule {
   id: number;
   remark?: string;
+  inbound_id?: number;
   inbound_tag?: string;
   client_id?: number;
   client_email?: string;
@@ -339,32 +340,7 @@ export interface DashboardSummary {
     routing_rules: number;
     routing_enabled: number;
   };
-  traffic: {
-    up: number;
-    down: number;
-    total: number;
-    xray_up: number;
-    xray_down: number;
-    xray_realtime: number;
-  };
-  traffic_rates?: {
-    rate_up: number;
-    rate_down: number;
-    rate_total: number;
-  };
-  traffic_status?: {
-    overall: string;
-    engines?: Record<string, string>;
-  };
   protocols: Record<string, number>;
-  traffic_series?: Array<{
-    name: string;
-    time?: string;
-    up: number;
-    down: number;
-    rate_up?: number;
-    rate_down?: number;
-  }>;
   validation: {
     xray: ConfigValidation;
     singbox: ConfigValidation;
@@ -378,6 +354,7 @@ export interface TrafficCoverage {
   unsupported?: number;
   not_configured?: number;
   unavailable?: number;
+  stale?: number;
   waiting?: number;
   engines?: Record<string, string>;
 }
@@ -390,7 +367,10 @@ export interface TrafficSummary {
   rate_down: number;
   rate_total: number;
   status: TrafficCoverage;
-  last_updated_at: string;
+  engine?: string;
+  source?: string;
+  last_sampled_at?: string;
+  generated_at: string;
 }
 
 export interface TrafficInbound {
@@ -406,7 +386,8 @@ export interface TrafficInbound {
   status: string;
   message?: string;
   engine?: string;
-  last_updated_at: string;
+  source?: string;
+  last_sampled_at?: string;
 }
 
 export interface TrafficClient {
@@ -424,7 +405,8 @@ export interface TrafficClient {
   status: string;
   message?: string;
   engine?: string;
-  last_updated_at: string;
+  source?: string;
+  last_sampled_at?: string;
 }
 
 export interface TrafficSeriesPoint {

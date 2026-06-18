@@ -535,7 +535,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// POST: create rule
-	payload := `{"inbound_tag":"","outbound_tag":"blocked","domain":"geosite:malware","ip":"geoip:private","rule_set":"geosite-category-ads-all","protocol":"bittorrent"}`
+	payload := `{"inbound_tag":"","outbound_id":2,"outbound_tag":"blocked","domain":"geosite:malware","ip":"geoip:private","rule_set":"geosite-category-ads-all","protocol":"bittorrent"}`
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(payload)))
 	if createResp.Code != 201 {
@@ -563,7 +563,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// PUT: update rule
-	updatePayload := `{"inbound_tag":"socks-in","outbound_tag":"direct","domain":"geosite:netflix","ip":"8.8.8.8","rule_set":"geoip-cn","protocol":"dns","enabled":false}`
+	updatePayload := `{"inbound_tag":"socks-in","outbound_id":1,"outbound_tag":"direct","domain":"geosite:netflix","ip":"8.8.8.8","rule_set":"geoip-cn","protocol":"dns","enabled":false}`
 	updateResp := httptest.NewRecorder()
 	router.ServeHTTP(updateResp, httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/routing-rules/%d", id), strings.NewReader(updatePayload)))
 	if updateResp.Code != 200 {
@@ -603,7 +603,7 @@ func TestDeleteRoutingRuleAPIReportsListFailureBeforeDelete(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundTag: "direct", Domain: "example.com", Enabled: true})
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestUpdateRoutingRuleAPIReportsListFailureBeforeUpdate(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundTag: "direct", Domain: "example.com", Enabled: true})
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
@@ -638,7 +638,7 @@ func TestUpdateRoutingRuleAPIReportsListFailureBeforeUpdate(t *testing.T) {
 	failingStore := &listRoutingRulesFailingStore{Store: store}
 	router := web.NewRouter(web.WithStore(failingStore))
 	response := httptest.NewRecorder()
-	body := `{"outbound_tag":"direct","domain":"example.org","enabled":false}`
+	body := `{"outbound_id":1,"outbound_tag":"direct","domain":"example.org","enabled":false}`
 	req := httptest.NewRequest(http.MethodPut, "/api/routing-rules/"+strconv.FormatInt(rule.ID, 10), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, req)
@@ -662,7 +662,7 @@ func TestCreateRoutingRuleReportsSingboxListFailureInResponse(t *testing.T) {
 
 	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(`{"outbound_tag":"direct","domain":"example.com","enabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(`{"outbound_id":1,"outbound_tag":"direct","domain":"example.com","enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusInternalServerError {
@@ -690,7 +690,7 @@ func TestRoutingRuleUpdateAppliesSingboxWhenPreviousRuleAffectedSingbox(t *testi
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(inbound), OutboundTag: "direct", Domain: "example.com", Enabled: true})
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(inbound), OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
@@ -703,7 +703,7 @@ func TestRoutingRuleUpdateAppliesSingboxWhenPreviousRuleAffectedSingbox(t *testi
 		}),
 	)
 
-	updatePayload := `{"inbound_tag":"` + db.GeneratedInboundTag(inbound) + `","outbound_tag":"direct","domain":"example.com","enabled":false}`
+	updatePayload := `{"inbound_tag":"` + db.GeneratedInboundTag(inbound) + `","outbound_id":1,"outbound_tag":"direct","domain":"example.com","enabled":false}`
 	updateResp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/routing-rules/%d", rule.ID), strings.NewReader(updatePayload))
 	req.Header.Set("Content-Type", "application/json")
@@ -1096,7 +1096,7 @@ func TestOutboundAndRoutingWritesReportSingboxApplyFailure(t *testing.T) {
 	}
 
 	ruleResp := httptest.NewRecorder()
-	rulePayload := `{"inbound_tag":"` + db.GeneratedInboundTag(inbound) + `","outbound_tag":"direct","enabled":true}`
+	rulePayload := `{"inbound_tag":"` + db.GeneratedInboundTag(inbound) + `","outbound_id":1,"outbound_tag":"direct","enabled":true}`
 	ruleReq := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(rulePayload))
 	ruleReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(ruleResp, ruleReq)
@@ -1228,7 +1228,7 @@ func TestOutboundAndRoutingApplyScopeFollowsAffectedCores(t *testing.T) {
 		}))
 
 		resp := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(`{"inbound_tag":"`+db.GeneratedInboundTag(inbound)+`","outbound_tag":"direct","enabled":true}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(`{"inbound_tag":"`+db.GeneratedInboundTag(inbound)+`","outbound_id":1,"outbound_tag":"direct","enabled":true}`))
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(resp, req)
 		if resp.Code != http.StatusCreated {
@@ -1552,7 +1552,7 @@ func TestXrayConfigAPIRendersAdvancedRoutingFields(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag: "edge", OutboundTag: "blocked", Domain: "geosite:ads,example.com", IP: "geoip:private\n8.8.8.8", RuleSet: "geosite-category-ads-all", Protocol: "bittorrent,dns", Enabled: true,
+		InboundTag: "edge", OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:ads,example.com", IP: "geoip:private\n8.8.8.8", RuleSet: "geosite-category-ads-all", Protocol: "bittorrent,dns", Enabled: true,
 	}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
@@ -2042,7 +2042,7 @@ func (c fixedStatsClient) Close() error { return nil }
 func seedClientTraffic(t *testing.T, store *db.Store, client db.Client, up, down int64) {
 	t.Helper()
 	ctx := context.Background()
-	t0 := time.Unix(1000, 0)
+	t0 := time.Now().UTC().Add(-20 * time.Second)
 	raw := func(rawUp, rawDown int64) []db.TrafficRawStat {
 		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: rawUp, RawDown: rawDown, Status: "ok"}}
 	}
@@ -2160,7 +2160,7 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create outbound: %v", err)
 	}
-	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundTag: "proxy", Enabled: true}); err != nil {
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundID: outbound.ID, OutboundTag: "proxy", Enabled: true}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
 	if err := store.ApplyTrafficRawStats(context.Background(), []db.TrafficRawStat{
@@ -2189,19 +2189,18 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"clients_limited":1`,
 		`"outbounds":4`,
 		`"routing_rules":1`,
-		`"xray_realtime":31`,
 		`"protocols":{"vless":1}`,
-		`"traffic_series"`,
-		`"outbound_traffic"`,
-		`"tag":"proxy"`,
-		`"up":11`,
-		`"down":20`,
 		`"validation"`,
 		`"target":"xray"`,
 		`"target":"singbox"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`"traffic"`, `"traffic_rates"`, `"traffic_status"`, `"last_sampled_at"`, `"traffic_series"`, `"outbound_traffic"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("dashboard summary should not include %q: %s", forbidden, body)
 		}
 	}
 }
@@ -2232,13 +2231,14 @@ func TestDashboardSummaryDoesNotRegressBelowStoredTraffic(t *testing.T) {
 	for _, want := range []string{
 		`"clients_active":0`,
 		`"clients_limited":1`,
-		`"traffic":{"down":50,"total":150,"up":100,"xray_down":50,"xray_realtime":150,"xray_up":100}`,
-		`"traffic_series"`,
-		`"up":100`,
-		`"down":50`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`"traffic"`, `"traffic_series"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("dashboard summary should not include %q: %s", forbidden, body)
 		}
 	}
 }
@@ -2425,7 +2425,7 @@ func TestTrafficSeriesAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing.T)
 	}
 }
 
-func TestDashboardSummaryTrafficSeriesUsesExpectedEngineFilter(t *testing.T) {
+func TestTrafficSeriesAPIUsesExpectedEngineFilter(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -2466,24 +2466,10 @@ func TestDashboardSummaryTrafficSeriesUsesExpectedEngineFilter(t *testing.T) {
 		t.Fatalf("increment samples: %v", err)
 	}
 	router := web.NewRouter(web.WithStore(store))
-	summary := httptest.NewRecorder()
-	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
-	if summary.Code != http.StatusOK {
-		t.Fatalf("expected summary 200, got %d: %s", summary.Code, summary.Body.String())
-	}
 	series := httptest.NewRecorder()
 	router.ServeHTTP(series, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=240", nil))
 	if series.Code != http.StatusOK {
 		t.Fatalf("expected series 200, got %d: %s", series.Code, series.Body.String())
-	}
-	var summaryBody struct {
-		TrafficSeries []struct {
-			Up   int64 `json:"up"`
-			Down int64 `json:"down"`
-		} `json:"traffic_series"`
-	}
-	if err := json.NewDecoder(summary.Body).Decode(&summaryBody); err != nil {
-		t.Fatalf("decode summary: %v", err)
 	}
 	var seriesBody struct {
 		Series []struct {
@@ -2494,17 +2480,12 @@ func TestDashboardSummaryTrafficSeriesUsesExpectedEngineFilter(t *testing.T) {
 	if err := json.NewDecoder(series.Body).Decode(&seriesBody); err != nil {
 		t.Fatalf("decode series: %v", err)
 	}
-	if len(summaryBody.TrafficSeries) != 2 || len(seriesBody.Series) != 2 {
-		t.Fatalf("expected two points from both endpoints, summary=%+v series=%+v", summaryBody.TrafficSeries, seriesBody.Series)
+	if len(seriesBody.Series) != 2 {
+		t.Fatalf("expected two traffic series points, got %+v", seriesBody.Series)
 	}
-	for i := range seriesBody.Series {
-		if summaryBody.TrafficSeries[i] != seriesBody.Series[i] {
-			t.Fatalf("summary series should match traffic series at %d, summary=%+v series=%+v", i, summaryBody.TrafficSeries, seriesBody.Series)
-		}
-	}
-	last := summaryBody.TrafficSeries[len(summaryBody.TrafficSeries)-1]
+	last := seriesBody.Series[len(seriesBody.Series)-1]
 	if last.Up != 40 || last.Down != 60 {
-		t.Fatalf("expected dashboard series to avoid cross-engine double count, got %+v", summaryBody.TrafficSeries)
+		t.Fatalf("expected traffic series to avoid cross-engine double count, got %+v", seriesBody.Series)
 	}
 }
 
@@ -4034,7 +4015,7 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 		t.Fatalf("create outbound: %v", err)
 	}
 	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag: "Reality", OutboundTag: "test-socks-egress", Enabled: true,
+		InboundTag: "Reality", OutboundID: outbound.ID, OutboundTag: "test-socks-egress", Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
@@ -4386,7 +4367,7 @@ func TestXrayDiagnosticsStructuredActionsCoverExpectedCodes(t *testing.T) {
 	if _, err := store.SetOutboundEnabled(context.Background(), badOutbound.ID, false); err != nil {
 		t.Fatalf("disable outbound: %v", err)
 	}
-	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(vless), OutboundTag: badOutbound.Tag, Enabled: true}); err != nil {
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(vless), OutboundID: badOutbound.ID, OutboundTag: badOutbound.Tag, Enabled: true}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
 	router := web.NewRouter(

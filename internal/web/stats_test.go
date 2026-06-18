@@ -219,18 +219,30 @@ func TestTrafficViewCacheSharesInboundsAndStatesAcrossHandlers(t *testing.T) {
 }
 
 func TestOutboundStatsByProfileIDMapsGeneratedCoreTags(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
 	states := []db.TrafficState{
-		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 10, TotalDown: 20, RateUp: 1, RateDown: 2, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
-		{Engine: "sing-box", ScopeType: "outbound", ScopeKey: "singbox-out-42", TotalUp: 30, TotalDown: 40, RateUp: 3, RateDown: 4, Status: "ok", LastSeenAt: "2026-06-17T00:01:00Z"},
-		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-44-extra", TotalUp: 99, TotalDown: 99, LastSeenAt: "2026-06-17T00:02:00Z"},
-		{Engine: "xray", ScopeType: "outbound", ScopeKey: "direct", TotalUp: 88, TotalDown: 88, LastSeenAt: "2026-06-17T00:03:00Z"},
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 10, TotalDown: 20, RateUp: 1, RateDown: 2, Status: "ok", LastSeenAt: now},
+		{Engine: "sing-box", ScopeType: "outbound", ScopeKey: "singbox-out-42", TotalUp: 30, TotalDown: 40, RateUp: 3, RateDown: 4, Status: "ok", LastSeenAt: now},
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-44-extra", TotalUp: 99, TotalDown: 99, LastSeenAt: now},
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "direct", TotalUp: 88, TotalDown: 88, LastSeenAt: now},
 	}
 	mapped := outboundStatsByProfileID(states)
 	if len(mapped) != 1 {
 		t.Fatalf("expected one generated outbound profile stat, got %+v", mapped)
 	}
-	if got := mapped[42]; got.Up != 40 || got.Down != 60 || got.RateUp != 4 || got.RateDown != 6 || got.LastSeenAt != "2026-06-17T00:01:00Z" || len(got.Engines) != 2 {
+	if got := mapped[42]; got.Up != 40 || got.Down != 60 || got.RateUp != 4 || got.RateDown != 6 || got.LastSeenAt != now || len(got.Engines) != 2 {
 		t.Fatalf("unexpected aggregated outbound profile mapping: %+v", got)
+	}
+}
+
+func TestOutboundStatsByProfileIDMarksStaleRates(t *testing.T) {
+	staleSample := time.Now().UTC().Add(-trafficStateStaleAfter - time.Minute).Format(time.RFC3339)
+	stats := outboundStatsByProfileID([]db.TrafficState{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 10, TotalDown: 20, RateUp: 3, RateDown: 4, Status: "ok", LastSeenAt: staleSample},
+	})
+	got := stats[42]
+	if got.Up != 10 || got.Down != 20 || got.RateUp != 0 || got.RateDown != 0 || got.Status != "stale" {
+		t.Fatalf("expected stale outbound rates to be zero while keeping totals, got %+v", got)
 	}
 }
 
@@ -291,7 +303,7 @@ func TestBuildStatsResponseLoadsTrafficStatesOnceForDetails(t *testing.T) {
 	}
 }
 
-func TestBuildDashboardSummaryLoadsTrafficStatesOnce(t *testing.T) {
+func TestBuildDashboardSummaryDoesNotLoadTrafficStates(t *testing.T) {
 	store := &countingSummaryStore{
 		inbounds: []db.Inbound{{
 			ID:       1,
@@ -309,11 +321,11 @@ func TestBuildDashboardSummaryLoadsTrafficStatesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build dashboard summary: %v", err)
 	}
-	if store.listTrafficStatesCalls != 1 {
-		t.Fatalf("expected dashboard summary to load traffic states once, got %d", store.listTrafficStatesCalls)
+	if store.listTrafficStatesCalls != 0 {
+		t.Fatalf("dashboard summary should not load traffic states, got %d calls", store.listTrafficStatesCalls)
 	}
-	if summary["outbound_traffic"] == nil {
-		t.Fatalf("expected outbound traffic in dashboard summary: %+v", summary)
+	if _, ok := summary["outbound_traffic"]; ok {
+		t.Fatalf("dashboard summary should not include outbound_traffic: %+v", summary)
 	}
 }
 
@@ -409,45 +421,11 @@ func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {
 	}
 }
 
-func TestDashboardSummaryCacheReusesSeriesAcrossShortSummaryExpiry(t *testing.T) {
-	store := &countingSummaryStore{
-		inbounds: []db.Inbound{{
-			ID:       1,
-			Remark:   "cached-series",
-			Protocol: "vless",
-			Port:     443,
-			Network:  "tcp",
-			Security: "none",
-			Enabled:  true,
-			Clients:  []db.Client{{ID: 10, InboundID: 1, UUID: "uuid", StatsKey: "c_state", Email: "a@example.com", Enabled: true}},
-		}},
-		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
-	}
-	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second, 30*time.Second)
-	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
-	now := time.Unix(100, 0)
-	cache.now = func() time.Time { return now }
-
-	if _, err := cache.get(context.Background(), cfg); err != nil {
-		t.Fatalf("first summary: %v", err)
-	}
-	now = now.Add(3 * time.Second)
-	if _, err := cache.get(context.Background(), cfg); err != nil {
-		t.Fatalf("second summary: %v", err)
-	}
-	if store.listInboundsCalls != 2 {
-		t.Fatalf("expected base summary to refresh after short ttl, got %d ListInbounds calls", store.listInboundsCalls)
-	}
-	if store.listTrafficSamplesCalls != 1 {
-		t.Fatalf("expected traffic series cache to avoid second sample scan, got %d calls", store.listTrafficSamplesCalls)
-	}
-}
-
 func TestDashboardSummaryValidationCacheRefreshesWhenSnapshotChanges(t *testing.T) {
 	store := &countingSummaryStore{
 		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
 	}
-	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second, 30*time.Second)
+	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second)
 	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
 	now := time.Unix(100, 0)
 	cache.now = func() time.Time { return now }
@@ -539,7 +517,7 @@ func TestDashboardSummaryValidationCacheReusesWhenOnlyRuntimeTrafficChanges(t *t
 		}},
 		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
 	}
-	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second, 30*time.Second)
+	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second)
 	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
 	now := time.Unix(100, 0)
 	cache.now = func() time.Time { return now }
@@ -606,6 +584,7 @@ func TestDashboardValidationCacheKeyChangesForConfigFields(t *testing.T) {
 		}},
 		rules: []db.RoutingRule{{
 			ID:          1,
+			InboundID:   1,
 			InboundTag:  "edge",
 			ClientID:    10,
 			ClientEmail: "client@example.com",
@@ -633,6 +612,7 @@ func TestDashboardValidationCacheKeyChangesForConfigFields(t *testing.T) {
 		{name: "client stats key", change: func(s *validationSnapshot) { s.inbounds[0].Clients[0].StatsKey = "new-stats" }},
 		{name: "outbound tag", change: func(s *validationSnapshot) { s.outbounds[0].Tag = "proxy" }},
 		{name: "outbound protocol", change: func(s *validationSnapshot) { s.outbounds[0].Protocol = "socks" }},
+		{name: "routing inbound id", change: func(s *validationSnapshot) { s.rules[0].InboundID = 2 }},
 		{name: "routing inbound", change: func(s *validationSnapshot) { s.rules[0].InboundTag = "other" }},
 		{name: "routing outbound", change: func(s *validationSnapshot) { s.rules[0].OutboundTag = "proxy" }},
 		{name: "routing domain", change: func(s *validationSnapshot) { s.rules[0].Domain = "example.org" }},
@@ -690,10 +670,11 @@ func TestCoreStatusCacheHitsAndInvalidates(t *testing.T) {
 }
 
 func TestSummarizeTrafficSelectsExpectedEngineForSharedStatsKey(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	store := &countingSummaryStore{
 		states: []db.TrafficState{
-			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, RateUp: 1, RateDown: 2, Status: "ok", LastSeenAt: "2026-06-16T00:00:00Z"},
-			{Engine: "singbox", ScopeType: "client", ScopeKey: "c_state", TotalUp: 30, TotalDown: 40, RateUp: 3, RateDown: 4, Status: "ok", LastSeenAt: "2026-06-16T00:01:00Z"},
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, RateUp: 1, RateDown: 2, Status: "ok", LastSeenAt: now},
+			{Engine: "singbox", ScopeType: "client", ScopeKey: "c_state", TotalUp: 30, TotalDown: 40, RateUp: 3, RateDown: 4, Status: "ok", LastSeenAt: now},
 		},
 	}
 	inbounds := []db.Inbound{
@@ -715,10 +696,11 @@ func TestSummarizeTrafficSelectsExpectedEngineForSharedStatsKey(t *testing.T) {
 }
 
 func TestSummarizeTrafficKeepsExpectedEngineEvenWhenUnavailable(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	store := &countingSummaryStore{
 		states: []db.TrafficState{
-			{Engine: "singbox", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, Status: "unavailable", LastSeenAt: "2026-06-16T00:01:00Z"},
-			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 30, TotalDown: 40, Status: "ok", LastSeenAt: "2026-06-16T00:00:00Z"},
+			{Engine: "singbox", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, Status: "unavailable", LastSeenAt: now},
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 30, TotalDown: 40, Status: "ok", LastSeenAt: now},
 		},
 	}
 	inbounds := []db.Inbound{{ID: 1, Protocol: "hysteria2", Enabled: true, Clients: []db.Client{{ID: 10, StatsKey: "c_state", Email: "user@example.com", Enabled: true}}}}
@@ -730,9 +712,10 @@ func TestSummarizeTrafficKeepsExpectedEngineEvenWhenUnavailable(t *testing.T) {
 }
 
 func TestSummarizeTrafficFallsBackWhenExpectedEngineMissing(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	store := &countingSummaryStore{
 		states: []db.TrafficState{
-			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 30, TotalDown: 40, Status: "ok", LastSeenAt: "2026-06-16T00:00:00Z"},
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 30, TotalDown: 40, Status: "ok", LastSeenAt: now},
 		},
 	}
 	inbounds := []db.Inbound{{ID: 1, Protocol: "hysteria2", Enabled: true, Clients: []db.Client{{ID: 10, StatsKey: "c_state", Email: "user@example.com", Enabled: true}}}}
@@ -740,6 +723,24 @@ func TestSummarizeTrafficFallsBackWhenExpectedEngineMissing(t *testing.T) {
 	client := trafficByClient[10]
 	if client.Status != "ok" || client.Up != 30 || client.Down != 40 || client.Engine != "xray" {
 		t.Fatalf("expected deterministic fallback when singbox state is missing, got %+v", client)
+	}
+}
+
+func TestSummarizeTrafficMarksStaleSamples(t *testing.T) {
+	staleAt := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano)
+	store := &countingSummaryStore{
+		states: []db.TrafficState{
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_stale", TotalUp: 30, TotalDown: 40, RateUp: 3, RateDown: 4, Status: "ok", LastSeenAt: staleAt},
+		},
+	}
+	inbounds := []db.Inbound{{ID: 1, Protocol: "vless", Enabled: true, Clients: []db.Client{{ID: 10, StatsKey: "c_stale", Email: "user@example.com", Enabled: true}}}}
+	trafficByInbound, trafficByClient := summarizeTraffic(context.Background(), store, inbounds)
+	client := trafficByClient[10]
+	if client.Status != "stale" || client.RateUp != 0 || client.RateDown != 0 || client.LastSampledAt == "" {
+		t.Fatalf("expected stale client state with zero rates, got %+v", client)
+	}
+	if trafficByInbound[1].Status != "stale" || trafficByInbound[1].RateUp != 0 || trafficByInbound[1].RateDown != 0 {
+		t.Fatalf("expected inbound aggregate to inherit stale status and zero rates, got %+v", trafficByInbound[1])
 	}
 }
 

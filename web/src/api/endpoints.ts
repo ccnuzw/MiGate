@@ -114,7 +114,6 @@ export const api = {
     const suffix = query.toString();
     return get<{ series: TrafficSeriesPoint[] }>(`/api/traffic/series${suffix ? `?${suffix}` : ''}`);
   },
-  stats: () => get<unknown>('/api/stats'),
   resources: () => get<Resources>('/api/system/resources'),
   xrayStatus: () => get<CoreStatus>('/api/xray/status'),
   xrayDiagnostics: () => get<XrayDiagnostics>('/api/xray/diagnostics'),

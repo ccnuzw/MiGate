@@ -124,6 +124,7 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 		})
 	}
 	if len(routingRules) > 0 {
+		inboundTagsByID := map[int64]string{}
 		inboundTagAliases := map[string]string{}
 		clientsByID := map[int64]db.Client{}
 		for _, inbound := range inbounds {
@@ -134,6 +135,7 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 				continue
 			}
 			actualTag := db.GeneratedInboundTag(inbound)
+			inboundTagsByID[inbound.ID] = actualTag
 			if strings.TrimSpace(inbound.Remark) != "" {
 				inboundTagAliases[strings.TrimSpace(inbound.Remark)] = actualTag
 			}
@@ -169,11 +171,17 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 				}
 				xr.User = []string{clientStatsName(client)}
 			}
-			if rule.InboundTag != "" {
-				if actual, ok := inboundTagAliases[rule.InboundTag]; ok {
+			if rule.InboundID > 0 {
+				if actual, ok := inboundTagsByID[rule.InboundID]; ok {
 					xr.InboundTag = []string{actual}
 				} else {
-					xr.InboundTag = []string{rule.InboundTag}
+					continue
+				}
+			} else if inboundTag := strings.TrimSpace(rule.InboundTag); inboundTag != "" {
+				if actual, ok := inboundTagAliases[inboundTag]; ok {
+					xr.InboundTag = []string{actual}
+				} else {
+					continue
 				}
 			}
 			if rule.Domain != "" {

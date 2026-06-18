@@ -75,7 +75,10 @@ func summarizeTraffic(ctx context.Context, store Store, inbounds []db.Inbound) (
 	return summarizeTrafficFromStates(loadTrafficStates(ctx, store), inbounds)
 }
 
+const trafficStateStaleAfter = 3 * time.Minute
+
 func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound) (map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary) {
+	now := time.Now().UTC()
 	stateByScope := map[string]map[string]db.TrafficState{}
 	for _, state := range states {
 		engine := normalizeTrafficEngine(state.Engine)
@@ -106,24 +109,28 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 		inboundState, hasInboundState := selectTrafficState(stateByScope["inbound\x00"+inboundKey], expectedEngine)
 		inboundSummary := inboundTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 		if hasInboundState {
+			freshState := trafficStateWithFreshness(inboundState, now)
 			inboundSummary.Up = inboundState.TotalUp
 			inboundSummary.Down = inboundState.TotalDown
-			inboundSummary.RateUp = inboundState.RateUp
-			inboundSummary.RateDown = inboundState.RateDown
-			inboundSummary.Status = stateStatus(inboundState)
-			inboundSummary.Message = inboundState.Message
+			inboundSummary.RateUp = freshState.RateUp
+			inboundSummary.RateDown = freshState.RateDown
+			inboundSummary.Status = stateStatus(freshState)
+			inboundSummary.Message = freshState.Message
 			inboundSummary.Engine = inboundState.Engine
+			inboundSummary.LastSampledAt = inboundState.LastSeenAt
 		}
 		for _, client := range inbound.Clients {
 			clientSummary := clientTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 			if state, ok := selectTrafficState(stateByScope["client\x00"+client.StatsKey], expectedEngine); ok {
+				freshState := trafficStateWithFreshness(state, now)
 				clientSummary.Up = state.TotalUp
 				clientSummary.Down = state.TotalDown
-				clientSummary.RateUp = state.RateUp
-				clientSummary.RateDown = state.RateDown
-				clientSummary.Status = stateStatus(state)
-				clientSummary.Message = state.Message
+				clientSummary.RateUp = freshState.RateUp
+				clientSummary.RateDown = freshState.RateDown
+				clientSummary.Status = stateStatus(freshState)
+				clientSummary.Message = freshState.Message
 				clientSummary.Engine = state.Engine
+				clientSummary.LastSampledAt = state.LastSeenAt
 				if state.Engine == "xray" {
 					clientSummary.XrayUp = state.LastRawUp
 					clientSummary.XrayDown = state.LastRawDown
@@ -152,6 +159,27 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 	return byInbound, byClient
 }
 
+func trafficStateWithFreshness(state db.TrafficState, now time.Time) db.TrafficState {
+	status := strings.TrimSpace(state.Status)
+	if state.LastSeenAt == "" || status == "stale" || status == "unsupported" || status == "not_configured" {
+		return state
+	}
+	sampledAt, err := time.Parse(time.RFC3339Nano, state.LastSeenAt)
+	if err != nil {
+		sampledAt, err = time.Parse(time.RFC3339, state.LastSeenAt)
+	}
+	if err != nil || now.Sub(sampledAt.UTC()) <= trafficStateStaleAfter {
+		return state
+	}
+	state.Status = "stale"
+	state.RateUp = 0
+	state.RateDown = 0
+	if strings.TrimSpace(state.Message) == "" {
+		state.Message = "traffic sample is stale"
+	}
+	return state
+}
+
 func inboundStatsKey(inbound db.Inbound) string {
 	switch strings.ToLower(strings.TrimSpace(inbound.Protocol)) {
 	case "hysteria2":
@@ -177,6 +205,7 @@ type outboundTrafficSummary struct {
 
 func outboundStatsByProfileID(states []db.TrafficState) map[int64]outboundTrafficSummary {
 	result := map[int64]outboundTrafficSummary{}
+	now := time.Now().UTC()
 	for _, state := range states {
 		if strings.ToLower(strings.TrimSpace(state.ScopeType)) != "outbound" {
 			continue
@@ -187,11 +216,12 @@ func outboundStatsByProfileID(states []db.TrafficState) map[int64]outboundTraffi
 			continue
 		}
 		current := result[id]
+		freshState := trafficStateWithFreshness(state, now)
 		current.Up += state.TotalUp
 		current.Down += state.TotalDown
-		current.RateUp += state.RateUp
-		current.RateDown += state.RateDown
-		current.Status = combineTrafficStatuses(current.Status, stateStatus(state))
+		current.RateUp += freshState.RateUp
+		current.RateDown += freshState.RateDown
+		current.Status = combineTrafficStatuses(current.Status, stateStatus(freshState))
 		if state.LastSeenAt > current.LastSeenAt {
 			current.LastSeenAt = state.LastSeenAt
 		}
@@ -286,6 +316,7 @@ type trafficCoverageCounts struct {
 	unsupported   int
 	notConfigured int
 	unavailable   int
+	stale         int
 	waiting       int
 }
 
@@ -300,8 +331,10 @@ func (counts *trafficCoverageCounts) add(status string) {
 		counts.unsupported++
 	case "not_configured":
 		counts.notConfigured++
-	case "unavailable", "stale":
+	case "unavailable":
 		counts.unavailable++
+	case "stale":
+		counts.stale++
 	case "waiting", "":
 		counts.waiting++
 	default:
@@ -320,7 +353,7 @@ func (counts trafficCoverageCounts) status() string {
 		return "ok"
 	}
 	if counts.ok > 0 {
-		if counts.partial > 0 || counts.unsupported > 0 || counts.unavailable > 0 || counts.waiting > 0 {
+		if counts.partial > 0 || counts.unsupported > 0 || counts.unavailable > 0 || counts.stale > 0 || counts.waiting > 0 {
 			return "partial"
 		}
 		return "ok"
@@ -330,6 +363,9 @@ func (counts trafficCoverageCounts) status() string {
 	}
 	if counts.unsupported > 0 && counts.unavailable == 0 {
 		return "unsupported"
+	}
+	if counts.stale > 0 && counts.unavailable == 0 {
+		return "stale"
 	}
 	if counts.unavailable > 0 {
 		return "unavailable"
@@ -363,9 +399,36 @@ func buildTrafficCoverage(byInbound map[int64]inboundTrafficSummary) map[string]
 		"unsupported":    counts.unsupported,
 		"not_configured": counts.notConfigured,
 		"unavailable":    counts.unavailable,
+		"stale":          counts.stale,
 		"waiting":        counts.waiting,
 		"engines":        engines,
 	}
+}
+
+func lastTrafficSampledAt(inboundTraffic map[int64]inboundTrafficSummary, clientTraffic map[int64]clientTrafficSummary) string {
+	latest := time.Time{}
+	consider := func(value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, value)
+		}
+		if err == nil && parsed.After(latest) {
+			latest = parsed
+		}
+	}
+	for _, traffic := range inboundTraffic {
+		consider(traffic.LastSampledAt)
+	}
+	for _, traffic := range clientTraffic {
+		consider(traffic.LastSampledAt)
+	}
+	if latest.IsZero() {
+		return ""
+	}
+	return latest.UTC().Format(time.RFC3339)
 }
 
 func coverageEngineKey(engine string) string {
@@ -482,6 +545,7 @@ func buildStatsResponse(ctx context.Context, store Store, statsClient xray.Stats
 	}
 
 	response := map[string]interface{}{
+		"legacy":                true,
 		"inbounds":              len(inb),
 		"clients":               clientCount,
 		"traffic_up":            totalUp,
@@ -534,7 +598,7 @@ func queryBool(r *http.Request, name string) bool {
 }
 
 func dashboardSummaryHandler(cfg *routerConfig) http.HandlerFunc {
-	cache := newDashboardSummaryCache(7*time.Second, 30*time.Second, 30*time.Second)
+	cache := newDashboardSummaryCache(7*time.Second, 30*time.Second)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -555,13 +619,10 @@ func dashboardSummaryHandler(cfg *routerConfig) http.HandlerFunc {
 
 type dashboardSummaryCache struct {
 	ttl                 time.Duration
-	seriesTTL           time.Duration
 	validationTTL       time.Duration
 	mu                  sync.Mutex
 	expiresAt           time.Time
 	value               map[string]interface{}
-	seriesExpiresAt     time.Time
-	seriesValue         []trafficSeriesPoint
 	validationExpiresAt time.Time
 	validationValue     map[string]configValidationResult
 	validationKey       string
@@ -569,15 +630,11 @@ type dashboardSummaryCache struct {
 }
 
 func newDashboardSummaryCache(ttl time.Duration, extraTTLs ...time.Duration) *dashboardSummaryCache {
-	seriesTTL := ttl
 	validationTTL := ttl
 	if len(extraTTLs) > 0 {
-		seriesTTL = extraTTLs[0]
+		validationTTL = extraTTLs[0]
 	}
-	if len(extraTTLs) > 1 {
-		validationTTL = extraTTLs[1]
-	}
-	return &dashboardSummaryCache{ttl: ttl, seriesTTL: seriesTTL, validationTTL: validationTTL, now: time.Now}
+	return &dashboardSummaryCache{ttl: ttl, validationTTL: validationTTL, now: time.Now}
 }
 
 func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
@@ -608,20 +665,11 @@ func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map
 }
 
 func (c *dashboardSummaryCache) build(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
-	summary, snapshot, inbounds, err := buildDashboardSummaryBase(ctx, cfg)
+	summary, snapshot, err := buildDashboardSummaryBase(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	now := c.now()
-	series := c.cachedSeries()
-	if series == nil {
-		built := buildDashboardTrafficSeries(ctx, cfg.store, inbounds)
-		series = &built
-		c.mu.Lock()
-		c.seriesValue = built
-		c.seriesExpiresAt = now.Add(c.seriesTTL)
-		c.mu.Unlock()
-	}
 	snapshotKey := snapshot.cacheKey()
 	validation := c.cachedValidation(snapshotKey)
 	if validation == nil {
@@ -633,23 +681,8 @@ func (c *dashboardSummaryCache) build(ctx context.Context, cfg *routerConfig) (m
 		c.validationExpiresAt = now.Add(c.validationTTL)
 		c.mu.Unlock()
 	}
-	summary["traffic_series"] = append([]trafficSeriesPoint(nil), (*series)...)
 	summary["validation"] = cloneValidationMap(*validation)
 	return summary, nil
-}
-
-func (c *dashboardSummaryCache) cachedSeries() *[]trafficSeriesPoint {
-	if c == nil || c.seriesTTL <= 0 {
-		return nil
-	}
-	now := c.now()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.seriesValue == nil || !now.Before(c.seriesExpiresAt) {
-		return nil
-	}
-	value := append([]trafficSeriesPoint(nil), c.seriesValue...)
-	return &value
 }
 
 func (c *dashboardSummaryCache) cachedValidation(snapshotKey string) *map[string]configValidationResult {
@@ -667,31 +700,30 @@ func (c *dashboardSummaryCache) cachedValidation(snapshotKey string) *map[string
 }
 
 func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
-	summary, snapshot, inbounds, err := buildDashboardSummaryBase(ctx, cfg)
+	summary, snapshot, err := buildDashboardSummaryBase(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	summary["traffic_series"] = buildDashboardTrafficSeries(ctx, cfg.store, inbounds)
 	summary["validation"] = buildDashboardValidation(ctx, cfg, snapshot)
 	return summary, nil
 }
 
-func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[string]interface{}, validationSnapshot, []db.Inbound, error) {
+func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[string]interface{}, validationSnapshot, error) {
 	if cfg == nil || cfg.store == nil {
-		return nil, validationSnapshot{}, nil, fmt.Errorf("store_unavailable")
+		return nil, validationSnapshot{}, fmt.Errorf("store_unavailable")
 	}
 	store := cfg.store
 	inbounds, err := store.ListInbounds(ctx)
 	if err != nil {
-		return nil, validationSnapshot{}, nil, fmt.Errorf("list_inbounds_failed")
+		return nil, validationSnapshot{}, fmt.Errorf("list_inbounds_failed")
 	}
 	outbounds, err := store.ListOutbounds(ctx)
 	if err != nil {
-		return nil, validationSnapshot{}, nil, fmt.Errorf("list_outbounds_failed")
+		return nil, validationSnapshot{}, fmt.Errorf("list_outbounds_failed")
 	}
 	rules, err := store.ListRoutingRules(ctx)
 	if err != nil {
-		return nil, validationSnapshot{}, nil, fmt.Errorf("list_routing_rules_failed")
+		return nil, validationSnapshot{}, fmt.Errorf("list_routing_rules_failed")
 	}
 	now := time.Now().Unix()
 	clientCount := 0
@@ -700,16 +732,6 @@ func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[stri
 	limitedClients := 0
 	enabledInbounds := 0
 	protocols := map[string]int{}
-	trafficSeries := []trafficSeriesPoint{}
-	states := loadTrafficStates(ctx, store)
-	trafficByInbound, trafficByClient := summarizeTrafficFromStates(states, inbounds)
-	outboundStats := outboundStatsByProfileID(states)
-	var totalUp int64
-	var totalDown int64
-	var xrayUp int64
-	var xrayDown int64
-	var rateUp float64
-	var rateDown float64
 	for _, inbound := range inbounds {
 		if inbound.Enabled {
 			enabledInbounds++
@@ -717,16 +739,9 @@ func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[stri
 		if inbound.Protocol != "" {
 			protocols[inbound.Protocol]++
 		}
-		if traffic, ok := trafficByInbound[inbound.ID]; ok {
-			totalUp += traffic.Up
-			totalDown += traffic.Down
-			rateUp += traffic.RateUp
-			rateDown += traffic.RateDown
-		}
 		for _, client := range inbound.Clients {
 			clientCount++
-			traffic := trafficByClient[client.ID]
-			used := traffic.Up + traffic.Down
+			used := client.Up + client.Down
 			expired := client.ExpiryAt > 0 && client.ExpiryAt <= now
 			limited := client.TrafficLimit > 0 && used >= client.TrafficLimit
 			if expired {
@@ -737,10 +752,6 @@ func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[stri
 			}
 			if client.Enabled && !expired && !limited {
 				activeClients++
-			}
-			if traffic, ok := trafficByClient[client.ID]; ok && traffic.Engine == "xray" {
-				xrayUp += traffic.Up
-				xrayDown += traffic.Down
 			}
 		}
 	}
@@ -771,35 +782,9 @@ func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[stri
 			"routing_rules":     len(rules),
 			"routing_enabled":   enabledRules,
 		},
-		"traffic": map[string]int64{
-			"up":            totalUp,
-			"down":          totalDown,
-			"total":         totalUp + totalDown,
-			"xray_up":       xrayUp,
-			"xray_down":     xrayDown,
-			"xray_realtime": xrayUp + xrayDown,
-		},
-		"traffic_rates": map[string]float64{
-			"rate_up":    rateUp,
-			"rate_down":  rateDown,
-			"rate_total": rateUp + rateDown,
-		},
-		"traffic_status":   buildTrafficCoverage(trafficByInbound),
-		"protocols":        protocols,
-		"traffic_series":   trafficSeries,
-		"outbound_traffic": outboundTrafficDetails(outbounds, outboundStats),
-		"validation":       map[string]configValidationResult{},
-	}, snapshot, inbounds, nil
-}
-
-func buildDashboardTrafficSeries(ctx context.Context, store Store, inbounds []db.Inbound) []trafficSeriesPoint {
-	if store == nil {
-		return []trafficSeriesPoint{}
-	}
-	if samples, err := store.ListTrafficSamples(ctx, "client", time.Now().UTC().Add(-24*time.Hour), 240); err == nil {
-		return trafficSamplesToSeries(samples, "client", inbounds)
-	}
-	return []trafficSeriesPoint{}
+		"protocols":  protocols,
+		"validation": map[string]configValidationResult{},
+	}, snapshot, nil
 }
 
 func buildDashboardValidation(ctx context.Context, cfg *routerConfig, snapshot validationSnapshot) map[string]configValidationResult {
@@ -915,6 +900,7 @@ type validationOutboundCacheKey struct {
 
 type validationRoutingRuleCacheKey struct {
 	ID          int64  `json:"id"`
+	InboundID   int64  `json:"inbound_id"`
 	InboundTag  string `json:"inbound_tag"`
 	ClientID    int64  `json:"client_id"`
 	ClientEmail string `json:"client_email"`
@@ -1021,6 +1007,7 @@ func validationRoutingRuleCacheKeys(rules []db.RoutingRule) []validationRoutingR
 	for _, rule := range rules {
 		keys = append(keys, validationRoutingRuleCacheKey{
 			ID:          rule.ID,
+			InboundID:   rule.InboundID,
 			InboundTag:  rule.InboundTag,
 			ClientID:    rule.ClientID,
 			ClientEmail: rule.ClientEmail,

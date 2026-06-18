@@ -20,10 +20,6 @@ type Store interface {
 	MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error
 }
 
-type batchTrafficStore interface {
-	UpdateClientTrafficBatch(ctx context.Context, stats map[string]db.ClientTrafficUpdate) error
-}
-
 type inboundStore interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
 }
@@ -154,25 +150,6 @@ func (s *TrafficSyncScheduler) sync() {
 			return
 		}
 		log.Printf("traffic sync: applied %d traffic counters", len(rawStats))
-		return
-	}
-
-	if s.statsClient == nil {
-		return
-	}
-	stats, err := s.statsClient.QueryAllStats(ctx)
-	if err != nil {
-		log.Printf("traffic sync: failed to query legacy stats: %v", err)
-		return
-	}
-	if batchStore, ok := s.store.(batchTrafficStore); ok {
-		batch := make(map[string]db.ClientTrafficUpdate, len(stats))
-		for email, clientStats := range stats {
-			batch[email] = db.ClientTrafficUpdate{Up: clientStats.Uplink, Down: clientStats.Downlink}
-		}
-		if err := batchStore.UpdateClientTrafficBatch(ctx, batch); err != nil {
-			log.Printf("traffic sync: failed to batch update clients: %v", err)
-		}
 	}
 }
 
