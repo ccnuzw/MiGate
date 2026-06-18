@@ -332,7 +332,7 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 	cfg := BuildConfigWithOptions(inbounds, BuildOptions{})
 	cfg.Outbounds = []OutboundConfig{}
 	for _, outbound := range outbounds {
-		if !outbound.Enabled || !db.OutboundSupportsCore(outbound, db.CoreSingbox) {
+		if !outbound.Enabled || !db.OutboundSupportsCore(outbound, db.CoreSingbox) || isRemovedSingboxOutbound(outbound) {
 			continue
 		}
 		built, err := buildOutbound(outbound)
@@ -345,12 +345,14 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 		cfg.Outbounds = append(cfg.Outbounds, OutboundConfig{Type: "direct", Tag: "singbox-out-0"})
 	}
 	if len(routingRules) > 0 {
+		inboundTagsByID := map[int64]string{}
 		inboundAliases := map[string]string{}
 		for _, inbound := range inbounds {
 			if !inbound.Enabled || db.InboundCore(inbound) != db.CoreSingbox {
 				continue
 			}
 			tag := InboundStatsTag(inbound)
+			inboundTagsByID[inbound.ID] = tag
 			inboundAliases[db.GeneratedInboundTag(inbound)] = tag
 			if strings.TrimSpace(inbound.Remark) != "" {
 				inboundAliases[strings.TrimSpace(inbound.Remark)] = tag
@@ -371,9 +373,18 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 			if !db.OutboundSupportsCore(outbound, db.CoreSingbox) {
 				return Config{}, fmt.Errorf("routing rule %d targets outbound %q that does not support sing-box", rule.ID, outbound.Tag)
 			}
+			if isRemovedSingboxOutbound(outbound) {
+				continue
+			}
 			sr := RouteRule{Outbound: db.GeneratedOutboundTag(db.CoreSingbox, outbound.ID, rule.OutboundTag)}
-			if strings.TrimSpace(rule.InboundTag) != "" {
-				if actual, ok := inboundAliases[strings.TrimSpace(rule.InboundTag)]; ok {
+			if rule.InboundID > 0 {
+				if actual, ok := inboundTagsByID[rule.InboundID]; ok {
+					sr.Inbound = []string{actual}
+				} else {
+					continue
+				}
+			} else if inboundTag := strings.TrimSpace(rule.InboundTag); inboundTag != "" {
+				if actual, ok := inboundAliases[inboundTag]; ok {
 					sr.Inbound = []string{actual}
 				} else {
 					continue
@@ -395,6 +406,10 @@ func BuildConfigWithOutbounds(inbounds []db.Inbound, outbounds []db.Outbound, ro
 		}
 	}
 	return cfg, nil
+}
+
+func isRemovedSingboxOutbound(outbound db.Outbound) bool {
+	return db.NormalizeOutboundProtocol(outbound.Protocol) == "dns"
 }
 
 // GenerateSelfSignedCert generates a self-signed TLS certificate and key
@@ -533,7 +548,7 @@ func buildOutbound(outbound db.Outbound) (OutboundConfig, error) {
 	case "blackhole":
 		return OutboundConfig{Type: "block", Tag: tag}, nil
 	case "dns":
-		return OutboundConfig{Type: "dns", Tag: tag}, nil
+		return OutboundConfig{}, fmt.Errorf("dns outbound is not supported by sing-box 1.13+; use route rule actions instead")
 	case "socks":
 		return OutboundConfig{Type: "socks", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Username: strings.TrimSpace(outbound.Username), Password: outbound.Password}, nil
 	case "http", "https":

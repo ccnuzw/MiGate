@@ -146,13 +146,6 @@ func ResolveRuleOutbound(rule RoutingRule, outbounds []Outbound) (Outbound, bool
 				return outbound, true
 			}
 		}
-		return Outbound{}, false
-	}
-	outboundTag := strings.TrimSpace(rule.OutboundTag)
-	for _, outbound := range outbounds {
-		if strings.TrimSpace(outbound.Tag) == outboundTag {
-			return outbound, true
-		}
 	}
 	return Outbound{}, false
 }
@@ -254,8 +247,16 @@ func RoutingRuleAppliesToCore(rule RoutingRule, inbounds []Inbound, core string)
 		for _, inbound := range inbounds {
 			for _, client := range inbound.Clients {
 				if client.ID == rule.ClientID {
-					return InboundCore(inbound) == want
+					return inbound.Enabled && InboundCore(inbound) == want
 				}
+			}
+		}
+		return false
+	}
+	if rule.InboundID > 0 {
+		for _, inbound := range inbounds {
+			if inbound.ID == rule.InboundID {
+				return inbound.Enabled && InboundCore(inbound) == want
 			}
 		}
 		return false
@@ -271,7 +272,7 @@ func RoutingRuleAppliesToCore(rule RoutingRule, inbounds []Inbound, core string)
 	}
 	for _, inbound := range inbounds {
 		if GeneratedInboundTag(inbound) == inboundTag || strings.TrimSpace(inbound.Remark) == inboundTag {
-			return InboundCore(inbound) == want
+			return inbound.Enabled && InboundCore(inbound) == want
 		}
 	}
 	return false

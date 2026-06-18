@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -109,4 +110,62 @@ func WithCoreScriptRunner(runner func(script string) ([]byte, error)) Option {
 	return func(cfg *routerConfig) {
 		cfg.coreScriptRunner = runner
 	}
+}
+
+func WithSingboxApplier(applier func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary) Option {
+	return func(cfg *routerConfig) {
+		if applier != nil {
+			cfg.singboxApplier = applier
+			cfg.singboxApplierSet = true
+		}
+	}
+}
+
+func WithSingboxProbe(probe SingboxProbe) Option {
+	return func(cfg *routerConfig) {
+		if probe != nil {
+			cfg.singboxProbe = probe
+		}
+	}
+}
+
+func WithCoreSingboxListenerDiagnostics(listeners func(context.Context) []CoreListenerDiagnostic) Option {
+	return func(cfg *routerConfig) {
+		if listeners != nil {
+			cfg.singboxListeners = func(ctx context.Context, _ *routerConfig) []CoreListenerDiagnostic {
+				return listeners(ctx)
+			}
+		}
+	}
+}
+
+func WithSingboxListenerDiagnostics(listeners func(context.Context) []SingboxListenerDiagnostic) Option {
+	if listeners == nil {
+		return func(*routerConfig) {}
+	}
+	return WithCoreSingboxListenerDiagnostics(func(ctx context.Context) []CoreListenerDiagnostic {
+		return listeners(ctx)
+	})
+}
+
+func WithXrayProbe(probe XrayProbe) Option {
+	return func(cfg *routerConfig) {
+		if probe != nil {
+			cfg.xrayProbe = probe
+		}
+	}
+}
+
+func WithCoreXrayListenerDiagnostics(listeners func(context.Context) []CoreListenerDiagnostic) Option {
+	return func(cfg *routerConfig) {
+		if listeners != nil {
+			cfg.xrayListeners = func(ctx context.Context, _ *routerConfig) []CoreListenerDiagnostic {
+				return listeners(ctx)
+			}
+		}
+	}
+}
+
+func WithXrayListenerDiagnostics(listeners func(context.Context) []CoreListenerDiagnostic) Option {
+	return WithCoreXrayListenerDiagnostics(listeners)
 }

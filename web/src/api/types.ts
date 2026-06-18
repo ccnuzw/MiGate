@@ -54,6 +54,64 @@ export interface Inbound {
   [key: string]: unknown;
 }
 
+export interface SingboxApplySummary {
+  applied?: boolean;
+  service?: string;
+  config_path?: string;
+  commands_executed?: string[];
+  error?: string;
+  reason?: string;
+  detail?: string;
+  output?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
+  inbounds?: number;
+  outbounds?: number;
+  rules?: number;
+}
+
+export interface XrayApplySummary {
+  applied?: boolean;
+  status?: string;
+  service?: string;
+  config_path?: string;
+  commands_executed?: string[];
+  error?: string;
+  detail?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  error_output?: string;
+  inbounds?: number;
+  outbounds?: number;
+  rules?: number;
+}
+
+export interface CoreDiagnosticAction {
+  code: string;
+  severity: 'error' | 'warning' | 'info' | string;
+  category: 'service' | 'config' | 'listener' | 'log' | 'security' | 'routing' | string;
+  message: string;
+  command?: string;
+  inbound_id?: number;
+  port?: number;
+}
+
+export interface CreateResultFields {
+  created?: boolean;
+  applied?: boolean;
+  error?: string;
+  detail?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
+  singbox?: SingboxApplySummary;
+  xray?: XrayApplySummary;
+}
+
+export type CreateInboundResponse = (Inbound | { inbound: Inbound }) & CreateResultFields;
+export type CreateClientResponse = (Client | { client: Client }) & CreateResultFields;
+
 export interface InboundCapability {
   protocol: string;
   core: 'xray' | 'sing-box' | string;
@@ -94,6 +152,7 @@ export interface Outbound {
 export interface RoutingRule {
   id: number;
   remark?: string;
+  inbound_id?: number;
   inbound_tag?: string;
   client_id?: number;
   client_email?: string;
@@ -131,6 +190,7 @@ export interface CoreStatus {
   active_connections?: number;
   config_path?: string;
   commands_executed?: string[];
+  listening_ports?: CoreListenerDiagnostic[];
 }
 
 export interface CoreActionResponse {
@@ -141,22 +201,120 @@ export interface CoreActionResponse {
   xray?: {
     status?: string;
     service?: string;
+    applied?: boolean;
+    config_path?: string;
     commands_executed?: string[];
+    error?: string;
+    detail?: string;
+    warnings?: string[];
+    post_apply_warnings?: string[];
     error_output?: string;
+    inbounds?: number;
+    outbounds?: number;
+    rules?: number;
   };
   singbox?: {
     applied?: boolean;
+    service?: string;
+    config_path?: string;
     reason?: string;
     error?: string;
+    detail?: string;
     output?: string;
     commands_executed?: string[];
+    warnings?: string[];
+    post_apply_warnings?: string[];
+    non_fatal_warnings?: string[];
     inbounds?: number;
+    outbounds?: number;
+    rules?: number;
   };
   applied?: boolean;
   reason?: string;
   error?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
   inbounds?: number;
+  outbounds?: number;
+  rules?: number;
 }
+
+export interface SingboxWriteResponse {
+  applied?: boolean;
+  error?: string;
+  detail?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
+  singbox?: SingboxApplySummary;
+  xray?: XrayApplySummary;
+}
+
+export interface CoreListenerDiagnostic {
+  inbound_id: number;
+  protocol: string;
+  port: number;
+  network?: string;
+  transport?: string;
+  path?: string;
+  grpc_service_name?: string;
+  security?: string;
+  listening: boolean;
+}
+
+export type SingboxListenerDiagnostic = CoreListenerDiagnostic;
+
+export interface CoreConfigPreview {
+  config_path: string;
+  in_sync: boolean;
+  reason?: 'disk_missing' | 'generated_build_failed' | 'hash_mismatch' | 'disk_parse_failed' | string;
+  disk: {
+    config_path: string;
+    hash?: string;
+    config?: unknown;
+    error?: string;
+    detail?: string;
+  };
+  generated: {
+    config_path: string;
+    hash?: string;
+    config?: unknown;
+    error?: string;
+    detail?: string;
+    warnings?: string[];
+    inbounds?: number;
+    outbounds?: number;
+    rules?: number;
+  };
+}
+
+export type SingboxConfigPreview = CoreConfigPreview;
+export type XrayConfigPreview = CoreConfigPreview;
+
+export interface CoreDiagnostics {
+  installed: boolean;
+  version?: string;
+  managed: boolean;
+  service: string;
+  service_status: 'running' | 'stopped' | 'not_managed' | 'not_installed' | string;
+  config_path: string;
+  config_exists: boolean;
+  config_valid: boolean;
+  config_error?: string;
+  disk_generated_in_sync: boolean;
+  sync_reason?: string;
+  expected_listeners: CoreListenerDiagnostic[];
+  missing_listeners: CoreListenerDiagnostic[];
+  recent_logs: string[];
+  warnings: string[];
+  suggestions: string[];
+  actions?: CoreDiagnosticAction[];
+  suggestion_details?: CoreDiagnosticAction[];
+}
+
+export type SingboxDiagnostics = CoreDiagnostics;
+export type XrayDiagnostics = CoreDiagnostics;
 
 export interface ConfigValidation {
   target: 'xray' | 'singbox';
@@ -182,32 +340,7 @@ export interface DashboardSummary {
     routing_rules: number;
     routing_enabled: number;
   };
-  traffic: {
-    up: number;
-    down: number;
-    total: number;
-    xray_up: number;
-    xray_down: number;
-    xray_realtime: number;
-  };
-  traffic_rates?: {
-    rate_up: number;
-    rate_down: number;
-    rate_total: number;
-  };
-  traffic_status?: {
-    overall: string;
-    engines?: Record<string, string>;
-  };
   protocols: Record<string, number>;
-  traffic_series?: Array<{
-    name: string;
-    time?: string;
-    up: number;
-    down: number;
-    rate_up?: number;
-    rate_down?: number;
-  }>;
   validation: {
     xray: ConfigValidation;
     singbox: ConfigValidation;
@@ -221,6 +354,7 @@ export interface TrafficCoverage {
   unsupported?: number;
   not_configured?: number;
   unavailable?: number;
+  stale?: number;
   waiting?: number;
   engines?: Record<string, string>;
 }
@@ -233,7 +367,10 @@ export interface TrafficSummary {
   rate_down: number;
   rate_total: number;
   status: TrafficCoverage;
-  last_updated_at: string;
+  engine?: string;
+  source?: string;
+  last_sampled_at?: string;
+  generated_at: string;
 }
 
 export interface TrafficInbound {
@@ -249,7 +386,8 @@ export interface TrafficInbound {
   status: string;
   message?: string;
   engine?: string;
-  last_updated_at: string;
+  source?: string;
+  last_sampled_at?: string;
 }
 
 export interface TrafficClient {
@@ -267,7 +405,8 @@ export interface TrafficClient {
   status: string;
   message?: string;
   engine?: string;
-  last_updated_at: string;
+  source?: string;
+  last_sampled_at?: string;
 }
 
 export interface TrafficSeriesPoint {

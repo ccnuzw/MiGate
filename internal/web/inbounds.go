@@ -15,14 +15,17 @@ import (
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
-func inboundsHandler(store Store, ctrl XrayController, statsClient xray.StatsClient) http.HandlerFunc {
+func inboundsHandler(cfg *routerConfig) http.HandlerFunc {
+	store, statsClient := cfg.store, cfg.statsClient
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			listInbounds(w, r, store, statsClient)
 		case http.MethodPost:
-			if createInbound(w, r, store) {
-				applyCoreAsync(ctrl, store)
+			created, ok := createInbound(w, r, store)
+			if ok {
+				includeXray, includeSingbox := xrayAndSingboxForInboundWrite(db.Inbound{}, false, created)
+				writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"inbound": created, "created": true}, includeXray, includeSingbox)
 			}
 		default:
 			methodNotAllowed(w)
@@ -75,10 +78,34 @@ func applySingboxAsync(store Store) {
 		return
 	}
 	go func() {
-		if err := tryApplySingbox(context.Background(), store); err != nil {
-			log.Printf("sing-box auto apply: %v", err)
+		result := tryApplySingbox(context.Background(), store)
+		if !result.Applied && result.Error != "" {
+			log.Printf("sing-box auto apply: %s: %s", result.Error, result.Detail)
 		}
 	}()
+}
+
+func strictSingboxApply(ctx context.Context, cfg *routerConfig, store Store) SingboxApplySummary {
+	return addSingboxPostApplyDiagnostics(ctx, cfg, applySingboxSummary(ctx, cfg, store, true))
+}
+
+func writeCreatedSingboxResult(w http.ResponseWriter, cfg *routerConfig, r *http.Request, store Store, payload map[string]interface{}) {
+	result := strictSingboxApply(r.Context(), cfg, store)
+	if !result.Applied {
+		payload["created"] = true
+		attachSingboxResult(payload, result)
+		writeJSON(w, http.StatusCreated, payload)
+		return
+	}
+	payload["created"] = true
+	attachSingboxResult(payload, result)
+	writeJSON(w, http.StatusCreated, payload)
+}
+
+func writeSingboxWriteResult(w http.ResponseWriter, r *http.Request, cfg *routerConfig, store Store, status int, payload map[string]interface{}) {
+	result := strictSingboxApply(r.Context(), cfg, store)
+	attachSingboxResult(payload, result)
+	writeJSON(w, status, payload)
 }
 
 func deriveRealityPublicKeys(inbounds []db.Inbound) {
@@ -250,46 +277,44 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": views})
 }
 
-func createInbound(w http.ResponseWriter, r *http.Request, store Store) bool {
+func createInbound(w http.ResponseWriter, r *http.Request, store Store) (db.Inbound, bool) {
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-		return false
+		return db.Inbound{}, false
 	}
 	var payload db.CreateInboundParams
 	if err := decodeJSONBody(r, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
-		return false
+		return db.Inbound{}, false
 	}
 	if err := prepareInboundRealityKeys(&payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "prepare_reality_keys_failed")
-		return false
+		return db.Inbound{}, false
 	}
 	// Port conflict check
 	if payload.Port > 0 {
 		conflict, ok, err := store.FindInboundByPort(r.Context(), payload.Port, 0)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "port_check_failed")
-			return false
+			return db.Inbound{}, false
 		}
 		if ok {
 			writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
 				"message": "端口 " + strconv.FormatInt(int64(conflict.Port), 10) + " 已被入站 " + strconv.FormatInt(conflict.ID, 10) + " 使用",
 			})
-			return false
+			return db.Inbound{}, false
 		}
 	}
 	created, err := store.CreateInbound(r.Context(), payload)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return false
+		return db.Inbound{}, false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(created)
-	return true
+	return created, true
 }
 
-func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient) http.HandlerFunc {
+func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
+	store, ctrl, statsClient, singboxStatsClient := cfg.store, cfg.xrayController, cfg.statsClient, cfg.singboxStatsClient
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/inbounds/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -319,8 +344,10 @@ func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.S
 					http.NotFound(w, r)
 					return
 				}
-				if createClient(w, r, store, inboundID) {
-					applyCoreAsync(ctrl, store)
+				created, inbound, ok := createClient(w, r, store, inboundID)
+				if ok {
+					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"client": created, "created": true}, includeXray, includeSingbox)
 				}
 			}
 		case http.MethodPatch:
@@ -330,8 +357,9 @@ func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.S
 					http.NotFound(w, r)
 					return
 				}
-				if patchInboundEnabled(w, r, store, inboundID) {
-					applyCoreAsync(ctrl, store)
+				if updated, ok := patchInboundEnabled(w, r, store, inboundID); ok {
+					includeXray, includeSingbox := xrayAndSingboxForInboundWrite(db.Inbound{}, false, updated)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated}, includeXray, includeSingbox)
 				}
 			} else if len(parts) == 4 && parts[1] == "clients" && parts[3] == "enabled" {
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
@@ -344,8 +372,9 @@ func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.S
 					http.NotFound(w, r)
 					return
 				}
-				if patchClientEnabled(w, r, store, inboundID, clientID) {
-					applyCoreAsync(ctrl, store)
+				if updated, inbound, ok := patchClientEnabled(w, r, store, inboundID, clientID); ok {
+					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated}, includeXray, includeSingbox)
 				}
 			} else {
 				http.NotFound(w, r)
@@ -358,18 +387,38 @@ func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.S
 					http.NotFound(w, r)
 					return
 				}
-				if updateInbound(w, r, store, inboundID) {
-					applyCoreAsync(ctrl, store)
+				if store == nil {
+					writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
+					return
+				}
+				previous, hadPrevious, err := findInbound(r.Context(), store, inboundID)
+				if err != nil {
+					writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+					return
+				}
+				if !hadPrevious {
+					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
+					return
+				}
+				if updated, ok := updateInbound(w, r, store, inboundID); ok {
+					includeXray, includeSingbox := xrayAndSingboxForInboundWrite(previous, hadPrevious, updated)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated}, includeXray, includeSingbox)
 				}
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// PUT /api/inbounds/{id}/clients/{clientId}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
 				if err != nil || clientID <= 0 {
 					http.NotFound(w, r)
 					return
 				}
-				if updateClient(w, r, store, clientID) {
-					applyCoreAsync(ctrl, store)
+				if updated, inbound, ok := updateClient(w, r, store, inboundID, clientID); ok {
+					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated}, includeXray, includeSingbox)
 				}
 			} else {
 				http.NotFound(w, r)
@@ -386,15 +435,28 @@ func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.S
 					writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 					return
 				}
+				inbound, found, err := findInbound(r.Context(), store, inboundID)
+				if err != nil {
+					writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+					return
+				}
+				if !found {
+					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
+					return
+				}
 				if err := store.DeleteInbound(r.Context(), inboundID); err != nil {
 					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 					return
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
-				applyCoreAsync(ctrl, store)
+				includeXray, includeSingbox := xrayAndSingboxForInboundDelete(inbound)
+				writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// DELETE /api/inbounds/{id}/clients/{clientId}
+				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil || inboundID <= 0 {
+					http.NotFound(w, r)
+					return
+				}
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
 				if err != nil || clientID <= 0 {
 					http.NotFound(w, r)
@@ -404,13 +466,21 @@ func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.S
 					writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 					return
 				}
+				inbound, found, err := findInbound(r.Context(), store, inboundID)
+				if err != nil {
+					writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+					return
+				}
+				if !found || !clientBelongsToInbound(r.Context(), store, inboundID, clientID) {
+					writeJSONError(w, http.StatusNotFound, "client_not_found")
+					return
+				}
 				if err := store.DeleteClient(r.Context(), clientID); err != nil {
 					writeJSONError(w, http.StatusNotFound, "client_not_found")
 					return
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
-				applyCoreAsync(ctrl, store)
+				includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+				writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
 			} else {
 				http.NotFound(w, r)
 			}
@@ -420,14 +490,19 @@ func inboundChildrenHandler(store Store, ctrl XrayController, statsClient xray.S
 	}
 }
 
-func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) bool {
+func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) (db.Client, db.Inbound, bool) {
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
-	if !inboundExists(r.Context(), store, inboundID) {
+	inbound, found, err := findInbound(r.Context(), store, inboundID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+		return db.Client{}, db.Inbound{}, false
+	}
+	if !found {
 		writeJSONError(w, http.StatusNotFound, "inbound_not_found")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
 	var payload struct {
 		Email        string `json:"email"`
@@ -440,7 +515,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 	}
 	if err := decodeJSONBody(r, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
 	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, CredentialID: payload.CredentialID, Password: payload.Password, Enabled: payload.Enabled, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
 	if err != nil {
@@ -448,59 +523,61 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{
 				"message": "同一入站下客户端邮箱或凭据已存在，请更换后重试",
 			})
-			return false
+			return db.Client{}, db.Inbound{}, false
 		}
 		writeJSONError(w, http.StatusBadRequest, "create_client_failed")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(created)
-	return true
+	return created, inbound, true
 }
 
-func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) bool {
+func patchInboundEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) (db.Inbound, bool) {
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-		return false
+		return db.Inbound{}, false
 	}
 	var payload struct {
 		Enabled bool `json:"enabled"`
 	}
 	if err := decodeJSONBody(r, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
-		return false
+		return db.Inbound{}, false
 	}
 	updated, err := store.SetInboundEnabled(r.Context(), inboundID, payload.Enabled)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "inbound_not_found")
-		return false
+		return db.Inbound{}, false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
-	return true
+	return updated, true
 }
 
-func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64, clientID int64) bool {
+func patchClientEnabled(w http.ResponseWriter, r *http.Request, store Store, inboundID int64, clientID int64) (db.Client, db.Inbound, bool) {
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
 	var payload struct {
 		Enabled bool `json:"enabled"`
 	}
 	if err := decodeJSONBody(r, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
-		return false
+		return db.Client{}, db.Inbound{}, false
+	}
+	inbound, found, err := findInbound(r.Context(), store, inboundID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+		return db.Client{}, db.Inbound{}, false
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "client_not_found")
+		return db.Client{}, db.Inbound{}, false
 	}
 	updated, err := store.SetClientEnabled(r.Context(), inboundID, clientID, payload.Enabled)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "client_not_found")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
-	return true
+	return updated, inbound, true
 }
 
 func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
@@ -511,46 +588,64 @@ func inboundExists(ctx context.Context, store Store, inboundID int64) bool {
 	return exists
 }
 
-func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) bool {
+func findInbound(ctx context.Context, store Store, inboundID int64) (db.Inbound, bool, error) {
+	if store == nil {
+		return db.Inbound{}, false, nil
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return db.Inbound{}, false, err
+	}
+	for _, inbound := range inbounds {
+		if inbound.ID == inboundID {
+			return inbound, true, nil
+		}
+	}
+	return db.Inbound{}, false, nil
+}
+
+func inboundChangeAffectsSingbox(previous db.Inbound, hadPrevious bool, updated db.Inbound) bool {
+	return db.InboundCore(updated) == db.CoreSingbox || (hadPrevious && db.InboundCore(previous) == db.CoreSingbox)
+}
+
+func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundID int64) (db.Inbound, bool) {
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-		return false
+		return db.Inbound{}, false
 	}
 	var payload db.UpdateInboundParams
 	if err := decodeJSONBody(r, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
-		return false
+		return db.Inbound{}, false
 	}
 	if err := prepareUpdateInboundRealityKeys(r.Context(), store, inboundID, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "prepare_reality_keys_failed")
-		return false
+		return db.Inbound{}, false
 	}
 	// Port conflict check (excluding current inbound)
 	if payload.Port > 0 {
 		conflict, ok, err := store.FindInboundByPort(r.Context(), payload.Port, inboundID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "port_check_failed")
-			return false
+			return db.Inbound{}, false
 		}
 		if ok {
 			writeJSONError(w, http.StatusConflict, "port_conflict", map[string]interface{}{
 				"message": "端口 " + strconv.FormatInt(int64(conflict.Port), 10) + " 已被入站 " + strconv.FormatInt(conflict.ID, 10) + " 使用",
 			})
-			return false
+			return db.Inbound{}, false
 		}
 	}
 	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeJSONError(w, http.StatusNotFound, "inbound_not_found")
-			return false
+			return db.Inbound{}, false
 		}
 		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return false
+		return db.Inbound{}, false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
-	return true
+	return updated, true
 }
 
 func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient, inboundID, clientID int64) bool {
@@ -618,15 +713,24 @@ func collectTrafficBaselines(ctx context.Context, store Store, statsClient xray.
 	return baselines
 }
 
-func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID int64) bool {
+func updateClient(w http.ResponseWriter, r *http.Request, store Store, inboundID int64, clientID int64) (db.Client, db.Inbound, bool) {
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
 	var payload db.UpdateClientParams
 	if err := decodeJSONBody(r, &payload); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
-		return false
+		return db.Client{}, db.Inbound{}, false
+	}
+	inbound, found, err := findInbound(r.Context(), store, inboundID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+		return db.Client{}, db.Inbound{}, false
+	}
+	if !found || !clientBelongsToInbound(r.Context(), store, inboundID, clientID) {
+		writeJSONError(w, http.StatusNotFound, "update_client_failed")
+		return db.Client{}, db.Inbound{}, false
 	}
 	updated, err := store.UpdateClient(r.Context(), clientID, payload)
 	if err != nil {
@@ -634,12 +738,10 @@ func updateClient(w http.ResponseWriter, r *http.Request, store Store, clientID 
 			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{
 				"message": "同一入站下客户端邮箱已存在，请更换后重试",
 			})
-			return false
+			return db.Client{}, db.Inbound{}, false
 		}
 		writeJSONError(w, http.StatusNotFound, "update_client_failed")
-		return false
+		return db.Client{}, db.Inbound{}, false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
-	return true
+	return updated, inbound, true
 }

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -9,7 +10,8 @@ import (
 	"github.com/imzyb/MiGate/internal/db"
 )
 
-func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
+func routingRulesHandler(cfg *routerConfig) http.HandlerFunc {
+	store := cfg.store
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -26,23 +28,26 @@ func routingRulesHandler(store Store, ctrl XrayController) http.HandlerFunc {
 				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
+			scope, checkErr := loadCoreInboundScope(r.Context(), store)
+			if checkErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
 			rule, err := store.CreateRoutingRule(r.Context(), params)
 			if err != nil {
 				writeJSONError(w, http.StatusBadRequest, "create_failed")
 				return
 			}
-			applyResult := ctrl.Apply(r.Context())
-			_ = tryApplySingbox(r.Context(), store)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"rule": rule, "xray": applyResult})
+			includeXray, includeSingbox := xrayAndSingboxForRoutingRuleWriteWithScope(scope, db.RoutingRule{}, false, rule)
+			writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"rule": rule}, includeXray, includeSingbox)
 		default:
 			methodNotAllowed(w)
 		}
 	}
 }
 
-func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFunc {
+func routingRuleChildrenHandler(cfg *routerConfig) http.HandlerFunc {
+	store := cfg.store
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/routing-rules/")
 		if path == "reorder" {
@@ -57,13 +62,16 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 				writeJSONError(w, http.StatusBadRequest, "invalid_payload")
 				return
 			}
+			includeXray, includeSingbox, checkErr := xrayAndSingboxForReorder(r.Context(), store)
+			if checkErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
 			if err := store.ReorderRoutingRules(r.Context(), req.IDs); err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "reorder_failed")
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"reordered"}`))
+			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "reordered"}, includeXray, includeSingbox)
 			return
 		}
 		idStr := strings.TrimSuffix(path, "/")
@@ -79,6 +87,16 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
+			previousRule, hadPreviousRule, err := findRoutingRuleStrict(r.Context(), store, id)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
+			scope, checkErr := loadCoreInboundScope(r.Context(), store)
+			if checkErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
 			rule, err := store.UpdateRoutingRule(r.Context(), id, params)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -88,12 +106,24 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 				}
 				return
 			}
-			applyResult := ctrl.Apply(r.Context())
-			_ = tryApplySingbox(r.Context(), store)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"rule": rule, "xray": applyResult})
+			includeXray, includeSingbox := xrayAndSingboxForRoutingRuleWriteWithScope(scope, previousRule, hadPreviousRule, rule)
+			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"rule": rule}, includeXray, includeSingbox)
 		case http.MethodDelete:
-			err := store.DeleteRoutingRule(r.Context(), id)
+			deletedRule, found, err := findRoutingRuleStrict(r.Context(), store, id)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
+			if !found {
+				writeJSONError(w, http.StatusNotFound, "not_found")
+				return
+			}
+			scope, checkErr := loadCoreInboundScope(r.Context(), store)
+			if checkErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
+			err = store.DeleteRoutingRule(r.Context(), id)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
 					writeJSONError(w, http.StatusNotFound, "not_found")
@@ -102,14 +132,93 @@ func routingRuleChildrenHandler(store Store, ctrl XrayController) http.HandlerFu
 				}
 				return
 			}
-			applyResult := ctrl.Apply(r.Context())
-			_ = tryApplySingbox(r.Context(), store)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "deleted", "xray": applyResult})
+			includeXray, includeSingbox := xrayAndSingboxForRoutingRuleDeleteWithScope(scope, deletedRule)
+			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
 		case http.MethodGet:
 			writeJSONError(w, http.StatusNotFound, "not_found")
 		default:
 			methodNotAllowed(w)
 		}
+	}
+}
+
+func findRoutingRule(ctx context.Context, store Store, id int64) (db.RoutingRule, bool) {
+	rule, found, _ := findRoutingRuleStrict(ctx, store, id)
+	return rule, found
+}
+
+func findRoutingRuleStrict(ctx context.Context, store Store, id int64) (db.RoutingRule, bool, error) {
+	if store == nil {
+		return db.RoutingRule{}, false, nil
+	}
+	rules, err := store.ListRoutingRules(ctx)
+	if err != nil {
+		return db.RoutingRule{}, false, err
+	}
+	for _, rule := range rules {
+		if rule.ID == id {
+			return rule, true, nil
+		}
+	}
+	return db.RoutingRule{}, false, nil
+}
+
+func storeHasSingboxInbounds(ctx context.Context, store Store) bool {
+	return storeHasCoreInbounds(ctx, store, db.CoreSingbox)
+}
+
+func storeHasSingboxInboundsStrict(ctx context.Context, store Store) (bool, error) {
+	return storeHasCoreInboundsStrict(ctx, store, db.CoreSingbox)
+}
+
+func storeHasCoreInbounds(ctx context.Context, store Store, core string) bool {
+	hasCoreInbounds, _ := storeHasCoreInboundsStrict(ctx, store, core)
+	return hasCoreInbounds
+}
+
+func storeHasCoreInboundsStrict(ctx context.Context, store Store, core string) (bool, error) {
+	if store == nil {
+		return false, nil
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, inbound := range inbounds {
+		if db.InboundCore(inbound) == core {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func routingChangeAffectsSingbox(ctx context.Context, store Store, rule db.RoutingRule) bool {
+	affected, _ := routingChangeAffectsSingboxStrict(ctx, store, rule)
+	return affected
+}
+
+func routingChangeAffectsSingboxStrict(ctx context.Context, store Store, rule db.RoutingRule) (bool, error) {
+	return routingChangeAffectsCoreStrict(ctx, store, rule, db.CoreSingbox)
+}
+
+func routingChangeAffectsCoreStrict(ctx context.Context, store Store, rule db.RoutingRule, core string) (bool, error) {
+	if store == nil {
+		return false, nil
+	}
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return false, err
+	}
+	return db.RoutingRuleAppliesToCore(rule, inbounds, core), nil
+}
+
+func failedSingboxListSummary(err error) SingboxApplySummary {
+	return SingboxApplySummary{
+		Applied:          false,
+		Service:          "sing-box",
+		ConfigPath:       "/etc/sing-box/config.json",
+		CommandsExecuted: []string{},
+		Error:            "list_failed",
+		Detail:           err.Error(),
 	}
 }

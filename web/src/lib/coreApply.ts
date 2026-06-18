@@ -1,0 +1,102 @@
+import type { CreateClientResponse, CreateInboundResponse, SingboxApplySummary, XrayApplySummary } from '../api/types';
+
+type CoreWriteResponse = {
+  applied?: boolean;
+  detail?: string;
+  error?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
+  singbox?: SingboxApplySummary;
+  xray?: XrayApplySummary;
+};
+
+export function coreApplyWarning(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown, prefix: string): string {
+  if (!response || typeof response !== 'object') return '';
+  const data = response as CoreWriteResponse;
+  const failedCore = failedCoreResult(data);
+  if (failedCore) {
+    const detail = failedCore.detail || failedCore.error || xrayFailureOutput(failedCore) || data.detail || data.error || '未知错误';
+    return `${prefix}：${detail}`;
+  }
+  const postApplyWarnings = firstNonEmptyWarnings(data.post_apply_warnings, data.xray?.post_apply_warnings, data.singbox?.post_apply_warnings);
+  const listenerWarning = firstListenerWarning(postApplyWarnings) || firstListenerWarning(firstNonEmptyWarnings(data.warnings, data.xray?.warnings, data.singbox?.warnings));
+  if (listenerWarning) return listenerWarning;
+  const semanticWarning = firstXraySemanticWarning(firstNonEmptyWarnings(data.xray?.warnings, data.warnings));
+  if (semanticWarning) return xraySemanticWarningLabel(semanticWarning);
+  return '';
+}
+
+export function coreApplyWarningTone(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown): 'error' | 'info' {
+  if (!response || typeof response !== 'object') return 'error';
+  const data = response as CoreWriteResponse;
+  return failedCoreResult(data) ? 'error' : 'info';
+}
+
+function failedCoreResult(data: CoreWriteResponse): (CoreWriteResponse & { error_output?: string; status?: string }) | XrayApplySummary | SingboxApplySummary | null {
+  if (data.xray?.applied === false) return data.xray;
+  if (data.singbox?.applied === false && data.singbox.reason !== 'not_needed') return data.singbox;
+  if (data.applied === false) return data;
+  return null;
+}
+
+function firstNonEmptyWarnings(...groups: Array<string[] | undefined>): string[] {
+  return groups.find((warnings) => Array.isArray(warnings) && warnings.length > 0) || [];
+}
+
+function firstListenerWarning(warnings: string[]): string {
+  return warnings.find((warning) => warning.startsWith('配置已应用，但端口未监听')) || '';
+}
+
+function firstXraySemanticWarning(warnings: string[]): string {
+  return warnings.find((warning) => isXraySemanticWarning(warning)) || '';
+}
+
+function isXraySemanticWarning(warning: string): boolean {
+  return [
+    'xray_ws_path_invalid',
+    'xray_grpc_service_name_invalid',
+    'xray_xhttp_path_invalid',
+    'xray_reality_settings_incomplete',
+    'xray_tls_certificate_missing',
+    'xray_shadowsocks_credentials_missing',
+  ].includes(warning);
+}
+
+function xraySemanticWarningLabel(warning: string): string {
+  const labels: Record<string, string> = {
+    xray_ws_path_invalid: '节点已保存，Xray WS/H2 path 配置需要检查',
+    xray_grpc_service_name_invalid: '节点已保存，Xray gRPC serviceName 配置需要检查',
+    xray_xhttp_path_invalid: '节点已保存，Xray XHTTP path 配置需要检查',
+    xray_reality_settings_incomplete: '节点已保存，Xray REALITY 配置不完整',
+    xray_tls_certificate_missing: '节点已保存，Xray TLS 证书配置缺失',
+    xray_shadowsocks_credentials_missing: '节点已保存，Xray Shadowsocks 2022 缺少可用凭据',
+  };
+  return labels[warning] || warning;
+}
+
+export function coreApplyFailureWarning(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown, prefix: string): string {
+  if (!response || typeof response !== 'object') return '';
+  const data = response as CoreWriteResponse;
+  const failedCore = failedCoreResult(data);
+  if (!failedCore) return '';
+  const detail = failedCore.detail || failedCore.error || xrayFailureOutput(failedCore) || '未知错误';
+  return `${prefix}：${detail}`;
+}
+
+function xrayFailureOutput(result: XrayApplySummary | SingboxApplySummary | (CoreWriteResponse & { error_output?: string; status?: string })): string {
+  const xray = result as XrayApplySummary & { error_output?: string; status?: string };
+  return xray.error_output || xray.status || '';
+}
+
+export function showCoreApplyWarning(
+  response: unknown,
+  prefix: string,
+  showToast: (title: string, tone?: 'success' | 'error' | 'info') => void,
+  text: (value: string) => string = (value) => value,
+): boolean {
+  const warning = coreApplyWarning(response, prefix);
+  if (!warning) return false;
+  showToast(text(warning), coreApplyWarningTone(response));
+  return true;
+}

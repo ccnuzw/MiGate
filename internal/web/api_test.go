@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -431,6 +434,85 @@ func TestDeleteOutboundAPIRejectsUnknownID(t *testing.T) {
 	}
 }
 
+type listOutboundsFailingStore struct {
+	*db.Store
+	deleteCalled bool
+}
+
+func (s *listOutboundsFailingStore) ListOutbounds(ctx context.Context) ([]db.Outbound, error) {
+	return nil, errors.New("list outbounds failed")
+}
+
+func (s *listOutboundsFailingStore) DeleteOutbound(ctx context.Context, id int64) error {
+	s.deleteCalled = true
+	return s.Store.DeleteOutbound(ctx, id)
+}
+
+func TestDeleteOutboundAPIReportsListFailureBeforeDelete(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "temp-proxy", Protocol: "socks", Address: "10.0.0.1", Port: 1080,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	failingStore := &listOutboundsFailingStore{Store: store}
+	router := web.NewRouter(web.WithStore(failingStore))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
+		t.Fatalf("expected list_failed error, got %s", response.Body.String())
+	}
+	if failingStore.deleteCalled {
+		t.Fatal("delete should not run when old outbound lookup fails")
+	}
+}
+
+type listRoutingRulesFailingStore struct {
+	*db.Store
+	updateCalled bool
+	deleteCalled bool
+}
+
+func (s *listRoutingRulesFailingStore) ListRoutingRules(ctx context.Context) ([]db.RoutingRule, error) {
+	return nil, errors.New("list routing rules failed")
+}
+
+func (s *listRoutingRulesFailingStore) UpdateRoutingRule(ctx context.Context, id int64, params db.UpdateRoutingRuleParams) (db.RoutingRule, error) {
+	s.updateCalled = true
+	return s.Store.UpdateRoutingRule(ctx, id, params)
+}
+
+func (s *listRoutingRulesFailingStore) DeleteRoutingRule(ctx context.Context, id int64) error {
+	s.deleteCalled = true
+	return s.Store.DeleteRoutingRule(ctx, id)
+}
+
+type listInboundsFailingStore struct {
+	*db.Store
+}
+
+func (s *listInboundsFailingStore) ListInbounds(ctx context.Context) ([]db.Inbound, error) {
+	return nil, errors.New("list inbounds failed")
+}
+
+type xrayBuildFailingStore struct {
+	*db.Store
+}
+
+func (s *xrayBuildFailingStore) ListRoutingRules(ctx context.Context) ([]db.RoutingRule, error) {
+	return []db.RoutingRule{{ID: 99, OutboundTag: "missing", Enabled: true}}, nil
+}
+
 func TestRoutingRulesAPICRUD(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -453,7 +535,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// POST: create rule
-	payload := `{"inbound_tag":"","outbound_tag":"blocked","domain":"geosite:malware","ip":"geoip:private","rule_set":"geosite-category-ads-all","protocol":"bittorrent"}`
+	payload := `{"inbound_tag":"","outbound_id":2,"outbound_tag":"blocked","domain":"geosite:malware","ip":"geoip:private","rule_set":"geosite-category-ads-all","protocol":"bittorrent"}`
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(payload)))
 	if createResp.Code != 201 {
@@ -481,7 +563,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	}
 
 	// PUT: update rule
-	updatePayload := `{"inbound_tag":"socks-in","outbound_tag":"direct","domain":"geosite:netflix","ip":"8.8.8.8","rule_set":"geoip-cn","protocol":"dns","enabled":false}`
+	updatePayload := `{"inbound_tag":"socks-in","outbound_id":1,"outbound_tag":"direct","domain":"geosite:netflix","ip":"8.8.8.8","rule_set":"geoip-cn","protocol":"dns","enabled":false}`
 	updateResp := httptest.NewRecorder()
 	router.ServeHTTP(updateResp, httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/routing-rules/%d", id), strings.NewReader(updatePayload)))
 	if updateResp.Code != 200 {
@@ -512,6 +594,129 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	router.ServeHTTP(deleteUnknown, httptest.NewRequest(http.MethodDelete, "/api/routing-rules/99999", nil))
 	if deleteUnknown.Code != 404 {
 		t.Fatalf("expected 404 deleting unknown rule, got %d", deleteUnknown.Code)
+	}
+}
+
+func TestDeleteRoutingRuleAPIReportsListFailureBeforeDelete(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	failingStore := &listRoutingRulesFailingStore{Store: store}
+	router := web.NewRouter(web.WithStore(failingStore))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/routing-rules/"+strconv.FormatInt(rule.ID, 10), nil)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
+		t.Fatalf("expected list_failed error, got %s", response.Body.String())
+	}
+	if failingStore.deleteCalled {
+		t.Fatal("delete should not run when old routing rule lookup fails")
+	}
+}
+
+func TestUpdateRoutingRuleAPIReportsListFailureBeforeUpdate(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	failingStore := &listRoutingRulesFailingStore{Store: store}
+	router := web.NewRouter(web.WithStore(failingStore))
+	response := httptest.NewRecorder()
+	body := `{"outbound_id":1,"outbound_tag":"direct","domain":"example.org","enabled":false}`
+	req := httptest.NewRequest(http.MethodPut, "/api/routing-rules/"+strconv.FormatInt(rule.ID, 10), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
+		t.Fatalf("expected list_failed error, got %s", response.Body.String())
+	}
+	if failingStore.updateCalled {
+		t.Fatal("update should not run when old routing rule lookup fails")
+	}
+}
+
+func TestCreateRoutingRuleReportsSingboxListFailureInResponse(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(`{"outbound_id":1,"outbound_tag":"direct","domain":"example.com","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
+		t.Fatalf("expected list_failed error, got %s", response.Body.String())
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("routing rule should not be created when scope read fails: %+v", rules)
+	}
+}
+
+func TestRoutingRuleUpdateAppliesSingboxWhenPreviousRuleAffectedSingbox(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21090, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(inbound), OutboundID: 1, OutboundTag: "direct", Domain: "example.com", Enabled: true})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+	var singboxApplyCalls int
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			singboxApplyCalls++
+			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{"sing-box check"}}
+		}),
+	)
+
+	updatePayload := `{"inbound_tag":"` + db.GeneratedInboundTag(inbound) + `","outbound_id":1,"outbound_tag":"direct","domain":"example.com","enabled":false}`
+	updateResp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/routing-rules/%d", rule.ID), strings.NewReader(updatePayload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(updateResp, req)
+
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 updating rule, got %d: %s", updateResp.Code, updateResp.Body.String())
+	}
+	if singboxApplyCalls != 1 {
+		t.Fatalf("expected sing-box apply for previous affected rule, got %d", singboxApplyCalls)
+	}
+	if !strings.Contains(updateResp.Body.String(), `"singbox":`) || !strings.Contains(updateResp.Body.String(), `"applied":true`) {
+		t.Fatalf("expected sing-box result in response: %s", updateResp.Body.String())
 	}
 }
 
@@ -597,6 +802,554 @@ func TestCreateInboundPersistsHysteria2MPortForWebUILink(t *testing.T) {
 			t.Fatalf("inbound list missing %s: %s", want, list.Body.String())
 		}
 	}
+}
+
+func TestCreateSingboxInboundReportsNotInstalledWithoutAppliedTrue(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		if !strict {
+			t.Fatal("sing-box node creation must use strict apply")
+		}
+		return web.SingboxApplySummary{Applied: false, Error: "singbox_not_installed", Detail: "singbox_not_installed", Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{}}
+	}))
+	payload := []byte(`{"remark":"hy2","protocol":"hysteria2","port":21001,"network":"udp","security":"tls"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected saved-but-not-applied 201, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"created":true`, `"applied":false`, `"error":"singbox_not_installed"`, `"inbound":`, `"singbox":`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `"applied":true`) {
+		t.Fatalf("must not report applied true when sing-box is unavailable: %s", response.Body.String())
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].Protocol != "hysteria2" {
+		t.Fatalf("inbound should be persisted for later apply: %+v", inbounds)
+	}
+}
+
+func TestCreateSingboxInboundReportsApplyFailureWithCreatedObject(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		if !strict {
+			t.Fatal("sing-box node creation must use strict apply")
+		}
+		return web.SingboxApplySummary{Applied: false, Error: "singbox_apply_failed", Detail: "config check failed", Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{}}
+	}))
+	payload := []byte(`{"remark":"tuic","protocol":"tuic","port":21002,"network":"udp","security":"tls"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected saved-but-not-applied 201, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"created":true`, `"applied":false`, `"error":"singbox_apply_failed"`, `"detail":"config check failed"`, `"inbound":`, `"singbox":`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].Protocol != "tuic" {
+		t.Fatalf("inbound should be persisted for later apply: %+v", inbounds)
+	}
+}
+
+func TestCreateSingboxClientReportsApplyFailureWithCreatedObject(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "tuic", Protocol: "tuic", Port: 21002, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		if !strict {
+			t.Fatal("sing-box client creation must use strict apply")
+		}
+		return web.SingboxApplySummary{Applied: false, Error: "singbox_apply_failed", Detail: "restart failed", Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{}}
+	}))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients", bytes.NewReader([]byte(`{"email":"tuic@example.com","credential_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","password":"secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected saved-but-not-applied 201, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"created":true`, `"applied":false`, `"error":"singbox_apply_failed"`, `"detail":"restart failed"`, `"client":`, `"singbox":`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `"applied":true`) {
+		t.Fatalf("must not report applied true when apply fails: %s", response.Body.String())
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || len(inbounds[0].Clients) != 1 || inbounds[0].Clients[0].Email != "tuic@example.com" {
+		t.Fatalf("client should be persisted for later apply: %+v", inbounds)
+	}
+}
+
+func failedSingboxSummary(detail string) web.SingboxApplySummary {
+	return web.SingboxApplySummary{
+		Applied:          false,
+		Error:            "singbox_apply_failed",
+		Detail:           detail,
+		Service:          "sing-box",
+		ConfigPath:       "/etc/sing-box/config.json",
+		CommandsExecuted: []string{"sing-box check -c <temp>", "systemctl restart sing-box"},
+	}
+}
+
+func TestUpdateAndDeleteSingboxInboundReportApplyFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		if !strict {
+			t.Fatal("sing-box inbound writes must use strict apply")
+		}
+		return failedSingboxSummary("inbound apply failed")
+	}))
+
+	updateResp := httptest.NewRecorder()
+	updateBody := []byte(`{"remark":"hy2-new","protocol":"hysteria2","port":21002,"network":"udp","security":"tls","enabled":true}`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), bytes.NewReader(updateBody))
+	updateReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", updateResp.Code, updateResp.Body.String())
+	}
+	for _, want := range []string{`"inbound":`, `"applied":false`, `"singbox":`, `"detail":"inbound apply failed"`} {
+		if !strings.Contains(updateResp.Body.String(), want) {
+			t.Fatalf("update response missing %q: %s", want, updateResp.Body.String())
+		}
+	}
+
+	deleteResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteResp, httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), nil))
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 delete, got %d: %s", deleteResp.Code, deleteResp.Body.String())
+	}
+	for _, want := range []string{`"status":"deleted"`, `"applied":false`, `"detail":"inbound apply failed"`} {
+		if !strings.Contains(deleteResp.Body.String(), want) {
+			t.Fatalf("delete response missing %q: %s", want, deleteResp.Body.String())
+		}
+	}
+}
+
+func TestUpdateInboundFromSingboxToXrayStillReportsSingboxApplyFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21011, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	var calls int
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		calls++
+		if !strict {
+			t.Fatal("sing-box inbound migration must use strict apply")
+		}
+		return failedSingboxSummary("remove stale sing-box inbound failed")
+	}))
+
+	response := httptest.NewRecorder()
+	body := []byte(`{"remark":"vless-now","protocol":"vless","port":21011,"network":"tcp","security":"none","enabled":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("expected sing-box apply once for migration away from sing-box, got %d", calls)
+	}
+	for _, want := range []string{`"inbound":`, `"protocol":"vless"`, `"applied":false`, `"detail":"remove stale sing-box inbound failed"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestUpdateToggleAndDeleteSingboxClientReportApplyFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "tuic", Protocol: "tuic", Port: 21003, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "old@example.com", UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CredentialID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Password: "secret"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		if !strict {
+			t.Fatal("sing-box client writes must use strict apply")
+		}
+		return failedSingboxSummary("client apply failed")
+	}))
+	base := "/api/inbounds/" + strconv.FormatInt(inbound.ID, 10) + "/clients/" + strconv.FormatInt(client.ID, 10)
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		want   string
+	}{
+		{name: "update", method: http.MethodPut, path: base, body: `{"email":"new@example.com","enabled":true}`, want: `"client":`},
+		{name: "toggle", method: http.MethodPatch, path: base + "/enabled", body: `{"enabled":false}`, want: `"client":`},
+		{name: "delete", method: http.MethodDelete, path: base, body: ``, want: `"status":"deleted"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body io.Reader
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
+			}
+			resp := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, tc.path, body)
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			router.ServeHTTP(resp, req)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+			}
+			for _, want := range []string{tc.want, `"applied":false`, `"singbox":`, `"detail":"client apply failed"`} {
+				if !strings.Contains(resp.Body.String(), want) {
+					t.Fatalf("response missing %q: %s", want, resp.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestOutboundAndRoutingWritesReportSingboxApplyFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21004, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		if !strict {
+			t.Fatal("sing-box outbound/routing writes must use strict apply")
+		}
+		return failedSingboxSummary("shared apply failed")
+	}))
+
+	outResp := httptest.NewRecorder()
+	outReq := httptest.NewRequest(http.MethodPost, "/api/outbounds", bytes.NewReader([]byte(`{"tag":"singbox-hy2-out","protocol":"hysteria2","address":"127.0.0.1","port":443,"password":"secret"}`)))
+	outReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(outResp, outReq)
+	if outResp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", outResp.Code, outResp.Body.String())
+	}
+	for _, want := range []string{`"outbound":`, `"singbox":`, `"applied":false`, `"detail":"shared apply failed"`} {
+		if !strings.Contains(outResp.Body.String(), want) {
+			t.Fatalf("outbound response missing %q: %s", want, outResp.Body.String())
+		}
+	}
+
+	ruleResp := httptest.NewRecorder()
+	rulePayload := `{"inbound_tag":"` + db.GeneratedInboundTag(inbound) + `","outbound_id":1,"outbound_tag":"direct","enabled":true}`
+	ruleReq := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(rulePayload))
+	ruleReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(ruleResp, ruleReq)
+	if ruleResp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", ruleResp.Code, ruleResp.Body.String())
+	}
+	for _, want := range []string{`"rule":`, `"singbox":`, `"applied":false`, `"detail":"shared apply failed"`} {
+		if !strings.Contains(ruleResp.Body.String(), want) {
+			t.Fatalf("routing response missing %q: %s", want, ruleResp.Body.String())
+		}
+	}
+}
+
+func TestCoreWriteApplyScopeDoesNotApplyUnrelatedCore(t *testing.T) {
+	t.Run("singbox client only", func(t *testing.T) {
+		store, err := db.Open(context.Background(), ":memory:")
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer store.Close()
+		inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21030, Network: "udp", Security: "tls"})
+		if err != nil {
+			t.Fatalf("create inbound: %v", err)
+		}
+		xrayCtrl := &fakeXrayController{}
+		var singboxCalls int
+		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			singboxCalls++
+			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{"sing-box check"}}
+		}))
+
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients", strings.NewReader(`{"email":"hy2@example.com","password":"secret"}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+		}
+		if xrayCtrl.applyCalls != 0 {
+			t.Fatalf("expected no xray apply for sing-box client write, got %d", xrayCtrl.applyCalls)
+		}
+		if singboxCalls != 1 {
+			t.Fatalf("expected sing-box apply once, got %d", singboxCalls)
+		}
+		if strings.Contains(resp.Body.String(), `"xray":`) || !strings.Contains(resp.Body.String(), `"singbox":`) {
+			t.Fatalf("unexpected core apply response: %s", resp.Body.String())
+		}
+	})
+
+	t.Run("xray inbound only", func(t *testing.T) {
+		store, err := db.Open(context.Background(), ":memory:")
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer store.Close()
+		xrayCtrl := &fakeXrayController{}
+		var singboxCalls int
+		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			singboxCalls++
+			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{"sing-box check"}}
+		}))
+
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"vless","protocol":"vless","port":24430,"network":"tcp","security":"none"}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+		}
+		if xrayCtrl.applyCalls != 1 {
+			t.Fatalf("expected xray apply once, got %d", xrayCtrl.applyCalls)
+		}
+		if singboxCalls != 0 {
+			t.Fatalf("expected no sing-box apply for xray inbound write, got %d", singboxCalls)
+		}
+		if !strings.Contains(resp.Body.String(), `"xray":`) || strings.Contains(resp.Body.String(), `"singbox":`) {
+			t.Fatalf("unexpected core apply response: %s", resp.Body.String())
+		}
+	})
+}
+
+func TestOutboundAndRoutingApplyScopeFollowsAffectedCores(t *testing.T) {
+	t.Run("outbound create with xray inbound only returns xray result", func(t *testing.T) {
+		store, err := db.Open(context.Background(), ":memory:")
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer store.Close()
+		if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 24431, Network: "tcp", Security: "none"}); err != nil {
+			t.Fatalf("create inbound: %v", err)
+		}
+		xrayCtrl := &fakeXrayController{}
+		var singboxCalls int
+		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			singboxCalls++
+			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{"sing-box check"}}
+		}))
+
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/outbounds", strings.NewReader(`{"tag":"proxy","protocol":"socks","address":"127.0.0.1","port":1080}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+		}
+		if xrayCtrl.applyCalls != 1 || singboxCalls != 0 {
+			t.Fatalf("unexpected apply calls: xray=%d singbox=%d", xrayCtrl.applyCalls, singboxCalls)
+		}
+		if !strings.Contains(resp.Body.String(), `"xray":`) || strings.Contains(resp.Body.String(), `"singbox":`) {
+			t.Fatalf("unexpected core apply response: %s", resp.Body.String())
+		}
+	})
+
+	t.Run("routing create for singbox inbound only returns singbox result", func(t *testing.T) {
+		store, err := db.Open(context.Background(), ":memory:")
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer store.Close()
+		inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21031, Network: "udp", Security: "tls"})
+		if err != nil {
+			t.Fatalf("create inbound: %v", err)
+		}
+		xrayCtrl := &fakeXrayController{}
+		var singboxCalls int
+		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			singboxCalls++
+			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{"sing-box check"}}
+		}))
+
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(`{"inbound_tag":"`+db.GeneratedInboundTag(inbound)+`","outbound_id":1,"outbound_tag":"direct","enabled":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+		}
+		if xrayCtrl.applyCalls != 0 || singboxCalls != 1 {
+			t.Fatalf("unexpected apply calls: xray=%d singbox=%d", xrayCtrl.applyCalls, singboxCalls)
+		}
+		if strings.Contains(resp.Body.String(), `"xray":`) || !strings.Contains(resp.Body.String(), `"singbox":`) {
+			t.Fatalf("unexpected core apply response: %s", resp.Body.String())
+		}
+	})
+}
+
+type fixedWebSingboxRuntime struct{}
+
+func (fixedWebSingboxRuntime) Capability(ctx context.Context) singbox.Capability {
+	return singbox.Capability{Checked: true}
+}
+
+type apiTestSingboxProbe struct {
+	installed    bool
+	managed      bool
+	service      string
+	status       string
+	configExists bool
+	configValid  bool
+}
+
+type fakeWebXrayProbe struct {
+	installed    bool
+	version      string
+	managed      bool
+	status       string
+	configExists bool
+	configValid  bool
+	checkErr     error
+	logs         []string
+}
+
+func (p fakeWebXrayProbe) IsInstalled(ctx context.Context) bool { return p.installed }
+func (p fakeWebXrayProbe) Version(ctx context.Context) string {
+	if p.version != "" {
+		return p.version
+	}
+	return "Xray 26.3.27"
+}
+func (p fakeWebXrayProbe) Managed(ctx context.Context) bool { return p.managed }
+func (p fakeWebXrayProbe) Status(ctx context.Context) string {
+	if p.status != "" {
+		return p.status
+	}
+	return "running"
+}
+func (p fakeWebXrayProbe) ConfigExists(path string) bool { return p.configExists }
+func (p fakeWebXrayProbe) CheckConfig(ctx context.Context, path string) error {
+	if p.checkErr != nil {
+		return p.checkErr
+	}
+	if p.configValid {
+		return nil
+	}
+	return errors.New("invalid config")
+}
+func (p fakeWebXrayProbe) RecentLogs(ctx context.Context, service string, lines int) []string {
+	return p.logs
+}
+
+func mustListInbounds(t *testing.T, store web.Store) []db.Inbound {
+	t.Helper()
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	return inbounds
+}
+
+func mustListOutbounds(t *testing.T, store web.Store) []db.Outbound {
+	t.Helper()
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list outbounds: %v", err)
+	}
+	return outbounds
+}
+
+func mustListRules(t *testing.T, store web.Store) []db.RoutingRule {
+	t.Helper()
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list rules: %v", err)
+	}
+	return rules
+}
+
+func (p apiTestSingboxProbe) IsInstalled() bool { return p.installed }
+func (p apiTestSingboxProbe) Version() (string, error) {
+	return "sing-box 1.13.13", nil
+}
+func (p apiTestSingboxProbe) Management() singbox.ManagementStatus {
+	service := p.service
+	if service == "" {
+		service = "sing-box"
+	}
+	return singbox.ManagementStatus{Managed: p.managed, Service: service}
+}
+func (p apiTestSingboxProbe) Status() string {
+	if p.status == "" {
+		return "stopped"
+	}
+	return p.status
+}
+func (p apiTestSingboxProbe) ConfigExists(path string) bool { return p.configExists }
+func (p apiTestSingboxProbe) CheckConfig(path string) error {
+	if p.configValid {
+		return nil
+	}
+	return errors.New("invalid")
+}
+func (p apiTestSingboxProbe) RecentLogs(service string, lines int) []string {
+	return []string{"sing-box started"}
 }
 
 func TestCreateInboundAPIStoresInbound(t *testing.T) {
@@ -799,7 +1552,7 @@ func TestXrayConfigAPIRendersAdvancedRoutingFields(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag: "edge", OutboundTag: "blocked", Domain: "geosite:ads,example.com", IP: "geoip:private\n8.8.8.8", RuleSet: "geosite-category-ads-all", Protocol: "bittorrent,dns", Enabled: true,
+		InboundTag: "edge", OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:ads,example.com", IP: "geoip:private\n8.8.8.8", RuleSet: "geosite-category-ads-all", Protocol: "bittorrent,dns", Enabled: true,
 	}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
@@ -821,7 +1574,7 @@ func TestXrayConfigAPIRendersAdvancedRoutingFields(t *testing.T) {
 	}
 }
 
-func TestSingboxConfigAPIProducesPreviewWhenConfigFileMissing(t *testing.T) {
+func TestSingboxConfigAPISeparatesDiskConfigAndGeneratedPreview(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -835,11 +1588,17 @@ func TestSingboxConfigAPIProducesPreviewWhenConfigFileMissing(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/config", nil))
 
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected missing disk config 404, got %d: %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, want := range []string{`"log"`, `"inbounds"`, `"type":"hysteria2"`, `"listen_port":21001`} {
+
+	preview := httptest.NewRecorder()
+	router.ServeHTTP(preview, httptest.NewRequest(http.MethodGet, "/api/singbox/config/preview", nil))
+	if preview.Code != http.StatusOK {
+		t.Fatalf("expected preview 200, got %d: %s", preview.Code, preview.Body.String())
+	}
+	body := preview.Body.String()
+	for _, want := range []string{`"in_sync":false`, `"reason":"disk_missing"`, `"disk":`, `"error":"read_failed"`, `"generated":`, `"type":"hysteria2"`, `"listen_port":21001`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("singbox config preview missing %q: %s", want, body)
 		}
@@ -1283,7 +2042,7 @@ func (c fixedStatsClient) Close() error { return nil }
 func seedClientTraffic(t *testing.T, store *db.Store, client db.Client, up, down int64) {
 	t.Helper()
 	ctx := context.Background()
-	t0 := time.Unix(1000, 0)
+	t0 := time.Now().UTC().Add(-20 * time.Second)
 	raw := func(rawUp, rawDown int64) []db.TrafficRawStat {
 		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: rawUp, RawDown: rawDown, Status: "ok"}}
 	}
@@ -1401,7 +2160,7 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create outbound: %v", err)
 	}
-	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundTag: "proxy", Enabled: true}); err != nil {
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundID: outbound.ID, OutboundTag: "proxy", Enabled: true}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
 	if err := store.ApplyTrafficRawStats(context.Background(), []db.TrafficRawStat{
@@ -1430,19 +2189,18 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"clients_limited":1`,
 		`"outbounds":4`,
 		`"routing_rules":1`,
-		`"xray_realtime":31`,
 		`"protocols":{"vless":1}`,
-		`"traffic_series"`,
-		`"outbound_traffic"`,
-		`"tag":"proxy"`,
-		`"up":11`,
-		`"down":20`,
 		`"validation"`,
 		`"target":"xray"`,
 		`"target":"singbox"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`"traffic"`, `"traffic_rates"`, `"traffic_status"`, `"last_sampled_at"`, `"traffic_series"`, `"outbound_traffic"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("dashboard summary should not include %q: %s", forbidden, body)
 		}
 	}
 }
@@ -1473,13 +2231,14 @@ func TestDashboardSummaryDoesNotRegressBelowStoredTraffic(t *testing.T) {
 	for _, want := range []string{
 		`"clients_active":0`,
 		`"clients_limited":1`,
-		`"traffic":{"down":50,"total":150,"up":100,"xray_down":50,"xray_realtime":150,"xray_up":100}`,
-		`"traffic_series"`,
-		`"up":100`,
-		`"down":50`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard summary missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`"traffic"`, `"traffic_series"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("dashboard summary should not include %q: %s", forbidden, body)
 		}
 	}
 }
@@ -1666,7 +2425,7 @@ func TestTrafficSeriesAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing.T)
 	}
 }
 
-func TestDashboardSummaryTrafficSeriesUsesExpectedEngineFilter(t *testing.T) {
+func TestTrafficSeriesAPIUsesExpectedEngineFilter(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1707,24 +2466,10 @@ func TestDashboardSummaryTrafficSeriesUsesExpectedEngineFilter(t *testing.T) {
 		t.Fatalf("increment samples: %v", err)
 	}
 	router := web.NewRouter(web.WithStore(store))
-	summary := httptest.NewRecorder()
-	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
-	if summary.Code != http.StatusOK {
-		t.Fatalf("expected summary 200, got %d: %s", summary.Code, summary.Body.String())
-	}
 	series := httptest.NewRecorder()
 	router.ServeHTTP(series, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=240", nil))
 	if series.Code != http.StatusOK {
 		t.Fatalf("expected series 200, got %d: %s", series.Code, series.Body.String())
-	}
-	var summaryBody struct {
-		TrafficSeries []struct {
-			Up   int64 `json:"up"`
-			Down int64 `json:"down"`
-		} `json:"traffic_series"`
-	}
-	if err := json.NewDecoder(summary.Body).Decode(&summaryBody); err != nil {
-		t.Fatalf("decode summary: %v", err)
 	}
 	var seriesBody struct {
 		Series []struct {
@@ -1735,17 +2480,12 @@ func TestDashboardSummaryTrafficSeriesUsesExpectedEngineFilter(t *testing.T) {
 	if err := json.NewDecoder(series.Body).Decode(&seriesBody); err != nil {
 		t.Fatalf("decode series: %v", err)
 	}
-	if len(summaryBody.TrafficSeries) != 2 || len(seriesBody.Series) != 2 {
-		t.Fatalf("expected two points from both endpoints, summary=%+v series=%+v", summaryBody.TrafficSeries, seriesBody.Series)
+	if len(seriesBody.Series) != 2 {
+		t.Fatalf("expected two traffic series points, got %+v", seriesBody.Series)
 	}
-	for i := range seriesBody.Series {
-		if summaryBody.TrafficSeries[i] != seriesBody.Series[i] {
-			t.Fatalf("summary series should match traffic series at %d, summary=%+v series=%+v", i, summaryBody.TrafficSeries, seriesBody.Series)
-		}
-	}
-	last := summaryBody.TrafficSeries[len(summaryBody.TrafficSeries)-1]
+	last := seriesBody.Series[len(seriesBody.Series)-1]
 	if last.Up != 40 || last.Down != 60 {
-		t.Fatalf("expected dashboard series to avoid cross-engine double count, got %+v", summaryBody.TrafficSeries)
+		t.Fatalf("expected traffic series to avoid cross-engine double count, got %+v", seriesBody.Series)
 	}
 }
 
@@ -2387,6 +3127,59 @@ func TestUpdateInboundAPIRejectsUnknownInbound(t *testing.T) {
 	}
 }
 
+func TestUpdateInboundAPIWithoutStoreReturnsUnavailable(t *testing.T) {
+	router := web.NewRouter()
+	body := `{"remark":"new","port":8443,"network":"tcp","security":"none","enabled":true}`
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/1", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 without store, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"error":"store_unavailable"`) {
+		t.Fatalf("expected store_unavailable error, got %s", response.Body.String())
+	}
+}
+
+type updateInboundRecordingStore struct {
+	*db.Store
+	updateCalled bool
+}
+
+func (s *updateInboundRecordingStore) ListInbounds(ctx context.Context) ([]db.Inbound, error) {
+	return nil, nil
+}
+
+func (s *updateInboundRecordingStore) UpdateInbound(ctx context.Context, id int64, params db.UpdateInboundParams) (db.Inbound, error) {
+	s.updateCalled = true
+	return s.Store.UpdateInbound(ctx, id, params)
+}
+
+func TestUpdateInboundAPIRejectsUnknownInboundBeforeUpdate(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	recordingStore := &updateInboundRecordingStore{Store: store}
+	router := web.NewRouter(web.WithStore(recordingStore))
+	body := `{"remark":"new","port":8443,"network":"tcp","security":"none","enabled":true}`
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/99999", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown inbound, got %d: %s", response.Code, response.Body.String())
+	}
+	if recordingStore.updateCalled {
+		t.Fatal("update should not run when old inbound lookup reports not found")
+	}
+}
+
 func TestUpdateClientAPIUpdatesFields(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -2443,25 +3236,41 @@ func TestUpdateClientAPIRejectsUnknownClient(t *testing.T) {
 }
 
 type fakeXrayController struct {
-	statusCalls int
-	applyCalls  int
+	statusCalls  int
+	applyCalls   int
+	statusResult *web.XrayStatus
+	applyResult  *web.XrayApplyResult
 }
 
 func (f *fakeXrayController) Status(ctx context.Context) web.XrayStatus {
 	f.statusCalls++
+	if f.statusResult != nil {
+		return *f.statusResult
+	}
 	return web.XrayStatus{Service: "xray", Status: "running", Managed: true, Installed: true, Version: "Xray 25.6.8", MemoryRSSBytes: 12345678, Uptime: "2h3m", ActiveConnections: 4, ConfigPath: "/usr/local/migate/xray.json", CommandsExecuted: []string{}}
 }
 
 func (f *fakeXrayController) Apply(ctx context.Context) web.XrayApplyResult {
 	f.applyCalls++
-	return web.XrayApplyResult{Status: "applied", Service: "xray", CommandsExecuted: []string{"xray -test -config /usr/local/etc/xray/config.json", "systemctl restart xray"}}
+	if f.applyResult != nil {
+		return *f.applyResult
+	}
+	return web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", ConfigPath: "/usr/local/migate/xray.json", CommandsExecuted: []string{"xray -test -config /usr/local/etc/xray/config.json", "systemctl restart xray"}}
 }
 
 func (f *fakeXrayController) Version(ctx context.Context) string { return "Xray 1.8.0" }
 
 func TestXrayStatusAPIIsReadOnly(t *testing.T) {
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithXrayController(controller))
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "grpc", Protocol: "vless", Port: 2443, Network: "grpc", Security: "reality", GrpcServiceName: "svc"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/xray/status", nil)
 	router.ServeHTTP(response, req)
@@ -2475,8 +3284,115 @@ func TestXrayStatusAPIIsReadOnly(t *testing.T) {
 			t.Fatalf("status response missing %q: %s", want, body)
 		}
 	}
+	for _, want := range []string{`"listening_ports":[`, `"network":"grpc"`, `"grpc_service_name":"svc"`, `"security":"reality"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("status response missing listening detail %q: %s", want, body)
+		}
+	}
 	if controller.statusCalls != 1 || controller.applyCalls != 0 {
 		t.Fatalf("status must be read-only, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	}
+}
+
+func TestXrayStatusAPIFillsProductionConfigPathAndListeningPorts(t *testing.T) {
+	dir := t.TempDir()
+	controller := &fakeXrayController{statusResult: &web.XrayStatus{
+		Service: "xray", Status: "running", Managed: true, Installed: true, Version: "Xray 26.3.27",
+	}}
+	router := web.NewRouter(web.WithConfigDir(dir), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"installed":true`, `"managed":true`, `"status":"running"`, `"version":"Xray 26.3.27"`, `"config_path":"` + dir + `/xray.json"`, `"listening_ports":[]`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("status response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestXrayStatusAPIReturnsListeningPortsWithTransportDetails(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	for _, params := range []db.CreateInboundParams{
+		{Remark: "ws", Protocol: "vless", Port: 2441, Network: "ws", Security: "tls", WsPath: "/ws", TLSCertFile: "/cert.pem", TLSKeyFile: "/key.pem"},
+		{Remark: "grpc", Protocol: "vless", Port: 2442, Network: "grpc", Security: "reality", GrpcServiceName: "svc", RealityPrivateKey: "priv", RealityServerNames: "example.com", RealityDest: "example.com:443"},
+		{Remark: "xhttp", Protocol: "vless", Port: 2443, Network: "xhttp", Security: "none", XHTTPPath: "/xhttp"},
+	} {
+		if _, err := store.CreateInbound(context.Background(), params); err != nil {
+			t.Fatalf("create %s inbound: %v", params.Remark, err)
+		}
+	}
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var data struct {
+		ListeningPorts []struct {
+			Protocol        string `json:"protocol"`
+			Port            int    `json:"port"`
+			Network         string `json:"network"`
+			Transport       string `json:"transport"`
+			Path            string `json:"path"`
+			GrpcServiceName string `json:"grpc_service_name"`
+			Security        string `json:"security"`
+		} `json:"listening_ports"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(data.ListeningPorts) != 3 {
+		t.Fatalf("expected 3 listening ports, got %+v", data.ListeningPorts)
+	}
+	byPort := map[int]interface{}{}
+	for _, listener := range data.ListeningPorts {
+		byPort[listener.Port] = listener
+		if listener.Transport != "tcp" {
+			t.Fatalf("expected xray listener transport tcp, got %+v", listener)
+		}
+	}
+	if got := data.ListeningPorts[0]; got.Port != 2441 || got.Network != "ws" || got.Path != "/ws" || got.Security != "tls" {
+		t.Fatalf("unexpected ws listener: %+v", data.ListeningPorts)
+	}
+	if got := data.ListeningPorts[1]; got.Port != 2442 || got.Network != "grpc" || got.GrpcServiceName != "svc" || got.Security != "reality" {
+		t.Fatalf("unexpected grpc listener: %+v", data.ListeningPorts)
+	}
+	if got := data.ListeningPorts[2]; got.Port != 2443 || got.Network != "xhttp" || got.Path != "/xhttp" || got.Security != "none" {
+		t.Fatalf("unexpected xhttp listener: %+v", data.ListeningPorts)
+	}
+	if len(byPort) != 3 || controller.applyCalls != 0 {
+		t.Fatalf("status should be read-only with all ports represented, ports=%+v applyCalls=%d", byPort, controller.applyCalls)
+	}
+}
+
+func TestXrayStatusAPIUsesInjectedListenerDiagnostics(t *testing.T) {
+	controller := &fakeXrayController{}
+	router := web.NewRouter(
+		web.WithXrayController(controller),
+		web.WithXrayListenerDiagnostics(func(ctx context.Context) []web.CoreListenerDiagnostic {
+			return []web.CoreListenerDiagnostic{{InboundID: 99, Protocol: "vless", Port: 29999, Network: "grpc", Transport: "tcp", GrpcServiceName: "injected", Security: "reality", Listening: true}}
+		}),
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"inbound_id":99`, `"port":29999`, `"grpc_service_name":"injected"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("status response should use injected listener diagnostics, missing %q: %s", want, body)
+		}
+	}
+	if controller.applyCalls != 0 {
+		t.Fatalf("status must remain read-only, apply calls=%d", controller.applyCalls)
 	}
 }
 
@@ -2521,6 +3437,425 @@ func TestXrayApplyAPICallsControllerAfterDoubleConfirmation(t *testing.T) {
 	}
 	if controller.applyCalls != 1 || controller.statusCalls != 0 {
 		t.Fatalf("apply should call only apply once, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	}
+}
+
+func TestXrayApplyAPIOmitsSingboxWhenNotNeeded(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"xray":`) || !strings.Contains(body, `"applied":true`) {
+		t.Fatalf("expected applied xray response: %s", body)
+	}
+	if strings.Contains(body, `"singbox"`) || strings.Contains(body, `"not_needed"`) {
+		t.Fatalf("sing-box not_needed should be omitted when not required: %s", body)
+	}
+}
+
+func TestXrayApplyAPIReportsSingboxDecisionReadFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"xray":`, `"applied":false`, `"reason":"list_inbounds_failed"`, `"detail":"list inbounds failed"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestXrayApplyAPISkipsSingboxApplyWhenXrayFails(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	controller := &fakeXrayController{applyResult: &web.XrayApplyResult{
+		Applied: false, Status: "failed: validation", Service: "xray", Error: "validation_failed", Detail: "invalid xray config", CommandsExecuted: []string{"xray run -test"},
+	}}
+	var applierCalls int
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithXrayController(controller),
+		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			applierCalls++
+			return web.SingboxApplySummary{Applied: true}
+		}),
+	)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if applierCalls != 0 {
+		t.Fatalf("sing-box applier should not run when xray apply fails, got %d calls", applierCalls)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"error":"validation_failed"`) || strings.Contains(body, `"singbox"`) {
+		t.Fatalf("expected only failed xray result, got %s", body)
+	}
+}
+
+func TestXrayApplyAPIUsesInjectedSingboxApplier(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	controller := &fakeXrayController{}
+	var applierCalls int
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithXrayController(controller),
+		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			applierCalls++
+			if strict {
+				t.Fatal("xray apply linked sing-box apply should stay best-effort")
+			}
+			return web.SingboxApplySummary{Applied: false, Error: "singbox_apply_failed", Detail: "injected apply failed", Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{}}
+		}),
+	)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if applierCalls != 1 {
+		t.Fatalf("expected injected sing-box applier once, got %d", applierCalls)
+	}
+	for _, want := range []string{`"xray":`, `"singbox":`, `"applied":false`, `"error":"singbox_apply_failed"`, `"detail":"injected apply failed"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestXrayApplyAPIDefaultSingboxApplierReportsNotInstalled(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	origBinary := singbox.DefaultBinaryPath
+	singbox.DefaultBinaryPath = t.TempDir() + "/missing-sing-box"
+	defer func() { singbox.DefaultBinaryPath = origBinary }()
+
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"xray":`, `"singbox":`, `"applied":false`, `"reason":"singbox_not_installed"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `"singbox":{"applied":true`) {
+		t.Fatalf("must not report sing-box applied when default applier skipped missing binary: %s", response.Body.String())
+	}
+}
+
+func TestSingboxStatusAPIReturnsManagedAndConfigPath(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		primary     string
+		legacy      string
+		active      string
+		wantManaged bool
+		wantStatus  string
+		wantService string
+	}{
+		{name: "primary service", primary: "loaded", legacy: "not-found", active: "active", wantManaged: true, wantStatus: "running", wantService: "sing-box"},
+		{name: "legacy service", primary: "not-found", legacy: "loaded", active: "inactive", wantManaged: true, wantStatus: "stopped", wantService: "migate-singbox"},
+		{name: "unmanaged", primary: "not-found", legacy: "not-found", active: "inactive", wantManaged: false, wantStatus: "not_managed", wantService: "sing-box"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := installFakeSingboxStatusCommands(t, tc.primary, tc.legacy, tc.active)
+			defer restore()
+
+			router := web.NewRouter()
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/status", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+			}
+			var data map[string]interface{}
+			if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if data["installed"] != true {
+				t.Fatalf("expected installed true, got %v in %s", data["installed"], response.Body.String())
+			}
+			if data["managed"] != tc.wantManaged {
+				t.Fatalf("expected managed %v, got %v in %s", tc.wantManaged, data["managed"], response.Body.String())
+			}
+			if data["status"] != tc.wantStatus || data["service"] != tc.wantService {
+				t.Fatalf("unexpected status/service: %+v", data)
+			}
+			if data["config_path"] != "/etc/sing-box/config.json" {
+				t.Fatalf("expected sing-box config path, got %+v", data)
+			}
+			if data["version"] != "sing-box version 1.13.13" {
+				t.Fatalf("expected normalized version, got %+v", data["version"])
+			}
+			if _, ok := data["listening_ports"].([]interface{}); !ok {
+				t.Fatalf("expected listening_ports array, got %+v", data["listening_ports"])
+			}
+		})
+	}
+}
+
+func TestSingboxStatusAPIReturnsListeningPorts(t *testing.T) {
+	restore := installFakeSingboxStatusCommands(t, "loaded", "not-found", "active")
+	defer restore()
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21080, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var data struct {
+		ListeningPorts []struct {
+			InboundID int64  `json:"inbound_id"`
+			Protocol  string `json:"protocol"`
+			Port      int    `json:"port"`
+			Network   string `json:"network"`
+			Listening bool   `json:"listening"`
+		} `json:"listening_ports"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(data.ListeningPorts) != 1 {
+		t.Fatalf("expected one listening port diagnostic, got %+v", data.ListeningPorts)
+	}
+	got := data.ListeningPorts[0]
+	if got.Protocol != "hysteria2" || got.Port != 21080 || got.Network != "udp" {
+		t.Fatalf("unexpected listening port diagnostic: %+v", got)
+	}
+}
+
+func TestSingboxDiagnosticsAPIReturnsStructuredResult(t *testing.T) {
+	origConfigPath := singbox.DefaultConfigPath
+	dir := t.TempDir()
+	singbox.DefaultConfigPath = dir + "/config.json"
+	defer func() { singbox.DefaultConfigPath = origConfigPath }()
+	if err := os.WriteFile(singbox.DefaultConfigPath, []byte(`{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}`), 0644); err != nil {
+		t.Fatalf("write disk config: %v", err)
+	}
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21082, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
+		web.WithSingboxProbe(apiTestSingboxProbe{installed: true, managed: true, service: "sing-box", status: "running", configExists: true, configValid: true}),
+		web.WithSingboxListenerDiagnostics(func(ctx context.Context) []web.SingboxListenerDiagnostic {
+			return []web.SingboxListenerDiagnostic{{InboundID: 1, Protocol: "hysteria2", Port: 21082, Transport: "udp", Listening: false}}
+		}),
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"installed":true`, `"service_status":"running"`, `"config_valid":true`, `"missing_listeners":[`, `"warnings":[`, `"suggestions":[`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("diagnostics response missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestSingboxApplyAPIReturnsMissingListenerWarning(t *testing.T) {
+	restore := installFakeSingboxApplyCommands(t)
+	defer restore()
+	origConfigDir := singbox.DefaultConfigDir
+	origConfigPath := singbox.DefaultConfigPath
+	origCertFile := singbox.CertFile
+	origKeyFile := singbox.KeyFile
+	dir := t.TempDir()
+	singbox.DefaultConfigDir = dir
+	singbox.DefaultConfigPath = dir + "/config.json"
+	singbox.CertFile = dir + "/server.crt"
+	singbox.KeyFile = dir + "/server.key"
+	defer func() {
+		singbox.DefaultConfigDir = origConfigDir
+		singbox.DefaultConfigPath = origConfigPath
+		singbox.CertFile = origCertFile
+		singbox.KeyFile = origKeyFile
+	}()
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21083, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-user", Password: "secret"}); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
+		web.WithSingboxListenerDiagnostics(func(ctx context.Context) []web.SingboxListenerDiagnostic {
+			return []web.SingboxListenerDiagnostic{{InboundID: inbound.ID, Protocol: "hysteria2", Port: 21083, Transport: "udp", Listening: false}}
+		}),
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/singbox/apply", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "配置已应用，但端口未监听：21083/udp") {
+		t.Fatalf("expected missing listener warning in apply response: %s", response.Body.String())
+	}
+}
+
+func TestSingboxConfigPreviewReportsSyncState(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21081, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	origConfigPath := singbox.DefaultConfigPath
+	dir := t.TempDir()
+	singbox.DefaultConfigPath = dir + "/config.json"
+	defer func() { singbox.DefaultConfigPath = origConfigPath }()
+	if err := os.WriteFile(singbox.DefaultConfigPath, []byte(`{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}`), 0644); err != nil {
+		t.Fatalf("write disk config: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/config/preview", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"in_sync":false`, `"reason":"hash_mismatch"`, `"disk":`, `"generated":`, `"hash":`, `"config_path":"` + singbox.DefaultConfigPath + `"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("preview response missing %q: %s", want, body)
+		}
+	}
+}
+
+func installFakeSingboxStatusCommands(t *testing.T, primary, legacy, active string) func() {
+	t.Helper()
+	dir := t.TempDir()
+	binary := dir + "/sing-box"
+	systemctl := dir + "/systemctl"
+	ss := dir + "/ss"
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf 'sing-box version 1.13.13\\nTags: with_quic\\n'\n"), 0755); err != nil {
+		t.Fatalf("write fake sing-box: %v", err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "show" ]; then
+  if [ "$2" = "sing-box" ]; then printf '%%s\n' %q; exit 0; fi
+  if [ "$2" = "migate-singbox" ]; then printf '%%s\n' %q; exit 0; fi
+fi
+if [ "$1" = "is-active" ]; then printf '%%s\n' %q; exit 0; fi
+printf '\n'
+`, primary, legacy, active)
+	if err := os.WriteFile(systemctl, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+	if err := os.WriteFile(ss, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write fake ss: %v", err)
+	}
+	origBinary := singbox.DefaultBinaryPath
+	origPath := os.Getenv("PATH")
+	singbox.DefaultBinaryPath = binary
+	os.Setenv("PATH", dir+":"+origPath)
+	return func() {
+		singbox.DefaultBinaryPath = origBinary
+		os.Setenv("PATH", origPath)
+	}
+}
+
+func installFakeSingboxApplyCommands(t *testing.T) func() {
+	t.Helper()
+	dir := t.TempDir()
+	binary := dir + "/sing-box"
+	systemctl := dir + "/systemctl"
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nif [ \"$1\" = \"check\" ]; then exit 0; fi\nif [ \"$1\" = \"version\" ]; then printf 'sing-box version 1.13.13\\n'; exit 0; fi\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write fake sing-box: %v", err)
+	}
+	if err := os.WriteFile(systemctl, []byte("#!/bin/sh\nif [ \"$1\" = \"show\" ]; then printf 'loaded\\n'; exit 0; fi\nif [ \"$1\" = \"restart\" ]; then exit 0; fi\nif [ \"$1\" = \"is-active\" ]; then printf 'active\\n'; exit 0; fi\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+	origBinary := singbox.DefaultBinaryPath
+	origPath := os.Getenv("PATH")
+	singbox.DefaultBinaryPath = binary
+	os.Setenv("PATH", dir+":"+origPath)
+	return func() {
+		singbox.DefaultBinaryPath = origBinary
+		os.Setenv("PATH", origPath)
 	}
 }
 
@@ -2680,7 +4015,7 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 		t.Fatalf("create outbound: %v", err)
 	}
 	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag: "Reality", OutboundTag: "test-socks-egress", Enabled: true,
+		InboundTag: "Reality", OutboundID: outbound.ID, OutboundTag: "test-socks-egress", Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
@@ -2696,8 +4031,11 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	controller := web.NewRealController(store, configDir, mockRun)
 	result := controller.Apply(context.Background())
 
-	if result.Status != "applied" {
-		t.Fatalf("expected status 'applied', got %q", result.Status)
+	if !result.Applied || result.Status != "applied" || result.Error != "" {
+		t.Fatalf("expected applied result, got %+v", result)
+	}
+	if result.ConfigPath != configDir+"/xray.json" || result.Inbounds == 0 || result.Outbounds == 0 || result.Rules == 0 {
+		t.Fatalf("expected config path and counts, got %+v", result)
 	}
 	configPath := configDir + "/xray.json"
 	configBytes, err := os.ReadFile(configPath)
@@ -2757,6 +4095,509 @@ func TestRealControllerApplyStopsOnValidationFailure(t *testing.T) {
 	}
 	if !strings.Contains(result.Status, "failed") {
 		t.Fatalf("expected status to indicate failure, got %q", result.Status)
+	}
+	if result.Applied || result.Error != "validation_failed" || !strings.Contains(result.Detail, "FAILED") || result.ConfigPath != configDir+"/xray.json" {
+		t.Fatalf("expected structured validation failure, got %+v", result)
+	}
+}
+
+func TestRealControllerApplyReportsRestartFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "test", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	configDir := t.TempDir()
+	var calls []string
+	mockRun := func(name string, args ...string) (string, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		calls = append(calls, cmd)
+		if cmd == "systemctl restart xray" {
+			return "restart failed", fmt.Errorf("restart failed")
+		}
+		return "ok", nil
+	}
+	result := web.NewRealController(store, configDir, mockRun).Apply(context.Background())
+	if result.Applied || result.Error != "restart_failed" || result.Detail != "restart failed" || result.Status != "failed: restart" {
+		t.Fatalf("expected structured restart failure, got %+v", result)
+	}
+	if len(calls) != 2 || !strings.Contains(strings.Join(calls, "\n"), "xray run -test") || !strings.Contains(strings.Join(calls, "\n"), "systemctl restart xray") {
+		t.Fatalf("expected validation then restart calls, got %+v", calls)
+	}
+}
+
+func TestXrayConfigPreviewReportsMissingMismatchAndSync(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	dir := t.TempDir()
+	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir))
+
+	missing := httptest.NewRecorder()
+	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
+	if missing.Code != http.StatusOK || !strings.Contains(missing.Body.String(), `"reason":"disk_missing"`) {
+		t.Fatalf("expected disk_missing preview, got %d: %s", missing.Code, missing.Body.String())
+	}
+
+	if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"debug"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
+		t.Fatalf("write mismatch config: %v", err)
+	}
+	mismatch := httptest.NewRecorder()
+	router.ServeHTTP(mismatch, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
+	if mismatch.Code != http.StatusOK || !strings.Contains(mismatch.Body.String(), `"reason":"hash_mismatch"`) {
+		t.Fatalf("expected hash_mismatch preview, got %d: %s", mismatch.Code, mismatch.Body.String())
+	}
+
+	config, err := xray.BuildConfigWithOutbounds(mustListInbounds(t, store), mustListOutbounds(t, store), mustListRules(t, store))
+	if err != nil {
+		t.Fatalf("build generated config: %v", err)
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal generated config: %v", err)
+	}
+	if err := os.WriteFile(dir+"/xray.json", raw, 0644); err != nil {
+		t.Fatalf("write synced config: %v", err)
+	}
+	synced := httptest.NewRecorder()
+	router.ServeHTTP(synced, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
+	if synced.Code != http.StatusOK || !strings.Contains(synced.Body.String(), `"in_sync":true`) {
+		t.Fatalf("expected in_sync preview, got %d: %s", synced.Code, synced.Body.String())
+	}
+}
+
+func TestXrayConfigReturnsStoreReadFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"error":"list_inbounds_failed"`) {
+		t.Fatalf("expected list failure, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestXrayConfigReturnsBadRequestForGeneratedConfigFailure(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for generated config failure, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"error":"build_xray_config_failed"`) {
+		t.Fatalf("expected build_xray_config_failed response, got %s", response.Body.String())
+	}
+}
+
+func TestXrayDiagnosticsGeneratedConfigBuildFailureHasStructuredAction(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"xray_generated_config_build_failed"`, `"actions":[`, `"category":"config"`, `"message":"修复数据库中的 Xray 入站、出站或路由配置后重新应用。"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("diagnostics response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestXrayDiagnosticsStructuredWarnings(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	dir := t.TempDir()
+	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: false}))
+	notInstalled := httptest.NewRecorder()
+	router.ServeHTTP(notInstalled, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if notInstalled.Code != http.StatusOK || !strings.Contains(notInstalled.Body.String(), `"xray_not_installed"`) || !strings.Contains(notInstalled.Body.String(), `"actions":[`) || !strings.Contains(notInstalled.Body.String(), `"category":"service"`) {
+		t.Fatalf("expected not installed warning, got %d: %s", notInstalled.Code, notInstalled.Body.String())
+	}
+
+	if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	router = web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: false, configExists: true, configValid: true}))
+	notManaged := httptest.NewRecorder()
+	router.ServeHTTP(notManaged, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if !strings.Contains(notManaged.Body.String(), `"service_status":"not_managed"`) || !strings.Contains(notManaged.Body.String(), `"xray_not_systemd_managed"`) || !strings.Contains(notManaged.Body.String(), `"command":"systemctl status xray"`) {
+		t.Fatalf("expected not managed diagnostics: %s", notManaged.Body.String())
+	}
+
+	router = web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, checkErr: errors.New("bad config")}))
+	invalid := httptest.NewRecorder()
+	router.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if !strings.Contains(invalid.Body.String(), `"xray_config_invalid"`) || !strings.Contains(invalid.Body.String(), `"config_error":"bad config"`) || !strings.Contains(invalid.Body.String(), `"category":"config"`) {
+		t.Fatalf("expected invalid config diagnostics: %s", invalid.Body.String())
+	}
+
+	router = web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: false}))
+	configMissing := httptest.NewRecorder()
+	router.ServeHTTP(configMissing, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if !strings.Contains(configMissing.Body.String(), `"xray_config_missing"`) || !strings.Contains(configMissing.Body.String(), `"actions":[`) || !strings.Contains(configMissing.Body.String(), `"message":"点击应用重新写入 Xray 配置。"`) {
+		t.Fatalf("expected structured missing config diagnostics: %s", configMissing.Body.String())
+	}
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2444, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router = web.NewRouter(
+		web.WithStore(store),
+		web.WithConfigDir(dir),
+		web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}),
+		web.WithXrayListenerDiagnostics(func(ctx context.Context) []web.CoreListenerDiagnostic {
+			return []web.CoreListenerDiagnostic{{InboundID: inbound.ID, Protocol: "vless", Port: 2444, Transport: "tcp", Listening: false}}
+		}),
+	)
+	missing := httptest.NewRecorder()
+	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if !strings.Contains(missing.Body.String(), `"xray_missing_listeners"`) || !strings.Contains(missing.Body.String(), `"missing_listeners":[`) || !strings.Contains(missing.Body.String(), `"port":2444`) {
+		t.Fatalf("expected missing listener diagnostics: %s", missing.Body.String())
+	}
+}
+
+func TestXrayDiagnosticsReturnsStructuredSemanticAndLogActions(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "ws", Protocol: "vless", Port: 2444, Network: "ws", Security: "tls", WsPath: "bad"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithConfigDir(dir),
+		web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true, logs: []string{"failed to listen tcp 0.0.0.0:2444: bind: address already in use"}}),
+		web.WithXrayListenerDiagnostics(func(ctx context.Context) []web.CoreListenerDiagnostic {
+			return []web.CoreListenerDiagnostic{{InboundID: inbound.ID, Protocol: "vless", Port: 2444, Transport: "tcp", Listening: false}}
+		}),
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"suggestions":[`,
+		`"actions":[`,
+		`"suggestion_details":[`,
+		`"code":"xray_ws_path_invalid"`,
+		`"category":"listener"`,
+		`"code":"xray_tls_certificate_missing"`,
+		`"category":"security"`,
+		`"code":"xray_listener_port_in_use"`,
+		`"command":"ss -ltnp | grep :2444"`,
+		`"inbound_id":`,
+		`"port":2444`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("diagnostics missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestXrayDiagnosticsStructuredActionsCoverExpectedCodes(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	vless, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "reality", Protocol: "vless", Port: 2446, Network: "tcp", Security: "reality",
+	})
+	if err != nil {
+		t.Fatalf("create reality inbound: %v", err)
+	}
+	tlsInbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "tls", Protocol: "vless", Port: 2447, Network: "tcp", Security: "tls",
+	})
+	if err != nil {
+		t.Fatalf("create tls inbound: %v", err)
+	}
+	badOutbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "disabled-proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	if _, err := store.SetOutboundEnabled(context.Background(), badOutbound.ID, false); err != nil {
+		t.Fatalf("disable outbound: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(vless), OutboundID: badOutbound.ID, OutboundTag: badOutbound.Tag, Enabled: true}); err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithConfigDir(dir),
+		web.WithXrayProbe(fakeWebXrayProbe{
+			installed: true, managed: true, status: "stopped", configExists: true, checkErr: errors.New("bad config"),
+			logs: []string{"failed to listen tcp 0.0.0.0:2446: bind: address already in use"},
+		}),
+		web.WithXrayListenerDiagnostics(func(ctx context.Context) []web.CoreListenerDiagnostic {
+			return []web.CoreListenerDiagnostic{
+				{InboundID: vless.ID, Protocol: "vless", Port: 2446, Transport: "tcp", Security: "reality", Listening: false},
+				{InboundID: tlsInbound.ID, Protocol: "vless", Port: 2447, Transport: "tcp", Security: "tls", Listening: false},
+			}
+		}),
+	)
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var diagnostics struct {
+		Warnings    []string `json:"warnings"`
+		Suggestions []string `json:"suggestions"`
+		Actions     []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"actions"`
+		SuggestionDetails []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"suggestion_details"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	for _, want := range []string{
+		"xray_service_not_running",
+		"xray_config_invalid",
+		"xray_config_out_of_sync",
+		"xray_tls_certificate_missing",
+		"xray_route_outbound_unavailable",
+		"xray_listener_port_in_use",
+	} {
+		if !diagnosticActionsContain(diagnostics.Actions, want) {
+			t.Fatalf("expected structured action %q, got %+v; body=%s", want, diagnostics.Actions, response.Body.String())
+		}
+	}
+	if len(diagnostics.Suggestions) == 0 || len(diagnostics.Actions) == 0 || len(diagnostics.SuggestionDetails) == 0 {
+		t.Fatalf("expected legacy and structured suggestions, got %+v", diagnostics)
+	}
+	seen := map[string]bool{}
+	for _, action := range diagnostics.Actions {
+		if strings.TrimSpace(action.Code) == "" || strings.TrimSpace(action.Message) == "" {
+			t.Fatalf("diagnostic action must not have empty code/message: %+v", action)
+		}
+		key := action.Code + "\x00" + action.Message
+		if seen[key] {
+			t.Fatalf("diagnostic action duplicated: %+v", action)
+		}
+		seen[key] = true
+	}
+}
+
+func TestXrayDiagnosticsStructuredActionsCoverInstallAndManagementCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		probe fakeWebXrayProbe
+		want  string
+	}{
+		{name: "not installed", probe: fakeWebXrayProbe{installed: false}, want: "xray_not_installed"},
+		{name: "not systemd managed", probe: fakeWebXrayProbe{installed: true, managed: false, configExists: true, configValid: true}, want: "xray_not_systemd_managed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := db.Open(context.Background(), ":memory:")
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			defer store.Close()
+			dir := t.TempDir()
+			if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(tc.probe))
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+			var diagnostics struct {
+				Actions []struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"actions"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
+				t.Fatalf("decode diagnostics: %v", err)
+			}
+			if !diagnosticActionsContain(diagnostics.Actions, tc.want) {
+				t.Fatalf("expected structured action %q, got %+v; body=%s", tc.want, diagnostics.Actions, response.Body.String())
+			}
+		})
+	}
+}
+
+func diagnosticActionsContain(actions []struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}, code string) bool {
+	for _, action := range actions {
+		if action.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func TestXrayDiagnosticsExpectedListenersIncludeTransportDetails(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cases := []db.CreateInboundParams{
+		{Remark: "ws", Protocol: "vless", Port: 2441, Network: "ws", Security: "none", WsPath: "/ws"},
+		{Remark: "grpc", Protocol: "vless", Port: 2442, Network: "grpc", Security: "none", GrpcServiceName: "svc"},
+		{Remark: "xhttp", Protocol: "vless", Port: 2443, Network: "xhttp", Security: "none", XHTTPPath: "/xhttp"},
+	}
+	for _, params := range cases {
+		if _, err := store.CreateInbound(context.Background(), params); err != nil {
+			t.Fatalf("create %s inbound: %v", params.Remark, err)
+		}
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"network":"ws"`, `"path":"/ws"`, `"security":"none"`,
+		`"network":"grpc"`, `"grpc_service_name":"svc"`,
+		`"network":"xhttp"`, `"path":"/xhttp"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("diagnostics missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestCreateXrayInboundReturnsSynchronousApplyResult(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	controller := &fakeXrayController{applyResult: &web.XrayApplyResult{
+		Applied: false, Status: "failed: validation", Service: "xray", ConfigPath: "/tmp/xray.json",
+		Error: "validation_failed", Detail: "invalid config", CommandsExecuted: []string{"write /tmp/xray.json", "xray run -test -c /tmp/xray.json"},
+	}}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"vless","protocol":"vless","port":2445,"network":"tcp","security":"none"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"created":true`, `"inbound":`, `"xray":`, `"applied":false`, `"error":"validation_failed"`, `"detail":"invalid config"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if controller.applyCalls != 1 {
+		t.Fatalf("expected synchronous xray apply once, got %d", controller.applyCalls)
+	}
+}
+
+func TestCreateXrayInboundReturnsSemanticWarningsWithoutFailingSave(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"bad-ws","protocol":"vless","port":2451,"network":"ws","security":"tls","ws_path":"bad"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"created":true`, `"xray":`, `"applied":true`, `"warnings":[`, `"xray_ws_path_invalid"`, `"xray_tls_certificate_missing"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"error":`) {
+		t.Fatalf("semantic warnings must not turn save into an error: %s", body)
+	}
+}
+
+func TestCreateXrayInboundApplyFailureTakesPriorityOverSemanticWarnings(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	controller := &fakeXrayController{applyResult: &web.XrayApplyResult{
+		Applied: false, Status: "failed: validation", Service: "xray", ConfigPath: "/tmp/xray.json",
+		Error: "validation_failed", Detail: "invalid config", CommandsExecuted: []string{"xray run -test -c /tmp/xray.json"},
+	}}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"bad-ws","protocol":"vless","port":2452,"network":"ws","security":"tls","ws_path":"bad"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"created":true`, `"xray":`, `"applied":false`, `"error":"validation_failed"`, `"detail":"invalid config"`, `"xray_ws_path_invalid"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response missing %q: %s", want, body)
+		}
 	}
 }
 

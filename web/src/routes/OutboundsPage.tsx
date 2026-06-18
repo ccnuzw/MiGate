@@ -10,6 +10,8 @@ import type { Outbound, PingResult, ProxyPoolProxy, ProxyPoolResponse } from '..
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { coreLabel, outboundSupportedCores, outboundSupportLevel, outboundSupportLevelLabel } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
+import { showCoreApplyWarning } from '../lib/coreApply';
+import { refreshTopologyDependencies } from '../lib/queryInvalidation';
 import { PageTitle } from './OverviewPage';
 
 const schema = z.object({
@@ -55,16 +57,20 @@ export default function OutboundsPage() {
 
   const toggle = useMutation({
     mutationFn: (item: Outbound) => api.toggleOutbound(item, !item.enabled),
-    onSuccess: () => {
-      showToast(text('出站状态已更新'), 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
+        showToast(text('出站状态已更新'), 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, text('出站状态更新失败')), 'error'),
   });
   const remove = useMutation({
     mutationFn: api.deleteOutbound,
-    onSuccess: () => {
-      showToast(text('出站已删除'), 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已删除，但核心配置未生效', showToast, text)) {
+        showToast(text('出站已删除'), 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, text('删除出站失败')), 'error'),
@@ -88,8 +94,10 @@ export default function OutboundsPage() {
   });
   const reorder = useMutation({
     mutationFn: (ids: number[]) => api.reorderOutbounds(ids),
-    onSuccess: () => {
-      showToast(text('出站顺序已保存'), 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
+        showToast(text('出站顺序已保存'), 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, text('保存顺序失败')), 'error'),
@@ -203,8 +211,10 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
       delete (payload as Partial<Outbound>).supported_cores;
       return outbound?.id ? api.updateOutbound(outbound.id, payload) : api.createOutbound(payload);
     },
-    onSuccess: () => {
-      showToast(text('出站已保存'), 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
+        showToast(text('出站已保存'), 'success');
+      }
       onSaved();
       onClose();
     },
@@ -278,10 +288,7 @@ export function outboundFormValues(outbound: Outbound | null): InputValues {
 }
 
 function refreshOutboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.invalidateQueries({ queryKey: ['outbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
-  queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
-  queryClient.invalidateQueries({ queryKey: ['inbounds'] });
+  refreshTopologyDependencies(queryClient);
 }
 
 function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
@@ -299,8 +306,10 @@ function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose:
   });
   const importProxy = useMutation({
     mutationFn: (proxy: ProxyPoolProxy) => api.importProxyPool(poolType, proxy),
-    onSuccess: () => {
-      showToast(text('代理出站已导入'), 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
+        showToast(text('代理出站已导入'), 'success');
+      }
       onImported();
     },
     onError: (error) => showToast(errorMessage(error, text('导入失败')), 'error'),

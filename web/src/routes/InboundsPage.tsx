@@ -9,6 +9,8 @@ import { copyToClipboard } from '../lib/clipboard';
 import { inboundCore } from '../lib/cores';
 import { formatBytes, randomUUID } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { showCoreApplyWarning } from '../lib/coreApply';
+import { refreshTopologyDependencies } from '../lib/queryInvalidation';
 import { usePageVisible } from '../lib/visibility';
 import { PageTitle } from './OverviewPage';
 import type { ClientValues, InboundValues } from './InboundsPageForms';
@@ -413,32 +415,40 @@ export default function InboundsPage() {
 
   const toggleInbound = useMutation({
     mutationFn: (item: Inbound) => api.toggleInbound(item.id, !item.enabled),
-    onSuccess: () => {
-      showToast('节点状态已更新', 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
+        showToast('节点状态已更新', 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, '节点状态更新失败'), 'error'),
   });
   const deleteInbound = useMutation({
     mutationFn: api.deleteInbound,
-    onSuccess: () => {
-      showToast('节点已删除', 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已删除，但核心配置未生效', showToast, text)) {
+        showToast('节点已删除', 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, '删除节点失败'), 'error'),
   });
   const deleteClient = useMutation({
     mutationFn: ({ inboundId, id }: { inboundId: number; id: number }) => api.deleteClient(inboundId, id),
-    onSuccess: () => {
-      showToast('客户端已删除', 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已删除，但核心配置未生效', showToast, text)) {
+        showToast('客户端已删除', 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, '删除客户端失败'), 'error'),
   });
   const toggleClient = useMutation({
     mutationFn: ({ inboundId, client }: { inboundId: number; client: Client }) => api.toggleClient(inboundId, client.id, !client.enabled),
-    onSuccess: () => {
-      showToast('客户端状态已更新', 'success');
+    onSuccess: (response) => {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
+        showToast('客户端状态已更新', 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, '客户端状态更新失败'), 'error'),
@@ -638,10 +648,7 @@ function MetaItem({ label, value }: { label: string; value: string }) {
 }
 
 function refreshInboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.invalidateQueries({ queryKey: ['inbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
-  queryClient.invalidateQueries({ queryKey: ['outbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
+  refreshTopologyDependencies(queryClient);
 }
 
 const protocolBadgeClasses: Record<string, string> = {

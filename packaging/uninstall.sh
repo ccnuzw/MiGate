@@ -2,10 +2,10 @@
 set -euo pipefail
 
 MIGATE_SERVICE="migate"
-SINGBOX_SERVICE="migate-singbox"
+SINGBOX_SERVICE="sing-box"
 MIGATE_BINARY="/usr/local/bin/migate"
 MIGATE_SERVICE_PATH="/etc/systemd/system/migate.service"
-SINGBOX_SERVICE_PATH="/etc/systemd/system/migate-singbox.service"
+SINGBOX_SERVICE_PATH="/etc/systemd/system/sing-box.service"
 MIGATE_CONFIG_DIR="/etc/migate"
 MIGATE_INSTALL_DIR="/usr/local/migate"
 SINGBOX_CONFIG_DIR="/etc/sing-box"
@@ -105,6 +105,9 @@ main() {
   run_cmd systemctl stop migate 2>/dev/null || true
   run_cmd systemctl disable migate 2>/dev/null || true
   run_cmd rm -f /etc/systemd/system/migate.service
+  run_cmd systemctl stop sing-box 2>/dev/null || true
+  run_cmd systemctl disable sing-box 2>/dev/null || true
+  run_cmd rm -f /etc/systemd/system/sing-box.service
   run_cmd systemctl stop migate-singbox 2>/dev/null || true
   run_cmd systemctl disable migate-singbox 2>/dev/null || true
   run_cmd rm -f /etc/systemd/system/migate-singbox.service

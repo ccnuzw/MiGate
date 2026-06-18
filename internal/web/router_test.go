@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -176,6 +177,71 @@ func TestRouterSetsSecurityHeaders(t *testing.T) {
 	directTLS.ServeHTTP(tlsResp, tlsReq)
 	if tlsResp.Header().Get("Strict-Transport-Security") == "" {
 		t.Fatal("direct TLS response missing HSTS")
+	}
+}
+
+type countingStatusController struct {
+	calls int
+}
+
+func (c *countingStatusController) Status(ctx context.Context) web.XrayStatus {
+	c.calls++
+	return web.XrayStatus{Service: "xray", Status: "running", Installed: true, Managed: true, Version: "Xray test", CommandsExecuted: []string{}}
+}
+
+func (c *countingStatusController) Apply(ctx context.Context) web.XrayApplyResult {
+	return web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", CommandsExecuted: []string{}}
+}
+
+func (c *countingStatusController) Version(ctx context.Context) string {
+	return "Xray test"
+}
+
+func TestCoreStatusCachePreservesSecurityHeadersOnMissAndHit(t *testing.T) {
+	controller := &countingStatusController{}
+	router := web.NewRouter(web.WithXrayController(controller), web.WithCoreXrayListenerDiagnostics(func(context.Context) []web.CoreListenerDiagnostic {
+		return []web.CoreListenerDiagnostic{}
+	}))
+
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected first status 200, got %d: %s", first.Code, first.Body.String())
+	}
+	assertSecurityHeaders(t, first.Header())
+	if contentType := first.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("expected first response JSON content type, got %q", contentType)
+	}
+
+	second := httptest.NewRecorder()
+	router.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected cached status 200, got %d: %s", second.Code, second.Body.String())
+	}
+	assertSecurityHeaders(t, second.Header())
+	if contentType := second.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("expected cached response JSON content type, got %q", contentType)
+	}
+	if controller.calls != 1 {
+		t.Fatalf("expected cached status response to avoid repeated controller call, got %d", controller.calls)
+	}
+}
+
+func assertSecurityHeaders(t *testing.T, header http.Header) {
+	t.Helper()
+	for _, name := range []string{"X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options", "Content-Security-Policy"} {
+		if header.Get(name) == "" {
+			t.Fatalf("response missing %s", name)
+		}
+	}
+	if header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("unexpected X-Content-Type-Options: %q", header.Get("X-Content-Type-Options"))
+	}
+	if header.Get("Referrer-Policy") != "strict-origin-when-cross-origin" {
+		t.Fatalf("unexpected Referrer-Policy: %q", header.Get("Referrer-Policy"))
+	}
+	if header.Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("unexpected X-Frame-Options: %q", header.Get("X-Frame-Options"))
 	}
 }
 
@@ -568,8 +634,12 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 	}{
 		{"/api/xray/install"},
 		{"/api/xray/uninstall"},
+		{"/api/xray/restart"},
+		{"/api/xray/stop"},
 		{"/api/singbox/install"},
 		{"/api/singbox/uninstall"},
+		{"/api/singbox/restart"},
+		{"/api/singbox/stop"},
 	} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"confirm":true}`))
@@ -580,6 +650,67 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 		}
 		if !strings.Contains(response.Body.String(), "confirmation_required") {
 			t.Fatalf("%s response missing confirmation_required: %s", tc.path, response.Body.String())
+		}
+	}
+}
+
+func TestCoreServiceControlAPIsRunExpectedSystemctlCommands(t *testing.T) {
+	for _, tc := range []struct {
+		path    string
+		command string
+		core    string
+		status  string
+	}{
+		{"/api/xray/restart", "systemctl restart xray", "xray", "restarted"},
+		{"/api/xray/stop", "systemctl stop xray", "xray", "stopped"},
+		{"/api/singbox/restart", "systemctl restart sing-box", "singbox", "restarted"},
+		{"/api/singbox/stop", "systemctl stop sing-box", "singbox", "stopped"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			var scriptSeen string
+			router := web.NewRouter(web.WithCoreScriptRunner(func(script string) ([]byte, error) {
+				scriptSeen = script
+				if !strings.Contains(script, `command -v systemctl`) || !strings.Contains(script, `[ ! -d /run/systemd/system ]`) {
+					t.Fatalf("service control script must fail clearly when systemd is unavailable: %s", script)
+				}
+				if !strings.Contains(script, tc.command) {
+					t.Fatalf("service control script missing %q: %s", tc.command, script)
+				}
+				return []byte("ok"), nil
+			}))
+			response := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, req)
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+			}
+			for _, want := range []string{`"core":"` + tc.core + `"`, `"status":"` + tc.status + `"`, tc.command} {
+				if !strings.Contains(response.Body.String(), want) {
+					t.Fatalf("service control response missing %q: %s", want, response.Body.String())
+				}
+			}
+			if scriptSeen == "" {
+				t.Fatalf("runner was not called")
+			}
+		})
+	}
+}
+
+func TestCoreServiceControlReturnsSystemdUnavailableError(t *testing.T) {
+	router := web.NewRouter(web.WithCoreScriptRunner(func(script string) ([]byte, error) {
+		return []byte("systemd is unavailable; cannot restart xray.service"), errors.New("systemd unavailable")
+	}))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/restart", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"status":"failed"`, `"error":"restart_failed"`, "systemd is unavailable"} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("systemd unavailable response missing %q: %s", want, response.Body.String())
 		}
 	}
 }
@@ -601,6 +732,38 @@ func TestCoreInstallFailureReturnsStructuredActionResult(t *testing.T) {
 	for _, want := range []string{`"status":"failed"`, `"error":"install_failed"`, "download Xray release"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("install failure response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestCoreInstallScriptsReplaceBinariesAtomically(t *testing.T) {
+	script := webPackageSource(t)
+	for _, want := range []string{
+		`systemctl stop xray 2>/dev/null || true`,
+		`install_tmp="/usr/local/bin/.xray.new.$$"`,
+		`cp "$tmp/xray/xray" "$install_tmp"`,
+		`chmod +x "$install_tmp"`,
+		`mv -f "$install_tmp" /usr/local/bin/xray`,
+		`systemctl stop sing-box 2>/dev/null || true`,
+		`systemctl stop migate-singbox 2>/dev/null || true`,
+		`install_tmp="/usr/local/bin/.sing-box.new.$$"`,
+		`cp "$tmp"/sing-box-*/sing-box "$install_tmp"`,
+		`chmod +x "$install_tmp"`,
+		`mv -f "$install_tmp" /usr/local/bin/sing-box`,
+		`rm -f "$install_tmp"`,
+		`"atomic install /usr/local/bin/xray"`,
+		`"atomic install /usr/local/bin/sing-box"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("WebUI core install script missing atomic replacement contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`cp "$tmp/xray/xray" /usr/local/bin/xray`,
+		`cp "$tmp"/sing-box-*/sing-box /usr/local/bin/sing-box`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("WebUI core install script must not directly overwrite running binary with %q", forbidden)
 		}
 	}
 }
@@ -653,7 +816,7 @@ func TestCoreSingboxInstallCommandsIncludeChecksumVerification(t *testing.T) {
 	for _, want := range []string{
 		`"download sing-box release"`,
 		`"verify sing-box release checksum"`,
-		`"install /usr/local/bin/sing-box"`,
+		`"atomic install /usr/local/bin/sing-box"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("sing-box WebUI command list missing %q", want)

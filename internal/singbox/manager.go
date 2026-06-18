@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,20 @@ var (
 	SBMaxPort = 21999
 )
 
+var execCommand = exec.Command
+
+const (
+	primaryServiceName = "sing-box"
+	legacyServiceName  = "migate-singbox"
+)
+
+// ManagementStatus describes whether sing-box is managed by a known systemd
+// unit and which unit runtime operations should use.
+type ManagementStatus struct {
+	Managed bool
+	Service string
+}
+
 // IsInstalled returns true if the sing-box binary exists.
 func IsInstalled() bool {
 	_, err := os.Stat(DefaultBinaryPath)
@@ -42,7 +57,7 @@ func Version() (string, error) {
 	if !IsInstalled() {
 		return "", fmt.Errorf("sing-box not installed")
 	}
-	out, err := exec.Command(DefaultBinaryPath, "version").Output()
+	out, err := execCommand(DefaultBinaryPath, "version").Output()
 	if err != nil {
 		return "", fmt.Errorf("sing-box version: %w", err)
 	}
@@ -64,15 +79,24 @@ func NormalizeVersion(raw string) string {
 
 // CheckConfig validates the config file with sing-box.
 func CheckConfig() error {
-	out, err := exec.Command(DefaultBinaryPath, "check", "-c", DefaultConfigPath).CombinedOutput()
+	return CheckConfigPath(DefaultConfigPath)
+}
+
+// CheckConfigPath validates a specific config file with sing-box.
+func CheckConfigPath(path string) error {
+	out, err := execCommand(DefaultBinaryPath, "check", "-c", path).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("sing-box config check failed: %s: %w", string(out), err)
 	}
 	return nil
 }
 
-// Status returns "running" if the service is active, "stopped" otherwise.
+// Status returns "running" if the service is active, "stopped" if it is
+// managed but inactive, or "not_managed" when no known systemd unit exists.
 func Status() string {
+	if !Management().Managed {
+		return "not_managed"
+	}
 	out, err := ServiceStatus()
 	if err != nil {
 		return "stopped"
@@ -95,29 +119,141 @@ func Apply() error {
 	return err
 }
 
+// ApplyConfig atomically validates, installs, and restarts a generated config.
+func ApplyConfig(raw []byte) error {
+	if err := CheckConfigDir(); err != nil {
+		return fmt.Errorf("prepare config dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(DefaultConfigDir, ".config-*.json")
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	if err := CheckConfigPath(tmpPath); err != nil {
+		return fmt.Errorf("config check failed: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(DefaultConfigPath), 0755); err != nil {
+		return fmt.Errorf("prepare config path: %w", err)
+	}
+	var backupPath string
+	if _, err := os.Stat(DefaultConfigPath); err == nil {
+		backup, createErr := os.CreateTemp(filepath.Dir(DefaultConfigPath), ".config-backup-*.json")
+		if createErr != nil {
+			return fmt.Errorf("backup current config: %w", createErr)
+		}
+		backupPath = backup.Name()
+		if data, readErr := os.ReadFile(DefaultConfigPath); readErr != nil {
+			backup.Close()
+			return fmt.Errorf("backup current config: %w", readErr)
+		} else if _, writeErr := backup.Write(data); writeErr != nil {
+			backup.Close()
+			return fmt.Errorf("backup current config: %w", writeErr)
+		} else if closeErr := backup.Close(); closeErr != nil {
+			return fmt.Errorf("backup current config: %w", closeErr)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat current config: %w", err)
+	}
+	if err := os.Rename(tmpPath, DefaultConfigPath); err != nil {
+		return fmt.Errorf("install config: %w", err)
+	}
+	if _, err := RestartService(); err != nil {
+		if backupPath != "" {
+			if restoreErr := os.Rename(backupPath, DefaultConfigPath); restoreErr != nil {
+				return fmt.Errorf("%w; restore previous config failed: %v", err, restoreErr)
+			}
+			if _, restoreRestartErr := RestartService(); restoreRestartErr != nil {
+				return fmt.Errorf("%w; previous config restored but restart failed: %v", err, restoreRestartErr)
+			}
+			return err
+		}
+		return fmt.Errorf("%w; new config was installed but service did not start because no previous config was available to restore", err)
+	}
+	if backupPath != "" {
+		_ = os.Remove(backupPath)
+	}
+	return nil
+}
+
 // ServiceName returns the systemd service name.
 func ServiceName() string {
-	return "migate-singbox"
+	return primaryServiceName
+}
+
+// LegacyServiceName returns the pre-migration systemd unit name. New installs
+// use ServiceName(), but runtime operations keep this fallback for upgraded VPSes.
+func LegacyServiceName() string {
+	return legacyServiceName
+}
+
+// RuntimeServiceName returns the best systemd unit to use for runtime
+// operations, preferring the upstream sing-box.service and falling back to the
+// legacy MiGate-managed unit when it is the only installed unit.
+func RuntimeServiceName() string {
+	return resolveServiceName()
+}
+
+func Management() ManagementStatus {
+	if serviceAvailable(primaryServiceName) {
+		return ManagementStatus{Managed: true, Service: primaryServiceName}
+	}
+	if serviceAvailable(legacyServiceName) {
+		return ManagementStatus{Managed: true, Service: legacyServiceName}
+	}
+	return ManagementStatus{Managed: false, Service: primaryServiceName}
+}
+
+func resolveServiceName() string {
+	return Management().Service
+}
+
+func serviceAvailable(name string) bool {
+	cmd := execCommand("systemctl", "show", name, "--property=LoadState", "--value")
+	out, err := cmd.CombinedOutput()
+	state := strings.TrimSpace(string(out))
+	if err != nil {
+		return false
+	}
+	switch state {
+	case "loaded", "generated", "linked", "linked-runtime", "masked", "masked-runtime", "static", "indirect", "enabled", "disabled":
+		return true
+	default:
+		return false
+	}
 }
 
 // RestartService restarts the systemd service.
 func RestartService() (string, error) {
-	cmd := exec.Command("systemctl", "restart", ServiceName())
+	service := resolveServiceName()
+	cmd := execCommand("systemctl", "restart", service)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("systemctl restart %s failed: %w", ServiceName(), err)
+		return string(out), fmt.Errorf("systemctl restart %s failed: %w", service, err)
 	}
 	return string(out), nil
 }
 
 // ServiceStatus returns the systemd service status.
 func ServiceStatus() (string, error) {
-	cmd := exec.Command("systemctl", "is-active", ServiceName())
+	service := resolveServiceName()
+	cmd := execCommand("systemctl", "is-active", service)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("systemctl is-active %s failed: %w", ServiceName(), err)
+	if err == nil || strings.TrimSpace(string(out)) != "" {
+		return string(out), nil
 	}
-	return string(out), nil
+	return "", fmt.Errorf("systemctl is-active %s failed: %w", service, err)
 }
 
 // ConfigPath returns the full path for a given config file name.
@@ -145,14 +281,15 @@ type ServiceProperties struct {
 
 // Show returns parsed systemd service properties via systemctl show.
 func Show() (*ServiceProperties, error) {
-	cmd := exec.Command("systemctl", "show", ServiceName(),
+	service := resolveServiceName()
+	cmd := execCommand("systemctl", "show", service,
 		"--property=MemoryCurrent",
 		"--property=MainPID",
 		"--property=ActiveEnterTimestamp",
 		"--property=ActiveEnterTimestampMonotonic")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("systemctl show: %w", err)
+		return nil, fmt.Errorf("systemctl show %s: %w", service, err)
 	}
 	props := &ServiceProperties{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -209,7 +346,7 @@ func Uptime() string {
 // ActiveConnections returns the number of established TCP connections
 // to sing-box ports (21000-21999 range) via ss.
 func ActiveConnections() int {
-	out, err := exec.Command("ss", "-tn", "state", "established").CombinedOutput()
+	out, err := execCommand("ss", "-tn", "state", "established").CombinedOutput()
 	if err != nil {
 		return 0
 	}
@@ -224,4 +361,41 @@ func ActiveConnections() int {
 		}
 	}
 	return count
+}
+
+// ListeningUDPPorts reports whether expected UDP ports are currently listening.
+func ListeningUDPPorts(expected []int) map[int]bool {
+	result := map[int]bool{}
+	for _, port := range expected {
+		if port > 0 && port <= 65535 {
+			result[port] = false
+		}
+	}
+	out, err := execCommand("ss", "-H", "-lun").CombinedOutput()
+	if err != nil {
+		return result
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		port := parseAddressPort(fields[3])
+		if _, ok := result[port]; ok {
+			result[port] = true
+		}
+	}
+	return result
+}
+
+func parseAddressPort(address string) int {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return 0
+	}
+	if idx := strings.LastIndex(address, ":"); idx >= 0 && idx < len(address)-1 {
+		port, _ := strconv.Atoi(strings.Trim(address[idx+1:], "[]"))
+		return port
+	}
+	return 0
 }

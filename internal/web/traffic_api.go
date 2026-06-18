@@ -36,6 +36,7 @@ func trafficSummaryHandler(store Store, cache *trafficViewCache) http.HandlerFun
 			rateUp += traffic.RateUp
 			rateDown += traffic.RateDown
 		}
+		generatedAt := time.Now().UTC().Format(time.RFC3339)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"total_up":        totalUp,
 			"total_down":      totalDown,
@@ -44,7 +45,10 @@ func trafficSummaryHandler(store Store, cache *trafficViewCache) http.HandlerFun
 			"rate_down":       rateDown,
 			"rate_total":      rateUp + rateDown,
 			"status":          buildTrafficCoverage(view.trafficByInbound),
-			"last_updated_at": time.Now().UTC().Format(time.RFC3339),
+			"engine":          trafficViewEngine(view.trafficByInbound),
+			"source":          "migate",
+			"last_sampled_at": lastTrafficSampledAt(view.trafficByInbound, view.trafficByClient),
+			"generated_at":    generatedAt,
 		})
 	}
 }
@@ -76,7 +80,8 @@ func trafficInboundsHandler(store Store, cache *trafficViewCache) http.HandlerFu
 				"status":          traffic.Status,
 				"message":         traffic.Message,
 				"engine":          traffic.Engine,
-				"last_updated_at": time.Now().UTC().Format(time.RFC3339),
+				"source":          traffic.Source,
+				"last_sampled_at": traffic.LastSampledAt,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": items})
@@ -113,12 +118,33 @@ func trafficClientsHandler(store Store, cache *trafficViewCache) http.HandlerFun
 					"status":          traffic.Status,
 					"message":         traffic.Message,
 					"engine":          traffic.Engine,
-					"last_updated_at": time.Now().UTC().Format(time.RFC3339),
+					"source":          traffic.Source,
+					"last_sampled_at": traffic.LastSampledAt,
 				})
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"clients": items})
 	}
+}
+
+func trafficViewEngine(byInbound map[int64]inboundTrafficSummary) string {
+	seen := map[string]struct{}{}
+	for _, traffic := range byInbound {
+		engine := normalizeTrafficEngine(traffic.Engine)
+		if engine != "" {
+			seen[engine] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return "migate"
+	}
+	if len(seen) > 1 {
+		return "mixed"
+	}
+	for engine := range seen {
+		return engine
+	}
+	return "migate"
 }
 
 type trafficView struct {

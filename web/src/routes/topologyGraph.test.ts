@@ -67,8 +67,8 @@ describe('topology graph helpers', () => {
     expect(lookup.get('edge-hk')?.id).toBe(7);
 
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 21, inbound_tag: 'inbound-7-vless', outbound_tag: 'direct', enabled: true },
-      { id: 22, inbound_tag: 'edge-hk', outbound_tag: 'proxy-a', enabled: true },
+      { id: 21, inbound_tag: 'inbound-7-vless', outbound_id: 1, outbound_tag: 'direct', enabled: true },
+      { id: 22, inbound_tag: 'edge-hk', outbound_id: 2, outbound_tag: 'proxy-a', enabled: true },
     ]);
 
     expect(graph.edges.find((edge) => edge.id.startsWith('rule-21-7'))).toMatchObject({
@@ -83,8 +83,8 @@ describe('topology graph helpers', () => {
 
   it('expands empty inbound_tag rules to all inbounds', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 31, inbound_tag: '', outbound_tag: 'direct', enabled: true },
-      { id: 32, inbound_tag: '   ', outbound_tag: 'direct', enabled: true },
+      { id: 31, inbound_tag: '', outbound_id: 1, outbound_tag: 'direct', enabled: true },
+      { id: 32, inbound_tag: '   ', outbound_id: 1, outbound_tag: 'direct', enabled: true },
     ]);
 
     const routingEdges = graph.edges.filter((edge) => edge.id.startsWith('rule-31-'));
@@ -98,13 +98,14 @@ describe('topology graph helpers', () => {
     expect(blankTagEdges.every((edge) => edge.label === '#32 全部入站')).toBe(true);
   });
 
-  it('creates a missing outbound node when outbound_tag is not found', () => {
+  it('creates a missing outbound node when outbound_id is not found', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 41, inbound_tag: 'inbound-7-vless', outbound_tag: 'deleted-proxy', enabled: true },
+      { id: 41, inbound_tag: 'inbound-7-vless', outbound_id: 99, outbound_tag: 'deleted-proxy', enabled: true },
     ]);
 
-    expect(graph.nodes.find((node) => node.id === 'outbound:deleted-proxy')?.data).toMatchObject({
+    expect(graph.nodes.find((node) => node.id === 'outbound:id:99')?.data).toMatchObject({
       kind: 'missing-outbound',
+      subtitle: '路由引用的出站不存在 · deleted-proxy',
       missing: true,
       enabled: false,
     });
@@ -116,7 +117,7 @@ describe('topology graph helpers', () => {
 
   it('creates a missing inbound node when inbound_tag is not found', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 42, inbound_tag: 'deleted-inbound', outbound_tag: 'direct', enabled: true },
+      { id: 42, inbound_tag: 'deleted-inbound', outbound_id: 1, outbound_tag: 'direct', enabled: true },
     ]);
 
     expect(graph.nodes.find((node) => node.id === 'inbound-missing:deleted-inbound')?.data).toMatchObject({
@@ -138,10 +139,45 @@ describe('topology graph helpers', () => {
     });
   });
 
+  it('resolves inbound source by inbound_id before stale inbound_tag', () => {
+    const graph = buildTopologyGraph(inbounds, outbounds, [
+      { id: 43, inbound_id: 8, inbound_tag: 'edge-hk', outbound_id: 1, outbound_tag: 'direct', enabled: true },
+      { id: 44, inbound_id: 7, inbound_tag: '', outbound_id: 1, outbound_tag: 'direct', enabled: true },
+    ]);
+
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-43-8'))).toMatchObject({
+      source: 'inbound:8',
+      target: 'outbound:direct',
+    });
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-44-7'))).toMatchObject({
+      source: 'inbound:7',
+      target: 'outbound:direct',
+    });
+    expect(graph.nodes.find((node) => node.id === 'inbound-missing:edge-hk')).toBeUndefined();
+  });
+
+  it('creates a missing inbound node when inbound_id is not found', () => {
+    const graph = buildTopologyGraph(inbounds, outbounds, [
+      { id: 45, inbound_id: 99, inbound_tag: 'deleted-inbound', outbound_id: 1, outbound_tag: 'direct', enabled: true },
+    ]);
+
+    expect(graph.nodes.find((node) => node.id === 'inbound-missing:id:99')?.data).toMatchObject({
+      kind: 'missing-inbound',
+      title: 'id:99',
+      subtitle: '路由引用的入站不存在 · deleted-inbound',
+      missing: true,
+      enabled: false,
+    });
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-45-missing-id-99'))).toMatchObject({
+      source: 'inbound-missing:id:99',
+      target: 'outbound:direct',
+    });
+  });
+
   it('marks disabled rules and nodes in graph data', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 51, inbound_tag: 'inbound-7-vless', outbound_tag: 'direct', enabled: false },
-      { id: 52, inbound_tag: 'inbound-8-vmess', outbound_tag: 'proxy-a', enabled: true },
+      { id: 51, inbound_tag: 'inbound-7-vless', outbound_id: 1, outbound_tag: 'direct', enabled: false },
+      { id: 52, inbound_tag: 'inbound-8-vmess', outbound_id: 2, outbound_tag: 'proxy-a', enabled: true },
     ]);
 
     expect(graph.nodes.find((node) => node.id === 'inbound:8')?.data.enabled).toBe(false);
@@ -151,14 +187,14 @@ describe('topology graph helpers', () => {
     expect(graph.edges.find((edge) => edge.id.startsWith('rule-52-8'))?.data?.enabled).toBe(false);
 
     const disabledOutboundGraph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 53, inbound_tag: 'inbound-7-vless', outbound_tag: 'proxy-a', enabled: true },
+      { id: 53, inbound_tag: 'inbound-7-vless', outbound_id: 2, outbound_tag: 'proxy-a', enabled: true },
     ]);
     expect(disabledOutboundGraph.edges.find((edge) => edge.id.startsWith('rule-53-7'))?.data?.enabled).toBe(false);
   });
 
   it('does not create fake client-to-outbound routing edges', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 61, inbound_tag: 'inbound-7-vless', outbound_tag: 'direct', enabled: true },
+      { id: 61, inbound_tag: 'inbound-7-vless', outbound_id: 1, outbound_tag: 'direct', enabled: true },
     ]);
 
     expect(graph.edges.some((edge) => edge.source.startsWith('client:') && edge.target.startsWith('outbound:'))).toBe(false);
@@ -166,7 +202,7 @@ describe('topology graph helpers', () => {
 
   it('creates real client-to-outbound routing edges for client rules', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 62, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_tag: 'direct', enabled: true },
+      { id: 62, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_id: 1, outbound_tag: 'direct', enabled: true },
     ]);
 
     expect(graph.edges.find((edge) => edge.id.startsWith('rule-62-client-11'))).toMatchObject({
@@ -183,7 +219,7 @@ describe('topology graph helpers', () => {
 
   it('keeps client default direct inheritance when client routing target is unavailable', () => {
     const disabledTargetGraph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 64, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_tag: 'proxy-a', enabled: true },
+      { id: 64, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_id: 2, outbound_tag: 'proxy-a', enabled: true },
     ]);
     expect(disabledTargetGraph.edges.find((edge) => edge.id.startsWith('rule-64-client-11'))?.data?.enabled).toBe(false);
     expect(disabledTargetGraph.edges.find((edge) => edge.id === 'default-direct-client-11')).toMatchObject({
@@ -192,7 +228,7 @@ describe('topology graph helpers', () => {
     });
 
     const missingTargetGraph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 65, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_tag: 'deleted-proxy', enabled: true },
+      { id: 65, inbound_tag: 'inbound-7-vless', client_id: 11, client_email: 'alice@example.com', outbound_id: 99, outbound_tag: 'deleted-proxy', enabled: true },
     ]);
     expect(missingTargetGraph.edges.find((edge) => edge.id.startsWith('rule-65-client-11'))?.data?.enabled).toBe(false);
     expect(missingTargetGraph.edges.find((edge) => edge.id === 'default-direct-client-11')).toMatchObject({
@@ -203,7 +239,7 @@ describe('topology graph helpers', () => {
 
   it('creates a missing client node for deleted client routing rules', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 63, inbound_tag: 'inbound-7-vless', client_id: 99, client_email: 'deleted@example.com', outbound_tag: 'direct', enabled: true },
+      { id: 63, inbound_tag: 'inbound-7-vless', client_id: 99, client_email: 'deleted@example.com', outbound_id: 1, outbound_tag: 'direct', enabled: true },
     ]);
 
     expect(graph.nodes.find((node) => node.id === 'client-missing:63')?.data).toMatchObject({
@@ -224,8 +260,8 @@ describe('topology graph helpers', () => {
 
   it('uses unique missing client nodes for multiple rules referencing the same deleted client', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 66, inbound_tag: 'inbound-7-vless', client_id: 99, client_email: 'deleted@example.com', outbound_tag: 'direct', enabled: true },
-      { id: 67, inbound_tag: 'deleted-inbound', client_id: 99, client_email: 'deleted@example.com', outbound_tag: 'direct', enabled: true },
+      { id: 66, inbound_tag: 'inbound-7-vless', client_id: 99, client_email: 'deleted@example.com', outbound_id: 1, outbound_tag: 'direct', enabled: true },
+      { id: 67, inbound_tag: 'deleted-inbound', client_id: 99, client_email: 'deleted@example.com', outbound_id: 1, outbound_tag: 'direct', enabled: true },
     ]);
 
     expect(graph.nodes.filter((node) => node.id.startsWith('client-missing:')).map((node) => node.id).sort()).toEqual(['client-missing:66', 'client-missing:67']);
@@ -237,8 +273,8 @@ describe('topology graph helpers', () => {
 
   it('adds a default direct visual edge only for inbounds without enabled routes', () => {
     const graph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 71, inbound_tag: 'inbound-7-vless', outbound_tag: 'direct', enabled: true },
-      { id: 72, inbound_tag: 'inbound-8-vmess', outbound_tag: 'proxy-a', enabled: false },
+      { id: 71, inbound_tag: 'inbound-7-vless', outbound_id: 1, outbound_tag: 'direct', enabled: true },
+      { id: 72, inbound_tag: 'inbound-8-vmess', outbound_id: 2, outbound_tag: 'proxy-a', enabled: false },
     ]);
 
     expect(graph.edges.find((edge) => edge.id === 'default-direct-7')).toBeUndefined();
@@ -256,7 +292,7 @@ describe('topology graph helpers', () => {
 
   it('keeps default direct visual edges when enabled routes point to unavailable outbounds', () => {
     const disabledTargetGraph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 73, inbound_tag: 'inbound-7-vless', outbound_tag: 'proxy-a', enabled: true },
+      { id: 73, inbound_tag: 'inbound-7-vless', outbound_id: 2, outbound_tag: 'proxy-a', enabled: true },
     ]);
     expect(disabledTargetGraph.edges.find((edge) => edge.id.startsWith('rule-73-7'))?.data?.enabled).toBe(false);
     expect(disabledTargetGraph.edges.find((edge) => edge.id === 'default-direct-7')).toMatchObject({
@@ -266,7 +302,7 @@ describe('topology graph helpers', () => {
     });
 
     const missingTargetGraph = buildTopologyGraph(inbounds, outbounds, [
-      { id: 74, inbound_tag: 'inbound-7-vless', outbound_tag: 'missing-proxy', enabled: true },
+      { id: 74, inbound_tag: 'inbound-7-vless', outbound_id: 99, outbound_tag: 'missing-proxy', enabled: true },
     ]);
     expect(missingTargetGraph.edges.find((edge) => edge.id.startsWith('rule-74-7'))?.data?.enabled).toBe(false);
     expect(missingTargetGraph.edges.find((edge) => edge.id === 'default-direct-7')).toMatchObject({
@@ -293,8 +329,8 @@ describe('topology graph helpers', () => {
       { id: 3, tag: 'shared-socks', protocol: 'socks', supported_cores: ['xray', 'sing-box'], enabled: true },
     ];
     const graph = buildTopologyGraph(mixedInbounds, mixedOutbounds, [
-      { id: 81, inbound_tag: 'inbound-1-vless', outbound_tag: 'hy2-out', enabled: true },
-      { id: 82, inbound_tag: 'inbound-2-hysteria2', outbound_tag: 'shared-socks', enabled: true },
+      { id: 81, inbound_tag: 'inbound-1-vless', outbound_id: 2, outbound_tag: 'hy2-out', enabled: true },
+      { id: 82, inbound_tag: 'inbound-2-hysteria2', outbound_id: 3, outbound_tag: 'shared-socks', enabled: true },
     ]);
 
     expect(graph.nodes.find((node) => node.id === 'inbound:1')?.data.meta).toContainEqual({ label: '内核', value: 'xray' });
@@ -309,7 +345,26 @@ describe('topology graph helpers', () => {
     });
   });
 
-  it('resolves routing target by outbound profile id before falling back to tag', () => {
+  it('shows tag-only routing rules as missing targets', () => {
+    const graph = buildTopologyGraph(inbounds, outbounds, [
+      { id: 90, inbound_tag: 'inbound-7-vless', outbound_tag: 'direct', enabled: true },
+    ]);
+
+    expect(graph.nodes.find((node) => node.id === 'outbound:missing-outbound-id')?.data).toMatchObject({
+      kind: 'missing-outbound',
+      missing: true,
+      subtitle: '路由引用的出站不存在 · 缺少 outbound_id',
+    });
+    expect(graph.edges.find((edge) => edge.id.startsWith('rule-90-7'))).toMatchObject({
+      source: 'inbound:7',
+      target: 'outbound:missing-outbound-id',
+      data: {
+        missingTarget: true,
+      },
+    });
+  });
+
+  it('resolves routing target by outbound profile id even when tag conflicts', () => {
     const graph = buildTopologyGraph(inbounds, [
       { id: 1, tag: 'direct', protocol: 'freedom', enabled: true },
       { id: 42, tag: 'renamed-proxy', protocol: 'socks', supported_cores: ['xray', 'sing-box'], enabled: true },
@@ -352,19 +407,19 @@ describe('topology graph helpers', () => {
       { id: 3, tag: 'singbox-only', protocol: 'hysteria2', supported_cores: ['sing-box'], enabled: true },
     ];
     const rules = [
-      ...largeInbounds.slice(0, 20).map((inbound) => ({ id: 1000 + inbound.id, inbound_tag: `edge-${inbound.id}`, outbound_tag: 'shared', enabled: true })),
-      ...largeInbounds.slice(20).map((inbound) => ({ id: 2000 + inbound.id, inbound_tag: `inbound-${inbound.id}-${inbound.protocol.toLowerCase()}`, outbound_tag: 'direct', enabled: true })),
+      ...largeInbounds.slice(0, 20).map((inbound) => ({ id: 1000 + inbound.id, inbound_tag: `edge-${inbound.id}`, outbound_id: 2, outbound_tag: 'shared', enabled: true })),
+      ...largeInbounds.slice(20).map((inbound) => ({ id: 2000 + inbound.id, inbound_tag: `inbound-${inbound.id}-${inbound.protocol.toLowerCase()}`, outbound_id: 1, outbound_tag: 'direct', enabled: true })),
       ...largeInbounds.map((inbound) => ({
         id: 3000 + inbound.id,
         inbound_tag: `edge-${inbound.id}`,
         client_id: inbound.clients?.[5]?.id,
         client_email: inbound.clients?.[5]?.email,
-        outbound_tag: 'shared',
+        outbound_id: 2, outbound_tag: 'shared',
         enabled: true,
       })),
-      { id: 9991, inbound_tag: '', outbound_tag: 'direct', enabled: false },
-      { id: 9992, inbound_tag: 'deleted-inbound', outbound_tag: 'missing-outbound', enabled: true },
-      { id: 9993, inbound_tag: 'edge-1', client_id: 999999, client_email: 'deleted@example.com', outbound_tag: 'direct', enabled: true },
+      { id: 9991, inbound_tag: '', outbound_id: 1, outbound_tag: 'direct', enabled: false },
+      { id: 9992, inbound_tag: 'deleted-inbound', outbound_id: 999, outbound_tag: 'missing-outbound', enabled: true },
+      { id: 9993, inbound_tag: 'edge-1', client_id: 999999, client_email: 'deleted@example.com', outbound_id: 1, outbound_tag: 'direct', enabled: true },
     ];
 
     const graph = buildTopologyGraph(largeInbounds, largeOutbounds, rules);
@@ -374,7 +429,7 @@ describe('topology graph helpers', () => {
     expect(graph.edges.filter((edge) => edge.data?.kind === 'client-routing')).toHaveLength(41);
     expect(graph.edges.filter((edge) => edge.data?.kind === 'all-inbounds-routing')).toHaveLength(40);
     expect(graph.nodes.find((node) => node.id === 'inbound-missing:deleted-inbound')?.data.missing).toBe(true);
-    expect(graph.nodes.find((node) => node.id === 'outbound:missing-outbound')?.data.missing).toBe(true);
+    expect(graph.nodes.find((node) => node.id === 'outbound:id:999')?.data.missing).toBe(true);
     expect(graph.edges.find((edge) => edge.id.startsWith('rule-3001-client-1006'))).toMatchObject({
       source: 'client:1006',
       target: 'outbound:shared',

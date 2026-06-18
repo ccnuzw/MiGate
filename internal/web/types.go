@@ -15,29 +15,31 @@ type XrayStatusStore interface {
 }
 
 type clientTrafficSummary struct {
-	Up       int64   `json:"up"`
-	Down     int64   `json:"down"`
-	RateUp   float64 `json:"rate_up"`
-	RateDown float64 `json:"rate_down"`
-	Status   string  `json:"status"`
-	Message  string  `json:"message,omitempty"`
-	Engine   string  `json:"engine,omitempty"`
-	XrayUp   int64   `json:"xray_up,omitempty"`
-	XrayDown int64   `json:"xray_down,omitempty"`
-	Source   string  `json:"source,omitempty"`
-	Note     string  `json:"note,omitempty"`
+	Up            int64   `json:"up"`
+	Down          int64   `json:"down"`
+	RateUp        float64 `json:"rate_up"`
+	RateDown      float64 `json:"rate_down"`
+	Status        string  `json:"status"`
+	Message       string  `json:"message,omitempty"`
+	Engine        string  `json:"engine,omitempty"`
+	XrayUp        int64   `json:"xray_up,omitempty"`
+	XrayDown      int64   `json:"xray_down,omitempty"`
+	LastSampledAt string  `json:"last_sampled_at,omitempty"`
+	Source        string  `json:"source,omitempty"`
+	Note          string  `json:"note,omitempty"`
 }
 
 type inboundTrafficSummary struct {
-	Up       int64   `json:"up"`
-	Down     int64   `json:"down"`
-	Total    int64   `json:"total"`
-	RateUp   float64 `json:"rate_up"`
-	RateDown float64 `json:"rate_down"`
-	Status   string  `json:"status"`
-	Message  string  `json:"message,omitempty"`
-	Engine   string  `json:"engine,omitempty"`
-	Source   string  `json:"source,omitempty"`
+	Up            int64   `json:"up"`
+	Down          int64   `json:"down"`
+	Total         int64   `json:"total"`
+	RateUp        float64 `json:"rate_up"`
+	RateDown      float64 `json:"rate_down"`
+	Status        string  `json:"status"`
+	Message       string  `json:"message,omitempty"`
+	Engine        string  `json:"engine,omitempty"`
+	LastSampledAt string  `json:"last_sampled_at,omitempty"`
+	Source        string  `json:"source,omitempty"`
 }
 
 type trafficSeriesPoint struct {
@@ -138,24 +140,56 @@ type XrayController interface {
 	Version(ctx context.Context) string
 }
 
+type CoreListenerDiagnostic struct {
+	InboundID       int64  `json:"inbound_id"`
+	Protocol        string `json:"protocol"`
+	Port            int    `json:"port"`
+	Network         string `json:"network,omitempty"`
+	Transport       string `json:"transport"`
+	Path            string `json:"path,omitempty"`
+	GrpcServiceName string `json:"grpc_service_name,omitempty"`
+	Security        string `json:"security,omitempty"`
+	Listening       bool   `json:"listening"`
+}
+
+type CoreDiagnosticAction struct {
+	Code      string `json:"code"`
+	Severity  string `json:"severity"`
+	Category  string `json:"category"`
+	Message   string `json:"message"`
+	Command   string `json:"command,omitempty"`
+	InboundID int64  `json:"inbound_id,omitempty"`
+	Port      int    `json:"port,omitempty"`
+}
+
 type XrayStatus struct {
-	Service           string   `json:"service"`
-	Status            string   `json:"status"`
-	Managed           bool     `json:"managed"`
-	Installed         bool     `json:"installed"`
-	Version           string   `json:"version"`
-	MemoryRSSBytes    int64    `json:"memory_rss_bytes"`
-	Uptime            string   `json:"uptime"`
-	ActiveConnections int      `json:"active_connections"`
-	ConfigPath        string   `json:"config_path"`
-	CommandsExecuted  []string `json:"commands_executed"`
+	Service           string                   `json:"service"`
+	Status            string                   `json:"status"`
+	Managed           bool                     `json:"managed"`
+	Installed         bool                     `json:"installed"`
+	Version           string                   `json:"version"`
+	MemoryRSSBytes    int64                    `json:"memory_rss_bytes"`
+	Uptime            string                   `json:"uptime"`
+	ActiveConnections int                      `json:"active_connections"`
+	ConfigPath        string                   `json:"config_path"`
+	CommandsExecuted  []string                 `json:"commands_executed"`
+	ListeningPorts    []CoreListenerDiagnostic `json:"listening_ports"`
 }
 
 type XrayApplyResult struct {
-	Status           string   `json:"status"`
-	Service          string   `json:"service"`
-	CommandsExecuted []string `json:"commands_executed"`
-	ErrorOutput      string   `json:"error_output,omitempty"`
+	Applied           bool     `json:"applied"`
+	Status            string   `json:"status"`
+	Service           string   `json:"service"`
+	ConfigPath        string   `json:"config_path,omitempty"`
+	CommandsExecuted  []string `json:"commands_executed"`
+	Error             string   `json:"error,omitempty"`
+	Detail            string   `json:"detail,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
+	PostApplyWarnings []string `json:"post_apply_warnings,omitempty"`
+	Inbounds          int      `json:"inbounds,omitempty"`
+	Outbounds         int      `json:"outbounds,omitempty"`
+	Rules             int      `json:"rules,omitempty"`
+	ErrorOutput       string   `json:"error_output,omitempty"`
 }
 
 type defaultXrayController struct{}
@@ -165,7 +199,7 @@ func (defaultXrayController) Status(ctx context.Context) XrayStatus {
 }
 
 func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
-	return XrayApplyResult{Status: "not_managed"}
+	return XrayApplyResult{Applied: false, Status: "not_managed", Service: "xray", Error: "not_managed", Detail: "xray controller is not configured", CommandsExecuted: []string{}}
 }
 
 func (defaultXrayController) Version(ctx context.Context) string { return "" }
@@ -192,6 +226,12 @@ type routerConfig struct {
 	trustProxy         bool
 	loginLimiter       *loginLimiter
 	coreScriptRunner   func(script string) ([]byte, error)
+	singboxApplier     func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary
+	singboxApplierSet  bool
+	singboxProbe       SingboxProbe
+	singboxListeners   func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
+	xrayProbe          XrayProbe
+	xrayListeners      func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
 	sessionTouches     map[string]time.Time
 	sessionTouchGC     time.Time
 	sessionTouchMu     sync.Mutex

@@ -12,6 +12,8 @@ export default function OverviewPage() {
   const visible = usePageVisible();
   const { text } = useI18n();
   const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
+  const trafficSummary = useQuery({ queryKey: ['traffic-summary'], queryFn: api.trafficSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
+  const trafficSeriesQuery = useQuery({ queryKey: ['traffic-series', 'client'], queryFn: () => api.trafficSeries({ scope_type: 'client' }), refetchInterval: visible ? 30000 : false, retry: false, staleTime: 20_000 });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false, staleTime: 5_000 });
   const [xray, singbox] = useQueries({
     queries: [
@@ -22,11 +24,16 @@ export default function OverviewPage() {
 
   const data = summary.data;
   const counts = data?.counts || emptyCounts;
-  const traffic = data?.traffic || emptyTraffic;
-  const rates = data?.traffic_rates || emptyRates;
-  const trafficStatus = data?.traffic_status;
+  const traffic = trafficSummary.data || emptyTraffic;
+  const trafficStatus = traffic.status;
   const protocols = Object.entries(data?.protocols || {}).map(([name, value]) => ({ name, value }));
-  const trafficSeries = data?.traffic_series || [];
+  const trafficSeries = trafficSeriesQuery.data?.series || [];
+  const trafficLoading = trafficSummary.isLoading && !trafficSummary.data;
+  const trafficUnavailable = trafficSummary.isError && !trafficSummary.data;
+  const trafficHidden = trafficLoading || trafficUnavailable;
+  const trafficPlaceholder = trafficLoading ? text('加载中') : text('不可用');
+  const trafficPlaceholderSub = trafficLoading ? text('等待流量摘要') : text('查看告警');
+  const trafficSeriesLoading = trafficSeriesQuery.isLoading && !trafficSeriesQuery.data;
 
   if (summary.isLoading) return <LoadingBlock />;
 
@@ -35,12 +42,14 @@ export default function OverviewPage() {
       <PageTitle
         title={text('运行概览')}
         description={text('VPS 面板、核心服务和业务累计用量的摘要。')}
-        action={<button className="btn secondary" onClick={() => refreshOverview([summary, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
+        action={<button className="btn secondary" onClick={() => refreshOverview([summary, trafficSummary, trafficSeriesQuery, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
       />
       <OverviewAlerts
-          errors={[
-            summary.error ? `${text('概览摘要加载失败')}：${errorText(summary.error)}` : '',
-            resources.error ? `${text('资源加载失败')}：${errorText(resources.error)}` : '',
+        errors={[
+          summary.error ? `${text('概览摘要加载失败')}：${errorText(summary.error)}` : '',
+          trafficSummary.error ? `${text('流量摘要加载失败')}：${errorText(trafficSummary.error)}` : '',
+          trafficSeriesQuery.error ? `${text('流量趋势加载失败')}：${errorText(trafficSeriesQuery.error)}` : '',
+          resources.error ? `${text('资源加载失败')}：${errorText(resources.error)}` : '',
           xray.error ? `Xray ${text('状态加载失败')}：${errorText(xray.error)}` : '',
           singbox.error ? `sing-box ${text('状态加载失败')}：${errorText(singbox.error)}` : '',
           data?.validation.xray && !data.validation.xray.valid ? `Xray ${text('生成校验失败')}：${data.validation.xray.error || text('未知错误')}` : '',
@@ -48,15 +57,15 @@ export default function OverviewPage() {
         ].filter(Boolean)}
       />
       <div className="metric-grid">
-        <Metric icon={Network} tone="teal" label={text('总流量')} value={formatBytes(traffic.total)} sub={`${formatBytes(traffic.up)} ↑ / ${formatBytes(traffic.down)} ↓`} />
+        <Metric icon={Network} tone="teal" label={text('总流量')} value={trafficHidden ? trafficPlaceholder : formatBytes(traffic.total)} sub={trafficHidden ? trafficPlaceholderSub : `${formatBytes(traffic.total_up)} ↑ / ${formatBytes(traffic.total_down)} ↓`} />
         <Metric icon={Users} tone="blue" label={text('客户端')} value={String(counts.clients)} sub={`${counts.clients_active} ${text('活跃')} · ${counts.clients_expired} ${text('过期')} · ${counts.clients_limited} ${text('受限')}`} />
         <Metric icon={Shield} tone="emerald" label={text('入站')} value={String(counts.inbounds)} sub={`${counts.inbounds_enabled} ${text('已启用')}`} />
-        <Metric icon={Activity} tone="violet" label={text('当前速率')} value={`${formatBytes(rates.rate_total)}/s`} sub={`${formatBytes(rates.rate_up)}/s ↑ / ${formatBytes(rates.rate_down)}/s ↓`} />
+        <Metric icon={Activity} tone="violet" label={text('当前速率')} value={trafficHidden ? trafficPlaceholder : `${formatBytes(traffic.rate_total)}/s`} sub={trafficHidden ? trafficPlaceholderSub : `${formatBytes(traffic.rate_up)}/s ↑ / ${formatBytes(traffic.rate_down)}/s ↓`} />
         <Metric icon={Network} tone="amber" label={text('出站')} value={String(counts.outbounds)} sub={`${counts.outbounds_enabled} ${text('已启用')}`} />
         <Metric icon={Activity} tone="slate" label={text('路由规则')} value={String(counts.routing_rules)} sub={`${counts.routing_enabled} ${text('已启用')}`} />
         <Metric icon={Activity} tone={xray.data?.status === 'running' ? 'emerald' : 'rose'} label="Xray" value={text(serviceLabel(xray.data?.status))} sub={text(versionLabel(xray.data?.version))} />
         <Metric icon={Activity} tone={singbox.data?.status === 'running' ? 'emerald' : 'rose'} label="sing-box" value={text(serviceLabel(singbox.data?.status))} sub={text(versionLabel(singbox.data?.version))} />
-        <Metric icon={Activity} tone={trafficStatusTone(trafficStatus?.overall)} label={text('统计状态')} value={trafficStatusLabel(trafficStatus?.overall, text)} sub={engineStatusSummary(trafficStatus?.engines, text)} />
+        <Metric icon={Activity} tone={trafficLoading ? 'slate' : trafficUnavailable ? 'rose' : trafficStatusTone(trafficStatus?.overall)} label={text('统计状态')} value={trafficHidden ? trafficPlaceholder : trafficStatusLabel(trafficStatus?.overall, text)} sub={trafficHidden ? trafficPlaceholderSub : engineStatusSummary(trafficStatus?.engines, text)} />
       </div>
       <Card className="p-5">
         <h2 className="section-title mb-4">{text('最近生成状态')}</h2>
@@ -71,15 +80,15 @@ export default function OverviewPage() {
             <h2 className="section-title">{text('累计流量趋势')}</h2>
             <div className="flex gap-2 text-xs text-panel-muted">
               <span className="inline-flex items-center gap-1">
-                <ArrowUp className="h-3 w-3" /> {formatBytes(traffic.up)}
+                <ArrowUp className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(traffic.total_up)}
               </span>
               <span className="inline-flex items-center gap-1">
-                <ArrowDown className="h-3 w-3" /> {formatBytes(traffic.down)}
+                <ArrowDown className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(traffic.total_down)}
               </span>
             </div>
           </div>
           <div className="h-64">
-            <TrafficChart data={trafficSeries} />
+            <TrafficChart data={trafficSeries} loading={trafficSeriesLoading} />
           </div>
         </Card>
         <Card className="p-5">
@@ -115,19 +124,15 @@ const emptyCounts: DashboardSummary['counts'] = {
   routing_enabled: 0,
 };
 
-const emptyTraffic: DashboardSummary['traffic'] = {
-  up: 0,
-  down: 0,
+const emptyTraffic = {
+  total_up: 0,
+  total_down: 0,
   total: 0,
-  xray_up: 0,
-  xray_down: 0,
-  xray_realtime: 0,
-};
-
-const emptyRates = {
   rate_up: 0,
   rate_down: 0,
   rate_total: 0,
+  status: { overall: 'waiting', engines: { xray: 'not_configured', singbox: 'not_configured' } },
+  generated_at: '',
 };
 
 function OverviewAlerts({ errors }: { errors: string[] }) {
@@ -144,9 +149,12 @@ function OverviewAlerts({ errors }: { errors: string[] }) {
   );
 }
 
-function TrafficChart({ data }: { data: TrafficSeriesPoint[] }) {
+function TrafficChart({ data, loading }: { data: TrafficSeriesPoint[]; loading?: boolean }) {
   const { text } = useI18n();
   const chart = useMemo(() => buildChart(data), [data]);
+  if (loading) {
+    return <div className="flex h-full items-center justify-center text-sm text-panel-muted">{text('流量趋势加载中')}</div>;
+  }
   if (data.length === 0) {
     return <div className="flex h-full items-center justify-center text-sm text-panel-muted">{text('暂无流量数据')}</div>;
   }

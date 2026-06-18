@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -74,7 +75,10 @@ func summarizeTraffic(ctx context.Context, store Store, inbounds []db.Inbound) (
 	return summarizeTrafficFromStates(loadTrafficStates(ctx, store), inbounds)
 }
 
+const trafficStateStaleAfter = 3 * time.Minute
+
 func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound) (map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary) {
+	now := time.Now().UTC()
 	stateByScope := map[string]map[string]db.TrafficState{}
 	for _, state := range states {
 		engine := normalizeTrafficEngine(state.Engine)
@@ -105,24 +109,28 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 		inboundState, hasInboundState := selectTrafficState(stateByScope["inbound\x00"+inboundKey], expectedEngine)
 		inboundSummary := inboundTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 		if hasInboundState {
+			freshState := trafficStateWithFreshness(inboundState, now)
 			inboundSummary.Up = inboundState.TotalUp
 			inboundSummary.Down = inboundState.TotalDown
-			inboundSummary.RateUp = inboundState.RateUp
-			inboundSummary.RateDown = inboundState.RateDown
-			inboundSummary.Status = stateStatus(inboundState)
-			inboundSummary.Message = inboundState.Message
+			inboundSummary.RateUp = freshState.RateUp
+			inboundSummary.RateDown = freshState.RateDown
+			inboundSummary.Status = stateStatus(freshState)
+			inboundSummary.Message = freshState.Message
 			inboundSummary.Engine = inboundState.Engine
+			inboundSummary.LastSampledAt = inboundState.LastSeenAt
 		}
 		for _, client := range inbound.Clients {
 			clientSummary := clientTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 			if state, ok := selectTrafficState(stateByScope["client\x00"+client.StatsKey], expectedEngine); ok {
+				freshState := trafficStateWithFreshness(state, now)
 				clientSummary.Up = state.TotalUp
 				clientSummary.Down = state.TotalDown
-				clientSummary.RateUp = state.RateUp
-				clientSummary.RateDown = state.RateDown
-				clientSummary.Status = stateStatus(state)
-				clientSummary.Message = state.Message
+				clientSummary.RateUp = freshState.RateUp
+				clientSummary.RateDown = freshState.RateDown
+				clientSummary.Status = stateStatus(freshState)
+				clientSummary.Message = freshState.Message
 				clientSummary.Engine = state.Engine
+				clientSummary.LastSampledAt = state.LastSeenAt
 				if state.Engine == "xray" {
 					clientSummary.XrayUp = state.LastRawUp
 					clientSummary.XrayDown = state.LastRawDown
@@ -151,6 +159,27 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 	return byInbound, byClient
 }
 
+func trafficStateWithFreshness(state db.TrafficState, now time.Time) db.TrafficState {
+	status := strings.TrimSpace(state.Status)
+	if state.LastSeenAt == "" || status == "stale" || status == "unsupported" || status == "not_configured" {
+		return state
+	}
+	sampledAt, err := time.Parse(time.RFC3339Nano, state.LastSeenAt)
+	if err != nil {
+		sampledAt, err = time.Parse(time.RFC3339, state.LastSeenAt)
+	}
+	if err != nil || now.Sub(sampledAt.UTC()) <= trafficStateStaleAfter {
+		return state
+	}
+	state.Status = "stale"
+	state.RateUp = 0
+	state.RateDown = 0
+	if strings.TrimSpace(state.Message) == "" {
+		state.Message = "traffic sample is stale"
+	}
+	return state
+}
+
 func inboundStatsKey(inbound db.Inbound) string {
 	switch strings.ToLower(strings.TrimSpace(inbound.Protocol)) {
 	case "hysteria2":
@@ -176,6 +205,7 @@ type outboundTrafficSummary struct {
 
 func outboundStatsByProfileID(states []db.TrafficState) map[int64]outboundTrafficSummary {
 	result := map[int64]outboundTrafficSummary{}
+	now := time.Now().UTC()
 	for _, state := range states {
 		if strings.ToLower(strings.TrimSpace(state.ScopeType)) != "outbound" {
 			continue
@@ -186,11 +216,12 @@ func outboundStatsByProfileID(states []db.TrafficState) map[int64]outboundTraffi
 			continue
 		}
 		current := result[id]
+		freshState := trafficStateWithFreshness(state, now)
 		current.Up += state.TotalUp
 		current.Down += state.TotalDown
-		current.RateUp += state.RateUp
-		current.RateDown += state.RateDown
-		current.Status = combineTrafficStatuses(current.Status, stateStatus(state))
+		current.RateUp += freshState.RateUp
+		current.RateDown += freshState.RateDown
+		current.Status = combineTrafficStatuses(current.Status, stateStatus(freshState))
 		if state.LastSeenAt > current.LastSeenAt {
 			current.LastSeenAt = state.LastSeenAt
 		}
@@ -285,6 +316,7 @@ type trafficCoverageCounts struct {
 	unsupported   int
 	notConfigured int
 	unavailable   int
+	stale         int
 	waiting       int
 }
 
@@ -299,8 +331,10 @@ func (counts *trafficCoverageCounts) add(status string) {
 		counts.unsupported++
 	case "not_configured":
 		counts.notConfigured++
-	case "unavailable", "stale":
+	case "unavailable":
 		counts.unavailable++
+	case "stale":
+		counts.stale++
 	case "waiting", "":
 		counts.waiting++
 	default:
@@ -319,7 +353,7 @@ func (counts trafficCoverageCounts) status() string {
 		return "ok"
 	}
 	if counts.ok > 0 {
-		if counts.partial > 0 || counts.unsupported > 0 || counts.unavailable > 0 || counts.waiting > 0 {
+		if counts.partial > 0 || counts.unsupported > 0 || counts.unavailable > 0 || counts.stale > 0 || counts.waiting > 0 {
 			return "partial"
 		}
 		return "ok"
@@ -329,6 +363,9 @@ func (counts trafficCoverageCounts) status() string {
 	}
 	if counts.unsupported > 0 && counts.unavailable == 0 {
 		return "unsupported"
+	}
+	if counts.stale > 0 && counts.unavailable == 0 {
+		return "stale"
 	}
 	if counts.unavailable > 0 {
 		return "unavailable"
@@ -362,9 +399,36 @@ func buildTrafficCoverage(byInbound map[int64]inboundTrafficSummary) map[string]
 		"unsupported":    counts.unsupported,
 		"not_configured": counts.notConfigured,
 		"unavailable":    counts.unavailable,
+		"stale":          counts.stale,
 		"waiting":        counts.waiting,
 		"engines":        engines,
 	}
+}
+
+func lastTrafficSampledAt(inboundTraffic map[int64]inboundTrafficSummary, clientTraffic map[int64]clientTrafficSummary) string {
+	latest := time.Time{}
+	consider := func(value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, value)
+		}
+		if err == nil && parsed.After(latest) {
+			latest = parsed
+		}
+	}
+	for _, traffic := range inboundTraffic {
+		consider(traffic.LastSampledAt)
+	}
+	for _, traffic := range clientTraffic {
+		consider(traffic.LastSampledAt)
+	}
+	if latest.IsZero() {
+		return ""
+	}
+	return latest.UTC().Format(time.RFC3339)
 }
 
 func coverageEngineKey(engine string) string {
@@ -481,6 +545,7 @@ func buildStatsResponse(ctx context.Context, store Store, statsClient xray.Stats
 	}
 
 	response := map[string]interface{}{
+		"legacy":                true,
 		"inbounds":              len(inb),
 		"clients":               clientCount,
 		"traffic_up":            totalUp,
@@ -533,7 +598,7 @@ func queryBool(r *http.Request, name string) bool {
 }
 
 func dashboardSummaryHandler(cfg *routerConfig) http.HandlerFunc {
-	cache := newDashboardSummaryCache(7 * time.Second)
+	cache := newDashboardSummaryCache(7*time.Second, 30*time.Second)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -553,15 +618,23 @@ func dashboardSummaryHandler(cfg *routerConfig) http.HandlerFunc {
 }
 
 type dashboardSummaryCache struct {
-	ttl       time.Duration
-	mu        sync.Mutex
-	expiresAt time.Time
-	value     map[string]interface{}
-	now       func() time.Time
+	ttl                 time.Duration
+	validationTTL       time.Duration
+	mu                  sync.Mutex
+	expiresAt           time.Time
+	value               map[string]interface{}
+	validationExpiresAt time.Time
+	validationValue     map[string]configValidationResult
+	validationKey       string
+	now                 func() time.Time
 }
 
-func newDashboardSummaryCache(ttl time.Duration) *dashboardSummaryCache {
-	return &dashboardSummaryCache{ttl: ttl, now: time.Now}
+func newDashboardSummaryCache(ttl time.Duration, extraTTLs ...time.Duration) *dashboardSummaryCache {
+	validationTTL := ttl
+	if len(extraTTLs) > 0 {
+		validationTTL = extraTTLs[0]
+	}
+	return &dashboardSummaryCache{ttl: ttl, validationTTL: validationTTL, now: time.Now}
 }
 
 func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
@@ -577,7 +650,7 @@ func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map
 	}
 	c.mu.Unlock()
 
-	summary, err := buildDashboardSummary(ctx, cfg)
+	summary, err := c.build(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -591,22 +664,66 @@ func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map
 	return summary, nil
 }
 
+func (c *dashboardSummaryCache) build(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
+	summary, snapshot, err := buildDashboardSummaryBase(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	now := c.now()
+	snapshotKey := snapshot.cacheKey()
+	validation := c.cachedValidation(snapshotKey)
+	if validation == nil {
+		built := buildDashboardValidation(ctx, cfg, snapshot)
+		validation = &built
+		c.mu.Lock()
+		c.validationValue = built
+		c.validationKey = snapshotKey
+		c.validationExpiresAt = now.Add(c.validationTTL)
+		c.mu.Unlock()
+	}
+	summary["validation"] = cloneValidationMap(*validation)
+	return summary, nil
+}
+
+func (c *dashboardSummaryCache) cachedValidation(snapshotKey string) *map[string]configValidationResult {
+	if c == nil || c.validationTTL <= 0 {
+		return nil
+	}
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.validationValue == nil || c.validationKey != snapshotKey || !now.Before(c.validationExpiresAt) {
+		return nil
+	}
+	value := cloneValidationMap(c.validationValue)
+	return &value
+}
+
 func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
+	summary, snapshot, err := buildDashboardSummaryBase(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	summary["validation"] = buildDashboardValidation(ctx, cfg, snapshot)
+	return summary, nil
+}
+
+func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[string]interface{}, validationSnapshot, error) {
 	if cfg == nil || cfg.store == nil {
-		return nil, fmt.Errorf("store_unavailable")
+		return nil, validationSnapshot{}, fmt.Errorf("store_unavailable")
 	}
 	store := cfg.store
 	inbounds, err := store.ListInbounds(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list_inbounds_failed")
+		return nil, validationSnapshot{}, fmt.Errorf("list_inbounds_failed")
 	}
 	outbounds, err := store.ListOutbounds(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list_outbounds_failed")
+		return nil, validationSnapshot{}, fmt.Errorf("list_outbounds_failed")
 	}
 	rules, err := store.ListRoutingRules(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list_routing_rules_failed")
+		return nil, validationSnapshot{}, fmt.Errorf("list_routing_rules_failed")
 	}
 	now := time.Now().Unix()
 	clientCount := 0
@@ -615,16 +732,6 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 	limitedClients := 0
 	enabledInbounds := 0
 	protocols := map[string]int{}
-	trafficSeries := []trafficSeriesPoint{}
-	states := loadTrafficStates(ctx, store)
-	trafficByInbound, trafficByClient := summarizeTrafficFromStates(states, inbounds)
-	outboundStats := outboundStatsByProfileID(states)
-	var totalUp int64
-	var totalDown int64
-	var xrayUp int64
-	var xrayDown int64
-	var rateUp float64
-	var rateDown float64
 	for _, inbound := range inbounds {
 		if inbound.Enabled {
 			enabledInbounds++
@@ -632,16 +739,9 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 		if inbound.Protocol != "" {
 			protocols[inbound.Protocol]++
 		}
-		if traffic, ok := trafficByInbound[inbound.ID]; ok {
-			totalUp += traffic.Up
-			totalDown += traffic.Down
-			rateUp += traffic.RateUp
-			rateDown += traffic.RateDown
-		}
 		for _, client := range inbound.Clients {
 			clientCount++
-			traffic := trafficByClient[client.ID]
-			used := traffic.Up + traffic.Down
+			used := client.Up + client.Down
 			expired := client.ExpiryAt > 0 && client.ExpiryAt <= now
 			limited := client.TrafficLimit > 0 && used >= client.TrafficLimit
 			if expired {
@@ -652,10 +752,6 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 			}
 			if client.Enabled && !expired && !limited {
 				activeClients++
-			}
-			if traffic, ok := trafficByClient[client.ID]; ok && traffic.Engine == "xray" {
-				xrayUp += traffic.Up
-				xrayDown += traffic.Down
 			}
 		}
 	}
@@ -670,9 +766,6 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 		if rule.Enabled {
 			enabledRules++
 		}
-	}
-	if samples, err := store.ListTrafficSamples(ctx, "client", time.Now().UTC().Add(-24*time.Hour), 240); err == nil {
-		trafficSeries = trafficSamplesToSeries(samples, "client", inbounds)
 	}
 	snapshot := validationSnapshot{inbounds: inbounds, outbounds: outbounds, rules: rules}
 	return map[string]interface{}{
@@ -689,34 +782,246 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 			"routing_rules":     len(rules),
 			"routing_enabled":   enabledRules,
 		},
-		"traffic": map[string]int64{
-			"up":            totalUp,
-			"down":          totalDown,
-			"total":         totalUp + totalDown,
-			"xray_up":       xrayUp,
-			"xray_down":     xrayDown,
-			"xray_realtime": xrayUp + xrayDown,
-		},
-		"traffic_rates": map[string]float64{
-			"rate_up":    rateUp,
-			"rate_down":  rateDown,
-			"rate_total": rateUp + rateDown,
-		},
-		"traffic_status":   buildTrafficCoverage(trafficByInbound),
-		"protocols":        protocols,
-		"traffic_series":   trafficSeries,
-		"outbound_traffic": outboundTrafficDetails(outbounds, outboundStats),
-		"validation": map[string]configValidationResult{
-			"xray":    validateXrayConfigSnapshot(snapshot),
-			"singbox": validateSingboxConfigSnapshotWithRuntime(ctx, snapshot, cfg),
-		},
-	}, nil
+		"protocols":  protocols,
+		"validation": map[string]configValidationResult{},
+	}, snapshot, nil
+}
+
+func buildDashboardValidation(ctx context.Context, cfg *routerConfig, snapshot validationSnapshot) map[string]configValidationResult {
+	return map[string]configValidationResult{
+		"xray":    validateXrayConfigSnapshot(snapshot),
+		"singbox": validateSingboxConfigSnapshotWithRuntime(ctx, snapshot, cfg),
+	}
+}
+
+func cloneValidationMap(value map[string]configValidationResult) map[string]configValidationResult {
+	clone := make(map[string]configValidationResult, len(value))
+	for key, item := range value {
+		item.Warnings = append([]string(nil), item.Warnings...)
+		clone[key] = item
+	}
+	return clone
 }
 
 type validationSnapshot struct {
 	inbounds  []db.Inbound
 	outbounds []db.Outbound
 	rules     []db.RoutingRule
+}
+
+func (s validationSnapshot) cacheKey() string {
+	payload, err := json.Marshal(validationSnapshotCachePayload{
+		Inbounds:  validationInboundCacheKeys(s.inbounds),
+		Outbounds: validationOutboundCacheKeys(s.outbounds),
+		Rules:     validationRoutingRuleCacheKeys(s.rules),
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+type validationSnapshotCachePayload struct {
+	Inbounds  []validationInboundCacheKey     `json:"inbounds"`
+	Outbounds []validationOutboundCacheKey    `json:"outbounds"`
+	Rules     []validationRoutingRuleCacheKey `json:"rules"`
+}
+
+type validationInboundCacheKey struct {
+	ID                    int64                      `json:"id"`
+	UUID                  string                     `json:"uuid"`
+	Remark                string                     `json:"remark"`
+	Protocol              string                     `json:"protocol"`
+	Core                  string                     `json:"core"`
+	Port                  int                        `json:"port"`
+	Network               string                     `json:"network"`
+	Security              string                     `json:"security"`
+	Enabled               bool                       `json:"enabled"`
+	WsPath                string                     `json:"ws_path"`
+	WsHost                string                     `json:"ws_host"`
+	GrpcServiceName       string                     `json:"grpc_service_name"`
+	RealityDest           string                     `json:"reality_dest"`
+	RealityServerNames    string                     `json:"reality_server_names"`
+	RealityShortID        string                     `json:"reality_short_id"`
+	RealityPrivateKey     string                     `json:"reality_private_key"`
+	RealityPublicKey      string                     `json:"reality_public_key"`
+	SSMethod              string                     `json:"ss_method"`
+	TLSCertFile           string                     `json:"tls_cert_file"`
+	TLSKeyFile            string                     `json:"tls_key_file"`
+	TLSSNI                string                     `json:"tls_sni"`
+	TLSFingerprint        string                     `json:"tls_fingerprint"`
+	TLSALPN               string                     `json:"tls_alpn"`
+	XHTTPPath             string                     `json:"xhttp_path"`
+	XHTTPMode             string                     `json:"xhttp_mode"`
+	Hy2UpMbps             int                        `json:"hy2_up_mbps"`
+	Hy2DownMbps           int                        `json:"hy2_down_mbps"`
+	Hy2Obfs               string                     `json:"hy2_obfs"`
+	Hy2ObfsPassword       string                     `json:"hy2_obfs_password"`
+	Hy2MPort              string                     `json:"hy2_mport"`
+	TuicCongestionControl string                     `json:"tuic_congestion_control"`
+	TuicZeroRTT           bool                       `json:"tuic_zero_rtt"`
+	WgPrivateKey          string                     `json:"wg_private_key"`
+	WgAddress             string                     `json:"wg_address"`
+	WgPeerPublicKey       string                     `json:"wg_peer_public_key"`
+	WgAllowedIPs          string                     `json:"wg_allowed_ips"`
+	WgEndpoint            string                     `json:"wg_endpoint"`
+	WgPresharedKey        string                     `json:"wg_preshared_key"`
+	WgMTU                 int                        `json:"wg_mtu"`
+	ShadowTLSVersion      int                        `json:"shadowtls_version"`
+	ShadowTLSPassword     string                     `json:"shadowtls_password"`
+	Clients               []validationClientCacheKey `json:"clients"`
+}
+
+type validationClientCacheKey struct {
+	ID           int64  `json:"id"`
+	InboundID    int64  `json:"inbound_id"`
+	UUID         string `json:"uuid"`
+	CredentialID string `json:"credential_id"`
+	Password     string `json:"password"`
+	StatsKey     string `json:"stats_key"`
+	Email        string `json:"email"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type validationOutboundCacheKey struct {
+	ID             int64    `json:"id"`
+	Tag            string   `json:"tag"`
+	Remark         string   `json:"remark"`
+	Protocol       string   `json:"protocol"`
+	Address        string   `json:"address"`
+	Port           int      `json:"port"`
+	Username       string   `json:"username"`
+	Password       string   `json:"password"`
+	SupportedCores []string `json:"supported_cores"`
+	Enabled        bool     `json:"enabled"`
+	Sort           int      `json:"sort"`
+}
+
+type validationRoutingRuleCacheKey struct {
+	ID          int64  `json:"id"`
+	InboundID   int64  `json:"inbound_id"`
+	InboundTag  string `json:"inbound_tag"`
+	ClientID    int64  `json:"client_id"`
+	ClientEmail string `json:"client_email"`
+	OutboundID  int64  `json:"outbound_id"`
+	OutboundTag string `json:"outbound_tag"`
+	Domain      string `json:"domain"`
+	IP          string `json:"ip"`
+	RuleSet     string `json:"rule_set"`
+	Protocol    string `json:"protocol"`
+	Enabled     bool   `json:"enabled"`
+	Sort        int    `json:"sort"`
+}
+
+func validationInboundCacheKeys(inbounds []db.Inbound) []validationInboundCacheKey {
+	keys := make([]validationInboundCacheKey, 0, len(inbounds))
+	for _, inbound := range inbounds {
+		keys = append(keys, validationInboundCacheKey{
+			ID:                    inbound.ID,
+			UUID:                  inbound.UUID,
+			Remark:                inbound.Remark,
+			Protocol:              inbound.Protocol,
+			Core:                  inbound.Core,
+			Port:                  inbound.Port,
+			Network:               inbound.Network,
+			Security:              inbound.Security,
+			Enabled:               inbound.Enabled,
+			WsPath:                inbound.WsPath,
+			WsHost:                inbound.WsHost,
+			GrpcServiceName:       inbound.GrpcServiceName,
+			RealityDest:           inbound.RealityDest,
+			RealityServerNames:    inbound.RealityServerNames,
+			RealityShortID:        inbound.RealityShortID,
+			RealityPrivateKey:     inbound.RealityPrivateKey,
+			RealityPublicKey:      inbound.RealityPublicKey,
+			SSMethod:              inbound.SSMethod,
+			TLSCertFile:           inbound.TLSCertFile,
+			TLSKeyFile:            inbound.TLSKeyFile,
+			TLSSNI:                inbound.TLSSNI,
+			TLSFingerprint:        inbound.TLSFingerprint,
+			TLSALPN:               inbound.TLSALPN,
+			XHTTPPath:             inbound.XHTTPPath,
+			XHTTPMode:             inbound.XHTTPMode,
+			Hy2UpMbps:             inbound.Hy2UpMbps,
+			Hy2DownMbps:           inbound.Hy2DownMbps,
+			Hy2Obfs:               inbound.Hy2Obfs,
+			Hy2ObfsPassword:       inbound.Hy2ObfsPassword,
+			Hy2MPort:              inbound.Hy2MPort,
+			TuicCongestionControl: inbound.TuicCongestionControl,
+			TuicZeroRTT:           inbound.TuicZeroRTT,
+			WgPrivateKey:          inbound.WgPrivateKey,
+			WgAddress:             inbound.WgAddress,
+			WgPeerPublicKey:       inbound.WgPeerPublicKey,
+			WgAllowedIPs:          inbound.WgAllowedIPs,
+			WgEndpoint:            inbound.WgEndpoint,
+			WgPresharedKey:        inbound.WgPresharedKey,
+			WgMTU:                 inbound.WgMTU,
+			ShadowTLSVersion:      inbound.ShadowTLSVersion,
+			ShadowTLSPassword:     inbound.ShadowTLSPassword,
+			Clients:               validationClientCacheKeys(inbound.Clients),
+		})
+	}
+	return keys
+}
+
+func validationClientCacheKeys(clients []db.Client) []validationClientCacheKey {
+	keys := make([]validationClientCacheKey, 0, len(clients))
+	for _, client := range clients {
+		keys = append(keys, validationClientCacheKey{
+			ID:           client.ID,
+			InboundID:    client.InboundID,
+			UUID:         client.UUID,
+			CredentialID: client.CredentialID,
+			Password:     client.Password,
+			StatsKey:     client.StatsKey,
+			Email:        client.Email,
+			Enabled:      client.Enabled,
+		})
+	}
+	return keys
+}
+
+func validationOutboundCacheKeys(outbounds []db.Outbound) []validationOutboundCacheKey {
+	keys := make([]validationOutboundCacheKey, 0, len(outbounds))
+	for _, outbound := range outbounds {
+		keys = append(keys, validationOutboundCacheKey{
+			ID:             outbound.ID,
+			Tag:            outbound.Tag,
+			Remark:         outbound.Remark,
+			Protocol:       outbound.Protocol,
+			Address:        outbound.Address,
+			Port:           outbound.Port,
+			Username:       outbound.Username,
+			Password:       outbound.Password,
+			SupportedCores: append([]string(nil), outbound.SupportedCores...),
+			Enabled:        outbound.Enabled,
+			Sort:           outbound.Sort,
+		})
+	}
+	return keys
+}
+
+func validationRoutingRuleCacheKeys(rules []db.RoutingRule) []validationRoutingRuleCacheKey {
+	keys := make([]validationRoutingRuleCacheKey, 0, len(rules))
+	for _, rule := range rules {
+		keys = append(keys, validationRoutingRuleCacheKey{
+			ID:          rule.ID,
+			InboundID:   rule.InboundID,
+			InboundTag:  rule.InboundTag,
+			ClientID:    rule.ClientID,
+			ClientEmail: rule.ClientEmail,
+			OutboundID:  rule.OutboundID,
+			OutboundTag: rule.OutboundTag,
+			Domain:      rule.Domain,
+			IP:          rule.IP,
+			RuleSet:     rule.RuleSet,
+			Protocol:    rule.Protocol,
+			Enabled:     rule.Enabled,
+			Sort:        rule.Sort,
+		})
+	}
+	return keys
 }
 
 type cpuSample struct {

@@ -129,6 +129,50 @@ func TestInstallerPreservesExistingConfigByDefault(t *testing.T) {
 	}
 }
 
+func TestInstallerFinishMessageNormalizesWebUIPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "missing leading slash", path: "migate", want: ":9999/migate"},
+		{name: "leading slash", path: "/migate", want: ":9999/migate"},
+		{name: "trailing slash", path: "/migate/", want: ":9999/migate"},
+		{name: "root", path: "/", want: ":9999/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := repoRoot(t)
+			tmp := t.TempDir()
+			configPath := filepath.Join(tmp, "panel.json")
+			if err := os.WriteFile(configPath, []byte(`{"panel_port":9999,"panel_username":"admin","web_base_path":"`+tc.path+`"}`), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cmd := exec.Command("bash", filepath.Join(root, "packaging", "install.sh"), "--upgrade", "--yes", "--dry-run")
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(),
+				"MIGATE_CONFIG_PATH="+configPath,
+				"MIGATE_CONFIG_DIR="+tmp,
+				"MIGATE_INSTALL_DIR="+tmp,
+			)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("dry-run upgrade failed: %v\n%s", err, output)
+			}
+			out := string(output)
+			if !strings.Contains(out, "WebUI 地址:") || !strings.Contains(out, tc.want) {
+				t.Fatalf("finish message missing normalized WebUI path %q:\n%s", tc.want, out)
+			}
+			proxyTarget := "反向代理到 0.0.0.0:9999" + strings.TrimPrefix(tc.want, ":9999")
+			if !strings.Contains(out, proxyTarget) {
+				t.Fatalf("finish message missing normalized reverse proxy target %q:\n%s", proxyTarget, out)
+			}
+			if strings.Contains(out, ":9999migate") || strings.Contains(out, ":9999//migate") {
+				t.Fatalf("finish message contains malformed URL path:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestInstallerConfigPathsFollowInstallDir(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
@@ -150,7 +194,7 @@ func TestInstallerDetectsCorePathsVersionsAndServices(t *testing.T) {
 		"core_version()",
 		"systemctl list-unit-files \"${service_name}.service\"",
 		"if detect_core \"Xray\" \"xray\" \"xray\"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi",
-		"if detect_core \"sing-box\" \"sing-box\" \"migate-singbox\"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi",
+		"if detect_core \"sing-box\" \"sing-box\" \"sing-box\"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer core detection contract missing %q", want)
@@ -217,13 +261,66 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	for _, want := range []string{
 		"install_singbox",
 		"confirm_yes \"未检测到 sing-box，是否安装 sing-box？\"",
-		"migate-singbox.service",
+		"sing-box.service",
+		"LEGACY_SINGBOX_SERVICE_PATH",
+		"LEGACY_SINGBOX_SERVICE_DROPIN_DIR",
 		"ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json",
-		"systemctl enable migate-singbox",
+		"systemctl stop migate-singbox",
+		"systemctl disable migate-singbox",
+		"rm -f \"$LEGACY_SINGBOX_SERVICE_PATH\"",
+		"rm -rf \"$LEGACY_SINGBOX_SERVICE_DROPIN_DIR\"",
+		"systemctl reset-failed migate-singbox",
+		"systemctl enable sing-box",
+		"/usr/local/bin/sing-box check -c /etc/sing-box/config.json",
+		"sing-box 配置校验失败，已跳过服务启动。",
+		"journalctl -u sing-box -n 80 --no-pager",
 		"sing-box 安装/修复完成",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box runtime contract missing %q", want)
+		}
+	}
+	serviceWrite := strings.Index(script, "cat > \"$SINGBOX_SERVICE_PATH\"")
+	if serviceWrite < 0 || !strings.Contains(script[serviceWrite:], "systemctl daemon-reload") {
+		t.Fatalf("installer must daemon-reload after writing sing-box service")
+	}
+	if strings.Index(script, "/usr/local/bin/sing-box check -c /etc/sing-box/config.json") > strings.Index(script, "systemctl start sing-box") {
+		t.Fatalf("installer must check sing-box config before starting service")
+	}
+	checkBlock := script[strings.Index(script, "if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then"):]
+	if !strings.Contains(checkBlock, "已跳过服务启动") || strings.Index(checkBlock, "else") > strings.Index(checkBlock, "systemctl start sing-box") {
+		t.Fatalf("installer must skip sing-box service start when config check fails")
+	}
+}
+
+func TestInstallerReplacesCoreBinariesAtomically(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"systemctl stop xray 2>/dev/null || true",
+		"local xray_install_tmp=\"/usr/local/bin/.xray.new.$$\"",
+		"cp \"$tmp_xray/xray/xray\" \"$xray_install_tmp\" && chmod +x \"$xray_install_tmp\" && mv -f \"$xray_install_tmp\" /usr/local/bin/xray",
+		"rm -f \"$xray_install_tmp\"",
+		"systemctl stop sing-box 2>/dev/null || true",
+		"systemctl stop migate-singbox 2>/dev/null || true",
+		"local sb_install_tmp=\"/usr/local/bin/.sing-box.new.$$\"",
+		"cp \"$tmp_sb\"/sing-box-*/sing-box \"$sb_install_tmp\" && chmod +x \"$sb_install_tmp\" && mv -f \"$sb_install_tmp\" /usr/local/bin/sing-box",
+		"rm -f \"$sb_install_tmp\"",
+		"[DRY-RUN] systemctl stop xray",
+		"[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$",
+		"[DRY-RUN] systemctl stop sing-box",
+		"[DRY-RUN] systemctl stop migate-singbox",
+		"[DRY-RUN] atomic install /usr/local/bin/sing-box via /usr/local/bin/.sing-box.new.$$",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer core atomic replacement contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"cp \"$tmp_xray/xray/xray\" /usr/local/bin/xray",
+		"cp \"$tmp_sb\"/sing-box-*/sing-box /usr/local/bin/sing-box",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not directly overwrite a running core binary with %q", forbidden)
 		}
 	}
 }
@@ -423,7 +520,7 @@ func TestInstallerSkipsSingBoxSystemdUnitWhenSystemdUnavailable(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"if [ \"$SYSTEMD_AVAILABLE\" -ne 1 ]; then",
-		"systemd 不可用，跳过 migate-singbox.service 写入。",
+		"systemd 不可用，跳过 sing-box.service 写入。",
 		"Manual run: /usr/local/bin/sing-box run -c /etc/sing-box/config.json",
 		"cat > \"$SINGBOX_SERVICE_PATH\"",
 	} {
@@ -431,7 +528,7 @@ func TestInstallerSkipsSingBoxSystemdUnitWhenSystemdUnavailable(t *testing.T) {
 			t.Fatalf("installer sing-box non-systemd contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "systemd 不可用，跳过 migate-singbox.service 写入。") > strings.Index(script, "cat > \"$SINGBOX_SERVICE_PATH\"") {
+	if strings.Index(script, "systemd 不可用，跳过 sing-box.service 写入。") > strings.Index(script, "cat > \"$SINGBOX_SERVICE_PATH\"") {
 		t.Fatalf("installer must skip sing-box unit before writing service file when systemd is unavailable")
 	}
 }
@@ -592,6 +689,9 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 		"rm -f /etc/systemd/system/migate.service",
 		"rm -f /usr/local/bin/migate",
 		"rm -f /usr/local/bin/mg",
+		"systemctl stop sing-box",
+		"systemctl disable sing-box",
+		"rm -f /etc/systemd/system/sing-box.service",
 		"systemctl stop migate-singbox",
 		"systemctl disable migate-singbox",
 		"rm -f /etc/systemd/system/migate-singbox.service",

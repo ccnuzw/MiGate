@@ -270,7 +270,7 @@ func TestGeneratedOutboundTagMapsBackToOutboundProfile(t *testing.T) {
 	}
 }
 
-func TestRoutingRuleOutboundResolutionUsesIDBeforeTagFallback(t *testing.T) {
+func TestRoutingRuleOutboundResolutionRequiresID(t *testing.T) {
 	outbounds := []db.Outbound{
 		{ID: 1, Tag: "old-tag", Protocol: "hysteria2", Enabled: true},
 		{ID: 42, Tag: "new-tag", Protocol: "socks", Enabled: true},
@@ -278,7 +278,7 @@ func TestRoutingRuleOutboundResolutionUsesIDBeforeTagFallback(t *testing.T) {
 	rule := db.RoutingRule{OutboundID: 42, OutboundTag: "old-tag"}
 	outbound, ok := db.ResolveRuleOutbound(rule, outbounds)
 	if !ok || outbound.ID != 42 {
-		t.Fatalf("expected outbound_id to win over tag fallback, got outbound=%+v ok=%v", outbound, ok)
+		t.Fatalf("expected outbound_id to resolve target, got outbound=%+v ok=%v", outbound, ok)
 	}
 	if got := db.EffectiveRuleOutboundID(rule, outbounds); got != 42 {
 		t.Fatalf("expected effective outbound id 42, got %d", got)
@@ -289,11 +289,11 @@ func TestRoutingRuleOutboundResolutionUsesIDBeforeTagFallback(t *testing.T) {
 
 	fallbackRule := db.RoutingRule{OutboundTag: "old-tag"}
 	fallback, ok := db.ResolveRuleOutbound(fallbackRule, outbounds)
-	if !ok || fallback.ID != 1 {
-		t.Fatalf("expected tag fallback to resolve old-tag, got outbound=%+v ok=%v", fallback, ok)
+	if ok || fallback.ID != 0 {
+		t.Fatalf("expected tag-only rule not to resolve, got outbound=%+v ok=%v", fallback, ok)
 	}
-	if db.RuleTargetSupportsCore(fallbackRule, outbounds, db.CoreXray) || !db.RuleTargetSupportsCore(fallbackRule, outbounds, db.CoreSingbox) {
-		t.Fatalf("hysteria2 target should support sing-box only")
+	if db.RuleTargetSupportsCore(fallbackRule, outbounds, db.CoreXray) || db.RuleTargetSupportsCore(fallbackRule, outbounds, db.CoreSingbox) {
+		t.Fatalf("tag-only rule should not support either core")
 	}
 }
 
@@ -303,9 +303,32 @@ func TestRoutingRuleAppliesToCoreSkipsUnknownInboundTag(t *testing.T) {
 	if db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreXray) || db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreSingbox) {
 		t.Fatal("unknown inbound_tag should not apply to any core")
 	}
-	valid := db.RoutingRule{InboundTag: db.GeneratedInboundTag(inbounds[0]), OutboundTag: "direct", Enabled: true}
+	valid := db.RoutingRule{InboundTag: db.GeneratedInboundTag(inbounds[0]), OutboundID: 1, OutboundTag: "direct", Enabled: true}
 	if !db.RoutingRuleAppliesToCore(valid, inbounds, db.CoreXray) || db.RoutingRuleAppliesToCore(valid, inbounds, db.CoreSingbox) {
 		t.Fatal("known xray inbound_tag should apply only to xray")
+	}
+}
+
+func TestRoutingRuleAppliesToCorePrefersInboundIDOverTag(t *testing.T) {
+	inbounds := []db.Inbound{
+		{ID: 1, Remark: "edge-xray", Protocol: "vless", Core: db.CoreXray, Enabled: true},
+		{ID: 2, Remark: "edge-sb", Protocol: "hysteria2", Core: db.CoreSingbox, Enabled: true},
+		{ID: 3, Remark: "disabled-xray", Protocol: "vless", Core: db.CoreXray, Enabled: false},
+	}
+	rule := db.RoutingRule{InboundID: 2, InboundTag: db.GeneratedInboundTag(inbounds[0]), OutboundID: 1, OutboundTag: "direct", Enabled: true}
+	if db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreXray) {
+		t.Fatal("conflicting inbound_tag must not override inbound_id")
+	}
+	if !db.RoutingRuleAppliesToCore(rule, inbounds, db.CoreSingbox) {
+		t.Fatal("inbound_id should make the rule apply to the sing-box inbound")
+	}
+	missing := db.RoutingRule{InboundID: 99, InboundTag: db.GeneratedInboundTag(inbounds[0]), OutboundID: 1, OutboundTag: "direct", Enabled: true}
+	if db.RoutingRuleAppliesToCore(missing, inbounds, db.CoreXray) || db.RoutingRuleAppliesToCore(missing, inbounds, db.CoreSingbox) {
+		t.Fatal("missing inbound_id should not fall back to inbound_tag")
+	}
+	disabled := db.RoutingRule{InboundID: 3, OutboundID: 1, OutboundTag: "direct", Enabled: true}
+	if db.RoutingRuleAppliesToCore(disabled, inbounds, db.CoreXray) {
+		t.Fatal("disabled inbound_id should not apply to core")
 	}
 }
 
@@ -323,6 +346,7 @@ func TestStoreUpdateOutboundKeepsRoutingRuleTagSnapshot(t *testing.T) {
 		t.Fatalf("create outbound: %v", err)
 	}
 	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		OutboundID:  ob.ID,
 		OutboundTag: "proxy-old",
 		Domain:      "geosite:netflix",
 		Enabled:     true,
@@ -426,6 +450,45 @@ func TestStoreDeleteOutboundDeletesOutbound(t *testing.T) {
 	}
 }
 
+func TestStoreDeleteOutboundRejectsReferencedOutbound(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "referenced-proxy", Protocol: "socks", Address: "10.0.0.1", Port: 1080})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundID: outbound.ID, Domain: "example.com", Enabled: true}); err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+
+	if err := store.DeleteOutbound(context.Background(), outbound.ID); err == nil || !strings.Contains(err.Error(), "referenced") {
+		t.Fatalf("expected referenced outbound delete to be rejected, got %v", err)
+	}
+}
+
+func TestStoreRejectsBadRoutingRuleForeignKeys(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if err := store.ExecForTest(ctx, `INSERT INTO routing_rules (outbound_id, outbound_tag, domain, enabled, sort) VALUES (0, 'tag-only', 'example.com', 1, 0)`); err == nil {
+		t.Fatal("expected outbound_id=0 routing rule to fail")
+	}
+	if err := store.ExecForTest(ctx, `INSERT INTO routing_rules (outbound_id, outbound_tag, domain, enabled, sort) VALUES (99999, 'missing', 'example.com', 1, 0)`); err == nil {
+		t.Fatal("expected missing outbound foreign key to fail")
+	}
+	if err := store.ExecForTest(ctx, `INSERT INTO routing_rules (client_id, outbound_id, outbound_tag, domain, enabled, sort) VALUES (99999, 1, 'direct', 'example.com', 1, 0)`); err == nil {
+		t.Fatal("expected missing client foreign key to fail")
+	}
+}
+
 func TestStoreDeleteOutboundRejectsUnknownID(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -486,13 +549,13 @@ func TestStoreCreatesAndListsRoutingRules(t *testing.T) {
 	}
 
 	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  "",
-		OutboundTag: "blocked",
-		Domain:      "geosite:malware",
-		IP:          "geoip:private",
-		RuleSet:     "geosite-category-ads-all",
-		Protocol:    "bittorrent",
-		Enabled:     true,
+		InboundTag: "",
+		OutboundID: 2, OutboundTag: "blocked",
+		Domain:   "geosite:malware",
+		IP:       "geoip:private",
+		RuleSet:  "geosite-category-ads-all",
+		Protocol: "bittorrent",
+		Enabled:  true,
 	})
 	if err != nil {
 		t.Fatalf("create routing rule: %v", err)
@@ -518,10 +581,10 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 	defer store.Close()
 
 	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  "",
-		OutboundTag: "blocked",
-		Domain:      "geosite:malware",
-		Enabled:     true,
+		InboundTag: "",
+		OutboundID: 2, OutboundTag: "blocked",
+		Domain:  "geosite:malware",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -532,13 +595,13 @@ func TestStoreUpdateRoutingRule(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	updated, err := store.UpdateRoutingRule(context.Background(), rule.ID, db.UpdateRoutingRuleParams{
-		InboundTag:  "socks-in",
-		OutboundTag: "direct",
-		Domain:      "geosite:netflix",
-		IP:          "8.8.8.8",
-		RuleSet:     "geoip-cn",
-		Protocol:    "dns",
-		Enabled:     false,
+		InboundTag: "socks-in",
+		OutboundID: 1, OutboundTag: "direct",
+		Domain:   "geosite:netflix",
+		IP:       "8.8.8.8",
+		RuleSet:  "geoip-cn",
+		Protocol: "dns",
+		Enabled:  false,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -575,10 +638,10 @@ func TestStoreRoutingRuleClientFields(t *testing.T) {
 	}
 
 	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  "edge",
-		ClientID:    client.ID,
-		OutboundTag: "blocked",
-		Enabled:     true,
+		InboundTag: "edge",
+		ClientID:   client.ID,
+		OutboundID: 2, OutboundTag: "blocked",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create client routing rule: %v", err)
@@ -589,10 +652,10 @@ func TestStoreRoutingRuleClientFields(t *testing.T) {
 	}
 
 	updated, err := store.UpdateRoutingRule(context.Background(), rule.ID, db.UpdateRoutingRuleParams{
-		ClientID:    client.ID,
-		OutboundTag: "direct",
-		Domain:      "example.com",
-		Enabled:     false,
+		ClientID:   client.ID,
+		OutboundID: 1, OutboundTag: "direct",
+		Domain:  "example.com",
+		Enabled: false,
 	})
 	if err != nil {
 		t.Fatalf("update client routing rule: %v", err)
@@ -666,10 +729,10 @@ func TestStoreRejectsRoutingRuleClientInboundMismatch(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  "other-inbound",
-		ClientID:    client.ID,
-		OutboundTag: "direct",
-		Enabled:     true,
+		InboundTag: "other-inbound",
+		ClientID:   client.ID,
+		OutboundID: 1, OutboundTag: "direct",
+		Enabled: true,
 	})
 	if err == nil {
 		t.Fatal("expected client inbound mismatch to be rejected")
@@ -686,8 +749,8 @@ func TestStoreRejectsRoutingRuleClientEmailWithoutClientID(t *testing.T) {
 	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
 		InboundTag:  "inbound-1-vless",
 		ClientEmail: "alice@example.com",
-		OutboundTag: "direct",
-		Enabled:     true,
+		OutboundID:  1, OutboundTag: "direct",
+		Enabled: true,
 	})
 	if err == nil {
 		t.Fatal("expected client_email without client_id to be rejected")
@@ -702,7 +765,7 @@ func TestStoreDeleteRoutingRule(t *testing.T) {
 	defer store.Close()
 
 	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		OutboundTag: "blocked", Domain: "geosite:malware",
+		OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:malware",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -934,6 +997,37 @@ func TestStoreDeletesClient(t *testing.T) {
 	}
 }
 
+func TestStoreDeleteClientCleansRoutingRules(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "client-route", Protocol: "vless", Port: 443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "route-client@test.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{ClientID: client.ID, OutboundID: 1, OutboundTag: "direct", Enabled: true}); err != nil {
+		t.Fatalf("create client routing rule: %v", err)
+	}
+
+	if err := store.DeleteClient(context.Background(), client.ID); err != nil {
+		t.Fatalf("delete client: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list rules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("expected client routing rules to be removed, got %+v", rules)
+	}
+}
+
 func TestStoreDeletesInboundAndCascadesClients(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -966,6 +1060,67 @@ func TestStoreDeletesInboundAndCascadesClients(t *testing.T) {
 	for _, ib := range inbounds {
 		if ib.ID == inbound.ID {
 			t.Fatalf("inbound %d still present after deletion", inbound.ID)
+		}
+	}
+}
+
+func TestStoreEnablesForeignKeysForConnections(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	err = store.ExecForTest(context.Background(), `
+INSERT INTO clients (inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at)
+VALUES (99999, 'orphan-uuid', 'orphan-uuid', '', 'orphan-token', 'orphan-stats', 'orphan@example.com', 1, 'now')
+`)
+	if err == nil {
+		t.Fatal("expected foreign key violation for missing inbound")
+	}
+}
+
+func TestStoreDeleteInboundCleansRoutingRulesAndClients(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "route-inbound", Protocol: "vless", Port: 9443, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "inbound-client@test.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(inbound), OutboundID: 1, OutboundTag: "direct", Enabled: true}); err != nil {
+		t.Fatalf("create inbound routing rule: %v", err)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{ClientID: client.ID, OutboundID: 2, OutboundTag: "blocked", Enabled: true}); err != nil {
+		t.Fatalf("create client routing rule: %v", err)
+	}
+
+	if err := store.DeleteInbound(context.Background(), inbound.ID); err != nil {
+		t.Fatalf("delete inbound: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list rules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("expected inbound and client routing rules to be removed, got %+v", rules)
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	for _, item := range inbounds {
+		for _, listedClient := range item.Clients {
+			if listedClient.ID == client.ID {
+				t.Fatalf("expected inbound client to be removed, got %+v", listedClient)
+			}
 		}
 	}
 }
@@ -1048,19 +1203,19 @@ func TestStoreUpdateInboundCascadesRoutingRuleInboundTag(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	remarkRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  "old-edge",
-		OutboundTag: "blocked",
-		Domain:      "geosite:netflix",
-		Enabled:     true,
+		InboundTag: "old-edge",
+		OutboundID: 2, OutboundTag: "blocked",
+		Domain:  "geosite:netflix",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create remark routing rule: %v", err)
 	}
 	generatedRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  fmt.Sprintf("inbound-%d-vless", inbound.ID),
-		OutboundTag: "direct",
-		Domain:      "example.com",
-		Enabled:     true,
+		InboundTag: fmt.Sprintf("inbound-%d-vless", inbound.ID),
+		OutboundID: 1, OutboundTag: "direct",
+		Domain:  "example.com",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create generated routing rule: %v", err)
@@ -1075,15 +1230,54 @@ func TestStoreUpdateInboundCascadesRoutingRuleInboundTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list routing rules: %v", err)
 	}
-	got := map[int64]string{}
+	got := map[int64]db.RoutingRule{}
 	for _, rule := range rules {
-		got[rule.ID] = rule.InboundTag
+		got[rule.ID] = rule
 	}
-	if got[remarkRule.ID] != "new-edge" {
+	if got[remarkRule.ID].InboundTag != "new-edge" {
 		t.Fatalf("remark inbound tag was not cascaded: %+v", rules)
 	}
-	if got[generatedRule.ID] != fmt.Sprintf("inbound-%d-vmess", inbound.ID) {
+	if got[generatedRule.ID].InboundTag != fmt.Sprintf("inbound-%d-vmess", inbound.ID) {
 		t.Fatalf("generated inbound tag was not cascaded: %+v", rules)
+	}
+	if got[remarkRule.ID].InboundID != inbound.ID || got[generatedRule.ID].InboundID != inbound.ID {
+		t.Fatalf("inbound_id should remain bound to updated inbound: %+v", rules)
+	}
+}
+
+func TestStoreRoutingRuleInboundIDSurvivesInboundRename(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "old-edge", Protocol: "vless", Port: 1443, Network: "tcp", Security: "none",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
+		InboundID: inbound.ID, OutboundID: 1, OutboundTag: "direct", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create routing rule: %v", err)
+	}
+	if rule.InboundID != inbound.ID || rule.InboundTag != db.GeneratedInboundTag(inbound) {
+		t.Fatalf("expected rule to store inbound_id target and tag snapshot: %+v", rule)
+	}
+	if _, err := store.UpdateInbound(context.Background(), inbound.ID, db.UpdateInboundParams{
+		Remark: "new-edge", Protocol: "vmess", Port: 2443, Network: "ws", Security: "tls", Enabled: true,
+	}); err != nil {
+		t.Fatalf("update inbound: %v", err)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil {
+		t.Fatalf("list routing rules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].InboundID != inbound.ID || rules[0].InboundTag != fmt.Sprintf("inbound-%d-vmess", inbound.ID) {
+		t.Fatalf("rule should remain bound to inbound_id after rename/protocol change: %+v", rules)
 	}
 }
 
@@ -1107,19 +1301,19 @@ func TestStoreUpdateInboundDoesNotCascadeDuplicateRemarkRules(t *testing.T) {
 		t.Fatalf("create second inbound: %v", err)
 	}
 	remarkRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  "shared-edge",
-		OutboundTag: "blocked",
-		Domain:      "geosite:netflix",
-		Enabled:     true,
+		InboundTag: "shared-edge",
+		OutboundID: 2, OutboundTag: "blocked",
+		Domain:  "geosite:netflix",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create remark routing rule: %v", err)
 	}
 	generatedRule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  fmt.Sprintf("inbound-%d-vless", first.ID),
-		OutboundTag: "direct",
-		Domain:      "example.com",
-		Enabled:     true,
+		InboundTag: fmt.Sprintf("inbound-%d-vless", first.ID),
+		OutboundID: 1, OutboundTag: "direct",
+		Domain:  "example.com",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create generated routing rule: %v", err)
@@ -1357,10 +1551,10 @@ func TestStoreUpdateClientCascadesRoutingRuleClientEmail(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		InboundTag:  "edge",
-		ClientID:    client.ID,
-		OutboundTag: "blocked",
-		Enabled:     true,
+		InboundTag: "edge",
+		ClientID:   client.ID,
+		OutboundID: 2, OutboundTag: "blocked",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create client routing rule: %v", err)
@@ -1875,25 +2069,24 @@ func TestStoreRejectsRemovedLegacyPoolVirtualOutbound(t *testing.T) {
 	}
 }
 
-func TestStoreCreateRoutingRuleRejectsNonexistentOutboundTag(t *testing.T) {
+func TestStoreCreateRoutingRuleRejectsMissingOutboundID(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
 
-	// Default outbounds are "direct" and "blocked" — "nonexistent" should be rejected
 	_, err = store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
 		OutboundTag: "nonexistent",
 		Domain:      "example.com",
 		Enabled:     true,
 	})
 	if err == nil {
-		t.Fatal("expected error for nonexistent outbound_tag, got nil")
+		t.Fatal("expected error for missing outbound_id, got nil")
 	}
 }
 
-func TestStoreUpdateRoutingRuleRejectsNonexistentOutboundTag(t *testing.T) {
+func TestStoreUpdateRoutingRuleRejectsMissingOutboundID(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1901,9 +2094,9 @@ func TestStoreUpdateRoutingRuleRejectsNonexistentOutboundTag(t *testing.T) {
 	defer store.Close()
 
 	rule, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		OutboundTag: "blocked",
-		Domain:      "geosite:malware",
-		Enabled:     true,
+		OutboundID: 2, OutboundTag: "blocked",
+		Domain:  "geosite:malware",
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create rule: %v", err)
@@ -1915,7 +2108,7 @@ func TestStoreUpdateRoutingRuleRejectsNonexistentOutboundTag(t *testing.T) {
 		Enabled:     false,
 	})
 	if err == nil {
-		t.Fatal("expected error for nonexistent outbound_tag on update, got nil")
+		t.Fatal("expected error for missing outbound_id on update, got nil")
 	}
 }
 
@@ -1927,10 +2120,10 @@ func TestStoreReorderRoutingRulesUpdatesSortOrder(t *testing.T) {
 	defer store.Close()
 
 	r1, _ := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		OutboundTag: "blocked", Domain: "geosite:malware", Enabled: true,
+		OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:malware", Enabled: true,
 	})
 	r2, _ := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{
-		OutboundTag: "blocked", Domain: "geosite:netflix", Enabled: true,
+		OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:netflix", Enabled: true,
 	})
 
 	err = store.ReorderRoutingRules(context.Background(), []int64{r2.ID, r1.ID})
@@ -2532,6 +2725,74 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	}
 	if len(samples) != 3 {
 		t.Fatalf("expected one recovered client sample after marker, got %+v", samples)
+	}
+}
+
+func TestApplyTrafficRawStatsBatchesClientSamplesAndTotals(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inboundA, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "batch-a", Protocol: "vless", Port: 28101, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound a: %v", err)
+	}
+	clientA, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inboundA.ID, Email: "batch-a@example.com"})
+	if err != nil {
+		t.Fatalf("create client a: %v", err)
+	}
+	inboundB, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "batch-b", Protocol: "vless", Port: 28102, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound b: %v", err)
+	}
+	clientB, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inboundB.ID, Email: "batch-b@example.com"})
+	if err != nil {
+		t.Fatalf("create client b: %v", err)
+	}
+
+	raw := func(aUp, aDown, bUp, bDown int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{
+			{Engine: "xray", ScopeType: "client", ScopeKey: clientA.StatsKey, RawUp: aUp, RawDown: aDown, Status: "ok"},
+			{Engine: "xray", ScopeType: "client", ScopeKey: clientB.StatsKey, RawUp: bUp, RawDown: bDown, Status: "ok"},
+			{Engine: "xray", ScopeType: "inbound", ScopeKey: "batch-inbound-a", RawUp: aUp, RawDown: aDown, Status: "ok"},
+		}
+	}
+	t0 := time.Unix(2000, 0)
+	if err := store.ApplyTrafficRawStats(ctx, raw(1000, 2000, 3000, 4000), t0); err != nil {
+		t.Fatalf("baseline batch: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1120, 2300, 3600, 4700), t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("increment batch: %v", err)
+	}
+
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	stateA := findTrafficState(states, "xray", "client", clientA.StatsKey)
+	stateB := findTrafficState(states, "xray", "client", clientB.StatsKey)
+	if stateA == nil || stateA.TotalUp != 120 || stateA.TotalDown != 300 || stateA.RateUp != 12 || stateA.RateDown != 30 {
+		t.Fatalf("unexpected client a traffic state: %+v", stateA)
+	}
+	if stateB == nil || stateB.TotalUp != 600 || stateB.TotalDown != 700 || stateB.RateUp != 60 || stateB.RateDown != 70 {
+		t.Fatalf("unexpected client b traffic state: %+v", stateB)
+	}
+	samples, err := store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples: %v", err)
+	}
+	if len(samples) != 4 {
+		t.Fatalf("expected two client samples for each batch, got %+v", samples)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientB.ID)
+	if err != nil {
+		t.Fatalf("get client b usage: %v", err)
+	}
+	if !found || usage.TotalUp != 600 || usage.TotalDown != 700 {
+		t.Fatalf("expected client table to track expected-engine totals, found=%v usage=%+v", found, usage)
 	}
 }
 

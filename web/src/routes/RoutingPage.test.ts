@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { RoutingRule } from '../api/types';
-import { clientSelectionOptions, generatedInboundTag, inboundSelectionOptions, inboundTagOptions, movedRoutingRuleIds, outboundSelectionOptions, routingPayload, ruleTitle } from './RoutingPage';
+import { clientSelectionOptions, generatedInboundTag, inboundSelectionOptions, inboundTagOptions, movedRoutingRuleIds, newRoutingRuleDraft, outboundSelectionOptions, routingPayload, ruleTitle } from './RoutingPage';
 
 describe('routing helpers', () => {
   it('builds create and edit payloads with backend field names only', () => {
-    expect(routingPayload({ inbound_tag: 'edge', domain: 'geosite:netflix', ip: 'geoip:private', rule_set: 'geosite-category-ads-all', protocol: '', outbound_tag: 'proxy-a', enabled: true })).toEqual({
+    expect(routingPayload({ inbound_tag: 'edge', domain: 'geosite:netflix', ip: 'geoip:private', rule_set: 'geosite-category-ads-all', protocol: '', outbound_id: 9, outbound_tag: 'proxy-a', enabled: true })).toEqual({
+      inbound_id: 0,
       inbound_tag: 'edge',
       client_id: 0,
       client_email: '',
@@ -12,12 +13,13 @@ describe('routing helpers', () => {
       ip: 'geoip:private',
       rule_set: 'geosite-category-ads-all',
       protocol: '',
-      outbound_id: 0,
+      outbound_id: 9,
       outbound_tag: 'proxy-a',
       enabled: true,
     });
 
-    expect(routingPayload({ inbound_tag: undefined, domain: undefined, protocol: 'bittorrent', outbound_tag: 'blocked', enabled: false })).toEqual({
+    expect(routingPayload({ inbound_tag: undefined, domain: undefined, protocol: 'bittorrent', outbound_id: 2, outbound_tag: 'blocked', enabled: false })).toEqual({
+      inbound_id: 0,
       inbound_tag: '',
       client_id: 0,
       client_email: '',
@@ -25,15 +27,16 @@ describe('routing helpers', () => {
       ip: '',
       rule_set: '',
       protocol: 'bittorrent',
-      outbound_id: 0,
+      outbound_id: 2,
       outbound_tag: 'blocked',
       enabled: false,
     });
   });
 
   it('preserves complete fields when toggling enabled state', () => {
-    const rule: RoutingRule = { id: 8, inbound_tag: 'edge', domain: 'example.com', ip: '8.8.8.8', rule_set: 'geoip-cn', protocol: 'dns', outbound_tag: 'direct', enabled: true };
+    const rule: RoutingRule = { id: 8, inbound_tag: 'edge', domain: 'example.com', ip: '8.8.8.8', rule_set: 'geoip-cn', protocol: 'dns', outbound_id: 1, outbound_tag: 'direct', enabled: true };
     expect(routingPayload({ ...rule, enabled: !rule.enabled })).toEqual({
+      inbound_id: 0,
       inbound_tag: 'edge',
       client_id: 0,
       client_email: '',
@@ -41,7 +44,7 @@ describe('routing helpers', () => {
       ip: '8.8.8.8',
       rule_set: 'geoip-cn',
       protocol: 'dns',
-      outbound_id: 0,
+      outbound_id: 1,
       outbound_tag: 'direct',
       enabled: false,
     });
@@ -54,6 +57,17 @@ describe('routing helpers', () => {
       { id: 3, outbound_tag: 'blocked', enabled: false },
     ];
     expect(movedRoutingRuleIds(rules, 2, -1)).toEqual([1, 3, 2]);
+  });
+
+  it('creates new rule drafts only from real outbound ids', () => {
+    expect(newRoutingRuleDraft([])).toBeNull();
+    expect(newRoutingRuleDraft([{ id: 0, tag: 'direct', protocol: 'freedom', enabled: true }])).toBeNull();
+    expect(newRoutingRuleDraft([{ id: 42, tag: 'real-direct', protocol: 'freedom', enabled: true }])).toMatchObject({
+      id: 0,
+      outbound_id: 42,
+      outbound_tag: 'real-direct',
+      enabled: true,
+    });
   });
 
   it('offers generated inbound tags before remark aliases', () => {
@@ -91,7 +105,7 @@ describe('routing helpers', () => {
 
     const clientOptions = clientSelectionOptions([
       { id: 7, remark: '启用客户入口', protocol: 'VLESS', port: 443, network: 'tcp', security: 'reality', enabled: true, clients: [{ id: 11, inbound_id: 7, email: '客户启用', uuid: 'u-1', enabled: true }] },
-    ], 'inbound-7-vless');
+    ], 7, 'inbound-7-vless');
     expect(clientOptions.find((option) => option.id === 11)).toMatchObject({
       title: '客户启用',
       meta: expect.arrayContaining([{ label: '入站：', value: '启用客户入口' }]),
@@ -102,17 +116,19 @@ describe('routing helpers', () => {
     const options = clientSelectionOptions([
       { id: 7, remark: 'edge', protocol: 'VLESS', port: 443, network: 'tcp', security: 'reality', enabled: true, clients: [{ id: 11, inbound_id: 7, email: 'alice@example.com', uuid: 'u-1', enabled: true }] },
       { id: 8, remark: 'other', protocol: 'vmess', port: 8443, network: 'ws', security: 'tls', enabled: true, clients: [{ id: 12, inbound_id: 8, email: 'bob@example.com', uuid: 'u-2', enabled: true }] },
-    ], 'inbound-7-vless', { client_id: 99, client_email: 'deleted@example.com' });
+    ], 7, 'inbound-7-vless', { inbound_id: 7, inbound_tag: 'inbound-7-vless', client_id: 99, client_email: 'deleted@example.com' });
 
     expect(options.map((option) => option.id)).toEqual([0, 11, 99]);
     expect(options.find((option) => option.id === 11)).toMatchObject({
       email: 'alice@example.com',
       title: 'alice@example.com',
+      inboundID: 7,
       inboundTag: 'inbound-7-vless',
       typeLabel: '客户端级',
     });
     expect(options.find((option) => option.id === 99)).toMatchObject({
       missing: true,
+      inboundID: 7,
       title: 'deleted@example.com',
       typeLabel: '客户端已缺失',
     });
@@ -127,6 +143,19 @@ describe('routing helpers', () => {
 
     expect(options[0].meta).toContainEqual({ label: '地址：', value: '205.178.136.32:8447' });
     expect(options[0].meta).toContainEqual({ label: '国家/地区：', value: '美国' });
+  });
+
+  it('uses outbound_id instead of stale outbound_tag in summaries', () => {
+    const text = (value: string) => value;
+    const outbounds = [
+      { id: 1, tag: 'direct', protocol: 'freedom', enabled: true },
+      { id: 2, tag: 'real-proxy', protocol: 'socks', enabled: true },
+    ];
+    expect(ruleTitle({ id: 10, outbound_id: 2, outbound_tag: 'old-proxy-tag', enabled: true }, text, [], outbounds)).toBe('全部入站 -> real-proxy');
+    expect(routingPayload({ outbound_id: 2, outbound_tag: 'old-proxy-tag', enabled: true })).toMatchObject({
+      outbound_id: 2,
+      outbound_tag: 'old-proxy-tag',
+    });
   });
 
   it('uses source and outbound summary instead of generic default titles', () => {
