@@ -317,6 +317,8 @@ func TestInstallerDownloadsReleaseAssetAndVerifiesChecksum(t *testing.T) {
 	for _, want := range []string{
 		"MIGATE_VERSION:-latest",
 		"release_base_url()",
+		"latest_release_tag()",
+		"ensure_latest_release_version",
 		"releases/latest/download",
 		"releases/download/%s",
 		"CHECKSUM_URL",
@@ -441,6 +443,8 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 		"--check)",
 		"--version)",
 		"check_update()",
+		"note_current_release_state",
+		"normalize_version",
 		"install_release_flow",
 		"download_release_asset",
 		"install_migate_binary_from_tmp",
@@ -467,9 +471,13 @@ func TestInstallerRepairServiceRefreshesSandboxPermissions(t *testing.T) {
 		}
 	}
 	repairIdx := strings.Index(script, "repair_service_flow()")
-	writeIdx := strings.Index(script[repairIdx:], "write_systemd_service")
-	restartIdx := strings.Index(script[repairIdx:], "restart_migate_service")
-	if repairIdx < 0 || writeIdx < 0 || restartIdx < 0 || writeIdx > restartIdx {
+	if repairIdx < 0 {
+		t.Fatalf("repair-service must define repair_service_flow")
+	}
+	repairBody := script[repairIdx:]
+	writeIdx := strings.Index(repairBody, "write_systemd_service")
+	restartIdx := strings.Index(repairBody, "restart_migate_service")
+	if writeIdx < 0 || restartIdx < 0 || writeIdx > restartIdx {
 		t.Fatalf("repair-service must rewrite migate.service before restarting service")
 	}
 }
@@ -491,6 +499,38 @@ func TestInstallerUpdateFlowRewritesServiceBeforeRestart(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("update flow service refresh contract missing %q", want)
 		}
+	}
+}
+
+func TestInstallerUpdateFlowRefreshesServiceEvenWhenCurrent(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	if strings.Contains(script, "if skip_update_if_current; then") {
+		t.Fatalf("update flow must not return before service and installer self-repair when already current")
+	}
+	for _, want := range []string{
+		"note_current_release_state",
+		"MiGate 已是最新版本",
+		"将刷新安装器和服务配置",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("update flow current-version repair contract missing %q", want)
+		}
+	}
+	flowIdx := strings.Index(script, "install_release_flow()")
+	if flowIdx < 0 {
+		t.Fatalf("update flow must define install_release_flow")
+	}
+	flowBody := script[flowIdx:]
+	noteIdx := strings.Index(flowBody, "note_current_release_state")
+	downloadIdx := strings.Index(flowBody, "download_release_asset")
+	installIdx := strings.Index(flowBody, "install_migate_binary_from_tmp")
+	writeIdx := strings.Index(flowBody, "write_systemd_service")
+	restartIdx := strings.Index(flowBody, "section \"服务启动\"")
+	if noteIdx < 0 || downloadIdx < 0 || installIdx < 0 || writeIdx < 0 || restartIdx < 0 {
+		t.Fatalf("update flow must include current-version note, release download, installer refresh, service rewrite, and restart")
+	}
+	if !(noteIdx < downloadIdx && downloadIdx < installIdx && installIdx < writeIdx && writeIdx < restartIdx) {
+		t.Fatalf("update flow must continue from current-version note through installer/service refresh before restart")
 	}
 }
 

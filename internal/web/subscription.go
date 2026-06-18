@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/xray"
 )
 
 func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
@@ -70,7 +72,12 @@ func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 			}
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(shareLink(subscriptionRequestHost(cfg, r), inbound, client)))
+		link, err := shareLink(subscriptionRequestHost(cfg, r), inbound, client)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, _ = w.Write([]byte(link))
 	}
 }
 
@@ -87,82 +94,112 @@ func subscriptionRequestHost(cfg *routerConfig, r *http.Request) string {
 	return r.Host
 }
 
-func shareLink(host string, inbound db.Inbound, client db.Client) string {
+func shareLink(host string, inbound db.Inbound, client db.Client) (string, error) {
 	host = subscriptionHost(host)
 	switch inbound.Protocol {
+	case "vless":
+		return universalShareLink(host, inbound, client), nil
 	case "vmess":
-		return vmessShareLink(host, inbound, client)
+		return vmessShareLink(host, inbound, client), nil
+	case "trojan":
+		return universalShareLink(host, inbound, client), nil
 	case "shadowsocks":
-		return ssShareLink(host, inbound, client)
+		return ssShareLink(host, inbound, client), nil
 	case "hysteria2":
-		// hysteria2://password@host:port/?params#name
-		var params []string
-		addParam := func(k, v string) {
-			if v != "" {
-				params = append(params, k+"="+url.QueryEscape(v))
-			}
-		}
-		if inbound.Hy2UpMbps > 0 {
-			params = append(params, "up_mbps="+strconv.Itoa(inbound.Hy2UpMbps))
-		}
-		if inbound.Hy2DownMbps > 0 {
-			params = append(params, "down_mbps="+strconv.Itoa(inbound.Hy2DownMbps))
-		}
-		addParam("obfs", inbound.Hy2Obfs)
-		addParam("obfs-password", inbound.Hy2ObfsPassword)
-		// sing-box v1.13 requires TLS for Hysteria2 server inbounds.
-		// MiGate uses generated self-signed certs by default, so share links must
-		// include TLS + insecure even when the UI stores security=none.
-		params = append(params, "security=tls")
-		addParam("sni", inbound.RealityServerNames)
-		params = append(params, "insecure=1")
-		query := strings.Join(params, "&")
-		suffix := ""
-		if query != "" {
-			suffix = "?" + query
-		}
-		return "hysteria2://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + suffix + "#" + url.QueryEscape(client.Email)
+		return hysteria2ShareLink(host, inbound, client), nil
+	case "tuic":
+		return tuicShareLink(host, inbound, client), nil
+	case "socks", "http", "shadowtls":
+		return "", fmt.Errorf("%s inbound does not support share links", inbound.Protocol)
 	default:
-		// vless, trojan, etc. use universal link format
-		var params []string
-		addParam := func(k, v string) {
-			if v != "" {
-				params = append(params, k+"="+url.QueryEscape(v))
-			}
-		}
-		addParam("type", inbound.Network)
-		addParam("security", inbound.Security)
-		if inbound.Security == "reality" {
-			if inbound.Network != "xhttp" {
-				params = append(params, "flow=xtls-rprx-vision")
-			}
-			addParam("sni", inbound.RealityServerNames)
-			params = append(params, "fp=chrome")
-			addParam("pbk", inbound.RealityPublicKey)
-			addParam("sid", inbound.RealityShortID)
-		} else if inbound.Security == "tls" {
-			addParam("sni", inbound.RealityServerNames)
-			params = append(params, "allowInsecure=1")
-		}
-		// Transport-specific params
-		switch inbound.Network {
-		case "ws":
-			addParam("path", inbound.WsPath)
-			addParam("host", inbound.WsHost)
-		case "h2":
-			addParam("path", inbound.WsPath)
-			addParam("host", inbound.WsHost)
-		case "grpc":
-			addParam("serviceName", inbound.GrpcServiceName)
-		case "xhttp":
-			addParam("path", inbound.XHTTPPath)
-			addParam("mode", inbound.XHTTPMode)
-		case "kcp":
-		case "quic":
-		}
-		query := strings.Join(params, "&")
-		return inbound.Protocol + "://" + client.UUID + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?" + query + "#" + url.QueryEscape(client.Email)
+		return "", fmt.Errorf("unsupported share link protocol: %s", inbound.Protocol)
 	}
+}
+
+func universalShareLink(host string, inbound db.Inbound, client db.Client) string {
+	var params []string
+	addParam := func(k, v string) {
+		if v != "" {
+			params = append(params, k+"="+url.QueryEscape(v))
+		}
+	}
+	addParam("type", inbound.Network)
+	addParam("security", inbound.Security)
+	if inbound.Security == "reality" {
+		if inbound.Network != "xhttp" {
+			params = append(params, "flow=xtls-rprx-vision")
+		}
+		addParam("sni", firstCSV(inbound.RealityServerNames))
+		addParam("fp", firstNonEmpty(inbound.TLSFingerprint, "chrome"))
+		addParam("pbk", inbound.RealityPublicKey)
+		addParam("sid", inbound.RealityShortID)
+	} else if inbound.Security == "tls" {
+		addParam("sni", inbound.TLSSNI)
+		params = append(params, "allowInsecure=1")
+	}
+	switch inbound.Network {
+	case "ws":
+		addParam("path", inbound.WsPath)
+		addParam("host", inbound.WsHost)
+	case "h2":
+		addParam("path", inbound.WsPath)
+		addParam("host", inbound.WsHost)
+	case "grpc":
+		addParam("serviceName", inbound.GrpcServiceName)
+	case "xhttp":
+		addParam("path", inbound.XHTTPPath)
+		addParam("mode", inbound.XHTTPMode)
+	}
+	query := strings.Join(params, "&")
+	credential := client.CredentialIDValue()
+	if inbound.Protocol == "trojan" {
+		credential = client.PasswordValue()
+	}
+	return inbound.Protocol + "://" + url.User(credential).String() + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?" + query + "#" + url.QueryEscape(client.Email)
+}
+
+func hysteria2ShareLink(host string, inbound db.Inbound, client db.Client) string {
+	var params []string
+	addParam := func(k, v string) {
+		if v != "" {
+			params = append(params, k+"="+url.QueryEscape(v))
+		}
+	}
+	if inbound.Hy2UpMbps > 0 {
+		params = append(params, "up_mbps="+strconv.Itoa(inbound.Hy2UpMbps))
+	}
+	if inbound.Hy2DownMbps > 0 {
+		params = append(params, "down_mbps="+strconv.Itoa(inbound.Hy2DownMbps))
+	}
+	addParam("obfs", inbound.Hy2Obfs)
+	addParam("obfs-password", inbound.Hy2ObfsPassword)
+	params = append(params, "security=tls")
+	addParam("sni", inbound.TLSSNI)
+	params = append(params, "insecure=1")
+	query := strings.Join(params, "&")
+	suffix := ""
+	if query != "" {
+		suffix = "?" + query
+	}
+	return "hysteria2://" + url.User(client.PasswordValue()).String() + "@" + host + ":" + strconv.Itoa(inbound.Port) + suffix + "#" + url.QueryEscape(client.Email)
+}
+
+func tuicShareLink(host string, inbound db.Inbound, client db.Client) string {
+	var params []string
+	addParam := func(k, v string) {
+		if v != "" {
+			params = append(params, k+"="+url.QueryEscape(v))
+		}
+	}
+	addParam("sni", inbound.TLSSNI)
+	addParam("congestion_control", firstNonEmpty(inbound.TuicCongestionControl, "bbr"))
+	if inbound.TuicZeroRTT {
+		params = append(params, "zero_rtt_handshake=1")
+	}
+	params = append(params, "insecure=1")
+	query := strings.Join(params, "&")
+	credential := url.UserPassword(client.CredentialIDValue(), client.PasswordValue()).String()
+	return "tuic://" + credential + "@" + host + ":" + strconv.Itoa(inbound.Port) + "?" + query + "#" + url.QueryEscape(client.Email)
 }
 
 func vmessShareLink(host string, inbound db.Inbound, client db.Client) string {
@@ -189,14 +226,18 @@ func vmessShareLink(host string, inbound db.Inbound, client db.Client) string {
 		vPath = inbound.WsPath
 	}
 	if inbound.Security == "tls" || inbound.Security == "reality" {
-		sni = inbound.RealityServerNames
+		if inbound.Security == "reality" {
+			sni = firstCSV(inbound.RealityServerNames)
+		} else {
+			sni = inbound.TLSSNI
+		}
 	}
 	vmessData := map[string]interface{}{
 		"v":    "2",
 		"ps":   client.Email,
 		"add":  host,
 		"port": portStr,
-		"id":   client.UUID,
+		"id":   client.CredentialIDValue(),
 		"aid":  "0",
 		"scy":  "auto",
 		"net":  inbound.Network,
@@ -216,9 +257,18 @@ func ssShareLink(host string, inbound db.Inbound, client db.Client) string {
 	if method == "" {
 		method = "2022-blake3-aes-128-gcm"
 	}
-	userPass := method + ":" + inbound.UUID
+	userPass := method + ":" + xray.SSInboundPassword(method, inbound.UUID)
 	encoded := base64.StdEncoding.EncodeToString([]byte(userPass))
 	return "ss://" + encoded + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + url.QueryEscape(client.Email)
+}
+
+func firstCSV(value string) string {
+	for _, part := range strings.Split(value, ",") {
+		if strings.TrimSpace(part) != "" {
+			return strings.TrimSpace(part)
+		}
+	}
+	return ""
 }
 
 func subscriptionHost(host string) string {

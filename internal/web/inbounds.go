@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -26,6 +28,29 @@ func inboundsHandler(store Store, ctrl XrayController, statsClient xray.StatsCli
 			methodNotAllowed(w)
 		}
 	}
+}
+
+func inboundCapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"capabilities": db.InboundCapabilities()})
+}
+
+func realityKeypairHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	privateKey, publicKey, err := xray.GenerateRealityKey()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "generate_reality_keypair_failed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"private_key": privateKey, "public_key": publicKey})
 }
 
 func applyCoreAsync(ctrl XrayController, store Store) {
@@ -64,6 +89,83 @@ func deriveRealityPublicKeys(inbounds []db.Inbound) {
 			}
 		}
 	}
+}
+
+func prepareInboundRealityKeys(payload *db.CreateInboundParams) error {
+	if strings.ToLower(strings.TrimSpace(payload.Security)) != "reality" {
+		return nil
+	}
+	if strings.TrimSpace(payload.RealityPrivateKey) == "" {
+		privKey, pubKey, err := xray.GenerateRealityKey()
+		if err != nil {
+			return err
+		}
+		payload.RealityPrivateKey = privKey
+		payload.RealityPublicKey = pubKey
+		return ensureRealityShortID(&payload.RealityShortID)
+	}
+	if strings.TrimSpace(payload.RealityPublicKey) == "" {
+		pubKey, err := xray.DeriveRealityPublicKey(payload.RealityPrivateKey)
+		if err != nil {
+			return err
+		}
+		payload.RealityPublicKey = pubKey
+	}
+	return ensureRealityShortID(&payload.RealityShortID)
+}
+
+func prepareUpdateInboundRealityKeys(ctx context.Context, store Store, inboundID int64, payload *db.UpdateInboundParams) error {
+	if strings.ToLower(strings.TrimSpace(payload.Security)) != "reality" {
+		return nil
+	}
+	if store != nil && (strings.TrimSpace(payload.RealityPrivateKey) == "" || strings.TrimSpace(payload.RealityPublicKey) == "" || strings.TrimSpace(payload.RealityShortID) == "") {
+		if inbounds, err := store.ListInbounds(ctx); err == nil {
+			for _, inbound := range inbounds {
+				if inbound.ID != inboundID {
+					continue
+				}
+				if strings.TrimSpace(payload.RealityPrivateKey) == "" {
+					payload.RealityPrivateKey = inbound.RealityPrivateKey
+				}
+				if strings.TrimSpace(payload.RealityPublicKey) == "" {
+					payload.RealityPublicKey = inbound.RealityPublicKey
+				}
+				if strings.TrimSpace(payload.RealityShortID) == "" {
+					payload.RealityShortID = inbound.RealityShortID
+				}
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(payload.RealityPrivateKey) == "" {
+		privKey, pubKey, err := xray.GenerateRealityKey()
+		if err != nil {
+			return err
+		}
+		payload.RealityPrivateKey = privKey
+		payload.RealityPublicKey = pubKey
+		return ensureRealityShortID(&payload.RealityShortID)
+	}
+	if strings.TrimSpace(payload.RealityPublicKey) == "" {
+		pubKey, err := xray.DeriveRealityPublicKey(payload.RealityPrivateKey)
+		if err != nil {
+			return err
+		}
+		payload.RealityPublicKey = pubKey
+	}
+	return ensureRealityShortID(&payload.RealityShortID)
+}
+
+func ensureRealityShortID(value *string) error {
+	if strings.TrimSpace(*value) != "" {
+		return nil
+	}
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return err
+	}
+	*value = hex.EncodeToString(b[:])
+	return nil
 }
 
 func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClient xray.StatsClient) {
@@ -158,12 +260,9 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) bool {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return false
 	}
-	// Auto-generate REALITY private key if missing
-	if payload.Security == "reality" && payload.RealityPrivateKey == "" {
-		if privKey, pubKey, err := xray.GenerateRealityKey(); err == nil {
-			payload.RealityPrivateKey = privKey
-			payload.RealityPublicKey = pubKey
-		}
+	if err := prepareInboundRealityKeys(&payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "prepare_reality_keys_failed")
+		return false
 	}
 	// Port conflict check
 	if payload.Port > 0 {
@@ -181,7 +280,7 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) bool {
 	}
 	created, err := store.CreateInbound(r.Context(), payload)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "unsupported_protocol")
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return false
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -333,6 +432,8 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 	var payload struct {
 		Email        string `json:"email"`
 		UUID         string `json:"uuid"`
+		CredentialID string `json:"credential_id"`
+		Password     string `json:"password"`
 		Enabled      *bool  `json:"enabled"`
 		TrafficLimit int64  `json:"traffic_limit"`
 		ExpiryAt     int64  `json:"expiry_at"`
@@ -341,7 +442,7 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return false
 	}
-	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, Enabled: payload.Enabled, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
+	created, err := store.CreateClient(r.Context(), db.CreateClientParams{InboundID: inboundID, Email: payload.Email, UUID: payload.UUID, CredentialID: payload.CredentialID, Password: payload.Password, Enabled: payload.Enabled, TrafficLimit: payload.TrafficLimit, ExpiryAt: payload.ExpiryAt})
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate client") {
 			writeJSONError(w, http.StatusConflict, "duplicate_client", map[string]interface{}{
@@ -420,11 +521,9 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 		writeJSONError(w, http.StatusBadRequest, "invalid_json")
 		return false
 	}
-	// Auto-generate REALITY private key if switching to reality without one
-	if payload.Security == "reality" && payload.RealityPrivateKey == "" {
-		if key, _, err := xray.GenerateRealityKey(); err == nil {
-			payload.RealityPrivateKey = key
-		}
+	if err := prepareUpdateInboundRealityKeys(r.Context(), store, inboundID, &payload); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "prepare_reality_keys_failed")
+		return false
 	}
 	// Port conflict check (excluding current inbound)
 	if payload.Port > 0 {
@@ -442,7 +541,11 @@ func updateInbound(w http.ResponseWriter, r *http.Request, store Store, inboundI
 	}
 	updated, err := store.UpdateInbound(r.Context(), inboundID, payload)
 	if err != nil {
-		writeJSONError(w, http.StatusNotFound, "update_inbound_failed")
+		if strings.Contains(err.Error(), "not found") {
+			writeJSONError(w, http.StatusNotFound, "inbound_not_found")
+			return false
+		}
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return false
 	}
 	w.Header().Set("Content-Type", "application/json")

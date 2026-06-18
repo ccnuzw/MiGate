@@ -494,6 +494,48 @@ release_base_url() {
   fi
 }
 
+latest_release_tag() {
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": "([^"]+)".*/\1/' || true
+}
+
+current_migate_version() {
+  "$MIGATE_BIN" version 2>/dev/null | awk '{print $NF}' || true
+}
+
+normalize_version() {
+  printf '%s' "$1" | sed -E 's/^MiGate version:[[:space:]]*//; s/^v//'
+}
+
+ensure_latest_release_version() {
+  if [ "$VERSION" != "latest" ]; then
+    return 0
+  fi
+  local latest
+  latest="$(latest_release_tag)"
+  if [ -z "$latest" ]; then
+    log_warn "无法解析最新 Release 版本，将继续使用 releases/latest/download。"
+    return 0
+  fi
+  VERSION="$latest"
+  log_info "解析最新 Release：${VERSION}"
+}
+
+note_current_release_state() {
+  if [ "$ACTION" != "upgrade" ] || [ "$DRY_RUN" -eq 1 ]; then
+    return 0
+  fi
+  local current latest
+  current="$(current_migate_version)"
+  if [ -z "$current" ] || [ "$current" = "unknown" ]; then
+    return 0
+  fi
+  ensure_latest_release_version
+  latest="$VERSION"
+  if [ -n "$latest" ] && [ "$(normalize_version "$current")" = "$(normalize_version "$latest")" ]; then
+    log_ok "MiGate 已是最新版本：${current}，将刷新安装器和服务配置。"
+  fi
+}
+
 download_file() {
   local url="$1"
   local dest="$2"
@@ -519,6 +561,7 @@ verify_sha256() {
 }
 
 download_release_asset() {
+  ensure_latest_release_version
   BASE_URL="$(release_base_url)"
   URL="${BASE_URL}/${ARTIFACT}"
   CHECKSUM_URL="${BASE_URL}/checksums.txt"
@@ -574,13 +617,13 @@ install_migate_binary_from_tmp() {
 }
 
 check_update() {
-  latest="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": "([^"]+)".*/\1/' || true)"
-  current="$("$MIGATE_BIN" version 2>/dev/null | awk '{print $NF}' || true)"
+  latest="$(latest_release_tag)"
+  current="$(current_migate_version)"
   [ -n "$current" ] || current="unknown"
   [ -n "$latest" ] || latest="unknown"
   echo "Current version: ${current}"
   echo "Latest version: ${latest}"
-  if [ "$current" != "$latest" ] && [ "$latest" != "unknown" ]; then
+  if [ "$(normalize_version "$current")" != "$(normalize_version "$latest")" ] && [ "$latest" != "unknown" ]; then
     echo "Update available: yes"
     echo "Run: mg update"
   else
@@ -1062,6 +1105,7 @@ install_release_flow() {
   fi
 
   section "安装 MiGate"
+  note_current_release_state
   download_release_asset
   if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
     run_cmd systemctl stop migate 2>/dev/null || true

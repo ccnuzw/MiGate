@@ -11,6 +11,8 @@ export interface Client {
   inbound_id: number;
   email: string;
   uuid: string;
+  credential_id?: string;
+  password?: string;
   subscription_token?: string;
   enabled: boolean;
   up?: number;
@@ -32,6 +34,7 @@ export interface Inbound {
   id: number;
   remark: string;
   protocol: string;
+  core?: 'xray' | 'sing-box' | string;
   port: number;
   network: string;
   security: string;
@@ -51,6 +54,28 @@ export interface Inbound {
   [key: string]: unknown;
 }
 
+export interface InboundCapability {
+  protocol: string;
+  core: 'xray' | 'sing-box' | string;
+  template_id?: string;
+  template_label?: string;
+  template_summary?: string;
+  networks: string[];
+  securities: string[];
+  default_network: string;
+  default_security: string;
+  security_by_network: Record<string, string[]>;
+  visible_fields?: string[];
+  auto_generate_fields?: string[];
+  expert_fields?: string[];
+  advanced_fields?: string[];
+  credential_type: 'none' | 'uuid' | 'password' | 'credential_id_password' | 'username_password' | string;
+  subscription: 'none' | 'full' | string;
+  share_link?: boolean;
+  local_proxy_inbound?: boolean;
+  unsupported_reasons?: string[];
+}
+
 export interface Outbound {
   id: number;
   tag: string;
@@ -60,6 +85,7 @@ export interface Outbound {
   port?: number;
   username?: string;
   password?: string;
+  supported_cores?: Array<'xray' | 'sing-box' | string>;
   enabled: boolean;
   sort?: number;
   [key: string]: unknown;
@@ -76,6 +102,7 @@ export interface RoutingRule {
   ip?: string;
   rule_set?: string;
   protocol?: string;
+  outbound_id?: number;
   outbound_tag: string;
   enabled: boolean;
   sort_order?: number;

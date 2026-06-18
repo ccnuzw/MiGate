@@ -12,6 +12,7 @@ describe('routing helpers', () => {
       ip: 'geoip:private',
       rule_set: 'geosite-category-ads-all',
       protocol: '',
+      outbound_id: 0,
       outbound_tag: 'proxy-a',
       enabled: true,
     });
@@ -24,6 +25,7 @@ describe('routing helpers', () => {
       ip: '',
       rule_set: '',
       protocol: 'bittorrent',
+      outbound_id: 0,
       outbound_tag: 'blocked',
       enabled: false,
     });
@@ -39,6 +41,7 @@ describe('routing helpers', () => {
       ip: '8.8.8.8',
       rule_set: 'geoip-cn',
       protocol: 'dns',
+      outbound_id: 0,
       outbound_tag: 'direct',
       enabled: false,
     });

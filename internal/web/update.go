@@ -181,7 +181,8 @@ func updateHandler(version string) http.HandlerFunc {
 		}
 		go func() {
 			time.Sleep(500 * time.Millisecond)
-			cmd := exec.Command("systemd-run", "--wait", "--unit=migate-update", "--replace", "--collect", "--same-dir", "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=300", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update", "--yes")
+			unit := fmt.Sprintf("migate-update-%d-%d", os.Getpid(), time.Now().UnixNano())
+			cmd := exec.Command("systemd-run", "--wait", "--unit="+unit, "--property=Type=oneshot", "--property=User=root", "--property=TimeoutSec=300", "--property=StandardOutput=append:/var/log/migate-update.log", "--property=StandardError=append:/var/log/migate-update.log", "/usr/local/bin/migate-install", "--update", "--yes")
 			out, err := cmd.CombinedOutput()
 			if len(out) > 0 {
 				_ = appendUpdateLog(string(out))
@@ -200,7 +201,7 @@ func updateHandler(version string) http.HandlerFunc {
 				globalUpdateState.finish("failed", message)
 				return
 			}
-			globalUpdateState.finish("restarting", "update completed, MiGate should restart shortly")
+			globalUpdateState.finish("completed", "update command completed; MiGate may restart if a new version was installed")
 		}()
 	}
 }
@@ -229,12 +230,19 @@ func readUpdateLogs(lines string) (string, error) {
 		if err == nil {
 			return string(out), nil
 		}
+		if journalOut, journalErr := readUpdateJournalLogs(lines); journalErr == nil {
+			return journalOut, nil
+		}
 		return string(out), err
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
+	return readUpdateJournalLogs(lines)
+}
+
+func readUpdateJournalLogs(lines string) (string, error) {
 	if _, err := exec.LookPath("journalctl"); err == nil {
-		out, journalErr := exec.Command("journalctl", "-u", "migate-update", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		out, journalErr := exec.Command("journalctl", "-u", "migate-update", "-u", "migate-update-*", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
 		if journalErr == nil {
 			return string(out), nil
 		}

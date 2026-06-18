@@ -279,6 +279,9 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
 	router := web.NewRouter(web.WithStore(store))
 
 	list := httptest.NewRecorder()
@@ -292,7 +295,7 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 		}
 	}
 
-	payload := []byte(`{"tag":"proxy-socks","remark":"SOCKS代理","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret"}`)
+	payload := []byte(`{"tag":"proxy-socks","remark":"SOCKS代理","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret","supported_cores":["xray"]}`)
 	created := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -300,7 +303,7 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("expected 201 creating outbound, got %d: %s", created.Code, created.Body.String())
 	}
-	for _, want := range []string{`"tag":"proxy-socks"`, `"protocol":"socks"`, `"address":"127.0.0.1"`, `"port":1080`, `"enabled":true`} {
+	for _, want := range []string{`"tag":"proxy-socks"`, `"protocol":"socks"`, `"address":"127.0.0.1"`, `"port":1080`, `"enabled":true`, `"supported_cores":["xray","sing-box"]`} {
 		if !strings.Contains(created.Body.String(), want) {
 			t.Fatalf("create outbound response missing %q: %s", want, created.Body.String())
 		}
@@ -310,8 +313,11 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list outbounds: %v", err)
 	}
-	if len(outbounds) != 3 || outbounds[2].Tag != "proxy-socks" {
+	if len(outbounds) != 4 || outbounds[3].Tag != "proxy-socks" {
 		t.Fatalf("outbound was not persisted: %+v", outbounds)
+	}
+	if !db.SupportsCore(outbounds[3].SupportedCores, db.CoreXray) || !db.SupportsCore(outbounds[3].SupportedCores, db.CoreSingbox) {
+		t.Fatalf("request supported_cores should not narrow protocol-derived response cores: %+v", outbounds[3].SupportedCores)
 	}
 }
 
@@ -363,6 +369,9 @@ func TestUpdateOutboundAPIRejectsUnknownID(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
 	router := web.NewRouter(web.WithStore(store))
 	payload := []byte(`{"tag":"x","remark":"x","protocol":"socks","address":"1.1.1.1","port":80}`)
 	response := httptest.NewRecorder()
@@ -428,6 +437,9 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
 	router := web.NewRouter(web.WithStore(store))
 
 	// GET: empty list
@@ -555,8 +567,8 @@ func TestCreateInboundPersistsHysteria2MPortForWebUILink(t *testing.T) {
 		"remark":            "hy2-link",
 		"protocol":          "hysteria2",
 		"port":              21001,
-		"network":           "quic",
-		"security":          "none",
+		"network":           "udp",
+		"security":          "tls",
 		"hy2_up_mbps":       100,
 		"hy2_down_mbps":     200,
 		"hy2_obfs":          "salamander",
@@ -670,8 +682,8 @@ func TestCreateInboundAPIRejectsUnsupportedProtocol(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "unsupported_protocol") {
-		t.Fatalf("expected unsupported_protocol body, got: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), "unsupported protocol") {
+		t.Fatalf("expected unsupported protocol body, got: %s", response.Body.String())
 	}
 	inbounds, err := store.ListInbounds(context.Background())
 	if err != nil {
@@ -815,7 +827,7 @@ func TestSingboxConfigAPIProducesPreviewWhenConfigFileMissing(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"}); err != nil {
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
 
@@ -840,7 +852,7 @@ func TestConfigValidateAPIsReturnStructuredResults(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"}); err != nil {
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
 	router := web.NewRouter(web.WithStore(store))
@@ -1178,8 +1190,8 @@ func TestSubscriptionHysteria2DefaultGeneratedTLSLink(t *testing.T) {
 		Remark:   "hy2",
 		Protocol: "hysteria2",
 		Port:     21001,
-		Network:  "quic",
-		Security: "none",
+		Network:  "udp",
+		Security: "tls",
 	})
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
@@ -1217,7 +1229,7 @@ func TestStatsMarksSingBoxClientTrafficAsWaitingBeforeFirstSample(t *testing.T) 
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "quic", Security: "none"})
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"})
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
@@ -1385,11 +1397,22 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 	}
 	seedClientTraffic(t, store, activeClient, 10, 20)
 	seedClientTraffic(t, store, limitedClient, 1, 0)
-	if _, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080}); err != nil {
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "proxy", Protocol: "socks", Address: "127.0.0.1", Port: 1080})
+	if err != nil {
 		t.Fatalf("create outbound: %v", err)
 	}
 	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{Domain: "example.com", OutboundTag: "proxy", Enabled: true}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(context.Background(), []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: db.GeneratedOutboundTag(db.CoreXray, outbound.ID, outbound.Tag), RawUp: 100, RawDown: 50, Status: "ok"},
+	}, time.Unix(100, 0)); err != nil {
+		t.Fatalf("seed outbound traffic baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(context.Background(), []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "outbound", ScopeKey: db.GeneratedOutboundTag(db.CoreXray, outbound.ID, outbound.Tag), RawUp: 120, RawDown: 70, Status: "ok"},
+	}, time.Unix(110, 0)); err != nil {
+		t.Fatalf("seed outbound traffic increment: %v", err)
 	}
 
 	router := web.NewRouter(web.WithStore(store))
@@ -1405,11 +1428,13 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		`"clients_active":1`,
 		`"clients_expired":1`,
 		`"clients_limited":1`,
-		`"outbounds":3`,
+		`"outbounds":4`,
 		`"routing_rules":1`,
 		`"xray_realtime":31`,
 		`"protocols":{"vless":1}`,
 		`"traffic_series"`,
+		`"outbound_traffic"`,
+		`"tag":"proxy"`,
 		`"up":11`,
 		`"down":20`,
 		`"validation"`,
@@ -1806,6 +1831,7 @@ func TestSubscriptionVLESSXHTTPRealityOmitsVisionFlow(t *testing.T) {
 		Security:           "reality",
 		XHTTPPath:          "/samge",
 		XHTTPMode:          "stream-one",
+		RealityPrivateKey:  "uNisYErm5wwrV9t9EP2P3VB0g3CpS5m70bdG7gwShXg",
 		RealityServerNames: "www.cloudflare.com",
 		RealityPublicKey:   "IXhEpcgnBhIQ6m4DewngNWqDeLl7-ej53nonOtwM_kM",
 		RealityShortID:     "00942aa4",
@@ -1911,7 +1937,7 @@ func TestSubscriptionVmessReturnsBase64JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "vmess-user"})
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "vmess-user", CredentialID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
@@ -1945,7 +1971,7 @@ func TestSubscriptionVmessReturnsBase64JSON(t *testing.T) {
 	}
 	for _, want := range []struct{ k, v string }{
 		{"v", "2"}, {"ps", "vmess-user"}, {"add", "panel.example.com"},
-		{"id", client.UUID}, {"aid", "0"}, {"scy", "auto"},
+		{"id", client.CredentialIDValue()}, {"aid", "0"}, {"scy", "auto"},
 		{"net", "ws"}, {"tls", "tls"},
 	} {
 		if got, ok := vmessData[want.k]; !ok || fmt.Sprint(got) != want.v {
@@ -2040,11 +2066,99 @@ func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
 		}
 	}
 	creds := string(decoded)
-	if !strings.Contains(creds, ":") || !strings.Contains(creds, inbound.UUID) {
-		t.Fatalf("ss:// decoded credentials %q should contain method:password with inbound password/key", creds)
+	method := inbound.SSMethod
+	if method == "" {
+		method = "2022-blake3-aes-128-gcm"
+	}
+	if !strings.Contains(creds, ":") || !strings.Contains(creds, xray.SSInboundPassword(method, inbound.UUID)) {
+		t.Fatalf("ss:// decoded credentials %q should contain method:stable inbound password/key", creds)
 	}
 	if !strings.HasSuffix(body, "#ss-%E7%94%A8%E6%88%B7") {
 		t.Fatalf("ss:// missing URL-encoded remark fragment: %s", body)
+	}
+}
+
+func TestSubscriptionTUICKeepsUserinfoSeparator(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "tuic-node", Protocol: "tuic", Port: 443, Network: "udp", Security: "tls", TLSSNI: "example.com",
+	})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{
+		InboundID: inbound.ID, Email: "tuic-user", CredentialID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Password: "pa@ss:word",
+	})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
+	req.Host = "panel.example.com"
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.HasPrefix(body, "tuic://aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:pa%40ss%3Aword@panel.example.com:443?") {
+		t.Fatalf("tuic userinfo should preserve uuid/password separator and escape password only, got %s", body)
+	}
+}
+
+func TestSubscriptionUserinfoEscapesReservedCharacters(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	trojan, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "trojan-node", Protocol: "trojan", Port: 443, Network: "tcp", Security: "tls",
+	})
+	if err != nil {
+		t.Fatalf("create trojan inbound: %v", err)
+	}
+	trojanClient, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: trojan.ID, Email: "trojan-user", Password: "pa@ss"})
+	if err != nil {
+		t.Fatalf("create trojan client: %v", err)
+	}
+	hy2, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+		Remark: "hy2-node", Protocol: "hysteria2", Port: 8443, Network: "udp", Security: "tls",
+	})
+	if err != nil {
+		t.Fatalf("create hy2 inbound: %v", err)
+	}
+	hy2Client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: hy2.ID, Email: "hy2-user", Password: "hy2@secret"})
+	if err != nil {
+		t.Fatalf("create hy2 client: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	for _, tc := range []struct {
+		token string
+		want  string
+	}{
+		{trojanClient.SubscriptionToken, "trojan://pa%40ss@panel.example.com:443?"},
+		{hy2Client.SubscriptionToken, "hysteria2://hy2%40secret@panel.example.com:8443?"},
+	} {
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/sub/"+tc.token, nil)
+		req.Host = "panel.example.com"
+		router.ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+		}
+		if !strings.HasPrefix(response.Body.String(), tc.want) {
+			t.Fatalf("share link should escape userinfo, want prefix %q got %s", tc.want, response.Body.String())
+		}
 	}
 }
 
@@ -2088,18 +2202,16 @@ func TestPatchInboundEnabledAPIPartiallyUpdatesEnabledOnly(t *testing.T) {
 	defer store.Close()
 
 	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
-		Remark:             "ws-entry",
-		Protocol:           "vless",
-		Port:               8443,
-		Network:            "ws",
-		Security:           "reality",
-		WsPath:             "/migate",
-		WsHost:             "example.com",
-		RealityDest:        "www.cloudflare.com:443",
-		RealityServerNames: "www.cloudflare.com",
-		RealityShortID:     "abcd1234",
-		XHTTPPath:          "/xhttp",
-		XHTTPMode:          "stream-one",
+		Remark:    "ws-entry",
+		Protocol:  "vless",
+		Port:      8443,
+		Network:   "ws",
+		Security:  "tls",
+		WsPath:    "/migate",
+		WsHost:    "example.com",
+		TLSSNI:    "example.com",
+		XHTTPPath: "/xhttp",
+		XHTTPMode: "stream-one",
 	})
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
@@ -2115,7 +2227,7 @@ func TestPatchInboundEnabledAPIPartiallyUpdatesEnabledOnly(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	resp := response.Body.String()
-	for _, want := range []string{`"remark":"ws-entry"`, `"protocol":"vless"`, `"port":8443`, `"network":"ws"`, `"security":"reality"`, `"ws_path":"/migate"`, `"ws_host":"example.com"`, `"reality_dest":"www.cloudflare.com:443"`, `"xhttp_path":"/xhttp"`, `"xhttp_mode":"stream-one"`, `"enabled":false`} {
+	for _, want := range []string{`"remark":"ws-entry"`, `"protocol":"vless"`, `"port":8443`, `"network":"ws"`, `"security":"tls"`, `"ws_path":"/migate"`, `"ws_host":"example.com"`, `"tls_sni":"example.com"`, `"xhttp_path":"/xhttp"`, `"xhttp_mode":"stream-one"`, `"enabled":false`} {
 		if !strings.Contains(resp, want) {
 			t.Fatalf("patch enabled response missing preserved field %q: %s", want, resp)
 		}
@@ -2561,7 +2673,7 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	_, err = store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+	outbound, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
 		Tag: "test-socks-egress", Remark: "Test SOCKS", Protocol: "socks", Address: "10.255.239.2", Port: 21080,
 	})
 	if err != nil {
@@ -2595,7 +2707,8 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	if !strings.Contains(string(configBytes), `"protocol": "vless"`) {
 		t.Fatalf("config missing inbound: %s", string(configBytes))
 	}
-	for _, want := range []string{`"tag": "test-socks-egress"`, `"protocol": "socks"`, `"address": "10.255.239.2"`, `"outboundTag": "test-socks-egress"`, `"inboundTag": [
+	compiledTag := fmt.Sprintf("xray-out-%d", outbound.ID)
+	for _, want := range []string{fmt.Sprintf(`"tag": "%s"`, compiledTag), `"protocol": "socks"`, `"address": "10.255.239.2"`, fmt.Sprintf(`"outboundTag": "%s"`, compiledTag), `"inboundTag": [
           "inbound-1-vless"
         ]`} {
 		if !strings.Contains(string(configBytes), want) {

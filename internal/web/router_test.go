@@ -383,7 +383,8 @@ func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
 	body := webPackageSource(t)
 	for _, want := range []string{
 		`exec.Command("systemd-run"`,
-		`"--unit=migate-update"`,
+		`unit := fmt.Sprintf("migate-update-%d-%d", os.Getpid(), time.Now().UnixNano())`,
+		`"--unit="+unit`,
 		`"--property=TimeoutSec=300"`,
 		`"--property=StandardOutput=append:/var/log/migate-update.log"`,
 		`"--property=StandardError=append:/var/log/migate-update.log"`,
@@ -393,10 +394,14 @@ func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
 		`os.Geteuid()`,
 		`exec.LookPath("systemd-run")`,
 		`os.Stat("/run/systemd/system")`,
+		`"journalctl", "-u", "migate-update", "-u", "migate-update-*"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("update handler missing detached updater contract %q", want)
 		}
+	}
+	if strings.Contains(body, `"--replace"`) {
+		t.Fatalf("update handler must not require systemd-run --replace; older systemd-run versions reject it")
 	}
 	if strings.Contains(body, `exec.Command("/usr/local/bin/migate-install", "--update").Run()`) {
 		t.Fatalf("update handler must not run updater inside the migate service cgroup")

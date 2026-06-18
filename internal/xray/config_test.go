@@ -97,10 +97,10 @@ func TestBuildConfigIncludesSupportedProtocolInboundsAndFreedomOutbound(t *testi
 
 func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
-		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
-		{Tag: "blocked", Protocol: "blackhole", Enabled: true, Sort: 1},
-		{Tag: "proxy-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Username: "sam", Password: "secret", Enabled: true, Sort: 2},
-		{Tag: "disabled-proxy", Protocol: "http", Address: "127.0.0.1", Port: 8080, Enabled: false, Sort: 3},
+		{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
+		{ID: 2, Tag: "blocked", Protocol: "blackhole", Enabled: true, Sort: 1},
+		{ID: 3, Tag: "proxy-socks", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Username: "sam", Password: "secret", Enabled: true, Sort: 2},
+		{ID: 4, Tag: "disabled-proxy", Protocol: "http", Address: "127.0.0.1", Port: 8080, Enabled: false, Sort: 3},
 	}, nil)
 	if err != nil {
 		t.Fatalf("build config with outbounds: %v", err)
@@ -113,7 +113,7 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 		t.Fatalf("marshal config: %v", err)
 	}
 	text := string(encoded)
-	for _, want := range []string{`"tag":"direct"`, `"protocol":"freedom"`, `"tag":"blocked"`, `"protocol":"blackhole"`, `"tag":"proxy-socks"`, `"protocol":"socks"`, `"address":"127.0.0.1"`, `"port":1080`, `"user":"sam"`, `"pass":"secret"`} {
+	for _, want := range []string{`"tag":"xray-out-1"`, `"protocol":"freedom"`, `"tag":"xray-out-2"`, `"protocol":"blackhole"`, `"tag":"xray-out-3"`, `"protocol":"socks"`, `"address":"127.0.0.1"`, `"port":1080`, `"user":"sam"`, `"pass":"secret"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("outbound config missing %q: %s", want, text)
 		}
@@ -123,24 +123,111 @@ func TestBuildConfigWithOutboundsUsesStoredOutbounds(t *testing.T) {
 	}
 }
 
-func TestBuildConfigRejectsRemovedLegacyOutbound(t *testing.T) {
-	_, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
-		{Tag: "removed-vpn-outbound", Protocol: join("vpn", "gate", "_soft", "ether"), Address: "10.77.1.2", Port: 21080, Enabled: true},
+func TestBuildConfigIncludesSocksAndHTTPInbounds(t *testing.T) {
+	config, err := xray.BuildConfig([]db.Inbound{
+		{ID: 21, Remark: "socks-in", Protocol: "socks", Port: 1080, Network: "tcp", Security: "none", Enabled: true, Clients: []db.Client{{UUID: "sam", CredentialID: "sam", Password: "secret", Email: "sam", Enabled: true}}},
+		{ID: 22, Remark: "http-in", Protocol: "http", Port: 8080, Network: "tcp", Security: "none", Enabled: true, Clients: []db.Client{{UUID: "ann", CredentialID: "ann", Password: "secret2", Email: "ann", Enabled: true}}},
+	})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	for _, want := range []string{`"protocol":"socks"`, `"protocol":"http"`, `"accounts"`, `"user":"sam"`, `"pass":"secret"`, `"user":"ann"`, `"pass":"secret2"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("socks/http inbound config missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestBuildConfigWithOutboundsCompilesHTTPSToHTTPOutbound(t *testing.T) {
+	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
+		{ID: 14, Tag: "proxy-https", Protocol: "https", Address: "127.0.0.1", Port: 8443, Username: "sam", Password: "secret", Enabled: true},
 	}, nil)
-	if err == nil {
-		t.Fatal("expected removed outbound protocol to be rejected")
+	if err != nil {
+		t.Fatalf("build config with https outbound: %v", err)
+	}
+	raw, _ := json.Marshal(config)
+	text := string(raw)
+	for _, want := range []string{`"tag":"xray-out-14"`, `"protocol":"http"`, `"address":"127.0.0.1"`, `"port":8443`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("https outbound config missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestBuildConfigSkipsSingboxOnlyOutboundProfiles(t *testing.T) {
+	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
+		{ID: 8, Tag: "hy2-out", Protocol: "hysteria2", Address: "127.0.0.1", Port: 443, Enabled: true},
+		{ID: 9, Tag: "socks-out", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Enabled: true},
+	}, nil)
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	encoded, _ := json.Marshal(config)
+	text := string(encoded)
+	if strings.Contains(text, "hy2-out") || strings.Contains(text, "xray-out-8") {
+		t.Fatalf("sing-box-only outbound leaked into xray config: %s", text)
+	}
+	if !strings.Contains(text, "xray-out-9") {
+		t.Fatalf("shared socks outbound missing xray tag: %s", text)
+	}
+}
+
+func TestBuildConfigSkipsRoutingRulesForOtherCoreBeforeValidatingOutbound(t *testing.T) {
+	inbounds := []db.Inbound{{
+		ID: 1, Remark: "hy2", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 8443, Enabled: true,
+	}}
+	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+		{ID: 8, Tag: "hy2-out", Protocol: "hysteria2", Address: "127.0.0.1", Port: 443, Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 91, InboundTag: "inbound-1-hysteria2", OutboundID: 8, OutboundTag: "hy2-out", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("xray should skip sing-box routing rule before validating outbound: %v", err)
+	}
+	if len(userRoutingRulesForTest(config.Routing.Rules)) != 0 {
+		t.Fatalf("sing-box route leaked into xray routing: %+v", config.Routing.Rules)
+	}
+}
+
+func TestBuildConfigSkipsStaleInboundTagBeforeValidatingOutbound(t *testing.T) {
+	config, err := xray.BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 1, Remark: "edge", Protocol: "vless", Core: db.CoreXray, Port: 443, Enabled: true,
+	}}, []db.Outbound{
+		{ID: 8, Tag: "hy2-out", Protocol: "hysteria2", Address: "127.0.0.1", Port: 443, Password: "secret", Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 94, InboundTag: "deleted-singbox-in", OutboundID: 8, OutboundTag: "hy2-out", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("xray should skip stale inbound_tag before validating outbound: %v", err)
+	}
+	if len(userRoutingRulesForTest(config.Routing.Rules)) != 0 {
+		t.Fatalf("stale inbound route leaked into xray routing: %+v", config.Routing.Rules)
+	}
+}
+
+func TestBuildConfigReportsMissingOutboundProfileForApplicableRule(t *testing.T) {
+	_, err := xray.BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 1, Remark: "edge", Protocol: "vless", Core: db.CoreXray, Port: 443, Enabled: true,
+	}}, []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}}, []db.RoutingRule{
+		{ID: 92, InboundTag: "inbound-1-vless", OutboundID: 99, OutboundTag: "missing", Enabled: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing outbound profile") {
+		t.Fatalf("expected clear missing outbound error, got %v", err)
 	}
 }
 
 func TestBuildConfigWithRoutingRules(t *testing.T) {
-	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
-		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
-		{Tag: "blocked", Protocol: "blackhole", Enabled: true, Sort: 1},
-		{Tag: "proxy-socks", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true, Sort: 2},
+	inbounds := []db.Inbound{{ID: 9, Remark: "socks-in", Protocol: "vless", Core: db.CoreXray, Port: 1080, Enabled: true}}
+	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+		{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
+		{ID: 2, Tag: "blocked", Protocol: "blackhole", Enabled: true, Sort: 1},
+		{ID: 3, Tag: "proxy-socks", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true, Sort: 2},
 	}, []db.RoutingRule{
-		{InboundTag: "socks-in", OutboundTag: "proxy-socks", Domain: "geosite:netflix", Enabled: true},
-		{OutboundTag: "blocked", Domain: "geosite:malware", Enabled: true},
-		{OutboundTag: "blocked", Protocol: "bittorrent", Enabled: false},
+		{InboundTag: "socks-in", OutboundID: 3, OutboundTag: "proxy-socks", Domain: "geosite:netflix", Enabled: true},
+		{OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:malware", Enabled: true},
+		{OutboundID: 2, OutboundTag: "blocked", Protocol: "bittorrent", Enabled: false},
 	})
 	if err != nil {
 		t.Fatalf("build config with routing rules: %v", err)
@@ -155,10 +242,10 @@ func TestBuildConfigWithRoutingRules(t *testing.T) {
 	if len(userRules) != 2 {
 		t.Fatalf("expected 2 enabled routing rules, got %d", len(userRules))
 	}
-	if config.Routing.Rules[0].OutboundTag != "proxy-socks" || config.Routing.Rules[0].Domain[0] != "geosite:netflix" {
+	if config.Routing.Rules[0].OutboundTag != "xray-out-3" || config.Routing.Rules[0].Domain[0] != "geosite:netflix" {
 		t.Fatalf("unexpected first rule: %+v", config.Routing.Rules[0])
 	}
-	if config.Routing.Rules[1].OutboundTag != "blocked" || config.Routing.Rules[1].Domain[0] != "geosite:malware" {
+	if config.Routing.Rules[1].OutboundTag != "xray-out-2" || config.Routing.Rules[1].Domain[0] != "geosite:malware" {
 		t.Fatalf("unexpected second rule: %+v", config.Routing.Rules[1])
 	}
 	// No routing rules
@@ -168,6 +255,25 @@ func TestBuildConfigWithRoutingRules(t *testing.T) {
 	}
 	if config2.Routing == nil || len(userRoutingRulesForTest(config2.Routing.Rules)) != 0 {
 		t.Fatal("expected no user routing rules when no rules are configured")
+	}
+}
+
+func TestBuildConfigWithRoutingRulesUsesOutboundIDAfterTagRename(t *testing.T) {
+	inbounds := []db.Inbound{{ID: 9, Remark: "socks-in", Protocol: "vless", Core: db.CoreXray, Port: 1080, Enabled: true}}
+	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+		{ID: 42, Tag: "proxy-new", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 42, InboundTag: "socks-in", OutboundID: 42, OutboundTag: "proxy-old", Domain: "geosite:netflix", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with renamed outbound rule: %v", err)
+	}
+	userRules := userRoutingRulesForTest(config.Routing.Rules)
+	if len(userRules) != 1 {
+		t.Fatalf("expected one user routing rule, got %+v", config.Routing.Rules)
+	}
+	if got := userRules[0].OutboundTag; got != "xray-out-42" {
+		t.Fatalf("expected generated tag to use outbound_id, got %s", got)
 	}
 }
 
@@ -188,14 +294,14 @@ func TestBuildConfigWithClientRoutingRules(t *testing.T) {
 		},
 	}}
 	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
-		{Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
-		{Tag: "proxy-socks", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true, Sort: 1},
+		{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true, Sort: 0},
+		{ID: 2, Tag: "proxy-socks", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true, Sort: 1},
 	}, []db.RoutingRule{
-		{ID: 1, InboundTag: "edge-hk", ClientID: 11, OutboundTag: "proxy-socks", Enabled: true},
-		{ID: 2, InboundTag: "edge-hk", ClientID: 12, OutboundTag: "direct", Enabled: true},
-		{ID: 3, InboundTag: "edge-hk", ClientID: 999, ClientEmail: "missing@example.com", OutboundTag: "direct", Enabled: true},
-		{ID: 4, InboundTag: "edge-hk", ClientID: 11, OutboundTag: "direct", Enabled: false},
-		{ID: 5, InboundTag: "edge-hk", ClientID: 13, OutboundTag: "direct", Enabled: true},
+		{ID: 1, InboundTag: "edge-hk", ClientID: 11, OutboundID: 2, OutboundTag: "proxy-socks", Enabled: true},
+		{ID: 2, InboundTag: "edge-hk", ClientID: 12, OutboundID: 1, OutboundTag: "direct", Enabled: true},
+		{ID: 3, InboundTag: "edge-hk", ClientID: 999, ClientEmail: "missing@example.com", OutboundID: 1, OutboundTag: "direct", Enabled: true},
+		{ID: 4, InboundTag: "edge-hk", ClientID: 11, OutboundID: 1, OutboundTag: "direct", Enabled: false},
+		{ID: 5, InboundTag: "edge-hk", ClientID: 13, OutboundID: 1, OutboundTag: "direct", Enabled: true},
 	})
 	if err != nil {
 		t.Fatalf("build config with client routing rules: %v", err)
@@ -205,7 +311,7 @@ func TestBuildConfigWithClientRoutingRules(t *testing.T) {
 		t.Fatalf("expected only one valid enabled client routing rule, got %+v", userRules)
 	}
 	got := userRules[0]
-	if got.OutboundTag != "proxy-socks" {
+	if got.OutboundTag != "xray-out-2" {
 		t.Fatalf("unexpected outbound tag: %+v", got)
 	}
 	if len(got.User) != 1 || got.User[0] != "alice@example.com" {
@@ -336,7 +442,7 @@ func TestBuildConfigOmitsVisionFlowForVLESSXHTTPReality(t *testing.T) {
 	}
 }
 
-func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
+func TestBuildConfigDoesNotGenerateMissingRealityPrivateKey(t *testing.T) {
 	inbounds := []db.Inbound{
 		{
 			ID: 8, UUID: "88888888-8888-4888-8888-888888888888",
@@ -360,8 +466,8 @@ func TestBuildConfigGeneratesMissingRealityPrivateKey(t *testing.T) {
 	if !strings.Contains(text, "realitySettings") {
 		t.Fatalf("auto-key inbound missing realitySettings: %s", text)
 	}
-	if !strings.Contains(text, "privateKey") {
-		t.Fatalf("auto-key inbound missing auto-generated privateKey: %s", text)
+	if strings.Contains(text, "privateKey") {
+		t.Fatalf("config generator must not create transient reality privateKey: %s", text)
 	}
 }
 
