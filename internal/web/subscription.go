@@ -94,27 +94,28 @@ func subscriptionRequestHost(cfg *routerConfig, r *http.Request) string {
 	return r.Host
 }
 
+type shareLinkGenerator func(host string, inbound db.Inbound, client db.Client) string
+
+var shareLinkGenerators = map[string]shareLinkGenerator{
+	"vless":       universalShareLink,
+	"vmess":       vmessShareLink,
+	"trojan":      universalShareLink,
+	"shadowsocks": ssShareLink,
+	"hysteria2":   hysteria2ShareLink,
+	"tuic":        tuicShareLink,
+}
+
 func shareLink(host string, inbound db.Inbound, client db.Client) (string, error) {
-	if !db.InboundSupportsShareLink(inbound.Protocol) {
-		return "", fmt.Errorf("%s inbound does not support share links", inbound.Protocol)
+	protocol := db.NormalizeInboundProtocol(inbound.Protocol)
+	if !db.InboundSupportsShareLink(protocol) {
+		return "", fmt.Errorf("%s inbound does not support share links", protocol)
 	}
-	host = subscriptionHost(host)
-	switch inbound.Protocol {
-	case "vless":
-		return universalShareLink(host, inbound, client), nil
-	case "vmess":
-		return vmessShareLink(host, inbound, client), nil
-	case "trojan":
-		return universalShareLink(host, inbound, client), nil
-	case "shadowsocks":
-		return ssShareLink(host, inbound, client), nil
-	case "hysteria2":
-		return hysteria2ShareLink(host, inbound, client), nil
-	case "tuic":
-		return tuicShareLink(host, inbound, client), nil
-	default:
-		return "", fmt.Errorf("unsupported share link protocol: %s", inbound.Protocol)
+	generator, ok := shareLinkGenerators[protocol]
+	if !ok {
+		return "", fmt.Errorf("unsupported share link protocol: %s", protocol)
 	}
+	inbound.Protocol = protocol
+	return generator(subscriptionHost(host), inbound, client), nil
 }
 
 func universalShareLink(host string, inbound db.Inbound, client db.Client) string {
