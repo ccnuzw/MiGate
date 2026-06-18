@@ -60,13 +60,41 @@ export interface SingboxApplySummary {
   config_path?: string;
   commands_executed?: string[];
   error?: string;
+  reason?: string;
   detail?: string;
+  output?: string;
   warnings?: string[];
   post_apply_warnings?: string[];
   non_fatal_warnings?: string[];
   inbounds?: number;
   outbounds?: number;
   rules?: number;
+}
+
+export interface XrayApplySummary {
+  applied?: boolean;
+  status?: string;
+  service?: string;
+  config_path?: string;
+  commands_executed?: string[];
+  error?: string;
+  detail?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  error_output?: string;
+  inbounds?: number;
+  outbounds?: number;
+  rules?: number;
+}
+
+export interface CoreDiagnosticAction {
+  code: string;
+  severity: 'error' | 'warning' | 'info' | string;
+  category: 'service' | 'config' | 'listener' | 'log' | 'security' | 'routing' | string;
+  message: string;
+  command?: string;
+  inbound_id?: number;
+  port?: number;
 }
 
 export interface CreateResultFields {
@@ -78,6 +106,7 @@ export interface CreateResultFields {
   post_apply_warnings?: string[];
   non_fatal_warnings?: string[];
   singbox?: SingboxApplySummary;
+  xray?: XrayApplySummary;
 }
 
 export type CreateInboundResponse = (Inbound | { inbound: Inbound }) & CreateResultFields;
@@ -160,14 +189,7 @@ export interface CoreStatus {
   active_connections?: number;
   config_path?: string;
   commands_executed?: string[];
-  listening_ports?: Array<{
-    inbound_id: number;
-    protocol: string;
-    port: number;
-    network?: string;
-    transport?: string;
-    listening: boolean;
-  }>;
+  listening_ports?: CoreListenerDiagnostic[];
 }
 
 export interface CoreActionResponse {
@@ -178,11 +200,22 @@ export interface CoreActionResponse {
   xray?: {
     status?: string;
     service?: string;
+    applied?: boolean;
+    config_path?: string;
     commands_executed?: string[];
+    error?: string;
+    detail?: string;
+    warnings?: string[];
+    post_apply_warnings?: string[];
     error_output?: string;
+    inbounds?: number;
+    outbounds?: number;
+    rules?: number;
   };
   singbox?: {
     applied?: boolean;
+    service?: string;
+    config_path?: string;
     reason?: string;
     error?: string;
     detail?: string;
@@ -192,6 +225,8 @@ export interface CoreActionResponse {
     post_apply_warnings?: string[];
     non_fatal_warnings?: string[];
     inbounds?: number;
+    outbounds?: number;
+    rules?: number;
   };
   applied?: boolean;
   reason?: string;
@@ -200,6 +235,8 @@ export interface CoreActionResponse {
   post_apply_warnings?: string[];
   non_fatal_warnings?: string[];
   inbounds?: number;
+  outbounds?: number;
+  rules?: number;
 }
 
 export interface SingboxWriteResponse {
@@ -210,18 +247,24 @@ export interface SingboxWriteResponse {
   post_apply_warnings?: string[];
   non_fatal_warnings?: string[];
   singbox?: SingboxApplySummary;
+  xray?: XrayApplySummary;
 }
 
-export interface SingboxListenerDiagnostic {
+export interface CoreListenerDiagnostic {
   inbound_id: number;
   protocol: string;
   port: number;
   network?: string;
   transport?: string;
+  path?: string;
+  grpc_service_name?: string;
+  security?: string;
   listening: boolean;
 }
 
-export interface SingboxConfigPreview {
+export type SingboxListenerDiagnostic = CoreListenerDiagnostic;
+
+export interface CoreConfigPreview {
   config_path: string;
   in_sync: boolean;
   reason?: 'disk_missing' | 'generated_build_failed' | 'hash_mismatch' | 'disk_parse_failed' | string;
@@ -245,7 +288,10 @@ export interface SingboxConfigPreview {
   };
 }
 
-export interface SingboxDiagnostics {
+export type SingboxConfigPreview = CoreConfigPreview;
+export type XrayConfigPreview = CoreConfigPreview;
+
+export interface CoreDiagnostics {
   installed: boolean;
   version?: string;
   managed: boolean;
@@ -257,12 +303,17 @@ export interface SingboxDiagnostics {
   config_error?: string;
   disk_generated_in_sync: boolean;
   sync_reason?: string;
-  expected_listeners: SingboxListenerDiagnostic[];
-  missing_listeners: SingboxListenerDiagnostic[];
+  expected_listeners: CoreListenerDiagnostic[];
+  missing_listeners: CoreListenerDiagnostic[];
   recent_logs: string[];
   warnings: string[];
   suggestions: string[];
+  actions?: CoreDiagnosticAction[];
+  suggestion_details?: CoreDiagnosticAction[];
 }
+
+export type SingboxDiagnostics = CoreDiagnostics;
+export type XrayDiagnostics = CoreDiagnostics;
 
 export interface ConfigValidation {
   target: 'xray' | 'singbox';

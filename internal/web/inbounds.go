@@ -16,7 +16,7 @@ import (
 )
 
 func inboundsHandler(cfg *routerConfig) http.HandlerFunc {
-	store, ctrl, statsClient := cfg.store, cfg.xrayController, cfg.statsClient
+	store, statsClient := cfg.store, cfg.statsClient
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -24,12 +24,8 @@ func inboundsHandler(cfg *routerConfig) http.HandlerFunc {
 		case http.MethodPost:
 			created, ok := createInbound(w, r, store)
 			if ok {
-				if db.InboundCore(created) == db.CoreSingbox {
-					applyXrayAsync(ctrl)
-					writeCreatedSingboxResult(w, cfg, r, store, map[string]interface{}{"inbound": created})
-					return
-				}
-				applyCoreAsync(ctrl, store)
+				includeXray, includeSingbox := xrayAndSingboxForInboundWrite(db.Inbound{}, false, created)
+				writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"inbound": created, "created": true}, includeXray, includeSingbox)
 			}
 		default:
 			methodNotAllowed(w)
@@ -314,11 +310,6 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) (db.Inbo
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return db.Inbound{}, false
 	}
-	if db.InboundCore(created) != db.CoreSingbox {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(created)
-	}
 	return created, true
 }
 
@@ -355,12 +346,8 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 				created, inbound, ok := createClient(w, r, store, inboundID)
 				if ok {
-					if db.InboundCore(inbound) == db.CoreSingbox {
-						applyXrayAsync(ctrl)
-						writeCreatedSingboxResult(w, cfg, r, store, map[string]interface{}{"client": created})
-						return
-					}
-					applyCoreAsync(ctrl, store)
+					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"client": created, "created": true}, includeXray, includeSingbox)
 				}
 			}
 		case http.MethodPatch:
@@ -371,13 +358,8 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					return
 				}
 				if updated, ok := patchInboundEnabled(w, r, store, inboundID); ok {
-					if db.InboundCore(updated) == db.CoreSingbox {
-						applyXrayAsync(ctrl)
-						writeSingboxWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated})
-					} else {
-						applyCoreAsync(ctrl, store)
-						writeJSON(w, http.StatusOK, updated)
-					}
+					includeXray, includeSingbox := xrayAndSingboxForInboundWrite(db.Inbound{}, false, updated)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated}, includeXray, includeSingbox)
 				}
 			} else if len(parts) == 4 && parts[1] == "clients" && parts[3] == "enabled" {
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
@@ -391,13 +373,8 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					return
 				}
 				if updated, inbound, ok := patchClientEnabled(w, r, store, inboundID, clientID); ok {
-					if db.InboundCore(inbound) == db.CoreSingbox {
-						applyXrayAsync(ctrl)
-						writeSingboxWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated})
-					} else {
-						applyCoreAsync(ctrl, store)
-						writeJSON(w, http.StatusOK, updated)
-					}
+					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated}, includeXray, includeSingbox)
 				}
 			} else {
 				http.NotFound(w, r)
@@ -424,13 +401,8 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					return
 				}
 				if updated, ok := updateInbound(w, r, store, inboundID); ok {
-					if inboundChangeAffectsSingbox(previous, hadPrevious, updated) {
-						applyXrayAsync(ctrl)
-						writeSingboxWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated})
-					} else {
-						applyCoreAsync(ctrl, store)
-						writeJSON(w, http.StatusOK, updated)
-					}
+					includeXray, includeSingbox := xrayAndSingboxForInboundWrite(previous, hadPrevious, updated)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated}, includeXray, includeSingbox)
 				}
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// PUT /api/inbounds/{id}/clients/{clientId}
@@ -445,13 +417,8 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					return
 				}
 				if updated, inbound, ok := updateClient(w, r, store, inboundID, clientID); ok {
-					if db.InboundCore(inbound) == db.CoreSingbox {
-						applyXrayAsync(ctrl)
-						writeSingboxWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated})
-					} else {
-						applyCoreAsync(ctrl, store)
-						writeJSON(w, http.StatusOK, updated)
-					}
+					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated}, includeXray, includeSingbox)
 				}
 			} else {
 				http.NotFound(w, r)
@@ -481,13 +448,8 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 					return
 				}
-				if db.InboundCore(inbound) == db.CoreSingbox {
-					applyXrayAsync(ctrl)
-					writeSingboxWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"})
-				} else {
-					applyCoreAsync(ctrl, store)
-					writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-				}
+				includeXray, includeSingbox := xrayAndSingboxForInboundDelete(inbound)
+				writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// DELETE /api/inbounds/{id}/clients/{clientId}
 				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
@@ -517,13 +479,8 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					writeJSONError(w, http.StatusNotFound, "client_not_found")
 					return
 				}
-				if db.InboundCore(inbound) == db.CoreSingbox {
-					applyXrayAsync(ctrl)
-					writeSingboxWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"})
-				} else {
-					applyCoreAsync(ctrl, store)
-					writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-				}
+				includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+				writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
 			} else {
 				http.NotFound(w, r)
 			}
@@ -570,11 +527,6 @@ func createClient(w http.ResponseWriter, r *http.Request, store Store, inboundID
 		}
 		writeJSONError(w, http.StatusBadRequest, "create_client_failed")
 		return db.Client{}, db.Inbound{}, false
-	}
-	if db.InboundCore(inbound) != db.CoreSingbox {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(created)
 	}
 	return created, inbound, true
 }

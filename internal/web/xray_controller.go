@@ -87,6 +87,24 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 // restarts the xray systemd service.
 func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	executed := []string{}
+	configPath := filepath.Join(c.configDir, "xray.json")
+	result := XrayApplyResult{
+		Applied:          false,
+		Status:           "failed",
+		Service:          "xray",
+		ConfigPath:       configPath,
+		CommandsExecuted: executed,
+		Warnings:         []string{},
+	}
+	fail := func(code string, detail string) XrayApplyResult {
+		result.Applied = false
+		result.Status = xrayApplyStatusForError(code)
+		result.Error = code
+		result.Detail = detail
+		result.ErrorOutput = detail
+		result.CommandsExecuted = append([]string(nil), executed...)
+		return result
+	}
 
 	// 1. Build config from store, including managed outbounds and routing rules.
 	// The WebUI preview uses BuildConfigWithOutbounds; Apply must use the same
@@ -94,61 +112,37 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	// the implicit direct outbound.
 	inbounds, err := c.store.ListInbounds(ctx)
 	if err != nil {
-		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: read inbounds: %v", err),
-			Service:          "xray",
-			CommandsExecuted: executed,
-		}
+		return fail("list_inbounds_failed", err.Error())
 	}
 	outbounds, err := c.store.ListOutbounds(ctx)
 	if err != nil {
-		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: read outbounds: %v", err),
-			Service:          "xray",
-			CommandsExecuted: executed,
-		}
+		return fail("list_outbounds_failed", err.Error())
 	}
 	rules, err := c.store.ListRoutingRules(ctx)
 	if err != nil {
-		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: read routing rules: %v", err),
-			Service:          "xray",
-			CommandsExecuted: executed,
-		}
+		return fail("list_routing_rules_failed", err.Error())
 	}
 
 	cfg, err := xray.BuildConfigWithOutbounds(inbounds, outbounds, rules)
 	if err != nil {
-		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: build config: %v", err),
-			Service:          "xray",
-			CommandsExecuted: executed,
-		}
+		return fail("build_failed", err.Error())
+	}
+	result.Inbounds = len(cfg.Inbounds)
+	result.Outbounds = len(cfg.Outbounds)
+	if cfg.Routing != nil {
+		result.Rules = len(cfg.Routing.Rules)
 	}
 
 	// 2. Write config to disk
-	configPath := filepath.Join(c.configDir, "xray.json")
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: marshal config: %v", err),
-			Service:          "xray",
-			CommandsExecuted: executed,
-		}
+		return fail("marshal_failed", err.Error())
 	}
 	if err := os.MkdirAll(c.configDir, 0755); err != nil {
-		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: create config dir: %v", err),
-			Service:          "xray",
-			CommandsExecuted: executed,
-		}
+		return fail("create_config_dir_failed", err.Error())
 	}
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		return XrayApplyResult{
-			Status:           fmt.Sprintf("failed: write config: %v", err),
-			Service:          "xray",
-			CommandsExecuted: executed,
-		}
+		return fail("write_failed", err.Error())
 	}
 	executed = append(executed, fmt.Sprintf("write %s", configPath))
 
@@ -156,30 +150,41 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	validateOut, err := c.runCmd("xray", "run", "-test", "-c", configPath)
 	executed = append(executed, fmt.Sprintf("xray run -test -c %s", configPath))
 	if err != nil {
-		return XrayApplyResult{
-			Status:           "failed: validation",
-			Service:          "xray",
-			CommandsExecuted: executed,
-			ErrorOutput:      validateOut,
+		detail := strings.TrimSpace(validateOut)
+		if detail == "" {
+			detail = err.Error()
 		}
+		return fail("validation_failed", detail)
 	}
 
 	// 4. Restart xray service
 	restartOut, err := c.runCmd("systemctl", "restart", "xray")
 	executed = append(executed, "systemctl restart xray")
 	if err != nil {
-		return XrayApplyResult{
-			Status:           "failed: restart",
-			Service:          "xray",
-			CommandsExecuted: executed,
-			ErrorOutput:      restartOut,
+		detail := strings.TrimSpace(restartOut)
+		if detail == "" {
+			detail = err.Error()
 		}
+		return fail("restart_failed", detail)
 	}
 
-	return XrayApplyResult{
-		Status:           "applied",
-		Service:          "xray",
-		CommandsExecuted: executed,
+	result.Applied = true
+	result.Status = "applied"
+	result.Error = ""
+	result.Detail = ""
+	result.ErrorOutput = ""
+	result.CommandsExecuted = append([]string(nil), executed...)
+	return result
+}
+
+func xrayApplyStatusForError(code string) string {
+	switch code {
+	case "validation_failed":
+		return "failed: validation"
+	case "restart_failed":
+		return "failed: restart"
+	default:
+		return "failed: " + code
 	}
 }
 

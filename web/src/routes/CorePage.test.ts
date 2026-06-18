@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configSyncReasonLabel, configSyncState, coreActionResult, coreStatusMetrics, coreStatusRefetchInterval, diagnosticWarningLabel, isCoreInstalled, singboxDiagnosticChecks, singboxDiagnosticsSummary, singboxListeningDiagnostics } from './CorePage';
+import { configSyncReasonLabel, configSyncState, coreActionResult, coreDiagnosticActions, coreDiagnosticChecks, coreDiagnosticsSummary, coreListeningDiagnostics, coreStatusMetrics, coreStatusRefetchInterval, diagnosticSuggestionItems, diagnosticWarningLabel, formatDiagnosticAction, isCoreInstalled } from './CorePage';
 
 describe('core action result', () => {
   it('treats xray apply validation failures as business errors', () => {
@@ -15,11 +15,31 @@ describe('core action result', () => {
   });
 
   it('detects nested xray and sing-box failures from HTTP 200 bodies', () => {
+    expect(coreActionResult({ xray: { applied: false, error: 'validation_failed', detail: 'invalid config', commands_executed: ['xray run -test'] } }, 'Xray 配置已应用')).toEqual({
+      ok: false,
+      message: 'validation_failed',
+      detail: 'commands:\nxray run -test\n\ndetail:\ninvalid config',
+    });
     expect(coreActionResult({ xray: { status: 'not_managed', error_output: 'service is not managed' } }, 'Xray 配置已应用')).toMatchObject({
       ok: false,
       message: 'service is not managed',
     });
     expect(coreActionResult({ singbox: { applied: false, reason: 'invalid config' } }, 'sing-box 配置已应用')).toMatchObject({
+      ok: false,
+      message: 'invalid config',
+    });
+  });
+
+  it('ignores legacy sing-box not_needed results when xray applied successfully', () => {
+    expect(coreActionResult({ xray: { applied: true }, singbox: { applied: false, reason: 'not_needed' } }, 'Xray 配置已应用')).toEqual({
+      ok: true,
+      message: 'Xray 配置已应用',
+    });
+    expect(coreActionResult({ xray: { applied: false, error: 'validation_failed' }, singbox: { applied: false, reason: 'not_needed' } }, 'Xray 配置已应用')).toMatchObject({
+      ok: false,
+      message: 'validation_failed',
+    });
+    expect(coreActionResult({ xray: { applied: true }, singbox: { applied: false, reason: 'invalid config' } }, 'Xray 配置已应用')).toMatchObject({
       ok: false,
       message: 'invalid config',
     });
@@ -67,6 +87,43 @@ describe('core action result', () => {
       message: '配置已应用，但端口未监听：21001/udp',
       tone: 'info',
     });
+    expect(coreActionResult({ xray: { applied: true, post_apply_warnings: ['配置已应用，但端口未监听：2443/tcp'] } }, 'Xray 配置已应用')).toEqual({
+      ok: true,
+      message: '配置已应用，但端口未监听：2443/tcp',
+      tone: 'info',
+    });
+  });
+
+  it('covers core apply result edge cases across nested cores', () => {
+    expect(coreActionResult({ xray: { applied: true } }, 'Xray 配置已应用')).toEqual({
+      ok: true,
+      message: 'Xray 配置已应用',
+    });
+    expect(coreActionResult({ xray: { applied: true }, singbox: { applied: false, reason: 'not_needed' } }, 'Xray 配置已应用')).toEqual({
+      ok: true,
+      message: 'Xray 配置已应用',
+    });
+    expect(coreActionResult({ xray: { applied: true, post_apply_warnings: ['配置已应用，但端口未监听：2443/tcp'] } }, 'Xray 配置已应用')).toEqual({
+      ok: true,
+      message: '配置已应用，但端口未监听：2443/tcp',
+      tone: 'info',
+    });
+    expect(coreActionResult({ xray: { applied: false, error: 'validation_failed' } }, 'Xray 配置已应用')).toMatchObject({
+      ok: false,
+      message: 'validation_failed',
+    });
+    expect(coreActionResult({ singbox: { applied: false, reason: 'restart_failed' } }, 'sing-box 配置已应用')).toMatchObject({
+      ok: false,
+      message: 'restart_failed',
+    });
+    expect(coreActionResult({ applied: false, xray: { applied: true } }, 'Xray 配置已应用')).toEqual({
+      ok: true,
+      message: 'Xray 配置已应用',
+    });
+    expect(coreActionResult({ applied: false, error: 'apply_failed' }, 'sing-box 配置已应用')).toMatchObject({
+      ok: false,
+      message: 'apply_failed',
+    });
   });
 
   it('pauses core status polling while the page is hidden', () => {
@@ -97,8 +154,8 @@ describe('core action result', () => {
     ]));
   });
 
-  it('formats sing-box port listening diagnostics', () => {
-    expect(singboxListeningDiagnostics({
+  it('formats core port listening diagnostics', () => {
+    expect(coreListeningDiagnostics({
       service: 'sing-box',
       status: 'running',
       listening_ports: [
@@ -106,6 +163,15 @@ describe('core action result', () => {
       ],
     })).toEqual([
       { inboundId: 9, protocol: 'hysteria2', port: 21001, transport: 'udp', listening: false },
+    ]);
+    expect(coreListeningDiagnostics({
+      service: 'xray',
+      status: 'running',
+      listening_ports: [
+        { inbound_id: 10, protocol: 'vless', port: 2443, network: 'grpc', transport: 'tcp', security: 'reality', grpc_service_name: 'svc', listening: true },
+      ],
+    })).toEqual([
+      { inboundId: 10, protocol: 'vless', port: 2443, network: 'grpc', transport: 'tcp', security: 'reality', detail: 'svc', listening: true },
     ]);
   });
 
@@ -127,7 +193,7 @@ describe('core action result', () => {
     });
   });
 
-  it('summarizes sing-box diagnostics and critical checks', () => {
+  it('summarizes core diagnostics and critical checks', () => {
     const diagnostics = {
       installed: true,
       managed: true,
@@ -144,16 +210,81 @@ describe('core action result', () => {
       warnings: ['singbox_missing_listeners'],
       suggestions: ['查看日志'],
     };
-    expect(singboxDiagnosticsSummary(diagnostics)).toEqual({
+    expect(coreDiagnosticsSummary(diagnostics)).toEqual({
       tone: 'warning',
       label: '警告',
       detail: 'singbox_missing_listeners',
     });
-    expect(singboxDiagnosticChecks(diagnostics)).toEqual(expect.arrayContaining([
+    expect(coreDiagnosticChecks(diagnostics)).toEqual(expect.arrayContaining([
       { label: '配置同步', value: '配置 hash 不一致', ok: false },
       { label: '端口监听', value: '缺失 1 个', ok: false },
     ]));
     expect(diagnosticWarningLabel('singbox_missing_listeners')).toBe('服务运行但入站端口未监听');
+    expect(diagnosticWarningLabel('xray_missing_listeners')).toBe('服务运行但入站端口未监听');
+    expect(diagnosticWarningLabel('xray_config_invalid')).toBe('xray run -test 失败');
+    expect(diagnosticWarningLabel('xray_ws_path_invalid')).toBe('WS/H2 path 配置无效');
+    expect(diagnosticWarningLabel('xray_grpc_service_name_invalid')).toBe('gRPC serviceName 配置无效');
+    expect(diagnosticWarningLabel('xray_xhttp_path_invalid')).toBe('XHTTP path 配置无效');
+    expect(diagnosticWarningLabel('xray_reality_settings_incomplete')).toBe('REALITY 配置不完整');
+    expect(diagnosticWarningLabel('xray_tls_certificate_missing')).toBe('TLS 证书配置缺失');
+    expect(diagnosticWarningLabel('xray_shadowsocks_credentials_missing')).toBe('Shadowsocks 2022 缺少可用凭据');
     expect(diagnosticWarningLabel('unknown_warning')).toBe('unknown_warning');
+  });
+
+  it('formats structured diagnostic actions before legacy suggestions', () => {
+    const diagnostics = {
+      installed: true,
+      managed: true,
+      service: 'xray',
+      service_status: 'running',
+      config_path: '/usr/local/migate/xray.json',
+      config_exists: true,
+      config_valid: true,
+      disk_generated_in_sync: true,
+      expected_listeners: [],
+      missing_listeners: [],
+      recent_logs: [],
+      warnings: ['xray_config_invalid'],
+      suggestions: ['旧建议'],
+      actions: [{
+        code: 'xray_config_invalid',
+        severity: 'error',
+        category: 'config',
+        message: '按校验报错修复后重新应用。',
+        command: 'xray run -test -c /usr/local/migate/xray.json',
+        inbound_id: 7,
+        port: 2443,
+      }],
+    };
+    expect(coreDiagnosticActions(diagnostics)).toHaveLength(1);
+    expect(formatDiagnosticAction(diagnostics.actions[0])).toEqual({
+      severity: '错误',
+      category: '配置',
+      message: '按校验报错修复后重新应用。',
+      command: 'xray run -test -c /usr/local/migate/xray.json',
+      target: '入站 7 · 端口 2443',
+      summary: '错误 · 配置 · 入站 7 · 端口 2443 · 按校验报错修复后重新应用。 · 命令：xray run -test -c /usr/local/migate/xray.json',
+    });
+    expect(diagnosticSuggestionItems(diagnostics)).toEqual([
+      '错误 · 配置 · 入站 7 · 端口 2443 · 按校验报错修复后重新应用。 · 命令：xray run -test -c /usr/local/migate/xray.json',
+    ]);
+  });
+
+  it('falls back to legacy suggestions when structured actions are absent', () => {
+    expect(diagnosticSuggestionItems({
+      installed: true,
+      managed: true,
+      service: 'xray',
+      service_status: 'running',
+      config_path: '/usr/local/migate/xray.json',
+      config_exists: true,
+      config_valid: true,
+      disk_generated_in_sync: true,
+      expected_listeners: [],
+      missing_listeners: [],
+      recent_logs: [],
+      warnings: [],
+      suggestions: ['查看日志'],
+    })).toEqual(['查看日志']);
   });
 });

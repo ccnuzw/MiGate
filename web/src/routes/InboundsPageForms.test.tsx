@@ -95,7 +95,7 @@ describe('inbound and client modal credential behavior', () => {
     changeValue(inputByLabel('名称'), 'hy2 edge');
     clickButtonByText('保存');
 
-    await waitForText('节点已保存，但 sing-box 配置未生效：invalid config');
+    await waitForText('节点已保存，但核心配置未生效：invalid config');
   });
 
   it('shows a warning when a created tuic client is saved but sing-box apply fails', async () => {
@@ -106,7 +106,7 @@ describe('inbound and client modal credential behavior', () => {
     changeValue(inputByLabel('客户端名称'), 'phone');
     clickButtonByText('保存');
 
-    await waitForText('客户端已保存，但 sing-box 配置未生效：restart failed');
+    await waitForText('客户端已保存，但核心配置未生效：restart failed');
   });
 
   it('keeps normal success toast when a node is saved and applied', async () => {

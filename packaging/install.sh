@@ -931,7 +931,10 @@ WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
   systemctl enable xray
-  systemctl restart xray 2>/dev/null || true
+  if ! systemctl restart xray; then
+    log_warn "Xray 服务暂未启动，初始配置可能无法通过当前内核校验。"
+    log_warn "请在 WebUI 应用 Xray 配置后重试，或查看：journalctl -u xray -n 80 --no-pager"
+  fi
   log_ok "Xray 安装/修复完成"
 }
 

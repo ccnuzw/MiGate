@@ -24,10 +24,6 @@ const (
 
 func outboundsHandler(cfg *routerConfig) http.HandlerFunc {
 	store := cfg.store
-	ctrl := cfg.xrayController
-	if ctrl == nil {
-		ctrl = defaultXrayController{}
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -44,40 +40,22 @@ func outboundsHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
+			scope, err := loadCoreInboundScope(r.Context(), store)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+				return
+			}
 			outbound, err := store.CreateOutbound(r.Context(), params)
 			if err != nil {
 				writeJSONError(w, http.StatusBadRequest, "create_outbound_failed")
 				return
 			}
-			applyResult := ctrl.Apply(r.Context())
-			singboxResult := maybeApplySingboxForOutboundChange(r.Context(), cfg, store, outbound)
-			payload := map[string]interface{}{"outbound": outbound, "xray": applyResult}
-			if singboxResult != nil {
-				attachSingboxResult(payload, *singboxResult)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(payload)
+			includeXray, includeSingbox := xrayAndSingboxForOutboundWrite(scope, db.Outbound{}, false, outbound)
+			writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"outbound": outbound}, includeXray, includeSingbox)
 		default:
 			methodNotAllowed(w)
 		}
 	}
-}
-
-func maybeApplySingboxForOutboundChange(ctx context.Context, cfg *routerConfig, store Store, outbound db.Outbound) *SingboxApplySummary {
-	if !db.OutboundSupportsCore(outbound, db.CoreSingbox) && !storeHasSingboxInbounds(ctx, store) {
-		return nil
-	}
-	result := addSingboxPostApplyDiagnostics(ctx, cfg, applySingboxSummary(ctx, cfg, store, true))
-	return &result
-}
-
-func maybeApplySingboxForOutboundUpdate(ctx context.Context, cfg *routerConfig, store Store, previous db.Outbound, hadPrevious bool, updated db.Outbound) *SingboxApplySummary {
-	if db.OutboundSupportsCore(updated, db.CoreSingbox) || (hadPrevious && db.OutboundSupportsCore(previous, db.CoreSingbox)) || storeHasSingboxInbounds(ctx, store) {
-		result := addSingboxPostApplyDiagnostics(ctx, cfg, applySingboxSummary(ctx, cfg, store, true))
-		return &result
-	}
-	return nil
 }
 
 func findOutbound(ctx context.Context, store Store, outboundID int64) (db.Outbound, bool, error) {
@@ -515,19 +493,19 @@ func proxyPoolPingHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(pingOutbound(address, req.Port))
 }
 
-func socks5PoolImportHandler(cfg *routerConfig, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
-	proxyPoolImportHandler(cfg, ctrl, "socks", "socks", w, r)
+func socks5PoolImportHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
+	proxyPoolImportHandler(cfg, "socks", "socks", w, r)
 }
 
-func httpPoolImportHandler(cfg *routerConfig, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
-	proxyPoolImportHandler(cfg, ctrl, "http", "http", w, r)
+func httpPoolImportHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
+	proxyPoolImportHandler(cfg, "http", "http", w, r)
 }
 
-func httpsPoolImportHandler(cfg *routerConfig, ctrl XrayController, w http.ResponseWriter, r *http.Request) {
-	proxyPoolImportHandler(cfg, ctrl, "http", "https", w, r)
+func httpsPoolImportHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
+	proxyPoolImportHandler(cfg, "http", "https", w, r)
 }
 
-func proxyPoolImportHandler(cfg *routerConfig, ctrl XrayController, outboundProtocol string, tagProtocol string, w http.ResponseWriter, r *http.Request) {
+func proxyPoolImportHandler(cfg *routerConfig, outboundProtocol string, tagProtocol string, w http.ResponseWriter, r *http.Request) {
 	store := cfg.store
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -536,9 +514,6 @@ func proxyPoolImportHandler(cfg *routerConfig, ctrl XrayController, outboundProt
 	if store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 		return
-	}
-	if ctrl == nil {
-		ctrl = defaultXrayController{}
 	}
 	var req struct {
 		Address      string `json:"address"`
@@ -571,6 +546,11 @@ func proxyPoolImportHandler(cfg *routerConfig, ctrl XrayController, outboundProt
 	if remark == "" {
 		remark = address
 	}
+	scope, err := loadCoreInboundScope(r.Context(), store)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+		return
+	}
 	outbound, err := store.CreateOutbound(r.Context(), db.CreateOutboundParams{
 		Tag:      fmt.Sprintf("pool-%s-%s-%d", tagProtocol, strings.NewReplacer(".", "-", ":", "-").Replace(address), req.Port),
 		Remark:   remark,
@@ -584,15 +564,8 @@ func proxyPoolImportHandler(cfg *routerConfig, ctrl XrayController, outboundProt
 		writeJSONError(w, http.StatusBadRequest, "create_outbound_failed")
 		return
 	}
-	applyResult := ctrl.Apply(r.Context())
-	singboxResult := maybeApplySingboxForOutboundChange(r.Context(), cfg, store, outbound)
-	payload := map[string]interface{}{"outbound": outbound, "xray": applyResult}
-	if singboxResult != nil {
-		attachSingboxResult(payload, *singboxResult)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(payload)
+	includeXray, includeSingbox := xrayAndSingboxForOutboundWrite(scope, db.Outbound{}, false, outbound)
+	writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"outbound": outbound}, includeXray, includeSingbox)
 }
 
 func poolCountryLabel(country, countryCode string) string {
@@ -606,10 +579,6 @@ func poolCountryLabel(country, countryCode string) string {
 
 func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 	store := cfg.store
-	ctrl := cfg.xrayController
-	if ctrl == nil {
-		ctrl = defaultXrayController{}
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/outbounds/")
 		if path == "socks5-pool" {
@@ -621,7 +590,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		if path == "socks5-pool/import" {
-			socks5PoolImportHandler(cfg, ctrl, w, r)
+			socks5PoolImportHandler(cfg, w, r)
 			return
 		}
 		if path == "http-pool" {
@@ -633,7 +602,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		if path == "http-pool/import" {
-			httpPoolImportHandler(cfg, ctrl, w, r)
+			httpPoolImportHandler(cfg, w, r)
 			return
 		}
 		if path == "https-pool" {
@@ -645,7 +614,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			return
 		}
 		if path == "https-pool/import" {
-			httpsPoolImportHandler(cfg, ctrl, w, r)
+			httpsPoolImportHandler(cfg, w, r)
 			return
 		}
 		// Handle /api/outbounds/reorder
@@ -662,15 +631,16 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusBadRequest, "invalid_payload")
 				return
 			}
+			includeXray, includeSingbox, err := xrayAndSingboxForReorder(r.Context(), store)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
 			if err := store.ReorderOutbounds(r.Context(), req.IDs); err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "reorder_failed")
 				return
 			}
-			payload := map[string]interface{}{"status": "reordered"}
-			if storeHasSingboxInbounds(r.Context(), store) {
-				attachSingboxResult(payload, strictSingboxApply(r.Context(), cfg, store))
-			}
-			writeJSON(w, http.StatusOK, payload)
+			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "reordered"}, includeXray, includeSingbox)
 			return
 		}
 		// Handle /api/outbounds/speedtest-all
@@ -756,6 +726,11 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
+			scope, err := loadCoreInboundScope(r.Context(), store)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
+				return
+			}
 			outbound, err := store.UpdateOutbound(r.Context(), id, params)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -765,14 +740,8 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 				return
 			}
-			applyResult := ctrl.Apply(r.Context())
-			singboxResult := maybeApplySingboxForOutboundUpdate(r.Context(), cfg, store, previous, hadPrevious, outbound)
-			payload := map[string]interface{}{"outbound": outbound, "xray": applyResult}
-			if singboxResult != nil {
-				attachSingboxResult(payload, *singboxResult)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(payload)
+			includeXray, includeSingbox := xrayAndSingboxForOutboundWrite(scope, previous, hadPrevious, outbound)
+			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"outbound": outbound}, includeXray, includeSingbox)
 		case http.MethodDelete:
 			deletedOutbound, found, err := findOutbound(r.Context(), store, id)
 			if err != nil {
@@ -781,6 +750,11 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			}
 			if !found {
 				writeJSONError(w, http.StatusNotFound, "not_found")
+				return
+			}
+			scope, err := loadCoreInboundScope(r.Context(), store)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 				return
 			}
 			err = store.DeleteOutbound(r.Context(), id)
@@ -792,12 +766,8 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 				return
 			}
-			xrayResult := ctrl.Apply(r.Context())
-			payload := map[string]interface{}{"status": "deleted", "xray": xrayResult}
-			if singboxResult := maybeApplySingboxForOutboundChange(r.Context(), cfg, store, deletedOutbound); singboxResult != nil {
-				attachSingboxResult(payload, *singboxResult)
-			}
-			writeJSON(w, http.StatusOK, payload)
+			includeXray, includeSingbox := xrayAndSingboxForOutboundDelete(scope, deletedOutbound)
+			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
 		default:
 			methodNotAllowed(w)
 		}

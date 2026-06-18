@@ -11,7 +11,7 @@ import { EmptyState, Field, LoadingBlock, Modal, SpinnerButton, StatusBadge, tog
 import { coreLabel, inboundCore, outboundSupportedCores, outboundSupportsCore } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
 import { generatedInboundTag } from '../lib/routing';
-import { showSingboxApplyWarning } from '../lib/singboxApply';
+import { showCoreApplyWarning } from '../lib/coreApply';
 import { PageTitle } from './OverviewPage';
 
 const schema = z.object({
@@ -54,7 +54,7 @@ export default function RoutingPage() {
   const remove = useMutation({
     mutationFn: api.deleteRoutingRule,
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '规则已删除，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '规则已删除，但核心配置未生效', showToast, text)) {
         showToast(text('路由规则已删除'), 'success');
       }
       refresh();
@@ -64,7 +64,7 @@ export default function RoutingPage() {
   const toggle = useMutation({
     mutationFn: (item: RoutingRule) => api.updateRoutingRule(item.id, routingPayload({ ...item, enabled: !item.enabled })),
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '规则已保存，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '规则已保存，但核心配置未生效', showToast, text)) {
         showToast(text('路由规则状态已更新'), 'success');
       }
       refresh();
@@ -74,7 +74,7 @@ export default function RoutingPage() {
   const reorder = useMutation({
     mutationFn: api.reorderRoutingRules,
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '规则已保存，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '规则已保存，但核心配置未生效', showToast, text)) {
         showToast(text('路由顺序已保存'), 'success');
       }
       refresh();
@@ -169,7 +169,7 @@ function RoutingModal({ rule, outbounds, inbounds, proxyLookup, onClose, onSaved
       return rule?.id ? api.updateRoutingRule(rule.id, payload) : api.createRoutingRule(payload);
     },
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '规则已保存，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '规则已保存，但核心配置未生效', showToast, text)) {
         showToast(text('路由规则已保存'), 'success');
       }
       onSaved();

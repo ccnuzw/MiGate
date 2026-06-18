@@ -129,12 +129,43 @@ func WithSingboxProbe(probe SingboxProbe) Option {
 	}
 }
 
-func WithSingboxListenerDiagnostics(listeners func(context.Context) []SingboxListenerDiagnostic) Option {
+func WithCoreSingboxListenerDiagnostics(listeners func(context.Context) []CoreListenerDiagnostic) Option {
 	return func(cfg *routerConfig) {
 		if listeners != nil {
-			cfg.singboxListeners = func(ctx context.Context, _ *routerConfig) []SingboxListenerDiagnostic {
+			cfg.singboxListeners = func(ctx context.Context, _ *routerConfig) []CoreListenerDiagnostic {
 				return listeners(ctx)
 			}
 		}
 	}
+}
+
+func WithSingboxListenerDiagnostics(listeners func(context.Context) []SingboxListenerDiagnostic) Option {
+	if listeners == nil {
+		return func(*routerConfig) {}
+	}
+	return WithCoreSingboxListenerDiagnostics(func(ctx context.Context) []CoreListenerDiagnostic {
+		return listeners(ctx)
+	})
+}
+
+func WithXrayProbe(probe XrayProbe) Option {
+	return func(cfg *routerConfig) {
+		if probe != nil {
+			cfg.xrayProbe = probe
+		}
+	}
+}
+
+func WithCoreXrayListenerDiagnostics(listeners func(context.Context) []CoreListenerDiagnostic) Option {
+	return func(cfg *routerConfig) {
+		if listeners != nil {
+			cfg.xrayListeners = func(ctx context.Context, _ *routerConfig) []CoreListenerDiagnostic {
+				return listeners(ctx)
+			}
+		}
+	}
+}
+
+func WithXrayListenerDiagnostics(listeners func(context.Context) []CoreListenerDiagnostic) Option {
+	return WithCoreXrayListenerDiagnostics(listeners)
 }

@@ -10,7 +10,7 @@ import type { Outbound, PingResult, ProxyPoolProxy, ProxyPoolResponse } from '..
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { coreLabel, outboundSupportedCores, outboundSupportLevel, outboundSupportLevelLabel } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
-import { showSingboxApplyWarning } from '../lib/singboxApply';
+import { showCoreApplyWarning } from '../lib/coreApply';
 import { PageTitle } from './OverviewPage';
 
 const schema = z.object({
@@ -57,7 +57,7 @@ export default function OutboundsPage() {
   const toggle = useMutation({
     mutationFn: (item: Outbound) => api.toggleOutbound(item, !item.enabled),
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '已保存，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
         showToast(text('出站状态已更新'), 'success');
       }
       refresh();
@@ -67,7 +67,7 @@ export default function OutboundsPage() {
   const remove = useMutation({
     mutationFn: api.deleteOutbound,
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '已删除，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '已删除，但核心配置未生效', showToast, text)) {
         showToast(text('出站已删除'), 'success');
       }
       refresh();
@@ -94,7 +94,7 @@ export default function OutboundsPage() {
   const reorder = useMutation({
     mutationFn: (ids: number[]) => api.reorderOutbounds(ids),
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '已保存，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
         showToast(text('出站顺序已保存'), 'success');
       }
       refresh();
@@ -211,7 +211,7 @@ function OutboundModal({ outbound, onClose, onSaved }: { outbound: Outbound | nu
       return outbound?.id ? api.updateOutbound(outbound.id, payload) : api.createOutbound(payload);
     },
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '已保存，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
         showToast(text('出站已保存'), 'success');
       }
       onSaved();
@@ -309,7 +309,7 @@ function ProxyPoolModal({ open, onClose, onImported }: { open: boolean; onClose:
   const importProxy = useMutation({
     mutationFn: (proxy: ProxyPoolProxy) => api.importProxyPool(poolType, proxy),
     onSuccess: (response) => {
-      if (!showSingboxApplyWarning(response, '已保存，但 sing-box 配置未生效', showToast, text)) {
+      if (!showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast, text)) {
         showToast(text('代理出站已导入'), 'success');
       }
       onImported();

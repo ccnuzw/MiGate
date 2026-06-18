@@ -34,32 +34,27 @@ type SingboxApplySummary struct {
 	Rules             int      `json:"rules,omitempty"`
 }
 
-type SingboxListenerDiagnostic struct {
-	InboundID int64  `json:"inbound_id"`
-	Protocol  string `json:"protocol"`
-	Port      int    `json:"port"`
-	Network   string `json:"network,omitempty"`
-	Transport string `json:"transport"`
-	Listening bool   `json:"listening"`
-}
+type SingboxListenerDiagnostic = CoreListenerDiagnostic
 
 type SingboxDiagnostics struct {
-	Installed           bool                        `json:"installed"`
-	Version             string                      `json:"version"`
-	Managed             bool                        `json:"managed"`
-	Service             string                      `json:"service"`
-	ServiceStatus       string                      `json:"service_status"`
-	ConfigPath          string                      `json:"config_path"`
-	ConfigExists        bool                        `json:"config_exists"`
-	ConfigValid         bool                        `json:"config_valid"`
-	ConfigError         string                      `json:"config_error,omitempty"`
-	DiskGeneratedInSync bool                        `json:"disk_generated_in_sync"`
-	SyncReason          string                      `json:"sync_reason,omitempty"`
-	ExpectedListeners   []SingboxListenerDiagnostic `json:"expected_listeners"`
-	MissingListeners    []SingboxListenerDiagnostic `json:"missing_listeners"`
-	RecentLogs          []string                    `json:"recent_logs"`
-	Warnings            []string                    `json:"warnings"`
-	Suggestions         []string                    `json:"suggestions"`
+	Installed           bool                     `json:"installed"`
+	Version             string                   `json:"version"`
+	Managed             bool                     `json:"managed"`
+	Service             string                   `json:"service"`
+	ServiceStatus       string                   `json:"service_status"`
+	ConfigPath          string                   `json:"config_path"`
+	ConfigExists        bool                     `json:"config_exists"`
+	ConfigValid         bool                     `json:"config_valid"`
+	ConfigError         string                   `json:"config_error,omitempty"`
+	DiskGeneratedInSync bool                     `json:"disk_generated_in_sync"`
+	SyncReason          string                   `json:"sync_reason,omitempty"`
+	ExpectedListeners   []CoreListenerDiagnostic `json:"expected_listeners"`
+	MissingListeners    []CoreListenerDiagnostic `json:"missing_listeners"`
+	RecentLogs          []string                 `json:"recent_logs"`
+	Warnings            []string                 `json:"warnings"`
+	Suggestions         []string                 `json:"suggestions"`
+	Actions             []CoreDiagnosticAction   `json:"actions,omitempty"`
+	SuggestionDetails   []CoreDiagnosticAction   `json:"suggestion_details,omitempty"`
 }
 
 type singboxDiskConfigPreview struct {
@@ -175,13 +170,13 @@ func firstRouterConfig(cfg []*routerConfig) *routerConfig {
 	return cfg[0]
 }
 
-func singboxExpectedListeningPorts(ctx context.Context, cfg *routerConfig) []SingboxListenerDiagnostic {
+func singboxExpectedListeningPorts(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic {
 	if cfg == nil || cfg.store == nil {
-		return []SingboxListenerDiagnostic{}
+		return []CoreListenerDiagnostic{}
 	}
 	inbounds, err := cfg.store.ListInbounds(ctx)
 	if err != nil {
-		return []SingboxListenerDiagnostic{}
+		return []CoreListenerDiagnostic{}
 	}
 	expected := []int{}
 	records := []db.Inbound{}
@@ -198,7 +193,7 @@ func singboxExpectedListeningPorts(ctx context.Context, cfg *routerConfig) []Sin
 		}
 	}
 	udpListening := singbox.ListeningUDPPorts(expected)
-	result := make([]SingboxListenerDiagnostic, 0, len(records))
+	result := make([]CoreListenerDiagnostic, 0, len(records))
 	for _, inbound := range records {
 		network := "tcp"
 		listening := false
@@ -210,7 +205,7 @@ func singboxExpectedListeningPorts(ctx context.Context, cfg *routerConfig) []Sin
 			network = "tcp"
 			listening = isTCPPortListening(inbound.Port)
 		}
-		result = append(result, SingboxListenerDiagnostic{
+		result = append(result, CoreListenerDiagnostic{
 			InboundID: inbound.ID,
 			Protocol:  inbound.Protocol,
 			Port:      inbound.Port,
@@ -357,8 +352,8 @@ func buildSingboxDiagnostics(ctx context.Context, cfg *routerConfig) SingboxDiag
 		ConfigPath:          singbox.DefaultConfigPath,
 		ConfigValid:         false,
 		DiskGeneratedInSync: false,
-		ExpectedListeners:   []SingboxListenerDiagnostic{},
-		MissingListeners:    []SingboxListenerDiagnostic{},
+		ExpectedListeners:   []CoreListenerDiagnostic{},
+		MissingListeners:    []CoreListenerDiagnostic{},
 		RecentLogs:          []string{},
 		Warnings:            []string{},
 		Suggestions:         []string{},
@@ -455,7 +450,7 @@ func singboxProbeForConfig(cfg *routerConfig) SingboxProbe {
 	return defaultSingboxProbe{}
 }
 
-func singboxListenerDiagnosticsForConfig(ctx context.Context, cfg *routerConfig) []SingboxListenerDiagnostic {
+func singboxListenerDiagnosticsForConfig(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic {
 	if cfg != nil && cfg.singboxListeners != nil {
 		return cfg.singboxListeners(ctx, cfg)
 	}
@@ -726,11 +721,11 @@ func addSingboxPostApplyDiagnostics(ctx context.Context, cfg *routerConfig, summ
 	return summary
 }
 
-func retrySingboxListenerDiagnostics(ctx context.Context, cfg *routerConfig, attempts int, delay time.Duration) []SingboxListenerDiagnostic {
+func retrySingboxListenerDiagnostics(ctx context.Context, cfg *routerConfig, attempts int, delay time.Duration) []CoreListenerDiagnostic {
 	if attempts < 1 {
 		attempts = 1
 	}
-	var last []SingboxListenerDiagnostic
+	var last []CoreListenerDiagnostic
 	for attempt := 0; attempt < attempts; attempt++ {
 		last = singboxListenerDiagnosticsForConfig(ctx, cfg)
 		if allListenersReady(last) || attempt == attempts-1 || delay <= 0 {
@@ -747,7 +742,7 @@ func retrySingboxListenerDiagnostics(ctx context.Context, cfg *routerConfig, att
 	return last
 }
 
-func allListenersReady(listeners []SingboxListenerDiagnostic) bool {
+func allListenersReady(listeners []CoreListenerDiagnostic) bool {
 	for _, listener := range listeners {
 		if !listener.Listening {
 			return false
@@ -756,7 +751,7 @@ func allListenersReady(listeners []SingboxListenerDiagnostic) bool {
 	return true
 }
 
-func listenerNetwork(listener SingboxListenerDiagnostic) string {
+func listenerNetwork(listener CoreListenerDiagnostic) string {
 	network := listener.Transport
 	if network == "" {
 		network = listener.Network

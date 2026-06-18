@@ -20,6 +20,8 @@ import type {
   SingboxConfigPreview,
   SingboxDiagnostics,
   SingboxWriteResponse,
+  XrayConfigPreview,
+  XrayDiagnostics,
   ProxyPoolProxy,
   ProxyPoolResponse,
   TrafficClient,
@@ -40,7 +42,11 @@ function unwrapRoutingRule(response: RoutingRuleResponse): RoutingRule & Singbox
       applied: response.applied,
       error: response.error,
       detail: response.detail,
+      warnings: response.warnings,
+      post_apply_warnings: response.post_apply_warnings,
+      non_fatal_warnings: response.non_fatal_warnings,
       singbox: response.singbox,
+      xray: response.xray,
     };
   }
   return response as RoutingRule & SingboxWriteResponse;
@@ -111,8 +117,10 @@ export const api = {
   stats: () => get<unknown>('/api/stats'),
   resources: () => get<Resources>('/api/system/resources'),
   xrayStatus: () => get<CoreStatus>('/api/xray/status'),
+  xrayDiagnostics: () => get<XrayDiagnostics>('/api/xray/diagnostics'),
   xrayVersion: () => get<VersionResponse>('/api/xray/version'),
   xrayConfig: () => get<unknown>('/api/xray/config'),
+  xrayConfigPreview: () => get<XrayConfigPreview>('/api/xray/config/preview'),
   xrayValidate: () => get<ConfigValidation>('/api/xray/validate'),
   xrayApply: () => post<CoreActionResponse>('/api/xray/apply', { confirm: true, allow_system_changes: true }),
   xrayInstall: () => post<CoreActionResponse>('/api/xray/install', { confirm: true, allow_system_changes: true }),
