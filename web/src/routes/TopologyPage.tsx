@@ -28,6 +28,8 @@ import { buildTopologyGraph, type TopologyEdgeData, type TopologyNodeData } from
 const nodeWidth = 270;
 const nodeHeight = 128;
 const clientNodeHeight = 116;
+const lightweightLayoutNodeLimit = 28;
+const lightweightLayoutEdgeLimit = 42;
 const nodeTypes = { topologyNode: TopologyNode };
 let layoutRequestId = 0;
 let layoutWorker: Worker | undefined;
@@ -147,6 +149,9 @@ function TopologyMetric({ icon: Icon, tone, label, value, sub }: { icon: typeof 
 
 async function layoutGraph(nodes: Array<Node<TopologyNodeData>>, edges: Array<Edge<TopologyEdgeData>>) {
   if (nodes.length === 0) return { nodes, edges };
+  if (shouldUseLightweightLayout(nodes, edges)) {
+    return { nodes: applyLightweightLayout(nodes, edges), edges };
+  }
   const layoutNodes = nodes.map((node) => ({
     id: node.id,
     width: nodeWidth,
@@ -165,6 +170,48 @@ async function layoutGraph(nodes: Array<Node<TopologyNodeData>>, edges: Array<Ed
     nodes: nodes.map((node) => ({ ...node, position: positions.get(node.id) || node.position })),
     edges,
   };
+}
+
+export function shouldUseLightweightLayout(nodes: Array<Node<TopologyNodeData>>, edges: Array<Edge<TopologyEdgeData>>) {
+  return nodes.length <= lightweightLayoutNodeLimit && edges.length <= lightweightLayoutEdgeLimit;
+}
+
+export function applyLightweightLayout(nodes: Array<Node<TopologyNodeData>>, edges: Array<Edge<TopologyEdgeData>>) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const inboundIds = nodes.filter((node) => node.data.kind === 'inbound' || node.data.kind === 'missing-inbound').map((node) => node.id);
+  const clientIds = nodes.filter((node) => node.data.kind === 'client' || node.data.kind === 'missing-client').map((node) => node.id);
+  const outboundIds = nodes.filter((node) => node.data.kind === 'outbound' || node.data.kind === 'missing-outbound').map((node) => node.id);
+  const inboundOrder = orderByConnectivity(inboundIds, edges);
+  const clientOrder = orderByConnectivity(clientIds, edges);
+  const outboundOrder = orderByConnectivity(outboundIds, edges);
+  const positioned = new Map<string, { x: number; y: number }>();
+  const xByColumn = [0, 380, 760];
+  placeColumn(inboundOrder, xByColumn[0], positioned, byId);
+  placeColumn(clientOrder, xByColumn[1], positioned, byId);
+  placeColumn(outboundOrder, xByColumn[2], positioned, byId);
+  const remaining = nodes.filter((node) => !positioned.has(node.id)).map((node) => node.id);
+  placeColumn(remaining, clientOrder.length ? xByColumn[1] : xByColumn[0], positioned, byId);
+  return nodes.map((node) => ({ ...node, position: positioned.get(node.id) || node.position }));
+}
+
+function orderByConnectivity(ids: string[], edges: Array<Edge<TopologyEdgeData>>) {
+  const score = new Map(ids.map((id) => [id, 0]));
+  for (const edge of edges) {
+    if (score.has(edge.source)) score.set(edge.source, (score.get(edge.source) || 0) + 1);
+    if (score.has(edge.target)) score.set(edge.target, (score.get(edge.target) || 0) + 1);
+  }
+  return [...ids].sort((a, b) => (score.get(b) || 0) - (score.get(a) || 0) || a.localeCompare(b));
+}
+
+function placeColumn(ids: string[], x: number, positioned: Map<string, { x: number; y: number }>, byId: Map<string, Node<TopologyNodeData>>) {
+  const gap = 34;
+  let y = 0;
+  for (const id of ids) {
+    const node = byId.get(id);
+    if (!node) continue;
+    positioned.set(id, { x, y });
+    y += (node.data.kind === 'client' ? clientNodeHeight : nodeHeight) + gap;
+  }
 }
 
 type LayoutNode = { id: string; width: number; height: number };

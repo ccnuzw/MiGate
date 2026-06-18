@@ -2535,6 +2535,74 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	}
 }
 
+func TestApplyTrafficRawStatsBatchesClientSamplesAndTotals(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inboundA, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "batch-a", Protocol: "vless", Port: 28101, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound a: %v", err)
+	}
+	clientA, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inboundA.ID, Email: "batch-a@example.com"})
+	if err != nil {
+		t.Fatalf("create client a: %v", err)
+	}
+	inboundB, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "batch-b", Protocol: "vless", Port: 28102, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound b: %v", err)
+	}
+	clientB, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inboundB.ID, Email: "batch-b@example.com"})
+	if err != nil {
+		t.Fatalf("create client b: %v", err)
+	}
+
+	raw := func(aUp, aDown, bUp, bDown int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{
+			{Engine: "xray", ScopeType: "client", ScopeKey: clientA.StatsKey, RawUp: aUp, RawDown: aDown, Status: "ok"},
+			{Engine: "xray", ScopeType: "client", ScopeKey: clientB.StatsKey, RawUp: bUp, RawDown: bDown, Status: "ok"},
+			{Engine: "xray", ScopeType: "inbound", ScopeKey: "batch-inbound-a", RawUp: aUp, RawDown: aDown, Status: "ok"},
+		}
+	}
+	t0 := time.Unix(2000, 0)
+	if err := store.ApplyTrafficRawStats(ctx, raw(1000, 2000, 3000, 4000), t0); err != nil {
+		t.Fatalf("baseline batch: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(1120, 2300, 3600, 4700), t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("increment batch: %v", err)
+	}
+
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	stateA := findTrafficState(states, "xray", "client", clientA.StatsKey)
+	stateB := findTrafficState(states, "xray", "client", clientB.StatsKey)
+	if stateA == nil || stateA.TotalUp != 120 || stateA.TotalDown != 300 || stateA.RateUp != 12 || stateA.RateDown != 30 {
+		t.Fatalf("unexpected client a traffic state: %+v", stateA)
+	}
+	if stateB == nil || stateB.TotalUp != 600 || stateB.TotalDown != 700 || stateB.RateUp != 60 || stateB.RateDown != 70 {
+		t.Fatalf("unexpected client b traffic state: %+v", stateB)
+	}
+	samples, err := store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 100)
+	if err != nil {
+		t.Fatalf("list samples: %v", err)
+	}
+	if len(samples) != 4 {
+		t.Fatalf("expected two client samples for each batch, got %+v", samples)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientB.ID)
+	if err != nil {
+		t.Fatalf("get client b usage: %v", err)
+	}
+	if !found || usage.TotalUp != 600 || usage.TotalDown != 700 {
+		t.Fatalf("expected client table to track expected-engine totals, found=%v usage=%+v", found, usage)
+	}
+}
+
 func TestResetWithoutRawBaselineClearsExistingEngineAndUsesNextRawAsBaseline(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

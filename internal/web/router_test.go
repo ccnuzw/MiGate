@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -176,6 +177,71 @@ func TestRouterSetsSecurityHeaders(t *testing.T) {
 	directTLS.ServeHTTP(tlsResp, tlsReq)
 	if tlsResp.Header().Get("Strict-Transport-Security") == "" {
 		t.Fatal("direct TLS response missing HSTS")
+	}
+}
+
+type countingStatusController struct {
+	calls int
+}
+
+func (c *countingStatusController) Status(ctx context.Context) web.XrayStatus {
+	c.calls++
+	return web.XrayStatus{Service: "xray", Status: "running", Installed: true, Managed: true, Version: "Xray test", CommandsExecuted: []string{}}
+}
+
+func (c *countingStatusController) Apply(ctx context.Context) web.XrayApplyResult {
+	return web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", CommandsExecuted: []string{}}
+}
+
+func (c *countingStatusController) Version(ctx context.Context) string {
+	return "Xray test"
+}
+
+func TestCoreStatusCachePreservesSecurityHeadersOnMissAndHit(t *testing.T) {
+	controller := &countingStatusController{}
+	router := web.NewRouter(web.WithXrayController(controller), web.WithCoreXrayListenerDiagnostics(func(context.Context) []web.CoreListenerDiagnostic {
+		return []web.CoreListenerDiagnostic{}
+	}))
+
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected first status 200, got %d: %s", first.Code, first.Body.String())
+	}
+	assertSecurityHeaders(t, first.Header())
+	if contentType := first.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("expected first response JSON content type, got %q", contentType)
+	}
+
+	second := httptest.NewRecorder()
+	router.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected cached status 200, got %d: %s", second.Code, second.Body.String())
+	}
+	assertSecurityHeaders(t, second.Header())
+	if contentType := second.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("expected cached response JSON content type, got %q", contentType)
+	}
+	if controller.calls != 1 {
+		t.Fatalf("expected cached status response to avoid repeated controller call, got %d", controller.calls)
+	}
+}
+
+func assertSecurityHeaders(t *testing.T, header http.Header) {
+	t.Helper()
+	for _, name := range []string{"X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options", "Content-Security-Policy"} {
+		if header.Get(name) == "" {
+			t.Fatalf("response missing %s", name)
+		}
+	}
+	if header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("unexpected X-Content-Type-Options: %q", header.Get("X-Content-Type-Options"))
+	}
+	if header.Get("Referrer-Policy") != "strict-origin-when-cross-origin" {
+		t.Fatalf("unexpected Referrer-Policy: %q", header.Get("Referrer-Policy"))
+	}
+	if header.Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("unexpected X-Frame-Options: %q", header.Get("X-Frame-Options"))
 	}
 }
 

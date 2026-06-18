@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -533,7 +534,7 @@ func queryBool(r *http.Request, name string) bool {
 }
 
 func dashboardSummaryHandler(cfg *routerConfig) http.HandlerFunc {
-	cache := newDashboardSummaryCache(7 * time.Second)
+	cache := newDashboardSummaryCache(7*time.Second, 30*time.Second, 30*time.Second)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -553,15 +554,30 @@ func dashboardSummaryHandler(cfg *routerConfig) http.HandlerFunc {
 }
 
 type dashboardSummaryCache struct {
-	ttl       time.Duration
-	mu        sync.Mutex
-	expiresAt time.Time
-	value     map[string]interface{}
-	now       func() time.Time
+	ttl                 time.Duration
+	seriesTTL           time.Duration
+	validationTTL       time.Duration
+	mu                  sync.Mutex
+	expiresAt           time.Time
+	value               map[string]interface{}
+	seriesExpiresAt     time.Time
+	seriesValue         []trafficSeriesPoint
+	validationExpiresAt time.Time
+	validationValue     map[string]configValidationResult
+	validationKey       string
+	now                 func() time.Time
 }
 
-func newDashboardSummaryCache(ttl time.Duration) *dashboardSummaryCache {
-	return &dashboardSummaryCache{ttl: ttl, now: time.Now}
+func newDashboardSummaryCache(ttl time.Duration, extraTTLs ...time.Duration) *dashboardSummaryCache {
+	seriesTTL := ttl
+	validationTTL := ttl
+	if len(extraTTLs) > 0 {
+		seriesTTL = extraTTLs[0]
+	}
+	if len(extraTTLs) > 1 {
+		validationTTL = extraTTLs[1]
+	}
+	return &dashboardSummaryCache{ttl: ttl, seriesTTL: seriesTTL, validationTTL: validationTTL, now: time.Now}
 }
 
 func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
@@ -577,7 +593,7 @@ func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map
 	}
 	c.mu.Unlock()
 
-	summary, err := buildDashboardSummary(ctx, cfg)
+	summary, err := c.build(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -591,22 +607,91 @@ func (c *dashboardSummaryCache) get(ctx context.Context, cfg *routerConfig) (map
 	return summary, nil
 }
 
+func (c *dashboardSummaryCache) build(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
+	summary, snapshot, inbounds, err := buildDashboardSummaryBase(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	now := c.now()
+	series := c.cachedSeries()
+	if series == nil {
+		built := buildDashboardTrafficSeries(ctx, cfg.store, inbounds)
+		series = &built
+		c.mu.Lock()
+		c.seriesValue = built
+		c.seriesExpiresAt = now.Add(c.seriesTTL)
+		c.mu.Unlock()
+	}
+	snapshotKey := snapshot.cacheKey()
+	validation := c.cachedValidation(snapshotKey)
+	if validation == nil {
+		built := buildDashboardValidation(ctx, cfg, snapshot)
+		validation = &built
+		c.mu.Lock()
+		c.validationValue = built
+		c.validationKey = snapshotKey
+		c.validationExpiresAt = now.Add(c.validationTTL)
+		c.mu.Unlock()
+	}
+	summary["traffic_series"] = append([]trafficSeriesPoint(nil), (*series)...)
+	summary["validation"] = cloneValidationMap(*validation)
+	return summary, nil
+}
+
+func (c *dashboardSummaryCache) cachedSeries() *[]trafficSeriesPoint {
+	if c == nil || c.seriesTTL <= 0 {
+		return nil
+	}
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seriesValue == nil || !now.Before(c.seriesExpiresAt) {
+		return nil
+	}
+	value := append([]trafficSeriesPoint(nil), c.seriesValue...)
+	return &value
+}
+
+func (c *dashboardSummaryCache) cachedValidation(snapshotKey string) *map[string]configValidationResult {
+	if c == nil || c.validationTTL <= 0 {
+		return nil
+	}
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.validationValue == nil || c.validationKey != snapshotKey || !now.Before(c.validationExpiresAt) {
+		return nil
+	}
+	value := cloneValidationMap(c.validationValue)
+	return &value
+}
+
 func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]interface{}, error) {
+	summary, snapshot, inbounds, err := buildDashboardSummaryBase(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	summary["traffic_series"] = buildDashboardTrafficSeries(ctx, cfg.store, inbounds)
+	summary["validation"] = buildDashboardValidation(ctx, cfg, snapshot)
+	return summary, nil
+}
+
+func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[string]interface{}, validationSnapshot, []db.Inbound, error) {
 	if cfg == nil || cfg.store == nil {
-		return nil, fmt.Errorf("store_unavailable")
+		return nil, validationSnapshot{}, nil, fmt.Errorf("store_unavailable")
 	}
 	store := cfg.store
 	inbounds, err := store.ListInbounds(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list_inbounds_failed")
+		return nil, validationSnapshot{}, nil, fmt.Errorf("list_inbounds_failed")
 	}
 	outbounds, err := store.ListOutbounds(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list_outbounds_failed")
+		return nil, validationSnapshot{}, nil, fmt.Errorf("list_outbounds_failed")
 	}
 	rules, err := store.ListRoutingRules(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list_routing_rules_failed")
+		return nil, validationSnapshot{}, nil, fmt.Errorf("list_routing_rules_failed")
 	}
 	now := time.Now().Unix()
 	clientCount := 0
@@ -671,9 +756,6 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 			enabledRules++
 		}
 	}
-	if samples, err := store.ListTrafficSamples(ctx, "client", time.Now().UTC().Add(-24*time.Hour), 240); err == nil {
-		trafficSeries = trafficSamplesToSeries(samples, "client", inbounds)
-	}
 	snapshot := validationSnapshot{inbounds: inbounds, outbounds: outbounds, rules: rules}
 	return map[string]interface{}{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
@@ -706,17 +788,253 @@ func buildDashboardSummary(ctx context.Context, cfg *routerConfig) (map[string]i
 		"protocols":        protocols,
 		"traffic_series":   trafficSeries,
 		"outbound_traffic": outboundTrafficDetails(outbounds, outboundStats),
-		"validation": map[string]configValidationResult{
-			"xray":    validateXrayConfigSnapshot(snapshot),
-			"singbox": validateSingboxConfigSnapshotWithRuntime(ctx, snapshot, cfg),
-		},
-	}, nil
+		"validation":       map[string]configValidationResult{},
+	}, snapshot, inbounds, nil
+}
+
+func buildDashboardTrafficSeries(ctx context.Context, store Store, inbounds []db.Inbound) []trafficSeriesPoint {
+	if store == nil {
+		return []trafficSeriesPoint{}
+	}
+	if samples, err := store.ListTrafficSamples(ctx, "client", time.Now().UTC().Add(-24*time.Hour), 240); err == nil {
+		return trafficSamplesToSeries(samples, "client", inbounds)
+	}
+	return []trafficSeriesPoint{}
+}
+
+func buildDashboardValidation(ctx context.Context, cfg *routerConfig, snapshot validationSnapshot) map[string]configValidationResult {
+	return map[string]configValidationResult{
+		"xray":    validateXrayConfigSnapshot(snapshot),
+		"singbox": validateSingboxConfigSnapshotWithRuntime(ctx, snapshot, cfg),
+	}
+}
+
+func cloneValidationMap(value map[string]configValidationResult) map[string]configValidationResult {
+	clone := make(map[string]configValidationResult, len(value))
+	for key, item := range value {
+		item.Warnings = append([]string(nil), item.Warnings...)
+		clone[key] = item
+	}
+	return clone
 }
 
 type validationSnapshot struct {
 	inbounds  []db.Inbound
 	outbounds []db.Outbound
 	rules     []db.RoutingRule
+}
+
+func (s validationSnapshot) cacheKey() string {
+	payload, err := json.Marshal(validationSnapshotCachePayload{
+		Inbounds:  validationInboundCacheKeys(s.inbounds),
+		Outbounds: validationOutboundCacheKeys(s.outbounds),
+		Rules:     validationRoutingRuleCacheKeys(s.rules),
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+type validationSnapshotCachePayload struct {
+	Inbounds  []validationInboundCacheKey     `json:"inbounds"`
+	Outbounds []validationOutboundCacheKey    `json:"outbounds"`
+	Rules     []validationRoutingRuleCacheKey `json:"rules"`
+}
+
+type validationInboundCacheKey struct {
+	ID                    int64                      `json:"id"`
+	UUID                  string                     `json:"uuid"`
+	Remark                string                     `json:"remark"`
+	Protocol              string                     `json:"protocol"`
+	Core                  string                     `json:"core"`
+	Port                  int                        `json:"port"`
+	Network               string                     `json:"network"`
+	Security              string                     `json:"security"`
+	Enabled               bool                       `json:"enabled"`
+	WsPath                string                     `json:"ws_path"`
+	WsHost                string                     `json:"ws_host"`
+	GrpcServiceName       string                     `json:"grpc_service_name"`
+	RealityDest           string                     `json:"reality_dest"`
+	RealityServerNames    string                     `json:"reality_server_names"`
+	RealityShortID        string                     `json:"reality_short_id"`
+	RealityPrivateKey     string                     `json:"reality_private_key"`
+	RealityPublicKey      string                     `json:"reality_public_key"`
+	SSMethod              string                     `json:"ss_method"`
+	TLSCertFile           string                     `json:"tls_cert_file"`
+	TLSKeyFile            string                     `json:"tls_key_file"`
+	TLSSNI                string                     `json:"tls_sni"`
+	TLSFingerprint        string                     `json:"tls_fingerprint"`
+	TLSALPN               string                     `json:"tls_alpn"`
+	XHTTPPath             string                     `json:"xhttp_path"`
+	XHTTPMode             string                     `json:"xhttp_mode"`
+	Hy2UpMbps             int                        `json:"hy2_up_mbps"`
+	Hy2DownMbps           int                        `json:"hy2_down_mbps"`
+	Hy2Obfs               string                     `json:"hy2_obfs"`
+	Hy2ObfsPassword       string                     `json:"hy2_obfs_password"`
+	Hy2MPort              string                     `json:"hy2_mport"`
+	TuicCongestionControl string                     `json:"tuic_congestion_control"`
+	TuicZeroRTT           bool                       `json:"tuic_zero_rtt"`
+	WgPrivateKey          string                     `json:"wg_private_key"`
+	WgAddress             string                     `json:"wg_address"`
+	WgPeerPublicKey       string                     `json:"wg_peer_public_key"`
+	WgAllowedIPs          string                     `json:"wg_allowed_ips"`
+	WgEndpoint            string                     `json:"wg_endpoint"`
+	WgPresharedKey        string                     `json:"wg_preshared_key"`
+	WgMTU                 int                        `json:"wg_mtu"`
+	ShadowTLSVersion      int                        `json:"shadowtls_version"`
+	ShadowTLSPassword     string                     `json:"shadowtls_password"`
+	Clients               []validationClientCacheKey `json:"clients"`
+}
+
+type validationClientCacheKey struct {
+	ID           int64  `json:"id"`
+	InboundID    int64  `json:"inbound_id"`
+	UUID         string `json:"uuid"`
+	CredentialID string `json:"credential_id"`
+	Password     string `json:"password"`
+	StatsKey     string `json:"stats_key"`
+	Email        string `json:"email"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type validationOutboundCacheKey struct {
+	ID             int64    `json:"id"`
+	Tag            string   `json:"tag"`
+	Remark         string   `json:"remark"`
+	Protocol       string   `json:"protocol"`
+	Address        string   `json:"address"`
+	Port           int      `json:"port"`
+	Username       string   `json:"username"`
+	Password       string   `json:"password"`
+	SupportedCores []string `json:"supported_cores"`
+	Enabled        bool     `json:"enabled"`
+	Sort           int      `json:"sort"`
+}
+
+type validationRoutingRuleCacheKey struct {
+	ID          int64  `json:"id"`
+	InboundTag  string `json:"inbound_tag"`
+	ClientID    int64  `json:"client_id"`
+	ClientEmail string `json:"client_email"`
+	OutboundID  int64  `json:"outbound_id"`
+	OutboundTag string `json:"outbound_tag"`
+	Domain      string `json:"domain"`
+	IP          string `json:"ip"`
+	RuleSet     string `json:"rule_set"`
+	Protocol    string `json:"protocol"`
+	Enabled     bool   `json:"enabled"`
+	Sort        int    `json:"sort"`
+}
+
+func validationInboundCacheKeys(inbounds []db.Inbound) []validationInboundCacheKey {
+	keys := make([]validationInboundCacheKey, 0, len(inbounds))
+	for _, inbound := range inbounds {
+		keys = append(keys, validationInboundCacheKey{
+			ID:                    inbound.ID,
+			UUID:                  inbound.UUID,
+			Remark:                inbound.Remark,
+			Protocol:              inbound.Protocol,
+			Core:                  inbound.Core,
+			Port:                  inbound.Port,
+			Network:               inbound.Network,
+			Security:              inbound.Security,
+			Enabled:               inbound.Enabled,
+			WsPath:                inbound.WsPath,
+			WsHost:                inbound.WsHost,
+			GrpcServiceName:       inbound.GrpcServiceName,
+			RealityDest:           inbound.RealityDest,
+			RealityServerNames:    inbound.RealityServerNames,
+			RealityShortID:        inbound.RealityShortID,
+			RealityPrivateKey:     inbound.RealityPrivateKey,
+			RealityPublicKey:      inbound.RealityPublicKey,
+			SSMethod:              inbound.SSMethod,
+			TLSCertFile:           inbound.TLSCertFile,
+			TLSKeyFile:            inbound.TLSKeyFile,
+			TLSSNI:                inbound.TLSSNI,
+			TLSFingerprint:        inbound.TLSFingerprint,
+			TLSALPN:               inbound.TLSALPN,
+			XHTTPPath:             inbound.XHTTPPath,
+			XHTTPMode:             inbound.XHTTPMode,
+			Hy2UpMbps:             inbound.Hy2UpMbps,
+			Hy2DownMbps:           inbound.Hy2DownMbps,
+			Hy2Obfs:               inbound.Hy2Obfs,
+			Hy2ObfsPassword:       inbound.Hy2ObfsPassword,
+			Hy2MPort:              inbound.Hy2MPort,
+			TuicCongestionControl: inbound.TuicCongestionControl,
+			TuicZeroRTT:           inbound.TuicZeroRTT,
+			WgPrivateKey:          inbound.WgPrivateKey,
+			WgAddress:             inbound.WgAddress,
+			WgPeerPublicKey:       inbound.WgPeerPublicKey,
+			WgAllowedIPs:          inbound.WgAllowedIPs,
+			WgEndpoint:            inbound.WgEndpoint,
+			WgPresharedKey:        inbound.WgPresharedKey,
+			WgMTU:                 inbound.WgMTU,
+			ShadowTLSVersion:      inbound.ShadowTLSVersion,
+			ShadowTLSPassword:     inbound.ShadowTLSPassword,
+			Clients:               validationClientCacheKeys(inbound.Clients),
+		})
+	}
+	return keys
+}
+
+func validationClientCacheKeys(clients []db.Client) []validationClientCacheKey {
+	keys := make([]validationClientCacheKey, 0, len(clients))
+	for _, client := range clients {
+		keys = append(keys, validationClientCacheKey{
+			ID:           client.ID,
+			InboundID:    client.InboundID,
+			UUID:         client.UUID,
+			CredentialID: client.CredentialID,
+			Password:     client.Password,
+			StatsKey:     client.StatsKey,
+			Email:        client.Email,
+			Enabled:      client.Enabled,
+		})
+	}
+	return keys
+}
+
+func validationOutboundCacheKeys(outbounds []db.Outbound) []validationOutboundCacheKey {
+	keys := make([]validationOutboundCacheKey, 0, len(outbounds))
+	for _, outbound := range outbounds {
+		keys = append(keys, validationOutboundCacheKey{
+			ID:             outbound.ID,
+			Tag:            outbound.Tag,
+			Remark:         outbound.Remark,
+			Protocol:       outbound.Protocol,
+			Address:        outbound.Address,
+			Port:           outbound.Port,
+			Username:       outbound.Username,
+			Password:       outbound.Password,
+			SupportedCores: append([]string(nil), outbound.SupportedCores...),
+			Enabled:        outbound.Enabled,
+			Sort:           outbound.Sort,
+		})
+	}
+	return keys
+}
+
+func validationRoutingRuleCacheKeys(rules []db.RoutingRule) []validationRoutingRuleCacheKey {
+	keys := make([]validationRoutingRuleCacheKey, 0, len(rules))
+	for _, rule := range rules {
+		keys = append(keys, validationRoutingRuleCacheKey{
+			ID:          rule.ID,
+			InboundTag:  rule.InboundTag,
+			ClientID:    rule.ClientID,
+			ClientEmail: rule.ClientEmail,
+			OutboundID:  rule.OutboundID,
+			OutboundTag: rule.OutboundTag,
+			Domain:      rule.Domain,
+			IP:          rule.IP,
+			RuleSet:     rule.RuleSet,
+			Protocol:    rule.Protocol,
+			Enabled:     rule.Enabled,
+			Sort:        rule.Sort,
+		})
+	}
+	return keys
 }
 
 type cpuSample struct {

@@ -500,6 +500,7 @@ CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(exp
 CREATE INDEX IF NOT EXISTS idx_token_blacklist_active ON token_blacklist(revoked, expires_at, id);
 CREATE INDEX IF NOT EXISTS idx_traffic_states_scope ON traffic_states(scope_type, scope_key);
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_lookup ON traffic_samples(scope_type, scope_key, sampled_at);
+CREATE INDEX IF NOT EXISTS idx_traffic_samples_scope_time ON traffic_samples(scope_type, sampled_at);
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_sampled_at ON traffic_samples(sampled_at);
 `)
 	if err != nil {
@@ -2367,6 +2368,34 @@ func (s *Store) ApplyTrafficRawStats(ctx context.Context, stats []TrafficRawStat
 	}
 	seenClients := map[string]trafficClientInfo{}
 	seenAt := observedAt.UTC().Format(time.RFC3339Nano)
+	upsertState, err := tx.PrepareContext(ctx, `
+INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
+  total_up=excluded.total_up,
+  total_down=excluded.total_down,
+  last_raw_up=excluded.last_raw_up,
+  last_raw_down=excluded.last_raw_down,
+  rate_up=excluded.rate_up,
+  rate_down=excluded.rate_down,
+  last_seen_at=excluded.last_seen_at,
+  status=excluded.status,
+  message=excluded.message
+`)
+	if err != nil {
+		return err
+	}
+	defer upsertState.Close()
+	insertSample, err := tx.PrepareContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer insertSample.Close()
+	updateClientTraffic, err := tx.PrepareContext(ctx, `UPDATE clients SET up = ?, down = ? WHERE stats_key = ?`)
+	if err != nil {
+		return err
+	}
+	defer updateClientTraffic.Close()
 	for _, raw := range normalizedStats {
 		stateKey := trafficStateKey(raw.Engine, raw.ScopeType, raw.ScopeKey)
 		current, hasCurrent := currentStates[stateKey]
@@ -2403,24 +2432,10 @@ func (s *Store) ApplyTrafficRawStats(ctx context.Context, stats []TrafficRawStat
 			rateUp = float64(deltaUp) / elapsed
 			rateDown = float64(deltaDown) / elapsed
 		}
-		if _, err := tx.ExecContext(ctx, `
-INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
-  total_up=excluded.total_up,
-  total_down=excluded.total_down,
-  last_raw_up=excluded.last_raw_up,
-  last_raw_down=excluded.last_raw_down,
-  rate_up=excluded.rate_up,
-  rate_down=excluded.rate_down,
-  last_seen_at=excluded.last_seen_at,
-  status=excluded.status,
-  message=excluded.message
-`, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, rateUp, rateDown, seenAt, raw.Status, strings.TrimSpace(raw.Message)); err != nil {
+		if _, err := upsertState.ExecContext(ctx, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, rateUp, rateDown, seenAt, raw.Status, strings.TrimSpace(raw.Message)); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			seenAt, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, rateUp, rateDown, raw.Status); err != nil {
+		if _, err := insertSample.ExecContext(ctx, seenAt, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, rateUp, rateDown, raw.Status); err != nil {
 			return err
 		}
 		current.Engine = raw.Engine
@@ -2445,10 +2460,7 @@ ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
 		}
 	}
 	for statsKey, info := range seenClients {
-		if _, err := tx.ExecContext(ctx, `
-UPDATE clients
-SET up = ?, down = ?
-WHERE stats_key = ?`, info.Up, info.Down, statsKey); err != nil {
+		if _, err := updateClientTraffic.ExecContext(ctx, info.Up, info.Down, statsKey); err != nil {
 			return err
 		}
 	}

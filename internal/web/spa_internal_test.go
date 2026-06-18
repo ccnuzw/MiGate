@@ -76,6 +76,14 @@ func TestPrecompressedStaticHandlerServesAcceptedEncoding(t *testing.T) {
 		t.Fatalf("expected lower-q br fallback when gzip file is missing, encoding=%q body=%q", brFallback.Header().Get("Content-Encoding"), brFallback.Body.String())
 	}
 
+	gzipWithoutFile := httptest.NewRecorder()
+	gzipWithoutFileReq := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	gzipWithoutFileReq.Header.Set("Accept-Encoding", "gzip")
+	brFallbackHandler.ServeHTTP(gzipWithoutFile, gzipWithoutFileReq)
+	if gzipWithoutFile.Header().Get("Content-Encoding") != "" || gzipWithoutFile.Body.String() != "plain" {
+		t.Fatalf("expected gzip-only request without gz file to fall back to plain asset, encoding=%q body=%q", gzipWithoutFile.Header().Get("Content-Encoding"), gzipWithoutFile.Body.String())
+	}
+
 	plain := httptest.NewRecorder()
 	handler.ServeHTTP(plain, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
 	if plain.Header().Get("Content-Encoding") != "" || plain.Body.String() != "plain" {

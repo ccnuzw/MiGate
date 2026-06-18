@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { brotliCompressSync, gzipSync } from 'node:zlib';
+import { brotliCompressSync } from 'node:zlib';
 
 const backendProxy = {
   target: 'http://127.0.0.1:9999',
@@ -66,13 +66,28 @@ function precompressAssets() {
       outDir = config.build.outDir;
     },
     async writeBundle() {
+      await removeGeneratedGzipFiles(outDir);
       for (const filePath of await listPrecompressableFiles(outDir)) {
         const input = await readFile(filePath);
-        await writeFile(`${filePath}.gz`, gzipSync(input, { level: 9, mtime: 0 }));
         await writeFile(`${filePath}.br`, brotliCompressSync(input));
       }
     },
   };
+}
+
+async function removeGeneratedGzipFiles(dir: string) {
+  const entries = await readdir(dir);
+  await Promise.all(entries.map(async (entry) => {
+    const filePath = join(dir, entry);
+    const info = await stat(filePath);
+    if (info.isDirectory()) {
+      await removeGeneratedGzipFiles(filePath);
+      return;
+    }
+    if (filePath.endsWith('.gz')) {
+      await unlink(filePath);
+    }
+  }));
 }
 
 function shouldPrecompress(fileName: string) {

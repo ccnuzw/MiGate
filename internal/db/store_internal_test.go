@@ -39,7 +39,7 @@ func TestStoreCreatesTrafficLookupIndexes(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("index rows: %v", err)
 	}
-	for _, name := range []string{"idx_clients_inbound_email", "idx_clients_credential_id", "idx_inbounds_port", "idx_traffic_samples_sampled_at"} {
+	for _, name := range []string{"idx_clients_inbound_email", "idx_clients_credential_id", "idx_inbounds_port", "idx_traffic_samples_lookup", "idx_traffic_samples_scope_time", "idx_traffic_samples_sampled_at"} {
 		if !indexes[name] {
 			t.Fatalf("expected index %s to exist, got %#v", name, indexes)
 		}

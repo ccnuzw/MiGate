@@ -3,6 +3,8 @@ package web
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -19,15 +21,16 @@ func (r fixedSingboxRuntime) Capability(ctx context.Context) singbox.Capability 
 }
 
 type countingSummaryStore struct {
-	inbounds               []db.Inbound
-	outbounds              []db.Outbound
-	rules                  []db.RoutingRule
-	states                 []db.TrafficState
-	listInboundsErr        error
-	listOutboundsErr       error
-	listRulesErr           error
-	listInboundsCalls      int
-	listTrafficStatesCalls int
+	inbounds                []db.Inbound
+	outbounds               []db.Outbound
+	rules                   []db.RoutingRule
+	states                  []db.TrafficState
+	listInboundsErr         error
+	listOutboundsErr        error
+	listRulesErr            error
+	listInboundsCalls       int
+	listTrafficStatesCalls  int
+	listTrafficSamplesCalls int
 }
 
 func (s *countingSummaryStore) ListInbounds(ctx context.Context) ([]db.Inbound, error) {
@@ -171,6 +174,7 @@ func (s *countingSummaryStore) ListTrafficStates(ctx context.Context) ([]db.Traf
 }
 
 func (s *countingSummaryStore) ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]db.TrafficSample, error) {
+	s.listTrafficSamplesCalls++
 	return nil, nil
 }
 
@@ -402,6 +406,286 @@ func TestDashboardSummaryCacheHitsExpiresAndRetriesErrors(t *testing.T) {
 	}
 	if failing.listInboundsCalls != 2 {
 		t.Fatalf("expected failed summaries not to be cached, got %d calls", failing.listInboundsCalls)
+	}
+}
+
+func TestDashboardSummaryCacheReusesSeriesAcrossShortSummaryExpiry(t *testing.T) {
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{{
+			ID:       1,
+			Remark:   "cached-series",
+			Protocol: "vless",
+			Port:     443,
+			Network:  "tcp",
+			Security: "none",
+			Enabled:  true,
+			Clients:  []db.Client{{ID: 10, InboundID: 1, UUID: "uuid", StatsKey: "c_state", Email: "a@example.com", Enabled: true}},
+		}},
+		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
+	}
+	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second, 30*time.Second)
+	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
+	now := time.Unix(100, 0)
+	cache.now = func() time.Time { return now }
+
+	if _, err := cache.get(context.Background(), cfg); err != nil {
+		t.Fatalf("first summary: %v", err)
+	}
+	now = now.Add(3 * time.Second)
+	if _, err := cache.get(context.Background(), cfg); err != nil {
+		t.Fatalf("second summary: %v", err)
+	}
+	if store.listInboundsCalls != 2 {
+		t.Fatalf("expected base summary to refresh after short ttl, got %d ListInbounds calls", store.listInboundsCalls)
+	}
+	if store.listTrafficSamplesCalls != 1 {
+		t.Fatalf("expected traffic series cache to avoid second sample scan, got %d calls", store.listTrafficSamplesCalls)
+	}
+}
+
+func TestDashboardSummaryValidationCacheRefreshesWhenSnapshotChanges(t *testing.T) {
+	store := &countingSummaryStore{
+		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
+	}
+	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second, 30*time.Second)
+	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
+	now := time.Unix(100, 0)
+	cache.now = func() time.Time { return now }
+
+	first, err := cache.get(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("first summary: %v", err)
+	}
+	firstValidation := first["validation"].(map[string]configValidationResult)
+	if firstValidation["singbox"].Inbounds != 0 {
+		t.Fatalf("expected initial singbox validation to have no inbounds, got %+v", firstValidation["singbox"])
+	}
+
+	store.inbounds = []db.Inbound{{
+		ID:       2,
+		Remark:   "hy2",
+		Protocol: "hysteria2",
+		Port:     8443,
+		Network:  "udp",
+		Security: "tls",
+		Enabled:  true,
+		Clients:  []db.Client{{ID: 20, InboundID: 2, UUID: "client-uuid", Email: "hy2@example.com", Enabled: true}},
+	}}
+	now = now.Add(3 * time.Second)
+	second, err := cache.get(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("second summary: %v", err)
+	}
+	secondValidation := second["validation"].(map[string]configValidationResult)
+	if secondValidation["singbox"].Inbounds == firstValidation["singbox"].Inbounds {
+		t.Fatalf("expected validation cache to refresh for changed snapshot, first=%+v second=%+v", firstValidation["singbox"], secondValidation["singbox"])
+	}
+	if secondValidation["singbox"].Inbounds != 1 {
+		t.Fatalf("expected changed snapshot to rebuild singbox validation, got %+v", secondValidation["singbox"])
+	}
+}
+
+func TestDashboardValidationCacheKeyIgnoresClientRuntimeTraffic(t *testing.T) {
+	snapshot := validationSnapshot{
+		inbounds: []db.Inbound{{
+			ID:       1,
+			UUID:     "inbound-uuid",
+			Remark:   "edge",
+			Protocol: "vless",
+			Port:     443,
+			Network:  "tcp",
+			Security: "none",
+			Enabled:  true,
+			Clients: []db.Client{{
+				ID:           10,
+				InboundID:    1,
+				UUID:         "client-uuid",
+				CredentialID: "client-credential",
+				Password:     "client-password",
+				StatsKey:     "client-stats",
+				Email:        "client@example.com",
+				Enabled:      true,
+				Up:           100,
+				Down:         200,
+				TrafficLimit: 1024,
+				ExpiryAt:     1893456000,
+			}},
+		}},
+		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
+		rules:     []db.RoutingRule{{ID: 1, InboundTag: "edge", OutboundID: 1, OutboundTag: "direct", Enabled: true}},
+	}
+	changed := snapshot
+	changed.inbounds = append([]db.Inbound(nil), snapshot.inbounds...)
+	changed.inbounds[0].Clients = append([]db.Client(nil), snapshot.inbounds[0].Clients...)
+	changed.inbounds[0].Clients[0].Up = 999
+	changed.inbounds[0].Clients[0].Down = 888
+
+	if snapshot.cacheKey() != changed.cacheKey() {
+		t.Fatal("client runtime up/down changes should not invalidate dashboard validation cache key")
+	}
+}
+
+func TestDashboardSummaryValidationCacheReusesWhenOnlyRuntimeTrafficChanges(t *testing.T) {
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{{
+			ID:       1,
+			Remark:   "runtime",
+			Protocol: "hysteria2",
+			Port:     8443,
+			Network:  "udp",
+			Security: "tls",
+			Enabled:  true,
+			Clients:  []db.Client{{ID: 10, InboundID: 1, UUID: "client-uuid", Password: "secret", StatsKey: "c_state", Email: "a@example.com", Enabled: true, Up: 10, Down: 20}},
+		}},
+		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
+	}
+	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second, 30*time.Second)
+	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
+	now := time.Unix(100, 0)
+	cache.now = func() time.Time { return now }
+
+	first, err := cache.get(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("first summary: %v", err)
+	}
+	_ = first
+	firstValidationExpiresAt := cache.validationExpiresAt
+	store.inbounds[0].Clients[0].Up = 12345
+	store.inbounds[0].Clients[0].Down = 67890
+	now = now.Add(3 * time.Second)
+
+	if _, err := cache.get(context.Background(), cfg); err != nil {
+		t.Fatalf("second summary: %v", err)
+	}
+	if !cache.validationExpiresAt.Equal(firstValidationExpiresAt) {
+		t.Fatalf("expected validation cache to be reused for runtime-only traffic changes, first expiry=%s second expiry=%s", firstValidationExpiresAt, cache.validationExpiresAt)
+	}
+}
+
+func TestDashboardValidationCacheKeyChangesForConfigFields(t *testing.T) {
+	base := validationSnapshot{
+		inbounds: []db.Inbound{{
+			ID:             1,
+			UUID:           "inbound-uuid",
+			Remark:         "edge",
+			Protocol:       "vless",
+			Core:           db.CoreXray,
+			Port:           443,
+			Network:        "tcp",
+			Security:       "none",
+			Enabled:        true,
+			WsPath:         "/ws",
+			TLSCertFile:    "/cert.pem",
+			TLSKeyFile:     "/key.pem",
+			RealityDest:    "example.com:443",
+			RealityShortID: "abcd",
+			Clients: []db.Client{{
+				ID:           10,
+				InboundID:    1,
+				UUID:         "client-uuid",
+				CredentialID: "client-credential",
+				Password:     "client-password",
+				StatsKey:     "client-stats",
+				Email:        "client@example.com",
+				Enabled:      true,
+				Up:           10,
+				Down:         20,
+			}},
+		}},
+		outbounds: []db.Outbound{{
+			ID:             1,
+			Tag:            "direct",
+			Protocol:       "freedom",
+			Address:        "127.0.0.1",
+			Port:           1080,
+			Username:       "user",
+			Password:       "pass",
+			SupportedCores: []string{db.CoreXray, db.CoreSingbox},
+			Enabled:        true,
+			Sort:           1,
+		}},
+		rules: []db.RoutingRule{{
+			ID:          1,
+			InboundTag:  "edge",
+			ClientID:    10,
+			ClientEmail: "client@example.com",
+			OutboundID:  1,
+			OutboundTag: "direct",
+			Domain:      "example.com",
+			IP:          "geoip:private",
+			RuleSet:     "ads",
+			Protocol:    "bittorrent",
+			Enabled:     true,
+			Sort:        1,
+		}},
+	}
+	baseKey := base.cacheKey()
+	cases := []struct {
+		name   string
+		change func(*validationSnapshot)
+	}{
+		{name: "inbound port", change: func(s *validationSnapshot) { s.inbounds[0].Port = 8443 }},
+		{name: "inbound protocol", change: func(s *validationSnapshot) { s.inbounds[0].Protocol = "trojan" }},
+		{name: "inbound enabled", change: func(s *validationSnapshot) { s.inbounds[0].Enabled = false }},
+		{name: "client enabled", change: func(s *validationSnapshot) { s.inbounds[0].Clients[0].Enabled = false }},
+		{name: "client credential", change: func(s *validationSnapshot) { s.inbounds[0].Clients[0].CredentialID = "new-credential" }},
+		{name: "client password", change: func(s *validationSnapshot) { s.inbounds[0].Clients[0].Password = "new-password" }},
+		{name: "client stats key", change: func(s *validationSnapshot) { s.inbounds[0].Clients[0].StatsKey = "new-stats" }},
+		{name: "outbound tag", change: func(s *validationSnapshot) { s.outbounds[0].Tag = "proxy" }},
+		{name: "outbound protocol", change: func(s *validationSnapshot) { s.outbounds[0].Protocol = "socks" }},
+		{name: "routing inbound", change: func(s *validationSnapshot) { s.rules[0].InboundTag = "other" }},
+		{name: "routing outbound", change: func(s *validationSnapshot) { s.rules[0].OutboundTag = "proxy" }},
+		{name: "routing domain", change: func(s *validationSnapshot) { s.rules[0].Domain = "example.org" }},
+		{name: "routing enabled", change: func(s *validationSnapshot) { s.rules[0].Enabled = false }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := cloneValidationSnapshotForTest(base)
+			tc.change(&changed)
+			if changed.cacheKey() == baseKey {
+				t.Fatalf("expected %s change to invalidate validation cache key", tc.name)
+			}
+		})
+	}
+}
+
+func cloneValidationSnapshotForTest(snapshot validationSnapshot) validationSnapshot {
+	clone := validationSnapshot{
+		inbounds:  append([]db.Inbound(nil), snapshot.inbounds...),
+		outbounds: append([]db.Outbound(nil), snapshot.outbounds...),
+		rules:     append([]db.RoutingRule(nil), snapshot.rules...),
+	}
+	for i := range clone.inbounds {
+		clone.inbounds[i].Clients = append([]db.Client(nil), clone.inbounds[i].Clients...)
+	}
+	for i := range clone.outbounds {
+		clone.outbounds[i].SupportedCores = append([]string(nil), clone.outbounds[i].SupportedCores...)
+	}
+	return clone
+}
+
+func TestCoreStatusCacheHitsAndInvalidates(t *testing.T) {
+	cache := newCoreStatusCache(5 * time.Second)
+	now := time.Unix(100, 0)
+	cache.now = func() time.Time { return now }
+	calls := 0
+	handler := cache.wrap("xray-status", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		writeJSON(w, http.StatusOK, map[string]interface{}{"calls": calls})
+	})
+
+	first := httptest.NewRecorder()
+	handler(first, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	second := httptest.NewRecorder()
+	handler(second, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if calls != 1 || first.Body.String() != second.Body.String() {
+		t.Fatalf("expected cached response to be reused, calls=%d first=%s second=%s", calls, first.Body.String(), second.Body.String())
+	}
+	cache.invalidate("xray-status")
+	third := httptest.NewRecorder()
+	handler(third, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	if calls != 2 {
+		t.Fatalf("expected invalidated cache to call handler again, calls=%d body=%s", calls, third.Body.String())
 	}
 }
 
