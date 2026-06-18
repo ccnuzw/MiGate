@@ -271,11 +271,25 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 		"rm -rf \"$LEGACY_SINGBOX_SERVICE_DROPIN_DIR\"",
 		"systemctl reset-failed migate-singbox",
 		"systemctl enable sing-box",
+		"/usr/local/bin/sing-box check -c /etc/sing-box/config.json",
+		"sing-box 配置校验失败，已跳过服务启动。",
+		"journalctl -u sing-box -n 80 --no-pager",
 		"sing-box 安装/修复完成",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box runtime contract missing %q", want)
 		}
+	}
+	serviceWrite := strings.Index(script, "cat > \"$SINGBOX_SERVICE_PATH\"")
+	if serviceWrite < 0 || !strings.Contains(script[serviceWrite:], "systemctl daemon-reload") {
+		t.Fatalf("installer must daemon-reload after writing sing-box service")
+	}
+	if strings.Index(script, "/usr/local/bin/sing-box check -c /etc/sing-box/config.json") > strings.Index(script, "systemctl start sing-box") {
+		t.Fatalf("installer must check sing-box config before starting service")
+	}
+	checkBlock := script[strings.Index(script, "if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then"):]
+	if !strings.Contains(checkBlock, "已跳过服务启动") || strings.Index(checkBlock, "else") > strings.Index(checkBlock, "systemctl start sing-box") {
+		t.Fatalf("installer must skip sing-box service start when config check fails")
 	}
 }
 

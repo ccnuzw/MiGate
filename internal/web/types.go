@@ -192,8 +192,10 @@ type routerConfig struct {
 	trustProxy         bool
 	loginLimiter       *loginLimiter
 	coreScriptRunner   func(script string) ([]byte, error)
-	singboxApplier     func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) error
+	singboxApplier     func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary
 	singboxApplierSet  bool
+	singboxProbe       SingboxProbe
+	singboxListeners   func(ctx context.Context, cfg *routerConfig) []SingboxListenerDiagnostic
 	sessionTouches     map[string]time.Time
 	sessionTouchGC     time.Time
 	sessionTouchMu     sync.Mutex

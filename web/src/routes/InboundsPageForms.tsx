@@ -10,6 +10,7 @@ import type { Client, CreateClientResponse, CreateInboundResponse, Inbound } fro
 import { Field, FieldError, Modal, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { copyToClipboard } from '../lib/clipboard';
 import { useI18n } from '../lib/i18n';
+import { singboxApplyWarning, singboxApplyWarningTone } from '../lib/singboxApply';
 import {
   allowedInboundNetworks,
   allowedInboundSecurities,
@@ -231,7 +232,7 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
     },
     onSuccess: (response) => {
       const warning = singboxApplyWarning(response, '节点已保存，但 sing-box 配置未生效');
-      showToast(text(warning || '节点已保存'), warning ? 'error' : 'success');
+      showToast(text(warning || '节点已保存'), warning ? singboxApplyWarningTone(response) : 'success');
       onSaved();
       onClose();
     },
@@ -653,7 +654,7 @@ export function ClientModal({ inbound, client, onClose, onSaved }: { inbound: In
     },
     onSuccess: ({ payload, response }) => {
       const warning = singboxApplyWarning(response as CreateClientResponse, '客户端已保存，但 sing-box 配置未生效');
-      showToast(text(warning || '客户端已保存'), warning ? 'error' : 'success');
+      showToast(text(warning || '客户端已保存'), warning ? singboxApplyWarningTone(response) : 'success');
       onSaved();
       extractClientResponse(response, client, payload, inbound?.id || client?.inbound_id || 0);
       onClose();
@@ -882,14 +883,6 @@ function extractClientResponse(response: unknown, fallback?: Client, payload?: R
     traffic_limit: payload.traffic_limit,
     expiry_at: payload.expiry_at,
   };
-}
-
-export function singboxApplyWarning(response: CreateInboundResponse | CreateClientResponse | unknown, prefix: string): string {
-  if (!response || typeof response !== 'object') return '';
-  const data = response as { applied?: boolean; detail?: string; error?: string; singbox?: { applied?: boolean; detail?: string; error?: string } };
-  if (data.applied !== false && data.singbox?.applied !== false) return '';
-  const detail = data.detail || data.singbox?.detail || data.error || data.singbox?.error || '未知错误';
-  return `${prefix}：${detail}`;
 }
 
 function isClient(value: unknown): value is Client {

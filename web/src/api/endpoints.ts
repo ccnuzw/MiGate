@@ -3,6 +3,7 @@ import type {
   CoreStatus,
   ConfigValidation,
   CoreActionResponse,
+  Client,
   DashboardSummary,
   CreateClientResponse,
   CreateInboundResponse,
@@ -16,6 +17,9 @@ import type {
   SessionInfo,
   Settings,
   CertStatus,
+  SingboxConfigPreview,
+  SingboxDiagnostics,
+  SingboxWriteResponse,
   ProxyPoolProxy,
   ProxyPoolResponse,
   TrafficClient,
@@ -27,11 +31,19 @@ import type {
   VersionResponse,
 } from './types';
 
-type RoutingRuleResponse = RoutingRule | { rule: RoutingRule };
+export type RoutingRuleResponse = (RoutingRule | { rule: RoutingRule }) & SingboxWriteResponse;
 
-function unwrapRoutingRule(response: RoutingRuleResponse): RoutingRule {
-  if ('rule' in response) return (response as { rule: RoutingRule }).rule;
-  return response as RoutingRule;
+function unwrapRoutingRule(response: RoutingRuleResponse): RoutingRule & SingboxWriteResponse {
+  if ('rule' in response && response.rule) {
+    return {
+      ...(response.rule as RoutingRule),
+      applied: response.applied,
+      error: response.error,
+      detail: response.detail,
+      singbox: response.singbox,
+    };
+  }
+  return response as RoutingRule & SingboxWriteResponse;
 }
 
 export const api = {
@@ -57,33 +69,33 @@ export const api = {
     return Array.isArray(response) ? response : response.inbounds || [];
   },
   createInbound: (body: Record<string, unknown>) => post<CreateInboundResponse>('/api/inbounds', body),
-  updateInbound: (id: number, body: Record<string, unknown>) => put<Inbound>(`/api/inbounds/${id}`, body),
-  deleteInbound: (id: number) => del<{ status: string }>(`/api/inbounds/${id}`),
-  toggleInbound: (id: number, enabled: boolean) => patch<Inbound>(`/api/inbounds/${id}/enabled`, { enabled }),
+  updateInbound: (id: number, body: Record<string, unknown>) => put<(Inbound | { inbound: Inbound }) & SingboxWriteResponse>(`/api/inbounds/${id}`, body),
+  deleteInbound: (id: number) => del<{ status: string } & SingboxWriteResponse>(`/api/inbounds/${id}`),
+  toggleInbound: (id: number, enabled: boolean) => patch<(Inbound | { inbound: Inbound }) & SingboxWriteResponse>(`/api/inbounds/${id}/enabled`, { enabled }),
   createClient: (inboundId: number, body: Record<string, unknown>) => post<CreateClientResponse>(`/api/inbounds/${inboundId}/clients`, body),
-  updateClient: (inboundId: number, id: number, body: Record<string, unknown>) => put(`/api/inbounds/${inboundId}/clients/${id}`, body),
-  deleteClient: (inboundId: number, id: number) => del(`/api/inbounds/${inboundId}/clients/${id}`),
-  toggleClient: (inboundId: number, id: number, enabled: boolean) => patch(`/api/inbounds/${inboundId}/clients/${id}/enabled`, { enabled }),
+  updateClient: (inboundId: number, id: number, body: Record<string, unknown>) => put<({ client?: Client } | Client) & SingboxWriteResponse>(`/api/inbounds/${inboundId}/clients/${id}`, body),
+  deleteClient: (inboundId: number, id: number) => del<{ status: string } & SingboxWriteResponse>(`/api/inbounds/${inboundId}/clients/${id}`),
+  toggleClient: (inboundId: number, id: number, enabled: boolean) => patch<({ client?: Client } | Client) & SingboxWriteResponse>(`/api/inbounds/${inboundId}/clients/${id}/enabled`, { enabled }),
   resetClientTraffic: (inboundId: number, id: number) => post(`/api/inbounds/${inboundId}/clients/${id}/reset-traffic`),
   outbounds: () => get<Outbound[]>('/api/outbounds'),
-  createOutbound: (body: Record<string, unknown>) => post('/api/outbounds', body),
-  updateOutbound: (id: number, body: Record<string, unknown>) => put(`/api/outbounds/${id}`, body),
-  deleteOutbound: (id: number) => del(`/api/outbounds/${id}`),
-  toggleOutbound: (item: Outbound, enabled: boolean) => put(`/api/outbounds/${item.id}`, { ...item, enabled }),
+  createOutbound: (body: Record<string, unknown>) => post<({ outbound: Outbound } | Outbound) & SingboxWriteResponse>('/api/outbounds', body),
+  updateOutbound: (id: number, body: Record<string, unknown>) => put<({ outbound: Outbound } | Outbound) & SingboxWriteResponse>(`/api/outbounds/${id}`, body),
+  deleteOutbound: (id: number) => del<{ status: string } & SingboxWriteResponse>(`/api/outbounds/${id}`),
+  toggleOutbound: (item: Outbound, enabled: boolean) => put<({ outbound: Outbound } | Outbound) & SingboxWriteResponse>(`/api/outbounds/${item.id}`, { ...item, enabled }),
   pingOutbound: (id: number) => get<PingResult>(`/api/outbounds/${id}/ping`),
   speedtestAll: () => post<Record<string, PingResult>>('/api/outbounds/speedtest-all'),
-  reorderOutbounds: (ids: number[]) => post<{ status: string }>('/api/outbounds/reorder', { ids }),
+  reorderOutbounds: (ids: number[]) => post<{ status: string } & SingboxWriteResponse>('/api/outbounds/reorder', { ids }),
   proxyPool: (type: 'socks5' | 'http' | 'https', country = '') => get<ProxyPoolResponse>(`/api/outbounds/${type}-pool${country ? `?country=${encodeURIComponent(country)}` : ''}`),
   pingProxyPool: (type: 'socks5' | 'http' | 'https', proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) => post<PingResult>(`/api/outbounds/${type}-pool/ping`, proxy),
-  importProxyPool: (type: 'socks5' | 'http' | 'https', proxy: ProxyPoolProxy) => post(`/api/outbounds/${type}-pool/import`, proxy),
+  importProxyPool: (type: 'socks5' | 'http' | 'https', proxy: ProxyPoolProxy) => post<({ outbound: Outbound } | Outbound) & SingboxWriteResponse>(`/api/outbounds/${type}-pool/import`, proxy),
   socks5Pool: (country = '') => get<ProxyPoolResponse>(`/api/outbounds/socks5-pool${country ? `?country=${encodeURIComponent(country)}` : ''}`),
   pingSocks5Pool: (proxy: Pick<ProxyPoolProxy, 'address' | 'port'>) => post<PingResult>('/api/outbounds/socks5-pool/ping', proxy),
-  importSocks5Pool: (proxy: ProxyPoolProxy) => post('/api/outbounds/socks5-pool/import', proxy),
+  importSocks5Pool: (proxy: ProxyPoolProxy) => post<({ outbound: Outbound } | Outbound) & SingboxWriteResponse>('/api/outbounds/socks5-pool/import', proxy),
   routingRules: () => get<RoutingRule[]>('/api/routing-rules'),
   createRoutingRule: async (body: Record<string, unknown>) => unwrapRoutingRule(await post<RoutingRuleResponse>('/api/routing-rules', body)),
   updateRoutingRule: async (id: number, body: Record<string, unknown>) => unwrapRoutingRule(await put<RoutingRuleResponse>(`/api/routing-rules/${id}`, body)),
-  deleteRoutingRule: (id: number) => del(`/api/routing-rules/${id}`),
-  reorderRoutingRules: (ids: number[]) => post<{ status: string }>('/api/routing-rules/reorder', { ids }),
+  deleteRoutingRule: (id: number) => del<{ status: string } & SingboxWriteResponse>(`/api/routing-rules/${id}`),
+  reorderRoutingRules: (ids: number[]) => post<{ status: string } & SingboxWriteResponse>('/api/routing-rules/reorder', { ids }),
   dashboardSummary: () => get<DashboardSummary>('/api/dashboard/summary'),
   trafficSummary: () => get<TrafficSummary>('/api/traffic/summary'),
   trafficInbounds: () => get<{ inbounds: TrafficInbound[] }>('/api/traffic/inbounds'),
@@ -107,8 +119,10 @@ export const api = {
   xrayUninstall: () => post<CoreActionResponse>('/api/xray/uninstall', { confirm: true, allow_system_changes: true }),
   xrayLogs: () => get<{ logs?: string; lines?: string[] }>('/api/xray/logs'),
   singboxStatus: () => get<CoreStatus>('/api/singbox/status'),
+  singboxDiagnostics: () => get<SingboxDiagnostics>('/api/singbox/diagnostics'),
   singboxVersion: () => get<VersionResponse>('/api/singbox/version'),
   singboxConfig: () => get<unknown>('/api/singbox/config'),
+  singboxConfigPreview: () => get<SingboxConfigPreview>('/api/singbox/config/preview'),
   singboxValidate: () => get<ConfigValidation>('/api/singbox/validate'),
   singboxApply: () => post<CoreActionResponse>('/api/singbox/apply', { confirm: true, allow_system_changes: true }),
   singboxInstall: () => post<CoreActionResponse>('/api/singbox/install', { confirm: true, allow_system_changes: true }),

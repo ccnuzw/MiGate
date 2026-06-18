@@ -112,11 +112,29 @@ func WithCoreScriptRunner(runner func(script string) ([]byte, error)) Option {
 	}
 }
 
-func WithSingboxApplier(applier func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) error) Option {
+func WithSingboxApplier(applier func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary) Option {
 	return func(cfg *routerConfig) {
 		if applier != nil {
 			cfg.singboxApplier = applier
 			cfg.singboxApplierSet = true
+		}
+	}
+}
+
+func WithSingboxProbe(probe SingboxProbe) Option {
+	return func(cfg *routerConfig) {
+		if probe != nil {
+			cfg.singboxProbe = probe
+		}
+	}
+}
+
+func WithSingboxListenerDiagnostics(listeners func(context.Context) []SingboxListenerDiagnostic) Option {
+	return func(cfg *routerConfig) {
+		if listeners != nil {
+			cfg.singboxListeners = func(ctx context.Context, _ *routerConfig) []SingboxListenerDiagnostic {
+				return listeners(ctx)
+			}
 		}
 	}
 }

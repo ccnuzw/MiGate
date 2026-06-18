@@ -56,8 +56,17 @@ export interface Inbound {
 
 export interface SingboxApplySummary {
   applied?: boolean;
+  service?: string;
+  config_path?: string;
+  commands_executed?: string[];
   error?: string;
   detail?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
+  inbounds?: number;
+  outbounds?: number;
+  rules?: number;
 }
 
 export interface CreateResultFields {
@@ -65,6 +74,9 @@ export interface CreateResultFields {
   applied?: boolean;
   error?: string;
   detail?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
   singbox?: SingboxApplySummary;
 }
 
@@ -148,6 +160,14 @@ export interface CoreStatus {
   active_connections?: number;
   config_path?: string;
   commands_executed?: string[];
+  listening_ports?: Array<{
+    inbound_id: number;
+    protocol: string;
+    port: number;
+    network?: string;
+    transport?: string;
+    listening: boolean;
+  }>;
 }
 
 export interface CoreActionResponse {
@@ -165,14 +185,83 @@ export interface CoreActionResponse {
     applied?: boolean;
     reason?: string;
     error?: string;
+    detail?: string;
     output?: string;
     commands_executed?: string[];
+    warnings?: string[];
+    post_apply_warnings?: string[];
+    non_fatal_warnings?: string[];
     inbounds?: number;
   };
   applied?: boolean;
   reason?: string;
   error?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
   inbounds?: number;
+}
+
+export interface SingboxWriteResponse {
+  applied?: boolean;
+  error?: string;
+  detail?: string;
+  warnings?: string[];
+  post_apply_warnings?: string[];
+  non_fatal_warnings?: string[];
+  singbox?: SingboxApplySummary;
+}
+
+export interface SingboxListenerDiagnostic {
+  inbound_id: number;
+  protocol: string;
+  port: number;
+  network?: string;
+  transport?: string;
+  listening: boolean;
+}
+
+export interface SingboxConfigPreview {
+  config_path: string;
+  in_sync: boolean;
+  reason?: 'disk_missing' | 'generated_build_failed' | 'hash_mismatch' | 'disk_parse_failed' | string;
+  disk: {
+    config_path: string;
+    hash?: string;
+    config?: unknown;
+    error?: string;
+    detail?: string;
+  };
+  generated: {
+    config_path: string;
+    hash?: string;
+    config?: unknown;
+    error?: string;
+    detail?: string;
+    warnings?: string[];
+    inbounds?: number;
+    outbounds?: number;
+    rules?: number;
+  };
+}
+
+export interface SingboxDiagnostics {
+  installed: boolean;
+  version?: string;
+  managed: boolean;
+  service: string;
+  service_status: 'running' | 'stopped' | 'not_managed' | 'not_installed' | string;
+  config_path: string;
+  config_exists: boolean;
+  config_valid: boolean;
+  config_error?: string;
+  disk_generated_in_sync: boolean;
+  sync_reason?: string;
+  expected_listeners: SingboxListenerDiagnostic[];
+  missing_listeners: SingboxListenerDiagnostic[];
+  recent_logs: string[];
+  warnings: string[];
+  suggestions: string[];
 }
 
 export interface ConfigValidation {

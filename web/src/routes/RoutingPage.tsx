@@ -11,6 +11,7 @@ import { EmptyState, Field, LoadingBlock, Modal, SpinnerButton, StatusBadge, tog
 import { coreLabel, inboundCore, outboundSupportedCores, outboundSupportsCore } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
 import { generatedInboundTag } from '../lib/routing';
+import { showSingboxApplyWarning } from '../lib/singboxApply';
 import { PageTitle } from './OverviewPage';
 
 const schema = z.object({
@@ -52,24 +53,30 @@ export default function RoutingPage() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
   const remove = useMutation({
     mutationFn: api.deleteRoutingRule,
-    onSuccess: () => {
-      showToast(text('路由规则已删除'), 'success');
+    onSuccess: (response) => {
+      if (!showSingboxApplyWarning(response, '规则已删除，但 sing-box 配置未生效', showToast, text)) {
+        showToast(text('路由规则已删除'), 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, text('删除路由规则失败')), 'error'),
   });
   const toggle = useMutation({
     mutationFn: (item: RoutingRule) => api.updateRoutingRule(item.id, routingPayload({ ...item, enabled: !item.enabled })),
-    onSuccess: () => {
-      showToast(text('路由规则状态已更新'), 'success');
+    onSuccess: (response) => {
+      if (!showSingboxApplyWarning(response, '规则已保存，但 sing-box 配置未生效', showToast, text)) {
+        showToast(text('路由规则状态已更新'), 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, text('更新路由规则失败')), 'error'),
   });
   const reorder = useMutation({
     mutationFn: api.reorderRoutingRules,
-    onSuccess: () => {
-      showToast(text('路由顺序已保存'), 'success');
+    onSuccess: (response) => {
+      if (!showSingboxApplyWarning(response, '规则已保存，但 sing-box 配置未生效', showToast, text)) {
+        showToast(text('路由顺序已保存'), 'success');
+      }
       refresh();
     },
     onError: (error) => showToast(errorMessage(error, text('保存顺序失败')), 'error'),
@@ -161,8 +168,10 @@ function RoutingModal({ rule, outbounds, inbounds, proxyLookup, onClose, onSaved
       const payload = routingPayload(values);
       return rule?.id ? api.updateRoutingRule(rule.id, payload) : api.createRoutingRule(payload);
     },
-    onSuccess: () => {
-      showToast(text('路由规则已保存'), 'success');
+    onSuccess: (response) => {
+      if (!showSingboxApplyWarning(response, '规则已保存，但 sing-box 配置未生效', showToast, text)) {
+        showToast(text('路由规则已保存'), 'success');
+      }
       onSaved();
       onClose();
     },

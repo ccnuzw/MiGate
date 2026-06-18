@@ -1,9 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { CheckCircle2, Download, Play, RefreshCw, ShieldCheck, Trash2, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, Play, RefreshCw, ShieldCheck, Trash2, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { CoreActionResponse, CoreStatus } from '../api/types';
+import type { CoreActionResponse, CoreStatus, SingboxConfigPreview, SingboxDiagnostics } from '../api/types';
 import { Card, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { formatBytes, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
@@ -23,6 +23,8 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: coreStatusRefetchInterval(visible), staleTime: 10_000 });
   const versionQuery = useQuery({ queryKey: [core, 'version'], queryFn: endpoints.version, retry: false, staleTime: 10 * 60_000 });
   const configQuery = useQuery({ queryKey: [core, 'config'], queryFn: endpoints.config, staleTime: 60_000 });
+  const singboxPreviewQuery = useQuery({ queryKey: ['singbox', 'config-preview'], queryFn: api.singboxConfigPreview, enabled: core === 'singbox', staleTime: 60_000 });
+  const singboxDiagnosticsQuery = useQuery({ queryKey: ['singbox', 'diagnostics'], queryFn: api.singboxDiagnostics, enabled: core === 'singbox', staleTime: 20_000 });
   const logsQuery = useQuery({ queryKey: [core, 'logs'], queryFn: endpoints.logs, enabled: false });
   const validate = useMutation({
     mutationFn: endpoints.validate,
@@ -42,9 +44,15 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
     onSuccess: (data) => {
       const result = coreActionResult(data, `${label} 配置已应用`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
-      showToast(text(result.message), result.ok ? 'success' : 'error');
+      showToast(text(result.message), result.tone || (result.ok ? 'success' : 'error'));
       statusQuery.refetch();
-      if (result.ok) configQuery.refetch();
+      if (core === 'singbox') singboxDiagnosticsQuery.refetch();
+      if (result.ok) {
+        configQuery.refetch();
+        if (core === 'singbox') {
+          singboxPreviewQuery.refetch();
+        }
+      }
     },
     onError: (error) => setActionError(error, `${label} 应用失败`, setLastResult, showToast),
   });
@@ -55,6 +63,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
       statusQuery.refetch();
+      if (core === 'singbox') singboxDiagnosticsQuery.refetch();
     },
     onError: (error) => setActionError(error, `${label} 安装失败`, setLastResult, showToast),
   });
@@ -65,6 +74,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
       statusQuery.refetch();
+      if (core === 'singbox') singboxDiagnosticsQuery.refetch();
     },
     onError: (error) => setActionError(error, `${label} 卸载失败`, setLastResult, showToast),
   });
@@ -79,7 +89,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
         description={text('查看核心运行状态、配置预览、日志和系统级操作。')}
         action={
           <div className="core-action-row">
-            <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
+            <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); if (core === 'singbox') singboxDiagnosticsQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
             <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
             <SpinnerButton className="btn secondary" loading={install.isPending} onClick={async () => (await confirm({ title: text(`${installActionLabel} ${label}？`), description: text(installed ? '该操作会重新执行安装脚本，通常用于升级或修复当前核心。' : '该操作会执行系统安装命令。') })) && install.mutate()}><Download className="h-4 w-4" /> {text(installActionLabel)}</SpinnerButton>
             <SpinnerButton className="btn danger" loading={uninstall.isPending} disabled={!installed} title={text(installed ? '卸载核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`卸载 ${label} 核心？`), description: text('该操作会删除或停用系统服务。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('卸载核心')}</SpinnerButton>
@@ -109,10 +119,13 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
           <pre className="code-block core-code-block">{status.commands_executed.join('\n')}</pre>
         </Card>
       ) : null}
+      {core === 'singbox' ? <SingboxDiagnosticsPanel diagnostics={singboxDiagnosticsQuery.data} loading={singboxDiagnosticsQuery.isLoading} error={singboxDiagnosticsQuery.error} onRefresh={() => singboxDiagnosticsQuery.refetch()} text={text} /> : null}
+      {core === 'singbox' ? <SingboxPortDiagnostics status={status} text={text} /> : null}
+      {core === 'singbox' ? <SingboxConfigSync preview={singboxPreviewQuery.data} loading={singboxPreviewQuery.isLoading} error={singboxPreviewQuery.error} onRefresh={() => { configQuery.refetch(); singboxPreviewQuery.refetch(); }} text={text} /> : null}
       <Card className="core-card p-5">
         <div className="core-card-header mb-3 flex items-center justify-between gap-3">
           <h2 className="section-title">{text('配置预览')}</h2>
-          <button className="btn secondary h-8" onClick={() => configQuery.refetch()}>{text('刷新配置')}</button>
+          <button className="btn secondary h-8" onClick={() => { configQuery.refetch(); if (core === 'singbox') singboxPreviewQuery.refetch(); }}>{text('刷新配置')}</button>
         </div>
         <pre className="code-block core-code-block">{JSON.stringify(configQuery.data || {}, null, 2)}</pre>
       </Card>
@@ -124,6 +137,131 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
         <pre className="code-block core-code-block">{formatLogs(logsQuery.data, text('点击“加载日志”查看最近日志。'))}</pre>
       </Card>
     </div>
+  );
+}
+
+function SingboxPortDiagnostics({ status, text }: { status?: CoreStatus; text: (value: string) => string }) {
+  const ports = singboxListeningDiagnostics(status);
+  if (!ports.length) return null;
+  const missing = ports.some((port) => !port.listening);
+  return (
+    <Card className={`core-card p-5 ${missing ? 'border-amber-200 bg-amber-50' : ''}`}>
+      <div className="core-card-header mb-3 flex items-center justify-between gap-3">
+        <h2 className="section-title">{text('端口监听诊断')}</h2>
+        {missing ? <span className="text-sm font-medium text-amber-700">{text('存在未监听端口')}</span> : null}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs text-panel-muted">
+            <tr>
+              <th className="py-2 pr-3">{text('入站 ID')}</th>
+              <th className="py-2 pr-3">{text('协议')}</th>
+              <th className="py-2 pr-3">{text('端口')}</th>
+              <th className="py-2 pr-3">UDP/TCP</th>
+              <th className="py-2 pr-3">{text('监听')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ports.map((port) => (
+              <tr key={`${port.inboundId}-${port.port}-${port.transport}`} className={!port.listening ? 'font-medium text-amber-800' : ''}>
+                <td className="py-2 pr-3">{port.inboundId}</td>
+                <td className="py-2 pr-3">{port.protocol}</td>
+                <td className="py-2 pr-3">{port.port}</td>
+                <td className="py-2 pr-3">{port.transport.toUpperCase()}</td>
+                <td className="py-2 pr-3">{text(port.listening ? '正在监听' : '未监听')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function SingboxDiagnosticsPanel({ diagnostics, loading, error, onRefresh, text }: { diagnostics?: SingboxDiagnostics; loading: boolean; error?: unknown; onRefresh: () => void; text: (value: string) => string }) {
+  const summary = singboxDiagnosticsSummary(diagnostics, loading, error);
+  const toneClass = summary.tone === 'error' ? 'border-red-200 bg-red-50' : summary.tone === 'warning' ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50';
+  const iconClass = summary.tone === 'error' ? 'text-red-700' : summary.tone === 'warning' ? 'text-amber-700' : 'text-emerald-700';
+  const checks = singboxDiagnosticChecks(diagnostics);
+  return (
+    <Card className={`core-card p-5 ${toneClass}`}>
+      <div className="core-card-header mb-4 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          {summary.tone === 'ok' ? <CheckCircle2 className={`h-5 w-5 ${iconClass}`} /> : <AlertTriangle className={`h-5 w-5 ${iconClass}`} />}
+          <div className="min-w-0">
+            <h2 className="section-title">{text('诊断')}</h2>
+            <div className={`mt-1 text-sm font-medium ${iconClass}`}>{text(summary.label)}</div>
+          </div>
+        </div>
+        <button className="btn secondary h-8" onClick={onRefresh}><RefreshCw className="h-4 w-4" /> {text('刷新诊断')}</button>
+      </div>
+      {summary.detail ? <div className="mb-3 text-sm text-panel-muted">{text(summary.detail)}</div> : null}
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {checks.map((check) => (
+          <div key={check.label} className="rounded border border-panel-border bg-white/70 p-3">
+            <div className="text-xs text-panel-muted">{text(check.label)}</div>
+            <div className={`mt-1 text-sm font-medium ${check.ok ? 'text-emerald-700' : 'text-amber-800'}`}>{text(check.value)}</div>
+          </div>
+        ))}
+      </div>
+      {diagnostics?.missing_listeners?.length ? (
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-medium text-panel-muted">{text('未监听端口')}</div>
+          <div className="flex flex-wrap gap-2">
+            {diagnostics.missing_listeners.map((listener) => <span key={`${listener.inbound_id}-${listener.port}`} className="rounded border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">{listener.port}/{String(listener.transport || listener.network || 'tcp').toLowerCase()}</span>)}
+          </div>
+        </div>
+      ) : null}
+      {diagnostics?.config_error ? (
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-medium text-panel-muted">{text('配置校验错误')}</div>
+          <pre className="code-block core-code-block">{diagnostics.config_error}</pre>
+        </div>
+      ) : null}
+      {diagnostics?.warnings?.length ? <DiagnosticList title={text('警告')} items={diagnostics.warnings.map((item) => text(diagnosticWarningLabel(item)))} /> : null}
+      {diagnostics?.suggestions?.length ? <DiagnosticList title={text('建议操作')} items={diagnostics.suggestions.map((item) => text(item))} /> : null}
+      {diagnostics?.recent_logs?.length ? (
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-medium text-panel-muted">{text('最近日志摘要')}</div>
+          <pre className="code-block core-code-block">{diagnostics.recent_logs.slice(-8).join('\n')}</pre>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function DiagnosticList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="mt-4">
+      <div className="mb-2 text-xs font-medium text-panel-muted">{title}</div>
+      <ul className="space-y-1 text-sm text-panel-text">
+        {items.map((item) => <li key={item} className="break-words">- {item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function SingboxConfigSync({ preview, loading, error, onRefresh, text }: { preview?: SingboxConfigPreview; loading: boolean; error?: unknown; onRefresh: () => void; text: (value: string) => string }) {
+  const state = configSyncState(preview, loading, error);
+  return (
+    <Card className={`core-card p-5 ${state.ok === false ? 'border-amber-200 bg-amber-50' : ''}`}>
+      <div className="core-card-header mb-3 flex items-center justify-between gap-3">
+        <h2 className="section-title">{text('配置同步状态')}</h2>
+        <button className="btn secondary h-8" onClick={onRefresh}>{text('刷新配置')}</button>
+      </div>
+      <div className={`text-sm font-medium ${state.ok === false ? 'text-amber-800' : 'text-emerald-700'}`}>{text(state.label)}</div>
+      {state.detail ? <div className="mt-2 text-xs text-panel-muted">{state.detail}</div> : null}
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div>
+          <div className="mb-2 text-xs font-medium text-panel-muted">{text('当前磁盘配置')}</div>
+          <pre className="code-block core-code-block">{JSON.stringify(preview?.disk?.config || preview?.disk || {}, null, 2)}</pre>
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-medium text-panel-muted">{text('数据库生成配置')}</div>
+          <pre className="code-block core-code-block">{JSON.stringify(preview?.generated?.config || preview?.generated || {}, null, 2)}</pre>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -150,13 +288,91 @@ export function coreStatusMetrics(status?: CoreStatus, fallbackVersion?: string)
   ];
 }
 
+export function singboxListeningDiagnostics(status?: CoreStatus) {
+  return (status?.listening_ports || []).map((item) => ({
+    inboundId: Number(item.inbound_id || 0),
+    protocol: item.protocol || '-',
+    port: Number(item.port || 0),
+    transport: String(item.transport || item.network || '-'),
+    listening: Boolean(item.listening),
+  }));
+}
+
+export function configSyncState(preview?: SingboxConfigPreview, loading = false, error?: unknown): { ok?: boolean; label: string; detail?: string } {
+  if (loading) return { label: '正在检查配置同步状态' };
+  if (error) return { ok: false, label: '生成配置预览失败', detail: error instanceof Error ? error.message : String(error) };
+  if (!preview) return { label: '配置同步状态未知' };
+  if (preview.in_sync) return { ok: true, label: '磁盘配置与数据库生成配置一致', detail: preview.generated?.hash || preview.disk?.hash };
+  const reason = preview.reason ? `原因：${configSyncReasonLabel(preview.reason)}` : '';
+  const hashDetail = [preview.disk?.hash ? `disk: ${preview.disk.hash}` : '', preview.generated?.hash ? `generated: ${preview.generated.hash}` : ''].filter(Boolean).join(' · ');
+  const detail = [reason, preview.disk?.detail || preview.generated?.detail || hashDetail].filter(Boolean).join(' · ');
+  return { ok: false, label: '磁盘配置与数据库生成配置不一致', detail };
+}
+
+export function configSyncReasonLabel(reason?: string): string {
+  switch (reason) {
+    case 'disk_missing':
+      return '磁盘配置不存在';
+    case 'generated_build_failed':
+      return '数据库生成配置失败';
+    case 'hash_mismatch':
+      return '配置 hash 不一致';
+    case 'disk_parse_failed':
+      return '磁盘配置解析失败';
+    default:
+      return reason || '未知原因';
+  }
+}
+
+export function singboxDiagnosticsSummary(diagnostics?: SingboxDiagnostics, loading = false, error?: unknown): { tone: 'ok' | 'warning' | 'error'; label: string; detail?: string } {
+  if (loading) return { tone: 'warning', label: '正在加载诊断' };
+  if (error) return { tone: 'error', label: '诊断加载失败', detail: error instanceof Error ? error.message : String(error) };
+  if (!diagnostics) return { tone: 'warning', label: '诊断状态未知' };
+  const hardError = !diagnostics.installed || diagnostics.service_status === 'not_installed' || !diagnostics.config_exists || !diagnostics.config_valid || diagnostics.service_status === 'stopped';
+  if (hardError) return { tone: 'error', label: '错误', detail: diagnostics.config_error || diagnostics.warnings?.[0] };
+  if (diagnostics.warnings?.length || diagnostics.missing_listeners?.length || !diagnostics.disk_generated_in_sync || diagnostics.service_status === 'not_managed') return { tone: 'warning', label: '警告', detail: diagnostics.warnings?.[0] };
+  return { tone: 'ok', label: '正常' };
+}
+
+export function singboxDiagnosticChecks(diagnostics?: SingboxDiagnostics): Array<{ label: string; value: string; ok: boolean }> {
+  return [
+    { label: '安装', value: diagnostics?.installed ? '已安装' : '未安装', ok: Boolean(diagnostics?.installed) },
+    { label: 'systemd 托管', value: diagnostics?.managed ? diagnostics.service || '已托管' : '未托管', ok: Boolean(diagnostics?.managed) },
+    { label: '服务状态', value: serviceLabel(diagnostics?.service_status), ok: diagnostics?.service_status === 'running' },
+    { label: '配置校验', value: diagnostics?.config_valid ? '通过' : '失败', ok: Boolean(diagnostics?.config_valid) },
+    { label: '配置同步', value: diagnostics?.disk_generated_in_sync ? '一致' : configSyncReasonLabel(diagnostics?.sync_reason), ok: Boolean(diagnostics?.disk_generated_in_sync) },
+    { label: '端口监听', value: diagnostics?.missing_listeners?.length ? `缺失 ${diagnostics.missing_listeners.length} 个` : '完整', ok: !diagnostics?.missing_listeners?.length },
+  ];
+}
+
+export function diagnosticWarningLabel(warning: string): string {
+  const labels: Record<string, string> = {
+    singbox_not_installed: 'sing-box 未安装',
+    singbox_not_systemd_managed: 'sing-box 未被 systemd 托管',
+    legacy_migate_singbox_service: '正在使用 legacy migate-singbox.service',
+    singbox_service_not_running: 'sing-box 服务未运行',
+    singbox_config_missing: '配置文件不存在',
+    singbox_config_invalid: 'sing-box check 失败',
+    singbox_config_out_of_sync: '磁盘配置与数据库生成配置不一致',
+    singbox_missing_listeners: '服务运行但入站端口未监听',
+    singbox_inbound_without_enabled_clients: '存在启用入站但没有启用客户端',
+    singbox_client_credentials_missing: 'Hysteria2/TUIC 缺少可用客户端凭据',
+    shadowtls_handshake_missing: 'ShadowTLS 缺少 handshake/SNI',
+    singbox_route_outbound_unavailable: '路由规则引用不可用于 sing-box 的出站',
+    singbox_stats_unsupported: 'sing-box 二进制不支持当前统计特性',
+    singbox_stats_capability_check_failed: 'sing-box 二进制特性检测失败',
+    singbox_generated_config_build_failed: '数据库生成 sing-box 配置失败',
+  };
+  return labels[warning] || warning;
+}
+
 function formatLogs(data: { logs?: string; lines?: string[] } | undefined, emptyMessage: string): string {
   if (!data) return emptyMessage;
   if (Array.isArray(data.lines)) return data.lines.join('\n');
   return data.logs || JSON.stringify(data, null, 2);
 }
 
-export function coreActionResult(data: CoreActionResponse, fallback: string): { ok: boolean; message: string; detail?: string } {
+export function coreActionResult(data: CoreActionResponse, fallback: string): { ok: boolean; message: string; detail?: string; tone?: 'success' | 'error' | 'info' } {
   const status = normalizeStatus(data.status);
   const xrayStatus = normalizeStatus(data.xray?.status);
   const error = data.error || data.xray?.error_output || data.singbox?.error || data.singbox?.reason || data.reason;
@@ -166,15 +382,19 @@ export function coreActionResult(data: CoreActionResponse, fallback: string): { 
     data.applied === false ||
     data.singbox?.applied === false ||
     Boolean(data.error || data.xray?.error_output || data.singbox?.error);
+  const listenerWarning = firstListenerWarning(allWarnings(data.post_apply_warnings, data.singbox?.post_apply_warnings, data.warnings, data.singbox?.warnings));
   const message = failed
     ? error || data.xray?.status || data.status || fallback
-    : data.xray?.status
-      ? `${fallback}：${data.xray.status}`
-      : data.singbox?.applied === true || data.applied === true
-        ? fallback
-        : data.status || fallback;
+    : listenerWarning || (
+      data.xray?.status
+        ? `${fallback}：${data.xray.status}`
+        : data.singbox?.applied === true || data.applied === true
+          ? fallback
+          : data.status || fallback
+    );
   const detail = commandDetail(data, message);
-  return withDetail({ ok: !failed, message }, detail);
+  const tone = listenerWarning && !failed ? 'info' : undefined;
+  return withDetail({ ok: !failed, message, tone }, detail);
 }
 
 function normalizeStatus(status?: string): string {
@@ -216,6 +436,14 @@ function commandDetail(data: CoreActionResponse, message: string) {
 
 function firstNonEmptyCommands(...groups: Array<string[] | undefined>): string[] {
   return groups.find((group) => Array.isArray(group) && group.length > 0) || [];
+}
+
+function allWarnings(...groups: Array<string[] | undefined>): string[] {
+  return groups.flatMap((group) => Array.isArray(group) ? group : []);
+}
+
+function firstListenerWarning(warnings: string[]): string {
+  return warnings.find((warning) => warning.startsWith('配置已应用，但端口未监听')) || '';
 }
 
 function withDetail<T extends { ok: boolean; message: string }>(result: T, detail?: string): T & { detail?: string } {

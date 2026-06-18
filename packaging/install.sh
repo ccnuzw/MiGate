@@ -1035,8 +1035,12 @@ UNIT
   systemctl daemon-reload
   systemctl reset-failed migate-singbox 2>/dev/null || true
   systemctl enable sing-box
-  if ! systemctl start sing-box; then
-    log_warn "sing-box 已安装并启用，但当前配置未能启动服务。请在 WebUI 应用 sing-box 配置后查看：journalctl -u sing-box -n 80 --no-pager"
+  if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then
+    log_warn "sing-box 配置校验失败，已跳过服务启动。请在 WebUI 应用 sing-box 配置后重试，或查看：journalctl -u sing-box -n 80 --no-pager"
+  else
+    if ! systemctl start sing-box; then
+      log_warn "sing-box 已安装并启用，但当前配置未能启动服务。请在 WebUI 应用 sing-box 配置后查看：journalctl -u sing-box -n 80 --no-pager"
+    fi
   fi
   log_ok "sing-box 安装/修复完成"
 }

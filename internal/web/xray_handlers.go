@@ -191,16 +191,25 @@ func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 							"reason":  "singbox_not_installed",
 						}
 					} else {
-						applyErr := singboxApplier(r.Context(), store, singboxRuntime, false)
-						if applyErr != nil {
+						applyResult := singboxApplier(r.Context(), store, singboxRuntime, false)
+						if !applyResult.Applied {
 							singboxResult = map[string]interface{}{
-								"applied": false,
-								"error":   applyErr.Error(),
+								"applied":           false,
+								"service":           applyResult.Service,
+								"config_path":       applyResult.ConfigPath,
+								"commands_executed": applyResult.CommandsExecuted,
+								"error":             applyResult.Error,
+								"detail":            applyResult.Detail,
+								"warnings":          applyResult.Warnings,
 							}
 						} else {
 							singboxResult = map[string]interface{}{
-								"applied":  true,
-								"inbounds": len(singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{}).Inbounds),
+								"applied":           true,
+								"service":           applyResult.Service,
+								"config_path":       applyResult.ConfigPath,
+								"commands_executed": applyResult.CommandsExecuted,
+								"warnings":          applyResult.Warnings,
+								"inbounds":          len(singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{}).Inbounds),
 							}
 						}
 					}
