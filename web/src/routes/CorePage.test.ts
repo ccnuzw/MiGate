@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmProvider, ToastProvider } from '../components/ui';
 import { I18nProvider } from '../lib/i18n';
-import CorePage, { configSyncReasonLabel, configSyncState, coreActionResult, coreDiagnosticActions, coreDiagnosticChecks, coreDiagnosticsSummary, coreListeningDiagnostics, coreStatusMetrics, coreStatusRefetchInterval, diagnosticSuggestionItems, diagnosticWarningLabel, formatDiagnosticAction, isCoreInstalled } from './CorePage';
+import CorePage, { configSyncReasonLabel, configSyncState, coreActionResult, coreDiagnosticActions, coreDiagnosticChecks, coreDiagnosticsSummary, coreHealthSummary, coreInstalledWithDiagnostics, coreListeningDiagnostics, corePortSummary, coreStatusMetrics, coreStatusRefetchInterval, diagnosticSuggestionItems, diagnosticWarningLabel, formatDiagnosticAction, isCoreInstalled } from './CorePage';
 
 const apiMock = vi.hoisted(() => ({
   xrayStatus: vi.fn(async () => ({ service: 'xray', status: 'running', installed: true, managed: true, version: 'Xray 26.3.27', commands_executed: [] })),
@@ -280,6 +280,58 @@ describe('core action result', () => {
     expect(diagnosticWarningLabel('unknown_warning')).toBe('unknown_warning');
   });
 
+  it('derives a user-facing core health summary from status, sync and listeners', () => {
+    expect(coreHealthSummary(
+      { service: 'xray', status: 'not_installed', installed: false },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+    )).toMatchObject({
+      tone: 'error',
+      headline: '核心未安装',
+      nextAction: '先安装核心，再应用配置。',
+    });
+    expect(coreInstalledWithDiagnostics(
+      { service: 'xray', status: 'not_installed', installed: false },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+    )).toBe(false);
+    expect(coreInstalledWithDiagnostics(
+      { service: 'xray', status: 'not_installed' },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+    )).toBe(false);
+    expect(coreInstalledWithDiagnostics(
+      { service: 'xray', status: 'unknown', version: 'not_installed' },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+    )).toBe(false);
+    expect(coreInstalledWithDiagnostics(
+      { service: 'xray', status: 'unknown', version: 'unknown' },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+    )).toBe(true);
+
+    expect(coreHealthSummary(
+      { service: 'sing-box', status: 'running', installed: true, managed: true, listening_ports: [{ inbound_id: 9, protocol: 'hysteria2', port: 21001, transport: 'udp', listening: false }] },
+      { installed: true, managed: true, service: 'sing-box', service_status: 'running', config_path: '/etc/sing-box/config.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [{ inbound_id: 9, protocol: 'hysteria2', port: 21001, transport: 'udp', listening: false }], recent_logs: [], warnings: ['singbox_missing_listeners'], suggestions: [] },
+      { config_path: '/etc/sing-box/config.json', in_sync: true, disk: { config_path: '', hash: 'a' }, generated: { config_path: '', hash: 'a' } },
+    )).toMatchObject({
+      tone: 'warning',
+      headline: '存在未监听端口',
+      detail: '有 1 个入站端口未监听。',
+    });
+
+    expect(coreHealthSummary(
+      { service: 'xray', status: 'running', installed: true, managed: true },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { config_path: '/usr/local/migate/xray.json', in_sync: true, disk: { config_path: '', hash: 'a' }, generated: { config_path: '', hash: 'a' } },
+    )).toMatchObject({
+      tone: 'ok',
+      headline: '核心运行正常',
+    });
+  });
+
+  it('summarizes listening ports for the compact port section', () => {
+    expect(corePortSummary([])).toBe('暂无监听端口数据。');
+    expect(corePortSummary([{ inboundId: 1, protocol: 'vless', port: 443, transport: 'tcp', listening: true }])).toBe('1 个端口监听正常。');
+    expect(corePortSummary([{ inboundId: 1, protocol: 'vless', port: 443, transport: 'tcp', listening: false }])).toBe('1 个端口未监听，请优先检查服务日志和防火墙。');
+  });
+
   it('formats structured diagnostic actions before legacy suggestions', () => {
     const diagnostics = {
       installed: true,
@@ -339,6 +391,168 @@ describe('core action result', () => {
 });
 
 describe('core service controls', () => {
+  it('renders the redesigned Xray operations layout with summary, sync, ports, diagnostics and collapsed logs', async () => {
+    apiMock.xrayStatus.mockResolvedValueOnce({
+      service: 'xray',
+      status: 'running',
+      installed: true,
+      managed: true,
+      version: 'Xray 26.3.27',
+      config_path: '/usr/local/migate/xray.json',
+      active_connections: 3,
+      listening_ports: [
+        { inbound_id: 10, protocol: 'vless', port: 2443, network: 'grpc', transport: 'tcp', security: 'reality', grpc_service_name: 'svc', listening: true },
+      ],
+      commands_executed: [],
+    } as Awaited<ReturnType<typeof apiMock.xrayStatus>>);
+    apiMock.xrayConfigPreview.mockResolvedValueOnce({
+      config_path: '/usr/local/migate/xray.json',
+      in_sync: false,
+      reason: 'hash_mismatch',
+      disk: { config_path: '/usr/local/migate/xray.json', hash: 'old' },
+      generated: { config_path: '/usr/local/migate/xray.json', hash: 'new' },
+    } as Awaited<ReturnType<typeof apiMock.xrayConfigPreview>>);
+    apiMock.xrayDiagnostics.mockResolvedValueOnce({
+      installed: true,
+      managed: true,
+      service: 'xray',
+      service_status: 'running',
+      config_path: '/usr/local/migate/xray.json',
+      config_exists: true,
+      config_valid: true,
+      disk_generated_in_sync: false,
+      sync_reason: 'hash_mismatch',
+      expected_listeners: [],
+      missing_listeners: [],
+      recent_logs: [],
+      warnings: ['xray_config_out_of_sync'],
+      suggestions: ['点击应用重新写入 Xray 配置。'],
+      actions: [{ code: 'xray_config_out_of_sync', severity: 'warning', category: 'config', message: '点击应用重新写入 Xray 配置。' }],
+    } as unknown as Awaited<ReturnType<typeof apiMock.xrayDiagnostics>>);
+
+    renderCorePage('xray');
+    await waitForText('Xray 核心管理');
+    await waitForText('配置不同步');
+    expect(document.body.textContent).toContain('主操作');
+    expect(document.body.textContent).toContain('应用配置');
+    expect(document.body.textContent).toContain('配置状态');
+    expect(document.body.textContent).toContain('/usr/local/migate/xray.json');
+    expect(document.body.textContent).toContain('监听端口');
+    expect(document.body.textContent).toContain('svc');
+    expect(document.body.textContent).toContain('诊断');
+    expect(document.body.textContent).toContain('推荐操作');
+    expect(document.body.textContent).toContain('最近日志');
+  });
+
+  it('renders sing-box port issues and apply results in the redesigned panel', async () => {
+    apiMock.singboxStatus.mockResolvedValueOnce({
+      service: 'sing-box',
+      status: 'running',
+      installed: true,
+      managed: true,
+      version: 'sing-box version 1.13.13',
+      config_path: '/etc/sing-box/config.json',
+      listening_ports: [
+        { inbound_id: 9, protocol: 'hysteria2', port: 21001, network: 'udp', transport: 'udp', listening: false },
+      ],
+      commands_executed: [],
+    } as Awaited<ReturnType<typeof apiMock.singboxStatus>>);
+    apiMock.singboxDiagnostics.mockResolvedValueOnce({
+      installed: true,
+      managed: true,
+      service: 'sing-box',
+      service_status: 'running',
+      config_path: '/etc/sing-box/config.json',
+      config_exists: true,
+      config_valid: true,
+      disk_generated_in_sync: true,
+      expected_listeners: [],
+      missing_listeners: [{ inbound_id: 9, protocol: 'hysteria2', port: 21001, network: 'udp', transport: 'udp', listening: false }],
+      recent_logs: ['listen udp :21001: bind: address already in use'],
+      warnings: ['singbox_missing_listeners'],
+      suggestions: [],
+      actions: [{ code: 'singbox_missing_listeners', severity: 'warning', category: 'listener', message: '检查防火墙/安全组是否放行 UDP 端口 21001。', port: 21001 }],
+    } as unknown as Awaited<ReturnType<typeof apiMock.singboxDiagnostics>>);
+    apiMock.singboxApply.mockResolvedValueOnce({ applied: true, commands_executed: ['sing-box check'], post_apply_warnings: ['配置已应用，但端口未监听：21001/udp'] } as unknown as Awaited<ReturnType<typeof apiMock.singboxApply>>);
+
+    renderCorePage('singbox');
+    await waitForText('sing-box 核心管理');
+    await waitForText('存在未监听端口');
+    expect(document.body.textContent).toContain('21001');
+    expect(document.body.textContent).toContain('检查防火墙/安全组是否放行 UDP 端口 21001。');
+
+    await clickButtonByText('应用配置');
+    await clickButtonByText('确认');
+    await vi.waitFor(() => expect(apiMock.singboxApply).toHaveBeenCalledTimes(1));
+    await waitForText('配置已应用，但端口未监听：21001/udp');
+  });
+
+  it('uses diagnostics installed state for operation controls when status is unknown', async () => {
+    apiMock.xrayStatus.mockResolvedValueOnce({
+      service: 'xray',
+      status: 'unknown',
+      version: 'unknown',
+      managed: true,
+      commands_executed: [],
+    } as Awaited<ReturnType<typeof apiMock.xrayStatus>>);
+    apiMock.xrayDiagnostics.mockResolvedValueOnce({
+      installed: true,
+      managed: true,
+      service: 'xray',
+      service_status: 'running',
+      config_path: '/usr/local/migate/xray.json',
+      config_exists: true,
+      config_valid: true,
+      disk_generated_in_sync: true,
+      expected_listeners: [],
+      missing_listeners: [],
+      recent_logs: [],
+      warnings: [],
+      suggestions: [],
+    } as unknown as Awaited<ReturnType<typeof apiMock.xrayDiagnostics>>);
+
+    renderCorePage('xray');
+    await waitForText('升级/重装核心');
+    await clickButtonByText('重启核心');
+    await clickButtonByText('确认');
+    await vi.waitFor(() => expect(apiMock.xrayRestart).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps healthy diagnostics compact and avoids rendering an empty port table', async () => {
+    apiMock.xrayStatus.mockResolvedValueOnce({
+      service: 'xray',
+      status: 'running',
+      installed: true,
+      managed: true,
+      version: 'Xray 26.3.27',
+      config_path: '/usr/local/migate/xray.json',
+      listening_ports: [],
+      commands_executed: [],
+    } as Awaited<ReturnType<typeof apiMock.xrayStatus>>);
+    apiMock.xrayDiagnostics.mockResolvedValueOnce({
+      installed: true,
+      managed: true,
+      service: 'xray',
+      service_status: 'running',
+      config_path: '/usr/local/migate/xray.json',
+      config_exists: true,
+      config_valid: true,
+      disk_generated_in_sync: true,
+      expected_listeners: [],
+      missing_listeners: [],
+      recent_logs: [],
+      warnings: [],
+      suggestions: [],
+    } as unknown as Awaited<ReturnType<typeof apiMock.xrayDiagnostics>>);
+
+    renderCorePage('xray');
+    await waitForText('当前没有可展示的监听端口。');
+    await waitForText('未发现需要处理的问题');
+
+    expect(document.querySelector('.core-port-table')).toBeNull();
+    expect(document.querySelector('.core-diagnostics-card details')?.hasAttribute('open')).toBe(false);
+  });
+
   it('renders and calls Xray restart and stop actions after confirmation', async () => {
     renderCorePage('xray');
     await waitForText('重启核心');

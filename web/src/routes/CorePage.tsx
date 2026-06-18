@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Download, Play, RefreshCw, RotateCcw, ShieldCheck, Square, Trash2, XCircle } from 'lucide-react';
-import { useState } from 'react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, FileText, Play, RefreshCw, RotateCcw, ShieldCheck, Square, Trash2, XCircle } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CoreActionResponse, CoreConfigPreview, CoreDiagnosticAction, CoreDiagnostics, CoreStatus } from '../api/types';
@@ -104,32 +104,53 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   });
   if (statusQuery.isLoading) return <LoadingBlock />;
   const status = statusQuery.data;
-  const installed = isCoreInstalled(status);
+  const diagnostics = diagnosticsQuery.data;
+  const installed = coreInstalledWithDiagnostics(status, diagnostics);
   const installActionLabel = installed ? '升级/重装核心' : '安装核心';
+  const configPreview = configPreviewQuery.data;
+  const health = coreHealthSummary(status, diagnostics, configPreview, diagnosticsQuery.isLoading, diagnosticsQuery.error, configPreviewQuery.isLoading, configPreviewQuery.error);
   return (
     <div className={`page-stack core-page core-page-${core}`}>
       <PageTitle
-        title={text(`${label} 配置`)}
-        description={text('查看核心运行状态、配置预览、日志和系统级操作。')}
-        action={
-          <div className="core-action-row">
-            <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); diagnosticsQuery.refetch(); configPreviewQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
-            <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
-            <SpinnerButton className="btn secondary" loading={install.isPending} onClick={async () => (await confirm({ title: text(`${installActionLabel} ${label}？`), description: text(installed ? '该操作会重新执行安装脚本，通常用于升级或修复当前核心。' : '该操作会执行系统安装命令。') })) && install.mutate()}><Download className="h-4 w-4" /> {text(installActionLabel)}</SpinnerButton>
-            <SpinnerButton className="btn secondary" loading={restart.isPending} disabled={!installed} title={text(installed ? '重启核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`重启 ${label} 核心？`), description: text('该操作会通过 systemd 重启核心服务。') })) && restart.mutate()}><RotateCcw className="h-4 w-4" /> {text('重启核心')}</SpinnerButton>
-            <SpinnerButton className="btn danger" loading={stop.isPending} disabled={!installed} title={text(installed ? '停止核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`停止 ${label} 核心？`), description: text('该操作会停止核心服务，入站连接会中断。'), tone: 'danger' })) && stop.mutate()}><Square className="h-4 w-4" /> {text('停止核心')}</SpinnerButton>
-            <SpinnerButton className="btn danger" loading={uninstall.isPending} disabled={!installed} title={text(installed ? '卸载核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`卸载 ${label} 核心？`), description: text('该操作会删除或停用系统服务。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('卸载核心')}</SpinnerButton>
-            <SpinnerButton className="btn primary" loading={apply.isPending} onClick={async () => (await confirm({ title: text(`应用 ${label} 配置？`), description: text('该操作会重新生成并应用核心配置。') })) && apply.mutate()}><Play className="h-4 w-4" /> {text('应用')}</SpinnerButton>
-          </div>
-        }
+        title={text(`${label} 核心管理`)}
+        description={text('集中处理运行状态、配置同步、端口监听和核心维护。')}
       />
-      <div className="metric-grid core-metric-grid">
-        {coreStatusMetrics(status, versionQuery.data?.version).map((metric) => (
-          <CoreMetric key={metric.label} label={text(metric.label)} value={text(metric.value)} />
-        ))}
-      </div>
+      <CoreOverview label={label} status={status} diagnostics={diagnostics} preview={configPreview} fallbackVersion={versionQuery.data?.version} health={health} text={text} />
+      <Card className="core-card core-operations-card p-5">
+        <div className="core-card-header mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="section-title">{text('主操作')}</h2>
+            <p className="mt-1 text-sm text-panel-muted">{text(health.nextAction)}</p>
+          </div>
+          <StatusPill tone={health.tone} label={text(health.label)} />
+        </div>
+        <div className="core-action-groups">
+          <div className="core-action-group">
+            <div className="core-action-group-title">{text('常用')}</div>
+            <div className="core-action-row">
+              <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); diagnosticsQuery.refetch(); configPreviewQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
+              <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
+              <SpinnerButton className="btn primary" loading={apply.isPending} onClick={async () => (await confirm({ title: text(`应用 ${label} 配置？`), description: text('该操作会重新生成并应用核心配置。') })) && apply.mutate()}><Play className="h-4 w-4" /> {text('应用配置')}</SpinnerButton>
+            </div>
+          </div>
+          <div className="core-action-group">
+            <div className="core-action-group-title">{text('维护')}</div>
+            <div className="core-action-row">
+              <SpinnerButton className="btn secondary" loading={install.isPending} onClick={async () => (await confirm({ title: text(`${installActionLabel} ${label}？`), description: text(installed ? '该操作会重新执行安装脚本，通常用于升级或修复当前核心。' : '该操作会执行系统安装命令。') })) && install.mutate()}><Download className="h-4 w-4" /> {text(installActionLabel)}</SpinnerButton>
+              <SpinnerButton className="btn secondary" loading={restart.isPending} disabled={!installed} title={text(installed ? '重启核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`重启 ${label} 核心？`), description: text('该操作会通过 systemd 重启核心服务。') })) && restart.mutate()}><RotateCcw className="h-4 w-4" /> {text('重启核心')}</SpinnerButton>
+            </div>
+          </div>
+          <div className="core-action-group core-action-group-danger">
+            <div className="core-action-group-title">{text('危险')}</div>
+            <div className="core-action-row">
+              <SpinnerButton className="btn danger ghost-danger" loading={stop.isPending} disabled={!installed} title={text(installed ? '停止核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`停止 ${label} 核心？`), description: text('该操作会停止核心服务，入站连接会中断。'), tone: 'danger' })) && stop.mutate()}><Square className="h-4 w-4" /> {text('停止核心')}</SpinnerButton>
+              <SpinnerButton className="btn danger ghost-danger" loading={uninstall.isPending} disabled={!installed} title={text(installed ? '卸载核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`卸载 ${label} 核心？`), description: text('该操作会删除或停用系统服务。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('卸载核心')}</SpinnerButton>
+            </div>
+          </div>
+        </div>
+      </Card>
       {lastResult ? (
-        <Card className={`core-card p-4 ${lastResult.ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
+        <Card className={`core-card core-result-card p-4 ${lastResult.ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
           <div className={`flex items-start gap-3 text-sm ${lastResult.ok ? 'text-emerald-800' : 'text-red-700'}`}>
             {lastResult.ok ? <CheckCircle2 className="mt-0.5 h-4 w-4" /> : <XCircle className="mt-0.5 h-4 w-4" />}
             <div className="min-w-0">
@@ -145,121 +166,200 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
           <pre className="code-block core-code-block">{status.commands_executed.join('\n')}</pre>
         </Card>
       ) : null}
-      <CoreDiagnosticsPanel diagnostics={diagnosticsQuery.data} loading={diagnosticsQuery.isLoading} error={diagnosticsQuery.error} onRefresh={() => diagnosticsQuery.refetch()} text={text} />
-      <CorePortDiagnostics status={status} diagnostics={diagnosticsQuery.data} text={text} />
-      <CoreConfigSync preview={configPreviewQuery.data} loading={configPreviewQuery.isLoading} error={configPreviewQuery.error} onRefresh={() => { configQuery.refetch(); configPreviewQuery.refetch(); }} text={text} />
-      <Card className="core-card p-5">
-        <div className="core-card-header mb-3 flex items-center justify-between gap-3">
-          <h2 className="section-title">{text('配置预览')}</h2>
-          <button className="btn secondary h-8" onClick={() => { configQuery.refetch(); configPreviewQuery.refetch(); }}>{text('刷新配置')}</button>
-        </div>
+      <CoreConfigSync preview={configPreview} loading={configPreviewQuery.isLoading} error={configPreviewQuery.error} onRefresh={() => { configQuery.refetch(); configPreviewQuery.refetch(); }} text={text} />
+      <CorePortDiagnostics status={status} diagnostics={diagnostics} text={text} />
+      <CoreDiagnosticsPanel diagnostics={diagnostics} loading={diagnosticsQuery.isLoading} error={diagnosticsQuery.error} onRefresh={() => diagnosticsQuery.refetch()} text={text} />
+      <CoreDisclosure title={text('配置预览')} icon={<FileText className="h-4 w-4" />} action={<button className="btn secondary h-8" onClick={() => { configQuery.refetch(); configPreviewQuery.refetch(); }}>{text('刷新配置')}</button>}>
         <pre className="code-block core-code-block">{JSON.stringify(configQuery.data || {}, null, 2)}</pre>
-      </Card>
-      <Card className="core-card p-5">
-        <div className="core-card-header mb-3 flex items-center justify-between gap-3">
-          <h2 className="section-title">{text('日志')}</h2>
-          <button className="btn secondary h-8" onClick={() => logsQuery.refetch()}>{text('加载日志')}</button>
-        </div>
+      </CoreDisclosure>
+      <CoreDisclosure title={text('最近日志')} icon={<FileText className="h-4 w-4" />} action={<button className="btn secondary h-8" onClick={() => logsQuery.refetch()}>{text('加载日志')}</button>}>
         <pre className="code-block core-code-block">{formatLogs(logsQuery.data, text('点击“加载日志”查看最近日志。'))}</pre>
-      </Card>
+      </CoreDisclosure>
     </div>
+  );
+}
+
+function CoreOverview({ label, status, diagnostics, preview, fallbackVersion, health, text }: { label: string; status?: CoreStatus; diagnostics?: CoreDiagnostics; preview?: CoreConfigPreview; fallbackVersion?: string; health: CoreHealthSummary; text: (value: string) => string }) {
+  const installed = coreInstalledWithDiagnostics(status, diagnostics);
+  const ports = coreListeningDiagnostics(status, diagnostics);
+  const listeningCount = ports.filter((port) => port.listening).length;
+  const missingCount = ports.filter((port) => !port.listening).length;
+  const managed = status?.managed ?? diagnostics?.managed;
+  const serviceStatus = status?.status || diagnostics?.service_status;
+  const configPath = status?.config_path || diagnostics?.config_path || preview?.config_path || '-';
+  const syncState = configSyncState(preview);
+  const stats = [
+    { label: '安装', value: installed ? '已安装' : '未安装', tone: installed ? 'ok' : 'error' },
+    { label: '托管', value: managed ? '已托管' : '未托管', tone: managed ? 'ok' : 'warning' },
+    { label: '运行', value: serviceLabel(serviceStatus), tone: serviceStatus === 'running' ? 'ok' : 'error' },
+    { label: '同步', value: syncState.ok === false ? '不同步' : syncState.ok ? '一致' : '未知', tone: syncState.ok === false ? 'warning' : syncState.ok ? 'ok' : 'neutral' },
+  ] satisfies Array<{ label: string; value: string; tone: StatusTone }>;
+  return (
+    <Card className={`core-overview core-overview-${health.tone} p-5`}>
+      <div className="core-overview-main">
+        <div className="core-overview-status">
+          {health.tone === 'ok' ? <CheckCircle2 className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+          <div className="min-w-0">
+            <div className="core-overview-label">{text(label)}</div>
+            <h2>{text(health.headline)}</h2>
+            <p>{text(health.detail)}</p>
+          </div>
+        </div>
+        <div className="core-overview-meta">
+          <div>
+            <span>{text('版本')}</span>
+            <strong title={versionLabel(status?.version || fallbackVersion)}>{versionLabel(status?.version || fallbackVersion)}</strong>
+          </div>
+          <div>
+            <span>{text('连接')}</span>
+            <strong>{status?.active_connections || 0}</strong>
+          </div>
+          <div>
+            <span>{text('监听')}</span>
+            <strong>{ports.length ? `${listeningCount}/${ports.length}` : '-'}</strong>
+          </div>
+          <div>
+            <span>{text('内存')}</span>
+            <strong>{formatBytes(status?.memory_rss_bytes)}</strong>
+          </div>
+        </div>
+      </div>
+      <div className="core-overview-strip">
+        {stats.map((item) => <StatusPill key={item.label} tone={item.tone} label={`${text(item.label)}：${text(item.value)}`} />)}
+        {missingCount ? <StatusPill tone="warning" label={text(`未监听 ${missingCount} 个端口`)} /> : null}
+      </div>
+      <div className="core-overview-path">
+        <span>{text('配置路径')}</span>
+        <code>{configPath}</code>
+      </div>
+    </Card>
   );
 }
 
 function CorePortDiagnostics({ status, diagnostics, text }: { status?: CoreStatus; diagnostics?: CoreDiagnostics; text: (value: string) => string }) {
   const ports = coreListeningDiagnostics(status, diagnostics);
-  if (!ports.length) return null;
   const missing = ports.some((port) => !port.listening);
   return (
-    <Card className={`core-card p-5 ${missing ? 'border-amber-200 bg-amber-50' : ''}`}>
+    <Card className={`core-card core-port-card p-5 ${missing ? 'border-amber-200 bg-amber-50' : ''}`}>
       <div className="core-card-header mb-3 flex items-center justify-between gap-3">
-        <h2 className="section-title">{text('端口监听诊断')}</h2>
-        {missing ? <span className="text-sm font-medium text-amber-700">{text('存在未监听端口')}</span> : null}
+        <div>
+          <h2 className="section-title">{text('监听端口')}</h2>
+          <p className="mt-1 text-sm text-panel-muted">{text(corePortSummary(ports))}</p>
+        </div>
+        <StatusPill tone={missing ? 'warning' : ports.length ? 'ok' : 'neutral'} label={text(missing ? '存在未监听端口' : ports.length ? '监听正常' : '暂无端口')} />
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs text-panel-muted">
-            <tr>
-              <th className="py-2 pr-3">{text('入站 ID')}</th>
-              <th className="py-2 pr-3">{text('协议')}</th>
-              <th className="py-2 pr-3">{text('端口')}</th>
-              <th className="py-2 pr-3">UDP/TCP</th>
-              <th className="py-2 pr-3">{text('传输')}</th>
-              <th className="py-2 pr-3">{text('安全')}</th>
-              <th className="py-2 pr-3">{text('详情')}</th>
-              <th className="py-2 pr-3">{text('监听')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ports.map((port) => (
-              <tr key={`${port.inboundId}-${port.port}-${port.transport}`} className={!port.listening ? 'font-medium text-amber-800' : ''}>
-                <td className="py-2 pr-3">{port.inboundId}</td>
-                <td className="py-2 pr-3">{port.protocol}</td>
-                <td className="py-2 pr-3">{port.port}</td>
-                <td className="py-2 pr-3">{port.transport.toUpperCase()}</td>
-                <td className="py-2 pr-3">{port.network || '-'}</td>
-                <td className="py-2 pr-3">{port.security || '-'}</td>
-                <td className="py-2 pr-3">{port.detail || '-'}</td>
-                <td className="py-2 pr-3">{text(port.listening ? '正在监听' : '未监听')}</td>
+      {!ports.length ? <div className="core-empty-state">{text('当前没有可展示的监听端口。')}</div> : null}
+      {ports.length ? (
+        <div className="overflow-x-auto">
+          <table className="core-port-table w-full text-left text-sm">
+            <thead className="text-xs text-panel-muted">
+              <tr>
+                <th className="py-2 pr-3">{text('入站 ID')}</th>
+                <th className="py-2 pr-3">{text('协议')}</th>
+                <th className="py-2 pr-3">{text('端口')}</th>
+                <th className="py-2 pr-3">UDP/TCP</th>
+                <th className="py-2 pr-3">{text('传输')}</th>
+                <th className="py-2 pr-3">{text('安全')}</th>
+                <th className="py-2 pr-3">{text('详情')}</th>
+                <th className="py-2 pr-3">{text('监听')}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {ports.map((port) => (
+                <tr key={`${port.inboundId}-${port.port}-${port.transport}`} className={!port.listening ? 'font-medium text-amber-800' : ''}>
+                  <td className="py-2 pr-3">{port.inboundId}</td>
+                  <td className="py-2 pr-3">{port.protocol}</td>
+                  <td className="py-2 pr-3">{port.port}</td>
+                  <td className="py-2 pr-3">{port.transport.toUpperCase()}</td>
+                  <td className="py-2 pr-3">{port.network || '-'}</td>
+                  <td className="py-2 pr-3">{port.security || '-'}</td>
+                  <td className="py-2 pr-3">{port.detail || '-'}</td>
+                  <td className="py-2 pr-3"><StatusPill tone={port.listening ? 'ok' : 'warning'} label={text(port.listening ? '正在监听' : '未监听')} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </Card>
   );
 }
 
 function CoreDiagnosticsPanel({ diagnostics, loading, error, onRefresh, text }: { diagnostics?: CoreDiagnostics; loading: boolean; error?: unknown; onRefresh: () => void; text: (value: string) => string }) {
   const summary = coreDiagnosticsSummary(diagnostics, loading, error);
-  const toneClass = summary.tone === 'error' ? 'border-red-200 bg-red-50' : summary.tone === 'warning' ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50';
+  const toneClass = summary.tone === 'error' ? 'border-red-200 bg-red-50' : summary.tone === 'warning' ? 'border-amber-200 bg-amber-50' : '';
   const iconClass = summary.tone === 'error' ? 'text-red-700' : summary.tone === 'warning' ? 'text-amber-700' : 'text-emerald-700';
-  const checks = coreDiagnosticChecks(diagnostics);
+  const checks = diagnosticChecksForPanel(diagnostics, loading, error);
   const actions = coreDiagnosticActions(diagnostics);
+  const hasIssues = summary.tone !== 'ok';
+  const detailsOpen = hasIssues && !loading;
   return (
-    <Card className={`core-card p-5 ${toneClass}`}>
+    <Card className={`core-card core-diagnostics-card p-5 ${toneClass}`}>
       <div className="core-card-header mb-4 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           {summary.tone === 'ok' ? <CheckCircle2 className={`h-5 w-5 ${iconClass}`} /> : <AlertTriangle className={`h-5 w-5 ${iconClass}`} />}
           <div className="min-w-0">
             <h2 className="section-title">{text('诊断')}</h2>
-            <div className={`mt-1 text-sm font-medium ${iconClass}`}>{text(summary.label)}</div>
+            <div className={`mt-1 text-sm font-medium ${iconClass}`}>{text(hasIssues ? issueSummary(diagnostics, summary) : '未发现需要处理的问题')}</div>
           </div>
         </div>
         <button className="btn secondary h-8" onClick={onRefresh}><RefreshCw className="h-4 w-4" /> {text('刷新诊断')}</button>
       </div>
-      {summary.detail ? <div className="mb-3 text-sm text-panel-muted">{text(summary.detail)}</div> : null}
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      {hasIssues ? (
+        <div className="core-issue-callout">
+          <div>
+            <div className="text-xs font-medium text-panel-muted">{text('推荐操作')}</div>
+            <div className="mt-1 text-sm font-medium text-panel-text">{text(recommendedAction(diagnostics, summary))}</div>
+          </div>
+        </div>
+      ) : null}
+      <div className="core-check-grid">
         {checks.map((check) => (
-          <div key={check.label} className="rounded border border-panel-border bg-white/70 p-3">
+          <div key={check.label} className="core-check-item">
             <div className="text-xs text-panel-muted">{text(check.label)}</div>
-            <div className={`mt-1 text-sm font-medium ${check.ok ? 'text-emerald-700' : 'text-amber-800'}`}>{text(check.value)}</div>
+            <div className={`mt-1 text-sm font-medium ${check.ok === true ? 'text-emerald-700' : check.ok === false ? 'text-amber-800' : 'text-panel-muted'}`}>{text(check.value)}</div>
           </div>
         ))}
       </div>
-      {diagnostics?.missing_listeners?.length ? (
-        <div className="mt-4">
-          <div className="mb-2 text-xs font-medium text-panel-muted">{text('未监听端口')}</div>
-          <div className="flex flex-wrap gap-2">
-            {diagnostics.missing_listeners.map((listener) => <span key={`${listener.inbound_id}-${listener.port}`} className="rounded border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">{listener.port}/{String(listener.transport || listener.network || 'tcp').toLowerCase()}</span>)}
-          </div>
-        </div>
-      ) : null}
-      {diagnostics?.config_error ? (
-        <div className="mt-4">
-          <div className="mb-2 text-xs font-medium text-panel-muted">{text('配置校验错误')}</div>
-          <pre className="code-block core-code-block">{diagnostics.config_error}</pre>
-        </div>
-      ) : null}
-      {diagnostics?.warnings?.length ? <DiagnosticList title={text('警告')} items={diagnostics.warnings.map((item) => text(diagnosticWarningLabel(item)))} /> : null}
-      {actions.length ? <DiagnosticActionList title={text('建议操作')} actions={actions} text={text} /> : diagnostics?.suggestions?.length ? <DiagnosticList title={text('建议操作')} items={diagnostics.suggestions.map((item) => text(item))} /> : null}
-      {diagnostics?.recent_logs?.length ? (
-        <div className="mt-4">
-          <div className="mb-2 text-xs font-medium text-panel-muted">{text('最近日志摘要')}</div>
-          <pre className="code-block core-code-block">{diagnostics.recent_logs.slice(-8).join('\n')}</pre>
-        </div>
-      ) : null}
+      <CoreDiagnosticsDetails diagnostics={diagnostics} actions={actions} openByDefault={detailsOpen} summary={summary} text={text} />
     </Card>
+  );
+}
+
+function CoreDiagnosticsDetails({ diagnostics, actions, openByDefault, summary, text }: { diagnostics?: CoreDiagnostics; actions: CoreDiagnosticAction[]; openByDefault: boolean; summary: ReturnType<typeof coreDiagnosticsSummary>; text: (value: string) => string }) {
+  const [open, setOpen] = useState(openByDefault);
+  useEffect(() => {
+    setOpen(openByDefault);
+  }, [openByDefault]);
+  return (
+    <details className="core-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary><span>{text('诊断详情')}</span><ChevronDown className="h-4 w-4" /></summary>
+      <div className="core-details-body">
+        {summary.detail ? <div className="mb-3 text-sm text-panel-muted">{text(diagnosticWarningLabel(summary.detail))}</div> : null}
+        {diagnostics?.missing_listeners?.length ? (
+          <div className="mt-4">
+            <div className="mb-2 text-xs font-medium text-panel-muted">{text('未监听端口')}</div>
+            <div className="flex flex-wrap gap-2">
+              {diagnostics.missing_listeners.map((listener) => <span key={`${listener.inbound_id}-${listener.port}`} className="rounded border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">{listener.port}/{String(listener.transport || listener.network || 'tcp').toLowerCase()}</span>)}
+            </div>
+          </div>
+        ) : null}
+        {diagnostics?.config_error ? (
+          <div className="mt-4">
+            <div className="mb-2 text-xs font-medium text-panel-muted">{text('配置校验错误')}</div>
+            <pre className="code-block core-code-block">{diagnostics.config_error}</pre>
+          </div>
+        ) : null}
+        {diagnostics?.warnings?.length ? <DiagnosticList title={text('警告')} items={diagnostics.warnings.map((item) => text(diagnosticWarningLabel(item)))} /> : null}
+        {actions.length ? <DiagnosticActionList title={text('建议操作')} actions={actions} text={text} /> : diagnostics?.suggestions?.length ? <DiagnosticList title={text('建议操作')} items={diagnostics.suggestions.map((item) => text(item))} /> : null}
+        {diagnostics?.recent_logs?.length ? (
+          <div className="mt-4">
+            <div className="mb-2 text-xs font-medium text-panel-muted">{text('最近日志摘要')}</div>
+            <pre className="code-block core-code-block">{diagnostics.recent_logs.slice(-8).join('\n')}</pre>
+          </div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -301,34 +401,163 @@ function DiagnosticActionList({ title, actions, text }: { title: string; actions
 function CoreConfigSync({ preview, loading, error, onRefresh, text }: { preview?: CoreConfigPreview; loading: boolean; error?: unknown; onRefresh: () => void; text: (value: string) => string }) {
   const state = configSyncState(preview, loading, error);
   return (
-    <Card className={`core-card p-5 ${state.ok === false ? 'border-amber-200 bg-amber-50' : ''}`}>
+    <Card className={`core-card core-config-card p-5 ${state.ok === false ? 'border-amber-200 bg-amber-50' : ''}`}>
       <div className="core-card-header mb-3 flex items-center justify-between gap-3">
-        <h2 className="section-title">{text('配置同步状态')}</h2>
+        <div>
+          <h2 className="section-title">{text('配置状态')}</h2>
+          <p className="mt-1 text-sm text-panel-muted">{text('对比磁盘配置与数据库生成配置。')}</p>
+        </div>
         <button className="btn secondary h-8" onClick={onRefresh}>{text('刷新配置')}</button>
       </div>
-      <div className={`text-sm font-medium ${state.ok === false ? 'text-amber-800' : 'text-emerald-700'}`}>{text(state.label)}</div>
+      <div className="core-config-summary">
+        <div>
+          <span>{text('配置路径')}</span>
+          <code>{preview?.config_path || preview?.disk?.config_path || preview?.generated?.config_path || '-'}</code>
+        </div>
+        <StatusPill tone={state.ok === false ? 'warning' : state.ok ? 'ok' : 'neutral'} label={text(state.label)} />
+      </div>
       {state.detail ? <div className="mt-2 text-xs text-panel-muted">{state.detail}</div> : null}
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        <div>
-          <div className="mb-2 text-xs font-medium text-panel-muted">{text('当前磁盘配置')}</div>
-          <pre className="code-block core-code-block">{JSON.stringify(preview?.disk?.config || preview?.disk || {}, null, 2)}</pre>
+      <details className="core-details">
+        <summary><span>{text('查看配置对比')}</span><ChevronDown className="h-4 w-4" /></summary>
+        <div className="core-details-body core-config-compare">
+          <div>
+            <div className="mb-2 text-xs font-medium text-panel-muted">{text('当前磁盘配置')}</div>
+            <pre className="code-block core-code-block">{JSON.stringify(preview?.disk?.config || preview?.disk || {}, null, 2)}</pre>
+          </div>
+          <div>
+            <div className="mb-2 text-xs font-medium text-panel-muted">{text('数据库生成配置')}</div>
+            <pre className="code-block core-code-block">{JSON.stringify(preview?.generated?.config || preview?.generated || {}, null, 2)}</pre>
+          </div>
         </div>
-        <div>
-          <div className="mb-2 text-xs font-medium text-panel-muted">{text('数据库生成配置')}</div>
-          <pre className="code-block core-code-block">{JSON.stringify(preview?.generated?.config || preview?.generated || {}, null, 2)}</pre>
-        </div>
+      </details>
+    </Card>
+  );
+}
+
+function CoreDisclosure({ title, icon, action, children }: { title: string; icon?: ReactNode; action?: ReactNode; children: ReactNode }) {
+  return (
+    <Card className="core-card core-disclosure-card p-5">
+      <div className="core-disclosure-header">
+        <details className="core-details">
+          <summary>
+            <span className="core-disclosure-title">{icon}{title}</span>
+            <ChevronDown className="h-4 w-4" />
+          </summary>
+          <div className="core-details-body">{children}</div>
+        </details>
+        {action ? <div className="core-disclosure-actions">{action}</div> : null}
       </div>
     </Card>
   );
 }
 
-function CoreMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <Card className="core-metric-card p-4">
-      <div className="text-sm text-panel-muted">{label}</div>
-      <div className="mt-2 truncate text-xl font-semibold" title={value}>{value}</div>
-    </Card>
-  );
+type StatusTone = 'ok' | 'warning' | 'error' | 'neutral';
+
+type CoreHealthSummary = {
+  tone: Exclude<StatusTone, 'neutral'>;
+  label: string;
+  headline: string;
+  detail: string;
+  nextAction: string;
+};
+
+function StatusPill({ tone, label }: { tone: StatusTone; label: string }) {
+  return <span className={`core-status-pill core-status-${tone}`}>{label}</span>;
+}
+
+export function coreHealthSummary(status?: CoreStatus, diagnostics?: CoreDiagnostics, preview?: CoreConfigPreview, diagnosticsLoading = false, diagnosticsError?: unknown, previewLoading = false, previewError?: unknown): CoreHealthSummary {
+  const installed = coreInstalledWithDiagnostics(status, diagnostics);
+  const managed = status?.managed ?? diagnostics?.managed;
+  const serviceStatus = status?.status || diagnostics?.service_status;
+  const sync = configSyncState(preview, previewLoading, previewError);
+  const ports = coreListeningDiagnostics(status, diagnostics);
+  const missingPorts = ports.filter((port) => !port.listening);
+  const diagnosticState = coreDiagnosticsSummary(diagnostics, diagnosticsLoading, diagnosticsError);
+
+  if (!installed || diagnostics?.service_status === 'not_installed') {
+    return { tone: 'error', label: '需要安装', headline: '核心未安装', detail: '系统中没有可用核心，当前无法应用配置或监听端口。', nextAction: '先安装核心，再应用配置。' };
+  }
+  if (serviceStatus && serviceStatus !== 'running' && serviceStatus !== 'not_managed') {
+    return { tone: 'error', label: '服务异常', headline: '核心未运行', detail: `服务状态：${serviceLabel(serviceStatus)}。`, nextAction: '先查看诊断建议，必要时重启核心或重新应用配置。' };
+  }
+  if (diagnostics?.config_exists === false) {
+    return { tone: 'error', label: '配置缺失', headline: '配置文件不存在', detail: '磁盘上没有找到核心配置文件。', nextAction: '点击“应用配置”重新写入配置。' };
+  }
+  if (diagnostics?.config_valid === false) {
+    return { tone: 'error', label: '配置错误', headline: '配置校验失败', detail: diagnostics.config_error || '生成的配置未通过核心校验。', nextAction: '查看诊断详情，修复配置后重新应用。' };
+  }
+  if (managed === false || serviceStatus === 'not_managed') {
+    return { tone: 'warning', label: '未托管', headline: '核心未由系统托管', detail: '系统服务托管状态异常，面板可能无法稳定重启或停止核心。', nextAction: '确认 systemd 服务后再执行维护操作。' };
+  }
+  if (sync.ok === false || diagnostics?.disk_generated_in_sync === false) {
+    return { tone: 'warning', label: '需要应用', headline: '配置不同步', detail: sync.detail || '磁盘配置与数据库生成配置不一致。', nextAction: '点击“应用配置”同步磁盘配置。' };
+  }
+  if (missingPorts.length || diagnostics?.missing_listeners?.length) {
+    const count = missingPorts.length || diagnostics?.missing_listeners?.length || 0;
+    return { tone: 'warning', label: '端口异常', headline: '存在未监听端口', detail: `有 ${count} 个入站端口未监听。`, nextAction: '查看监听端口区和诊断建议，确认服务、防火墙和配置。' };
+  }
+  if (diagnosticState.tone === 'error') {
+    return { tone: 'error', label: '诊断异常', headline: '诊断发现错误', detail: diagnosticState.detail || '核心诊断未通过。', nextAction: recommendedAction(diagnostics, diagnosticState) };
+  }
+  if (diagnosticState.tone === 'warning') {
+    return { tone: 'warning', label: '需要关注', headline: '存在需要关注的问题', detail: diagnosticState.detail ? diagnosticWarningLabel(diagnosticState.detail) : '诊断仍在检查或存在非阻断问题。', nextAction: recommendedAction(diagnostics, diagnosticState) };
+  }
+  return { tone: 'ok', label: '运行正常', headline: '核心运行正常', detail: '核心已安装、服务运行、配置同步且端口监听状态正常。', nextAction: '无需处理；变更节点或路由后再应用配置。' };
+}
+
+export function corePortSummary(ports: ReturnType<typeof coreListeningDiagnostics>): string {
+  if (!ports.length) return '暂无监听端口数据。';
+  const missing = ports.filter((port) => !port.listening).length;
+  if (missing) return `${missing} 个端口未监听，请优先检查服务日志和防火墙。`;
+  return `${ports.length} 个端口监听正常。`;
+}
+
+export function coreInstalledWithDiagnostics(status?: CoreStatus, diagnostics?: CoreDiagnostics): boolean {
+  if (typeof status?.installed === 'boolean') return status.installed;
+  if (hasCoreInstallSignal(status)) return isCoreInstalled(status);
+  return Boolean(diagnostics?.installed);
+}
+
+function hasCoreInstallSignal(status?: CoreStatus): boolean {
+  return isKnownCoreSignal(status?.version) || isKnownCoreSignal(status?.status);
+}
+
+function isKnownCoreSignal(value?: string): boolean {
+  const signal = String(value || '').trim().toLowerCase();
+  return Boolean(signal && signal !== 'unknown');
+}
+
+function diagnosticChecksForPanel(diagnostics: CoreDiagnostics | undefined, loading: boolean, error: unknown): Array<{ label: string; value: string; ok?: boolean }> {
+  if (loading) {
+    return coreDiagnosticCheckLabels().map((label) => ({ label, value: '正在检查' }));
+  }
+  if (error) {
+    return coreDiagnosticCheckLabels().map((label) => ({ label, value: '加载失败' }));
+  }
+  if (!diagnostics) {
+    return coreDiagnosticCheckLabels().map((label) => ({ label, value: '未知' }));
+  }
+  return coreDiagnosticChecks(diagnostics);
+}
+
+function coreDiagnosticCheckLabels(): string[] {
+  return ['安装', 'systemd 托管', '服务状态', '配置校验', '配置同步', '端口监听'];
+}
+
+function issueSummary(diagnostics: CoreDiagnostics | undefined, summary: ReturnType<typeof coreDiagnosticsSummary>): string {
+  if (summary.detail) return diagnosticWarningLabel(summary.detail);
+  if (diagnostics?.missing_listeners?.length) return `缺失 ${diagnostics.missing_listeners.length} 个监听端口`;
+  if (diagnostics?.warnings?.length) return diagnosticWarningLabel(diagnostics.warnings[0]);
+  return summary.label;
+}
+
+function recommendedAction(diagnostics: CoreDiagnostics | undefined, summary: ReturnType<typeof coreDiagnosticsSummary>): string {
+  const action = coreDiagnosticActions(diagnostics)[0];
+  if (action) return formatDiagnosticAction(action).message;
+  if (diagnostics?.suggestions?.[0]) return diagnostics.suggestions[0];
+  if (summary.tone === 'error') return '按错误提示修复后重新应用配置。';
+  if (summary.tone === 'warning') return '检查诊断详情，必要时重新应用配置。';
+  return '无需处理。';
 }
 
 export function coreStatusMetrics(status?: CoreStatus, fallbackVersion?: string): Array<{ label: string; value: string }> {
