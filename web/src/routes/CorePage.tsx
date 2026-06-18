@@ -3,7 +3,7 @@ import { CheckCircle2, Download, Play, RefreshCw, ShieldCheck, Trash2, XCircle }
 import { useState } from 'react';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { CoreActionResponse } from '../api/types';
+import type { CoreActionResponse, CoreStatus } from '../api/types';
 import { Card, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { formatBytes, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
@@ -88,14 +88,9 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
         }
       />
       <div className="metric-grid core-metric-grid">
-        <CoreMetric label={text('安装')} value={text(installed ? '已安装' : '未安装')} />
-        <CoreMetric label={text('托管')} value={text(status?.managed ? '已托管' : '未托管')} />
-        <CoreMetric label={text('状态')} value={text(serviceLabel(status?.status))} />
-        <CoreMetric label={text('版本')} value={text(versionLabel(status?.version || versionQuery.data?.version))} />
-        <CoreMetric label={text('内存')} value={formatBytes(status?.memory_rss_bytes)} />
-        <CoreMetric label={text('运行时长')} value={status?.uptime || '-'} />
-        <CoreMetric label={text('连接')} value={String(status?.active_connections || 0)} />
-        <CoreMetric label={text('配置路径')} value={status?.config_path || '-'} />
+        {coreStatusMetrics(status, versionQuery.data?.version).map((metric) => (
+          <CoreMetric key={metric.label} label={text(metric.label)} value={text(metric.value)} />
+        ))}
       </div>
       {lastResult ? (
         <Card className={`core-card p-4 ${lastResult.ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
@@ -139,6 +134,20 @@ function CoreMetric({ label, value }: { label: string; value: string }) {
       <div className="mt-2 truncate text-xl font-semibold" title={value}>{value}</div>
     </Card>
   );
+}
+
+export function coreStatusMetrics(status?: CoreStatus, fallbackVersion?: string): Array<{ label: string; value: string }> {
+  const installed = isCoreInstalled(status);
+  return [
+    { label: '安装', value: installed ? '已安装' : '未安装' },
+    { label: '托管', value: status?.managed ? '已托管' : '未托管' },
+    { label: '状态', value: serviceLabel(status?.status) },
+    { label: '版本', value: versionLabel(status?.version || fallbackVersion) },
+    { label: '内存', value: formatBytes(status?.memory_rss_bytes) },
+    { label: '运行时长', value: status?.uptime || '-' },
+    { label: '连接', value: String(status?.active_connections || 0) },
+    { label: '配置路径', value: status?.config_path || '-' },
+  ];
 }
 
 function formatLogs(data: { logs?: string; lines?: string[] } | undefined, emptyMessage: string): string {

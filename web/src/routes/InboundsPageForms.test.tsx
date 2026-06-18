@@ -11,9 +11,9 @@ import { ClientModal, InboundModal } from './InboundsPageForms';
 const apiMock = vi.hoisted(() => ({
   certStatus: vi.fn(async () => ({ issued: false, cert_path: '', key_path: '', domain: '' })),
   generateRealityKeypair: vi.fn(async () => ({ private_key: 'private', public_key: 'public' })),
-  createInbound: vi.fn(async (body) => ({ inbound: { id: 99, clients: [], ...body } })),
+  createInbound: vi.fn(async (body): Promise<unknown> => ({ inbound: { id: 99, clients: [], ...body } })),
   updateInbound: vi.fn(async (_id, body) => ({ inbound: body })),
-  createClient: vi.fn(async (_inboundId, body) => ({ client: { id: 7, inbound_id: _inboundId, ...body } })),
+  createClient: vi.fn(async (_inboundId, body): Promise<unknown> => ({ client: { id: 7, inbound_id: _inboundId, ...body } })),
   updateClient: vi.fn(async (_inboundId, id, body) => ({ client: { id, inbound_id: _inboundId, ...body } })),
 }));
 
@@ -31,6 +31,7 @@ afterEach(() => {
   root = null;
   container?.remove();
   container = null;
+  vi.clearAllMocks();
 });
 
 describe('inbound and client modal credential behavior', () => {
@@ -74,7 +75,6 @@ describe('inbound and client modal credential behavior', () => {
   });
 
   it('uses parsed default client values when creating a node', async () => {
-    apiMock.createInbound.mockClear();
     renderModal(<InboundModal inbound={createDefaultInbound()} onClose={() => undefined} onSaved={() => undefined} />);
 
     changeValue(inputByLabel('名称'), 'edge');
@@ -84,6 +84,40 @@ describe('inbound and client modal credential behavior', () => {
     await vi.waitFor(() => expect(apiMock.createInbound).toHaveBeenCalled());
     const payload = apiMock.createInbound.mock.calls[0][0];
     expect(payload.initial_client.traffic_limit).toBe(Math.round(1.5 * 1024 ** 3));
+  });
+
+  it('shows a warning when a created hysteria2 node is saved but sing-box apply fails', async () => {
+    apiMock.createInbound.mockResolvedValueOnce({ created: true, applied: false, detail: 'invalid config', inbound: { ...createDefaultInbound(), id: 99, clients: [], protocol: 'hysteria2' } });
+    renderModal(<InboundModal inbound={createDefaultInbound()} onClose={() => undefined} onSaved={() => undefined} />);
+
+    clickButtonByText('高级设置');
+    changeValue(inputByLabel('协议'), 'hysteria2');
+    changeValue(inputByLabel('名称'), 'hy2 edge');
+    clickButtonByText('保存');
+
+    await waitForText('节点已保存，但 sing-box 配置未生效：invalid config');
+  });
+
+  it('shows a warning when a created tuic client is saved but sing-box apply fails', async () => {
+    apiMock.createClient.mockResolvedValueOnce({ created: true, applied: false, singbox: { applied: false, detail: 'restart failed' }, client: { id: 7, inbound_id: 3, email: 'phone', uuid: 'uuid', enabled: true } });
+    const inbound = { ...createDefaultInbound(), id: 3, protocol: 'tuic', core: 'sing-box', clients: [] };
+    renderModal(<ClientModal inbound={inbound} onClose={() => undefined} onSaved={() => undefined} />);
+
+    changeValue(inputByLabel('客户端名称'), 'phone');
+    clickButtonByText('保存');
+
+    await waitForText('客户端已保存，但 sing-box 配置未生效：restart failed');
+  });
+
+  it('keeps normal success toast when a node is saved and applied', async () => {
+    apiMock.createInbound.mockResolvedValueOnce({ created: true, applied: true, inbound: { ...createDefaultInbound(), id: 99, clients: [] } });
+    renderModal(<InboundModal inbound={createDefaultInbound()} onClose={() => undefined} onSaved={() => undefined} />);
+
+    changeValue(inputByLabel('名称'), 'edge');
+    clickButtonByText('保存');
+
+    await waitForText('节点已保存');
+    expect(document.body.textContent).not.toContain('sing-box 配置未生效');
   });
 });
 
@@ -152,5 +186,11 @@ function changeValue(input: HTMLInputElement | HTMLSelectElement, value: string)
     setter?.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+async function waitForText(text: string) {
+  await vi.waitFor(() => {
+    expect(document.body.textContent).toContain(text);
   });
 }

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -597,6 +599,126 @@ func TestCreateInboundPersistsHysteria2MPortForWebUILink(t *testing.T) {
 			t.Fatalf("inbound list missing %s: %s", want, list.Body.String())
 		}
 	}
+}
+
+func TestCreateSingboxInboundReportsNotInstalledWithoutAppliedTrue(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) error {
+		if !strict {
+			t.Fatal("sing-box node creation must use strict apply")
+		}
+		return errors.New("singbox_not_installed")
+	}))
+	payload := []byte(`{"remark":"hy2","protocol":"hysteria2","port":21001,"network":"udp","security":"tls"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected saved-but-not-applied 201, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"created":true`, `"applied":false`, `"error":"singbox_not_installed"`, `"inbound":`, `"singbox":`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `"applied":true`) {
+		t.Fatalf("must not report applied true when sing-box is unavailable: %s", response.Body.String())
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].Protocol != "hysteria2" {
+		t.Fatalf("inbound should be persisted for later apply: %+v", inbounds)
+	}
+}
+
+func TestCreateSingboxInboundReportsApplyFailureWithCreatedObject(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) error {
+		if !strict {
+			t.Fatal("sing-box node creation must use strict apply")
+		}
+		return errors.New("config check failed")
+	}))
+	payload := []byte(`{"remark":"tuic","protocol":"tuic","port":21002,"network":"udp","security":"tls"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected saved-but-not-applied 201, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"created":true`, `"applied":false`, `"error":"singbox_apply_failed"`, `"detail":"config check failed"`, `"inbound":`, `"singbox":`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].Protocol != "tuic" {
+		t.Fatalf("inbound should be persisted for later apply: %+v", inbounds)
+	}
+}
+
+func TestCreateSingboxClientReportsApplyFailureWithCreatedObject(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "tuic", Protocol: "tuic", Port: 21002, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) error {
+		if !strict {
+			t.Fatal("sing-box client creation must use strict apply")
+		}
+		return errors.New("restart failed")
+	}))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients", bytes.NewReader([]byte(`{"email":"tuic@example.com","credential_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","password":"secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected saved-but-not-applied 201, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"created":true`, `"applied":false`, `"error":"singbox_apply_failed"`, `"detail":"restart failed"`, `"client":`, `"singbox":`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `"applied":true`) {
+		t.Fatalf("must not report applied true when apply fails: %s", response.Body.String())
+	}
+	inbounds, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || len(inbounds[0].Clients) != 1 || inbounds[0].Clients[0].Email != "tuic@example.com" {
+		t.Fatalf("client should be persisted for later apply: %+v", inbounds)
+	}
+}
+
+type fixedWebSingboxRuntime struct{}
+
+func (fixedWebSingboxRuntime) Capability(ctx context.Context) singbox.Capability {
+	return singbox.Capability{Checked: true}
 }
 
 func TestCreateInboundAPIStoresInbound(t *testing.T) {
@@ -2521,6 +2643,162 @@ func TestXrayApplyAPICallsControllerAfterDoubleConfirmation(t *testing.T) {
 	}
 	if controller.applyCalls != 1 || controller.statusCalls != 0 {
 		t.Fatalf("apply should call only apply once, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	}
+}
+
+func TestXrayApplyAPIUsesInjectedSingboxApplier(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	controller := &fakeXrayController{}
+	var applierCalls int
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithXrayController(controller),
+		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) error {
+			applierCalls++
+			if strict {
+				t.Fatal("xray apply linked sing-box apply should stay best-effort")
+			}
+			return errors.New("injected apply failed")
+		}),
+	)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if applierCalls != 1 {
+		t.Fatalf("expected injected sing-box applier once, got %d", applierCalls)
+	}
+	for _, want := range []string{`"xray":`, `"singbox":`, `"applied":false`, `"error":"injected apply failed"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestXrayApplyAPIDefaultSingboxApplierReportsNotInstalled(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	origBinary := singbox.DefaultBinaryPath
+	singbox.DefaultBinaryPath = t.TempDir() + "/missing-sing-box"
+	defer func() { singbox.DefaultBinaryPath = origBinary }()
+
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"xray":`, `"singbox":`, `"applied":false`, `"reason":"singbox_not_installed"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `"singbox":{"applied":true`) {
+		t.Fatalf("must not report sing-box applied when default applier skipped missing binary: %s", response.Body.String())
+	}
+}
+
+func TestSingboxStatusAPIReturnsManagedAndConfigPath(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		primary     string
+		legacy      string
+		active      string
+		wantManaged bool
+		wantStatus  string
+		wantService string
+	}{
+		{name: "primary service", primary: "loaded", legacy: "not-found", active: "active", wantManaged: true, wantStatus: "running", wantService: "sing-box"},
+		{name: "legacy service", primary: "not-found", legacy: "loaded", active: "inactive", wantManaged: true, wantStatus: "stopped", wantService: "migate-singbox"},
+		{name: "unmanaged", primary: "not-found", legacy: "not-found", active: "inactive", wantManaged: false, wantStatus: "not_managed", wantService: "sing-box"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := installFakeSingboxStatusCommands(t, tc.primary, tc.legacy, tc.active)
+			defer restore()
+
+			router := web.NewRouter()
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/status", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+			}
+			var data map[string]interface{}
+			if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if data["installed"] != true {
+				t.Fatalf("expected installed true, got %v in %s", data["installed"], response.Body.String())
+			}
+			if data["managed"] != tc.wantManaged {
+				t.Fatalf("expected managed %v, got %v in %s", tc.wantManaged, data["managed"], response.Body.String())
+			}
+			if data["status"] != tc.wantStatus || data["service"] != tc.wantService {
+				t.Fatalf("unexpected status/service: %+v", data)
+			}
+			if data["config_path"] != "/etc/sing-box/config.json" {
+				t.Fatalf("expected sing-box config path, got %+v", data)
+			}
+			if data["version"] != "sing-box version 1.13.13" {
+				t.Fatalf("expected normalized version, got %+v", data["version"])
+			}
+			if _, ok := data["listening_ports"].([]interface{}); !ok {
+				t.Fatalf("expected listening_ports array, got %+v", data["listening_ports"])
+			}
+		})
+	}
+}
+
+func installFakeSingboxStatusCommands(t *testing.T, primary, legacy, active string) func() {
+	t.Helper()
+	dir := t.TempDir()
+	binary := dir + "/sing-box"
+	systemctl := dir + "/systemctl"
+	ss := dir + "/ss"
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf 'sing-box version 1.13.13\\nTags: with_quic\\n'\n"), 0755); err != nil {
+		t.Fatalf("write fake sing-box: %v", err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "show" ]; then
+  if [ "$2" = "sing-box" ]; then printf '%%s\n' %q; exit 0; fi
+  if [ "$2" = "migate-singbox" ]; then printf '%%s\n' %q; exit 0; fi
+fi
+if [ "$1" = "is-active" ]; then printf '%%s\n' %q; exit 0; fi
+printf '\n'
+`, primary, legacy, active)
+	if err := os.WriteFile(systemctl, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+	if err := os.WriteFile(ss, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write fake ss: %v", err)
+	}
+	origBinary := singbox.DefaultBinaryPath
+	origPath := os.Getenv("PATH")
+	singbox.DefaultBinaryPath = binary
+	os.Setenv("PATH", dir+":"+origPath)
+	return func() {
+		singbox.DefaultBinaryPath = origBinary
+		os.Setenv("PATH", origPath)
 	}
 }
 

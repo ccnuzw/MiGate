@@ -4,6 +4,8 @@ import type {
   ConfigValidation,
   CoreActionResponse,
   DashboardSummary,
+  CreateClientResponse,
+  CreateInboundResponse,
   Inbound,
   InboundCapability,
   Outbound,
@@ -54,11 +56,11 @@ export const api = {
     const response = await get<Inbound[] | { inbounds?: Inbound[] }>('/api/inbounds?refresh=traffic');
     return Array.isArray(response) ? response : response.inbounds || [];
   },
-  createInbound: (body: Record<string, unknown>) => post<Inbound | { inbound: Inbound }>('/api/inbounds', body),
+  createInbound: (body: Record<string, unknown>) => post<CreateInboundResponse>('/api/inbounds', body),
   updateInbound: (id: number, body: Record<string, unknown>) => put<Inbound>(`/api/inbounds/${id}`, body),
   deleteInbound: (id: number) => del<{ status: string }>(`/api/inbounds/${id}`),
   toggleInbound: (id: number, enabled: boolean) => patch<Inbound>(`/api/inbounds/${id}/enabled`, { enabled }),
-  createClient: (inboundId: number, body: Record<string, unknown>) => post(`/api/inbounds/${inboundId}/clients`, body),
+  createClient: (inboundId: number, body: Record<string, unknown>) => post<CreateClientResponse>(`/api/inbounds/${inboundId}/clients`, body),
   updateClient: (inboundId: number, id: number, body: Record<string, unknown>) => put(`/api/inbounds/${inboundId}/clients/${id}`, body),
   deleteClient: (inboundId: number, id: number) => del(`/api/inbounds/${inboundId}/clients/${id}`),
   toggleClient: (inboundId: number, id: number, enabled: boolean) => patch(`/api/inbounds/${inboundId}/clients/${id}/enabled`, { enabled }),

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,7 +15,9 @@ import (
 	"github.com/imzyb/MiGate/internal/singbox"
 )
 
-func singboxStatusHandler() http.HandlerFunc {
+var errSingboxNotInstalled = errors.New("singbox_not_installed")
+
+func singboxStatusHandler(cfg ...*routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -30,22 +33,72 @@ func singboxStatusHandler() http.HandlerFunc {
 			})
 			return
 		}
+		management := singbox.Management()
 		status := singbox.Status()
 		ver, _ := singbox.Version()
+		ports := singboxExpectedUDPPorts(r.Context(), firstRouterConfig(cfg))
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"installed":          true,
+			"managed":            management.Managed,
+			"service":            management.Service,
 			"status":             status,
 			"version":            strings.TrimSpace(ver),
 			"memory_rss_bytes":   singbox.MemoryRSS(),
 			"uptime":             singbox.Uptime(),
 			"active_connections": singbox.ActiveConnections(),
+			"config_path":        singbox.DefaultConfigPath,
+			"commands_executed":  []string{},
+			"listening_ports":    ports,
 		})
 	}
 }
 
+func firstRouterConfig(cfg []*routerConfig) *routerConfig {
+	if len(cfg) == 0 {
+		return nil
+	}
+	return cfg[0]
+}
+
+func singboxExpectedUDPPorts(ctx context.Context, cfg *routerConfig) []map[string]interface{} {
+	if cfg == nil || cfg.store == nil {
+		return []map[string]interface{}{}
+	}
+	inbounds, err := cfg.store.ListInbounds(ctx)
+	if err != nil {
+		return []map[string]interface{}{}
+	}
+	expected := []int{}
+	records := []db.Inbound{}
+	for _, inbound := range inbounds {
+		if !inbound.Enabled || db.InboundCore(inbound) != db.CoreSingbox {
+			continue
+		}
+		switch db.NormalizeInboundProtocol(inbound.Protocol) {
+		case "hysteria2", "tuic":
+			if inbound.Port > 0 {
+				expected = append(expected, inbound.Port)
+				records = append(records, inbound)
+			}
+		}
+	}
+	listening := singbox.ListeningUDPPorts(expected)
+	result := make([]map[string]interface{}, 0, len(records))
+	for _, inbound := range records {
+		result = append(result, map[string]interface{}{
+			"inbound_id": inbound.ID,
+			"protocol":   inbound.Protocol,
+			"port":       inbound.Port,
+			"network":    "udp",
+			"listening":  listening[inbound.Port],
+		})
+	}
+	return result
+}
+
 // singboxApplyHandler reads sing-box supported inbounds from the store, builds
-// a sing-box config, generates a self-signed cert if missing, writes
-// the config to disk and restarts the sing-box service.
+// a sing-box config, generates a self-signed cert if missing, validates a temp
+// config, atomically installs it, and restarts the sing-box service.
 func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -96,24 +149,19 @@ func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			}
 		}
 
-		// Encode and write config
 		raw, err := json.MarshalIndent(built.config, "", "  ")
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "marshal_failed", map[string]interface{}{"detail": err.Error()})
 			return
 		}
-		if err := os.WriteFile(singbox.DefaultConfigPath, raw, 0644); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "write_failed", map[string]interface{}{"detail": err.Error()})
-			return
-		}
 
-		// Restart sing-box
-		applyErr := singbox.Apply()
+		applyErr := singbox.ApplyConfig(raw)
 
 		result := map[string]interface{}{
-			"applied":     applyErr == nil,
-			"config_path": singbox.DefaultConfigPath,
-			"inbounds":    len(built.config.Inbounds),
+			"applied":           applyErr == nil,
+			"config_path":       singbox.DefaultConfigPath,
+			"inbounds":          len(built.config.Inbounds),
+			"commands_executed": []string{"sing-box check -c <temp>", "systemctl restart " + singbox.RuntimeServiceName()},
 		}
 		if len(built.warnings) > 0 {
 			result["warnings"] = built.warnings
@@ -253,15 +301,18 @@ func buildSingboxConfigForRuntime(ctx context.Context, cfg *routerConfig, inboun
 }
 
 // tryApplySingbox reads sing-box supported inbounds from the store, builds
-// a sing-box config, writes it to disk and restarts sing-box. Errors are
-// silently returned (not panicked) to avoid blocking the caller.
+// a sing-box config, validates a temp config, atomically installs it, and
+// restarts sing-box. Errors are returned to the caller for UI/API visibility.
 func tryApplySingbox(ctx context.Context, store Store) error {
-	return tryApplySingboxWithRuntime(ctx, store, defaultSingboxRuntime{})
+	return tryApplySingboxWithRuntime(ctx, store, defaultSingboxRuntime{}, false)
 }
 
-func tryApplySingboxWithRuntime(ctx context.Context, store Store, runtime SingboxRuntime) error {
+func tryApplySingboxWithRuntime(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) error {
 	if !singbox.IsInstalled() {
-		return nil // sing-box not available, skip silently
+		if strict {
+			return errSingboxNotInstalled
+		}
+		return nil
 	}
 	inbounds, err := store.ListInbounds(ctx)
 	if err != nil {
@@ -289,10 +340,7 @@ func tryApplySingboxWithRuntime(ctx context.Context, store Store, runtime Singbo
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err := os.WriteFile(singbox.DefaultConfigPath, raw, 0644); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	return singbox.Apply()
+	return singbox.ApplyConfig(raw)
 }
 
 // singboxConfigHandler returns the current sing-box config JSON.
@@ -381,7 +429,7 @@ func singboxLogsHandler() http.HandlerFunc {
 		} else if n > maxXrayLogLines {
 			lines = strconv.Itoa(maxXrayLogLines)
 		}
-		out, err := exec.Command("journalctl", "-u", singbox.ServiceName(), "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		out, err := exec.Command("journalctl", "-u", singbox.RuntimeServiceName(), "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
 		if err != nil {
 			out, err = exec.Command("tail", "-n", lines, "/var/log/syslog").CombinedOutput()
 			if err != nil {

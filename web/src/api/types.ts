@@ -54,6 +54,23 @@ export interface Inbound {
   [key: string]: unknown;
 }
 
+export interface SingboxApplySummary {
+  applied?: boolean;
+  error?: string;
+  detail?: string;
+}
+
+export interface CreateResultFields {
+  created?: boolean;
+  applied?: boolean;
+  error?: string;
+  detail?: string;
+  singbox?: SingboxApplySummary;
+}
+
+export type CreateInboundResponse = (Inbound | { inbound: Inbound }) & CreateResultFields;
+export type CreateClientResponse = (Client | { client: Client }) & CreateResultFields;
+
 export interface InboundCapability {
   protocol: string;
   core: 'xray' | 'sing-box' | string;

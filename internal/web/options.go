@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -108,5 +109,14 @@ func WithSingboxStatsClient(client singbox.StatsClient) Option {
 func WithCoreScriptRunner(runner func(script string) ([]byte, error)) Option {
 	return func(cfg *routerConfig) {
 		cfg.coreScriptRunner = runner
+	}
+}
+
+func WithSingboxApplier(applier func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) error) Option {
+	return func(cfg *routerConfig) {
+		if applier != nil {
+			cfg.singboxApplier = applier
+			cfg.singboxApplierSet = true
+		}
 	}
 }

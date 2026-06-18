@@ -160,10 +160,16 @@ func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		var store Store
 		var singboxRuntime SingboxRuntime = defaultSingboxRuntime{}
+		singboxApplier := tryApplySingboxWithRuntime
+		usingDefaultSingboxApplier := true
 		if cfg != nil {
 			store = cfg.store
 			if cfg.singboxRuntime != nil {
 				singboxRuntime = cfg.singboxRuntime
+			}
+			if cfg.singboxApplier != nil {
+				singboxApplier = cfg.singboxApplier
+				usingDefaultSingboxApplier = !cfg.singboxApplierSet
 			}
 		}
 
@@ -175,28 +181,33 @@ func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			"applied": false,
 			"reason":  "not_needed",
 		}
-		if store != nil && singbox.IsInstalled() {
+		if store != nil {
 			inbounds, err := store.ListInbounds(r.Context())
 			if err == nil {
 				if singbox.HasEnabledSingboxInbound(inbounds) {
-					applyErr := tryApplySingboxWithRuntime(r.Context(), store, singboxRuntime)
-					if applyErr != nil {
+					if usingDefaultSingboxApplier && !singbox.IsInstalled() {
 						singboxResult = map[string]interface{}{
 							"applied": false,
-							"error":   applyErr.Error(),
+							"reason":  "singbox_not_installed",
 						}
 					} else {
-						singboxResult = map[string]interface{}{
-							"applied":  true,
-							"inbounds": len(singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{}).Inbounds),
+						applyErr := singboxApplier(r.Context(), store, singboxRuntime, false)
+						if applyErr != nil {
+							singboxResult = map[string]interface{}{
+								"applied": false,
+								"error":   applyErr.Error(),
+							}
+						} else {
+							singboxResult = map[string]interface{}{
+								"applied":  true,
+								"inbounds": len(singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{}).Inbounds),
+							}
 						}
 					}
 				}
 			}
 		} else if store == nil {
 			singboxResult["reason"] = "no_store"
-		} else {
-			singboxResult["reason"] = "singbox_not_installed"
 		}
 
 		w.Header().Set("Content-Type", "application/json")

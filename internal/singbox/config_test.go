@@ -263,6 +263,41 @@ func TestBuildConfigWithOutboundsUsesSupportedProfilesAndGeneratedTags(t *testin
 	}
 }
 
+func TestBuildConfigWithOutboundsSkipsLegacyDNSOutboundForSingbox113(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds(nil, []db.Outbound{
+		{ID: 3, Tag: "dns", Protocol: "dns", Enabled: true},
+		{ID: 10, Tag: "direct", Protocol: "freedom", Enabled: true},
+	}, nil)
+	if err != nil {
+		t.Fatalf("build config with dns outbound: %v", err)
+	}
+	raw, _ := json.Marshal(cfg)
+	text := string(raw)
+	if strings.Contains(text, `"type":"dns"`) || strings.Contains(text, `"tag":"singbox-out-3"`) {
+		t.Fatalf("sing-box 1.13 config must not contain legacy dns outbound: %s", text)
+	}
+	if !strings.Contains(text, `"type":"direct"`) {
+		t.Fatalf("expected non-dns outbound to remain: %s", text)
+	}
+}
+
+func TestBuildConfigWithOutboundsSkipsRoutingRuleTargetingLegacyDNSOutbound(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds([]db.Inbound{{
+		ID: 2, Remark: "hy2", Protocol: "hysteria2", Core: db.CoreSingbox, Port: 8443, Enabled: true,
+	}}, []db.Outbound{
+		{ID: 3, Tag: "dns", Protocol: "dns", Enabled: true},
+		{ID: 10, Tag: "direct", Protocol: "freedom", Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 1, InboundTag: "inbound-2-hysteria2", OutboundID: 3, OutboundTag: "dns", Protocol: "dns", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("dns routing rule should be skipped for sing-box 1.13: %v", err)
+	}
+	if cfg.Route != nil && len(cfg.Route.Rules) > 0 {
+		t.Fatalf("dns routing rule should not target removed outbound: %+v", cfg.Route.Rules)
+	}
+}
+
 func TestBuildConfigWithOutboundsCompilesHTTPSOutbound(t *testing.T) {
 	cfg, err := BuildConfigWithOutbounds(nil, []db.Outbound{
 		{ID: 14, Tag: "proxy-https", Protocol: "https", Address: "127.0.0.1", Port: 8443, Username: "sam", Password: "secret", Enabled: true},

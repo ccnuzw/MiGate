@@ -404,7 +404,7 @@ func cliStatus(stdout, stderr io.Writer, runner commandRunner, m messages) int {
 		stopped string
 	}{
 		{name: "migate", label: "MiGate", running: m.statusPanelRunning, stopped: m.statusPanelStopped},
-		{name: "migate-singbox", label: "sing-box", running: m.statusSingboxRunning, stopped: m.statusSingboxStopped},
+		{name: resolveCLIServiceName(runner, "sing-box", "migate-singbox"), label: "sing-box", running: m.statusSingboxRunning, stopped: m.statusSingboxStopped},
 	}
 	for _, svc := range services {
 		out, err := runner.Run("systemctl", "is-active", svc.name)
@@ -545,7 +545,32 @@ func cliRestart(stderr io.Writer, runner commandRunner, args []string) int {
 	return 2
 }
 
+func resolveCLIServiceName(runner commandRunner, primary, legacy string) string {
+	if cliServiceAvailable(runner, primary) {
+		return primary
+	}
+	if cliServiceAvailable(runner, legacy) {
+		return legacy
+	}
+	return primary
+}
+
+func cliServiceAvailable(runner commandRunner, service string) bool {
+	out, err := runner.Run("systemctl", "show", service, "--property=LoadState", "--value")
+	state := strings.TrimSpace(out)
+	if state == "not-found" {
+		return false
+	}
+	if err != nil && state == "" {
+		return false
+	}
+	return true
+}
+
 func cliSystemctl(stderr io.Writer, runner commandRunner, action, service string) int {
+	if service == "sing-box" {
+		service = resolveCLIServiceName(runner, "sing-box", "migate-singbox")
+	}
 	if _, err := runner.Run("systemctl", action, service); err != nil {
 		fmt.Fprintf(stderr, "%s %s failed: %v\n", action, service, err)
 		return 1
@@ -650,7 +675,7 @@ func localizedServiceStatus(status string) string {
 }
 
 func managedServices() []struct{ name, label string } {
-	return []struct{ name, label string }{{name: "migate", label: "MiGate Panel"}, {name: "migate-singbox", label: "sing-box"}}
+	return []struct{ name, label string }{{name: "migate", label: "MiGate Panel"}, {name: "sing-box", label: "sing-box"}}
 }
 
 func panelURL(cfg panelConfig, host string) string {

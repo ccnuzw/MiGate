@@ -6,7 +6,7 @@ import type { UseFormRegisterReturn } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { api } from '../api/endpoints';
-import type { Client, Inbound } from '../api/types';
+import type { Client, CreateClientResponse, CreateInboundResponse, Inbound } from '../api/types';
 import { Field, FieldError, Modal, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { copyToClipboard } from '../lib/clipboard';
 import { useI18n } from '../lib/i18n';
@@ -229,8 +229,9 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
       const initialClient = !inbound?.id && createClientWithNode && clientValues ? buildClientPayload(clientValues, values.protocol) : null;
       return inbound?.id ? api.updateInbound(inbound.id, buildFullInboundPayload(inbound, values)) : api.createInbound(buildFullInboundPayload(inbound, values, initialClient));
     },
-    onSuccess: () => {
-      showToast(text('节点已保存'), 'success');
+    onSuccess: (response) => {
+      const warning = singboxApplyWarning(response, '节点已保存，但 sing-box 配置未生效');
+      showToast(text(warning || '节点已保存'), warning ? 'error' : 'success');
       onSaved();
       onClose();
     },
@@ -651,7 +652,8 @@ export function ClientModal({ inbound, client, onClose, onSaved }: { inbound: In
       return { payload, response };
     },
     onSuccess: ({ payload, response }) => {
-      showToast(text('客户端已保存'), 'success');
+      const warning = singboxApplyWarning(response as CreateClientResponse, '客户端已保存，但 sing-box 配置未生效');
+      showToast(text(warning || '客户端已保存'), warning ? 'error' : 'success');
       onSaved();
       extractClientResponse(response, client, payload, inbound?.id || client?.inbound_id || 0);
       onClose();
@@ -880,6 +882,14 @@ function extractClientResponse(response: unknown, fallback?: Client, payload?: R
     traffic_limit: payload.traffic_limit,
     expiry_at: payload.expiry_at,
   };
+}
+
+export function singboxApplyWarning(response: CreateInboundResponse | CreateClientResponse | unknown, prefix: string): string {
+  if (!response || typeof response !== 'object') return '';
+  const data = response as { applied?: boolean; detail?: string; error?: string; singbox?: { applied?: boolean; detail?: string; error?: string } };
+  if (data.applied !== false && data.singbox?.applied !== false) return '';
+  const detail = data.detail || data.singbox?.detail || data.error || data.singbox?.error || '未知错误';
+  return `${prefix}：${detail}`;
 }
 
 function isClient(value: unknown): value is Client {

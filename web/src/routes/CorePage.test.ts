@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coreActionResult, coreStatusRefetchInterval, isCoreInstalled } from './CorePage';
+import { coreActionResult, coreStatusMetrics, coreStatusRefetchInterval, isCoreInstalled } from './CorePage';
 
 describe('core action result', () => {
   it('treats xray apply validation failures as business errors', () => {
@@ -61,5 +61,21 @@ describe('core action result', () => {
     expect(isCoreInstalled({ version: 'sing-box version 1.13.13' })).toBe(true);
     expect(isCoreInstalled({ version: 'not_installed', status: 'not_installed' })).toBe(false);
     expect(isCoreInstalled(undefined)).toBe(false);
+  });
+
+  it('formats sing-box managed status and config path for core metrics', () => {
+    const metrics = coreStatusMetrics({
+      service: 'sing-box',
+      installed: true,
+      managed: true,
+      status: 'running',
+      version: 'sing-box version 1.13.13',
+      config_path: '/etc/sing-box/config.json',
+      active_connections: 0,
+    });
+    expect(metrics).toEqual(expect.arrayContaining([
+      { label: '托管', value: '已托管' },
+      { label: '配置路径', value: '/etc/sing-box/config.json' },
+    ]));
   });
 });

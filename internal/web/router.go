@@ -16,6 +16,7 @@ func NewRouter(options ...Option) http.Handler {
 		updateCheckURL:   defaultUpdateCheckURL,
 		loginLimiter:     newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
 		coreScriptRunner: runCoreScript,
+		singboxApplier:   tryApplySingboxWithRuntime,
 	}
 	for _, option := range options {
 		option(&cfg)
@@ -32,8 +33,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/api/inbound-capabilities", inboundCapabilitiesHandler)
 	mux.HandleFunc("/api/reality/keypair", realityKeypairHandler)
-	mux.HandleFunc("/api/inbounds", inboundsHandler(cfg.store, cfg.xrayController, cfg.statsClient))
-	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(cfg.store, cfg.xrayController, cfg.statsClient, cfg.singboxStatsClient))
+	mux.HandleFunc("/api/inbounds", inboundsHandler(&cfg))
+	mux.HandleFunc("/api/inbounds/", inboundChildrenHandler(&cfg))
 	mux.HandleFunc("/api/outbounds", outboundsHandler(cfg.store, cfg.xrayController))
 	mux.HandleFunc("/api/outbounds/", outboundChildrenHandler(&cfg))
 	mux.HandleFunc("/api/routing-rules", routingRulesHandler(cfg.store, cfg.xrayController))
@@ -63,7 +64,7 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/api/update/status", updateStatusHandler())
 	mux.HandleFunc("/api/update/logs", updateLogsHandler())
 	mux.HandleFunc("/api/update", updateHandler(cfg.version))
-	mux.HandleFunc("/api/singbox/status", singboxStatusHandler())
+	mux.HandleFunc("/api/singbox/status", singboxStatusHandler(&cfg))
 	mux.HandleFunc("/api/singbox/apply", singboxApplyHandler(&cfg))
 	mux.HandleFunc("/api/singbox/validate", singboxValidateHandler(&cfg))
 	mux.HandleFunc("/api/singbox/install", coreInstallHandler("singbox", cfg.coreScriptRunner))

@@ -124,7 +124,7 @@ if ! systemctl restart xray; then
 fi
 /usr/local/bin/xray version | head -1`
 		case "singbox":
-			commands = []string{"download sing-box release", "verify sing-box release checksum", "install /usr/local/bin/sing-box", "write /etc/systemd/system/migate-singbox.service", "systemctl enable --now migate-singbox"}
+			commands = []string{"download sing-box release", "verify sing-box release checksum", "install /usr/local/bin/sing-box", "write /etc/systemd/system/sing-box.service", "systemctl enable --now sing-box"}
 			script = `set -euo pipefail
 arch="$(uname -m)"
 case "$arch" in
@@ -171,13 +171,13 @@ if [ ! -f /etc/sing-box/config.json ]; then
   printf '%s\n' '{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}' > /etc/sing-box/config.json
 fi
 if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-  echo "systemd is unavailable; skipped migate-singbox.service"
+  echo "systemd is unavailable; skipped sing-box.service"
   /usr/local/bin/sing-box version | head -1
   exit 0
 fi
-cat > /etc/systemd/system/migate-singbox.service <<'UNIT'
+cat > /etc/systemd/system/sing-box.service <<'UNIT'
 [Unit]
-Description=MiGate managed sing-box service
+Description=sing-box service managed by MiGate
 After=network-online.target
 Wants=network-online.target
 
@@ -192,9 +192,10 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable migate-singbox
-if ! systemctl restart migate-singbox; then
-  echo "sing-box installed, but migate-singbox.service did not start. Apply config or check journalctl -u migate-singbox." >&2
+systemctl disable migate-singbox 2>/dev/null || true
+rm -f /etc/systemd/system/migate-singbox.service
+if ! systemctl enable --now sing-box; then
+  echo "sing-box installed, but sing-box.service did not start. Apply config or check journalctl -u sing-box." >&2
 fi
 /usr/local/bin/sing-box version | head -1`
 		default:
@@ -268,10 +269,11 @@ systemctl disable --now xray 2>/dev/null || true
 rm -f /usr/local/etc/xray/xray.json /usr/local/etc/xray/config.json
 printf 'Xray service disabled and MiGate symlinks removed. Remove the Xray binary/package manually if it was installed outside MiGate.\n'`
 		case "singbox":
-			commands = []string{"systemctl disable --now migate-singbox", "remove sing-box binary and service"}
+			commands = []string{"systemctl disable --now sing-box", "remove sing-box binary and service"}
 			script = `set -euo pipefail
+systemctl disable --now sing-box 2>/dev/null || true
 systemctl disable --now migate-singbox 2>/dev/null || true
-rm -f /etc/systemd/system/migate-singbox.service /usr/local/bin/sing-box
+rm -f /etc/systemd/system/sing-box.service /etc/systemd/system/migate-singbox.service /usr/local/bin/sing-box
 systemctl daemon-reload 2>/dev/null || true
 printf 'sing-box removed\n'`
 		default:

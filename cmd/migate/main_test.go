@@ -321,8 +321,9 @@ func TestServeDefaultBindHostIsLoopback(t *testing.T) {
 
 func TestCLIStatusUsesSystemctlWithoutStartingServer(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
-		"systemctl is-active migate":         "active\n",
-		"systemctl is-active migate-singbox": "inactive\n",
+		"systemctl show sing-box --property=LoadState --value": "loaded\n",
+		"systemctl is-active migate":                           "active\n",
+		"systemctl is-active sing-box":                         "inactive\n",
 	}}
 	var out bytes.Buffer
 	exitCode := runCLI([]string{"status"}, &out, &bytes.Buffer{}, runner)
@@ -332,8 +333,36 @@ func TestCLIStatusUsesSystemctlWithoutStartingServer(t *testing.T) {
 	if !strings.Contains(out.String(), "MiGate 面板: 运行中") || !strings.Contains(out.String(), "sing-box: 已停止") {
 		t.Fatalf("unexpected status output: %s", out.String())
 	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected 2 systemctl calls, got %+v", runner.calls)
+	want := []string{
+		"systemctl show sing-box --property=LoadState --value",
+		"systemctl is-active migate",
+		"systemctl is-active sing-box",
+	}
+	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected status calls: %+v", runner.calls)
+	}
+}
+
+func TestCLIStatusFallsBackToLegacySingboxService(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string]string{
+		"systemctl show sing-box --property=LoadState --value":       "not-found\n",
+		"systemctl show migate-singbox --property=LoadState --value": "loaded\n",
+		"systemctl is-active migate":                                 "active\n",
+		"systemctl is-active migate-singbox":                         "inactive\n",
+	}}
+	var out bytes.Buffer
+	exitCode := runCLI([]string{"status"}, &out, &bytes.Buffer{}, runner)
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d", exitCode)
+	}
+	want := []string{
+		"systemctl show sing-box --property=LoadState --value",
+		"systemctl show migate-singbox --property=LoadState --value",
+		"systemctl is-active migate",
+		"systemctl is-active migate-singbox",
+	}
+	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected calls: %+v", runner.calls)
 	}
 }
 
@@ -402,8 +431,9 @@ func TestCLIUpdateReportsInstallerFailure(t *testing.T) {
 
 func TestCLIEnglishLanguageFlagSwitchesOutput(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
-		"systemctl is-active migate":         "active\n",
-		"systemctl is-active migate-singbox": "inactive\n",
+		"systemctl show sing-box --property=LoadState --value": "loaded\n",
+		"systemctl is-active migate":                           "active\n",
+		"systemctl is-active sing-box":                         "inactive\n",
 	}}
 	var out bytes.Buffer
 	exitCode := runCLI([]string{"--lang", "en", "status"}, &out, &bytes.Buffer{}, runner)
@@ -465,13 +495,14 @@ func TestCLIDoctorPrintsPanelRuntimeAndResourceChecks(t *testing.T) {
 		t.Fatalf("write db: %v", err)
 	}
 	runner := &fakeRunner{outputs: map[string]string{
-		"systemctl is-active migate":         "active\n",
-		"systemctl is-active migate-singbox": "inactive\n",
-		"xray version":                       "Xray 26.3.27\n",
-		"sing-box version":                   "sing-box version 1.13.13\n",
-		"ss -ltn":                            "LISTEN 0 4096 *:9999 *:*\n",
-		"free -m":                            "Mem: 900 400 500\nSwap: 512 0 512\n",
-		"df -h /":                            "/dev/sda1 50G 10G 40G 20% /\n",
+		"systemctl show sing-box --property=LoadState --value": "loaded\n",
+		"systemctl is-active migate":                           "active\n",
+		"systemctl is-active sing-box":                         "inactive\n",
+		"xray version":                                         "Xray 26.3.27\n",
+		"sing-box version":                                     "sing-box version 1.13.13\n",
+		"ss -ltn":                                              "LISTEN 0 4096 *:9999 *:*\n",
+		"free -m":                                              "Mem: 900 400 500\nSwap: 512 0 512\n",
+		"df -h /":                                              "/dev/sda1 50G 10G 40G 20% /\n",
 	}}
 	var out bytes.Buffer
 	exitCode := runCLI([]string{"doctor"}, &out, &bytes.Buffer{}, runner)
@@ -577,9 +608,10 @@ func TestCLIUpdateCheckQueriesLatestRelease(t *testing.T) {
 
 func TestCLILogsFollowAndRestartAllUseExpectedServices(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
-		"journalctl -u migate -n 80 -f":    "following\n",
-		"systemctl restart migate":         "",
-		"systemctl restart migate-singbox": "",
+		"journalctl -u migate -n 80 -f":                        "following\n",
+		"systemctl restart migate":                             "",
+		"systemctl show sing-box --property=LoadState --value": "loaded\n",
+		"systemctl restart sing-box":                           "",
 	}}
 	if code := runCLI([]string{"logs", "-f"}, &bytes.Buffer{}, &bytes.Buffer{}, runner); code != 0 {
 		t.Fatalf("logs -f exit %d", code)
@@ -587,7 +619,28 @@ func TestCLILogsFollowAndRestartAllUseExpectedServices(t *testing.T) {
 	if code := runCLI([]string{"restart", "all"}, &bytes.Buffer{}, &bytes.Buffer{}, runner); code != 0 {
 		t.Fatalf("restart all exit %d", code)
 	}
-	want := []string{"journalctl -u migate -n 80 -f", "systemctl restart migate", "systemctl restart migate-singbox"}
+	want := []string{"journalctl -u migate -n 80 -f", "systemctl restart migate", "systemctl show sing-box --property=LoadState --value", "systemctl restart sing-box"}
+	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected calls: %+v", runner.calls)
+	}
+}
+
+func TestCLIRestartAllFallsBackToLegacySingboxService(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string]string{
+		"systemctl restart migate":                                   "",
+		"systemctl show sing-box --property=LoadState --value":       "not-found\n",
+		"systemctl show migate-singbox --property=LoadState --value": "loaded\n",
+		"systemctl restart migate-singbox":                           "",
+	}}
+	if code := runCLI([]string{"restart", "all"}, &bytes.Buffer{}, &bytes.Buffer{}, runner); code != 0 {
+		t.Fatalf("restart all exit %d", code)
+	}
+	want := []string{
+		"systemctl restart migate",
+		"systemctl show sing-box --property=LoadState --value",
+		"systemctl show migate-singbox --property=LoadState --value",
+		"systemctl restart migate-singbox",
+	}
 	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
 		t.Fatalf("unexpected calls: %+v", runner.calls)
 	}

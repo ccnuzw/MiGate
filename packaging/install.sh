@@ -11,7 +11,9 @@ MIGATE_BIN="${MIGATE_BIN:-/usr/local/bin/migate}"
 MIGATE_LINK="${MIGATE_LINK:-/usr/local/bin/mg}"
 INSTALLER_BIN="${INSTALLER_BIN:-/usr/local/bin/migate-install}"
 UNINSTALLER_BIN="${UNINSTALLER_BIN:-/usr/local/bin/migate-uninstall}"
-SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-singbox.service}"
+SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/sing-box.service}"
+LEGACY_SINGBOX_SERVICE_PATH="${LEGACY_SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-singbox.service}"
+LEGACY_SINGBOX_SERVICE_DROPIN_DIR="${LEGACY_SINGBOX_SERVICE_DROPIN_DIR:-${LEGACY_SINGBOX_SERVICE_PATH}.d}"
 JOURNALD_CONF_DIR="${JOURNALD_CONF_DIR:-/etc/systemd/journald.conf.d}"
 JOURNALD_MIGATE_CONF="${JOURNALD_MIGATE_CONF:-${JOURNALD_CONF_DIR}/migate.conf}"
 LOGROTATE_CONF_DIR="${LOGROTATE_CONF_DIR:-/etc/logrotate.d}"
@@ -266,6 +268,16 @@ normalize_web_base_path() {
   fi
   path="/${path#/}"
   path="${path%/}"
+  printf '%s' "$path"
+}
+
+web_url_path() {
+  local path
+  path="$(normalize_web_base_path "${1:-}")"
+  if [ -z "$path" ]; then
+    printf '/'
+    return
+  fi
   printf '%s' "$path"
 }
 
@@ -942,7 +954,7 @@ install_singbox() {
     printf '[DRY-RUN] sha256sum -c "%s.sha256"\n' "$sb_artifact"
     printf '[DRY-RUN] install /usr/local/bin/sing-box\n'
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-      printf '[DRY-RUN] write %q and restart migate-singbox\n' "$SINGBOX_SERVICE_PATH"
+      printf '[DRY-RUN] write %q and enable --now sing-box\n' "$SINGBOX_SERVICE_PATH"
     else
       printf '[DRY-RUN] skip %q because systemd is unavailable\n' "$SINGBOX_SERVICE_PATH"
     fi
@@ -990,14 +1002,14 @@ install_singbox() {
     printf '%s\n' '{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}' > /etc/sing-box/config.json
   fi
   if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
-    log_warn "systemd 不可用，跳过 migate-singbox.service 写入。"
+    log_warn "systemd 不可用，跳过 sing-box.service 写入。"
     log_info "Manual run: /usr/local/bin/sing-box run -c /etc/sing-box/config.json"
     log_ok "sing-box 安装/修复完成"
     return 0
   fi
   cat > "$SINGBOX_SERVICE_PATH" <<'UNIT'
 [Unit]
-Description=MiGate managed sing-box service
+Description=sing-box service managed by MiGate
 After=network-online.target
 Wants=network-online.target
 
@@ -1016,8 +1028,16 @@ LogRateLimitBurst=200
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  systemctl enable migate-singbox
-  systemctl restart migate-singbox 2>/dev/null || true
+  systemctl stop migate-singbox 2>/dev/null || true
+  systemctl disable migate-singbox 2>/dev/null || true
+  rm -f "$LEGACY_SINGBOX_SERVICE_PATH"
+  rm -rf "$LEGACY_SINGBOX_SERVICE_DROPIN_DIR"
+  systemctl daemon-reload
+  systemctl reset-failed migate-singbox 2>/dev/null || true
+  systemctl enable sing-box
+  if ! systemctl start sing-box; then
+    log_warn "sing-box 已安装并启用，但当前配置未能启动服务。请在 WebUI 应用 sing-box 配置后查看：journalctl -u sing-box -n 80 --no-pager"
+  fi
   log_ok "sing-box 安装/修复完成"
 }
 
@@ -1117,7 +1137,7 @@ install_release_flow() {
 
   section "核心检测"
   if detect_core "Xray" "xray" "xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
-  if detect_core "sing-box" "sing-box" "migate-singbox"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
+  if detect_core "sing-box" "sing-box" "sing-box"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
   prompt_core_installs
   if [ "$INSTALL_XRAY" -eq 1 ]; then
     if [ "$EXPLICIT_INSTALL_XRAY" -eq 1 ]; then install_xray; else maybe_install_core "Xray" install_xray; fi
@@ -1209,17 +1229,19 @@ finish_message() {
   local host_ip
   local xray_bin
   local singbox_bin
+  local web_path
   host_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
   [ -n "$host_ip" ] || host_ip="SERVER_IP"
   xray_bin="$(core_binary_path xray)"
   singbox_bin="$(core_binary_path sing-box)"
+  web_path="$(web_url_path "${WEB_BASE_PATH:-/}")"
   section "安装完成，请保存以下信息"
   kv "MiGate 二进制" "$MIGATE_BIN"
   kv "CLI 命令" "mg"
   kv "安装目录" "${INSTALL_DIR}"
   kv "面板监听" "${PANEL_BIND_HOST}:${PANEL_PORT}"
-  kv "Web base path" "${WEB_BASE_PATH:-/}"
-  kv "WebUI 地址" "http://${host_ip}:${PANEL_PORT}${WEB_BASE_PATH}"
+  kv "Web base path" "$web_path"
+  kv "WebUI 地址" "http://${host_ip}:${PANEL_PORT}${web_path}"
   log_warn "默认仅监听 ${PANEL_BIND_HOST}。公网访问请通过 Nginx/Caddy 等反向代理并启用 HTTPS。"
   kv "管理员用户" "${PANEL_USERNAME}"
   if [ "$GENERATED_PASSWORD" -eq 1 ] || [ -n "$PANEL_PASSWORD" ]; then
@@ -1240,7 +1262,7 @@ finish_message() {
   kv "sing-box 配置" "/etc/sing-box/config.json"
   if [ -n "$singbox_bin" ]; then
     kv "sing-box 二进制" "${singbox_bin} ($(core_version "$singbox_bin"))"
-    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "sing-box 服务" "systemctl status migate-singbox"; fi
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "sing-box 服务" "systemctl status sing-box"; fi
   else
     log_warn "sing-box 二进制：未找到"
   fi
@@ -1255,7 +1277,7 @@ finish_message() {
   fi
   kv "常用命令" "mg status | mg doctor | mg logs -f | mg restart | mg update | mg uninstall"
   section "下一步"
-  log_info "如果你需要公网访问面板，请用 Nginx/Caddy 反向代理到 ${PANEL_BIND_HOST}:${PANEL_PORT}${WEB_BASE_PATH}，并启用 HTTPS。"
+  log_info "如果你需要公网访问面板，请用 Nginx/Caddy 反向代理到 ${PANEL_BIND_HOST}:${PANEL_PORT}${web_path}，并启用 HTTPS。"
   log_info "如果服务启动失败，请运行：journalctl -u migate -n 80 --no-pager"
   log_info "如果核心不可用，请运行：mg doctor"
 }
