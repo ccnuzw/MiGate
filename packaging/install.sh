@@ -862,10 +862,12 @@ install_xray() {
     printf '[DRY-RUN] curl -fL %q -o "$tmp_xray/%s.dgst"\n' "$xray_dgst_url" "$xray_artifact"
     printf '[DRY-RUN] extract SHA2-256 to "$tmp_xray/%s.sha256"\n' "$xray_artifact"
     printf '[DRY-RUN] verify sha256 with "%s.sha256"\n' "$xray_artifact"
-    printf '[DRY-RUN] install /usr/local/bin/xray\n'
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+      printf '[DRY-RUN] systemctl stop xray\n'
+      printf '[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$\n'
       printf '[DRY-RUN] write /etc/systemd/system/xray.service and restart xray\n'
     else
+      printf '[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$\n'
       printf '[DRY-RUN] skip /etc/systemd/system/xray.service because systemd is unavailable\n'
     fi
     return 0
@@ -892,8 +894,16 @@ install_xray() {
   verify_sha256 "$xray_artifact.sha256" "$tmp_xray"
   log_info "解压并安装 Xray"
   unzip -oq "$tmp_xray/$xray_artifact" -d "$tmp_xray/xray"
-  cp "$tmp_xray/xray/xray" /usr/local/bin/xray
-  chmod +x /usr/local/bin/xray
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    systemctl stop xray 2>/dev/null || true
+  fi
+  local xray_install_tmp="/usr/local/bin/.xray.new.$$"
+  rm -f "$xray_install_tmp"
+  if ! { cp "$tmp_xray/xray/xray" "$xray_install_tmp" && chmod +x "$xray_install_tmp" && mv -f "$xray_install_tmp" /usr/local/bin/xray; }; then
+    rm -f "$xray_install_tmp"
+    rm -rf "$tmp_xray"
+    return 1
+  fi
   mkdir -p /usr/local/share/xray "$INSTALL_DIR" /usr/local/etc/xray
   [ -f "$tmp_xray/xray/geosite.dat" ] && cp "$tmp_xray/xray/geosite.dat" /usr/local/share/xray/geosite.dat
   [ -f "$tmp_xray/xray/geoip.dat" ] && cp "$tmp_xray/xray/geoip.dat" /usr/local/share/xray/geoip.dat
@@ -955,10 +965,13 @@ install_singbox() {
     printf '[DRY-RUN] curl -fsSL %q -o "$tmp_sb/release.json"\n' "$sb_release_api_url"
     printf '[DRY-RUN] extract GitHub asset digest for %q > "$tmp_sb/%s.sha256"\n' "$sb_artifact" "$sb_artifact"
     printf '[DRY-RUN] sha256sum -c "%s.sha256"\n' "$sb_artifact"
-    printf '[DRY-RUN] install /usr/local/bin/sing-box\n'
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+      printf '[DRY-RUN] systemctl stop sing-box\n'
+      printf '[DRY-RUN] systemctl stop migate-singbox\n'
+      printf '[DRY-RUN] atomic install /usr/local/bin/sing-box via /usr/local/bin/.sing-box.new.$$\n'
       printf '[DRY-RUN] write %q and enable --now sing-box\n' "$SINGBOX_SERVICE_PATH"
     else
+      printf '[DRY-RUN] atomic install /usr/local/bin/sing-box via /usr/local/bin/.sing-box.new.$$\n'
       printf '[DRY-RUN] skip %q because systemd is unavailable\n' "$SINGBOX_SERVICE_PATH"
     fi
     return 0
@@ -997,8 +1010,17 @@ install_singbox() {
   verify_sha256 "$sb_artifact.sha256" "$tmp_sb"
   log_info "解压并安装 sing-box"
   tar --no-same-owner -xzf "$tmp_sb/$sb_artifact" -C "$tmp_sb"
-  cp "$tmp_sb"/sing-box-*/sing-box /usr/local/bin/sing-box
-  chmod +x /usr/local/bin/sing-box
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    systemctl stop sing-box 2>/dev/null || true
+    systemctl stop migate-singbox 2>/dev/null || true
+  fi
+  local sb_install_tmp="/usr/local/bin/.sing-box.new.$$"
+  rm -f "$sb_install_tmp"
+  if ! { cp "$tmp_sb"/sing-box-*/sing-box "$sb_install_tmp" && chmod +x "$sb_install_tmp" && mv -f "$sb_install_tmp" /usr/local/bin/sing-box; }; then
+    rm -f "$sb_install_tmp"
+    rm -rf "$tmp_sb"
+    return 1
+  fi
   rm -rf "$tmp_sb"
   mkdir -p /etc/sing-box
   if [ ! -f /etc/sing-box/config.json ]; then

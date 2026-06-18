@@ -103,10 +103,18 @@ describe('api client', () => {
     await api.xrayApply();
     await api.xrayInstall();
     await api.xrayUninstall();
+    await api.xrayRestart();
+    await api.xrayStop();
     await api.singboxApply();
     await api.singboxInstall();
     await api.singboxUninstall();
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    await api.singboxRestart();
+    await api.singboxStop();
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+    expect(fetchMock).toHaveBeenCalledWith('/api/xray/restart', expect.any(Object));
+    expect(fetchMock).toHaveBeenCalledWith('/api/xray/stop', expect.any(Object));
+    expect(fetchMock).toHaveBeenCalledWith('/api/singbox/restart', expect.any(Object));
+    expect(fetchMock).toHaveBeenCalledWith('/api/singbox/stop', expect.any(Object));
     vi.unstubAllGlobals();
   });
 

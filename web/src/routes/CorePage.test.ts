@@ -1,5 +1,54 @@
-import { describe, expect, it } from 'vitest';
-import { configSyncReasonLabel, configSyncState, coreActionResult, coreDiagnosticActions, coreDiagnosticChecks, coreDiagnosticsSummary, coreListeningDiagnostics, coreStatusMetrics, coreStatusRefetchInterval, diagnosticSuggestionItems, diagnosticWarningLabel, formatDiagnosticAction, isCoreInstalled } from './CorePage';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, createElement, type ReactNode } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ConfirmProvider, ToastProvider } from '../components/ui';
+import { I18nProvider } from '../lib/i18n';
+import CorePage, { configSyncReasonLabel, configSyncState, coreActionResult, coreDiagnosticActions, coreDiagnosticChecks, coreDiagnosticsSummary, coreListeningDiagnostics, coreStatusMetrics, coreStatusRefetchInterval, diagnosticSuggestionItems, diagnosticWarningLabel, formatDiagnosticAction, isCoreInstalled } from './CorePage';
+
+const apiMock = vi.hoisted(() => ({
+  xrayStatus: vi.fn(async () => ({ service: 'xray', status: 'running', installed: true, managed: true, version: 'Xray 26.3.27', commands_executed: [] })),
+  xrayVersion: vi.fn(async () => ({ version: 'Xray 26.3.27' })),
+  xrayConfig: vi.fn(async () => ({})),
+  xrayConfigPreview: vi.fn(async () => ({ config_path: '/usr/local/migate/xray.json', in_sync: true })),
+  xrayDiagnostics: vi.fn(async () => ({ installed: true, service_status: 'running', config_exists: true, config_valid: true, warnings: [] })),
+  xrayLogs: vi.fn(async () => ({ logs: '' })),
+  xrayValidate: vi.fn(async () => ({ target: 'xray', valid: true })),
+  xrayApply: vi.fn(async () => ({ status: 'applied' })),
+  xrayInstall: vi.fn(async () => ({ core: 'xray', status: 'installed' })),
+  xrayUninstall: vi.fn(async () => ({ core: 'xray', status: 'uninstalled' })),
+  xrayRestart: vi.fn(async () => ({ core: 'xray', status: 'restarted', commands_executed: ['systemctl restart xray'] })),
+  xrayStop: vi.fn(async () => ({ core: 'xray', status: 'stopped', commands_executed: ['systemctl stop xray'] })),
+  singboxStatus: vi.fn(async () => ({ service: 'sing-box', status: 'running', installed: true, managed: true, version: 'sing-box version 1.13.13', commands_executed: [] })),
+  singboxVersion: vi.fn(async () => ({ version: 'sing-box version 1.13.13' })),
+  singboxConfig: vi.fn(async () => ({})),
+  singboxConfigPreview: vi.fn(async () => ({ config_path: '/etc/sing-box/config.json', in_sync: true })),
+  singboxDiagnostics: vi.fn(async () => ({ installed: true, service_status: 'running', config_exists: true, config_valid: true, warnings: [] })),
+  singboxLogs: vi.fn(async () => ({ logs: '' })),
+  singboxValidate: vi.fn(async () => ({ target: 'singbox', valid: true })),
+  singboxApply: vi.fn(async () => ({ status: 'applied' })),
+  singboxInstall: vi.fn(async () => ({ core: 'singbox', status: 'installed' })),
+  singboxUninstall: vi.fn(async () => ({ core: 'singbox', status: 'uninstalled' })),
+  singboxRestart: vi.fn(async () => ({ core: 'singbox', status: 'restarted', commands_executed: ['systemctl restart sing-box'] })),
+  singboxStop: vi.fn(async () => ({ core: 'singbox', status: 'stopped', commands_executed: ['systemctl stop sing-box'] })),
+}));
+
+vi.mock('../api/endpoints', () => ({
+  api: apiMock,
+}));
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+
+afterEach(() => {
+  if (root) {
+    act(() => root?.unmount());
+  }
+  root = null;
+  container?.remove();
+  container = null;
+  vi.clearAllMocks();
+});
 
 describe('core action result', () => {
   it('treats xray apply validation failures as business errors', () => {
@@ -288,3 +337,80 @@ describe('core action result', () => {
     })).toEqual(['查看日志']);
   });
 });
+
+describe('core service controls', () => {
+  it('renders and calls Xray restart and stop actions after confirmation', async () => {
+    renderCorePage('xray');
+    await waitForText('重启核心');
+    expect(document.body.textContent).toContain('停止核心');
+
+    await clickButtonByText('重启核心');
+    await clickButtonByText('确认');
+    await vi.waitFor(() => expect(apiMock.xrayRestart).toHaveBeenCalledTimes(1));
+
+    await clickButtonByText('停止核心');
+    await clickButtonByText('确认');
+    await vi.waitFor(() => expect(apiMock.xrayStop).toHaveBeenCalledTimes(1));
+  });
+
+  it('renders and calls sing-box restart and stop actions after confirmation', async () => {
+    renderCorePage('singbox');
+    await waitForText('重启核心');
+    expect(document.body.textContent).toContain('停止核心');
+
+    await clickButtonByText('重启核心');
+    await clickButtonByText('确认');
+    await vi.waitFor(() => expect(apiMock.singboxRestart).toHaveBeenCalledTimes(1));
+
+    await clickButtonByText('停止核心');
+    await clickButtonByText('确认');
+    await vi.waitFor(() => expect(apiMock.singboxStop).toHaveBeenCalledTimes(1));
+  });
+});
+
+function renderCorePage(core: 'xray' | 'singbox') {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  renderNode(
+    createElement(
+      I18nProvider,
+      null,
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          ToastProvider,
+          null,
+          createElement(ConfirmProvider, null, createElement(CorePage, { core })),
+        ),
+      ),
+    ),
+  );
+}
+
+function renderNode(node: ReactNode) {
+  act(() => {
+    root!.render(node);
+  });
+}
+
+async function waitForText(text: string) {
+  await vi.waitFor(() => expect(document.body.textContent).toContain(text));
+}
+
+async function clickButtonByText(text: string) {
+  const button = await findEnabledButtonByText(text);
+  act(() => button.click());
+}
+
+async function findEnabledButtonByText(text: string): Promise<HTMLButtonElement> {
+  let found: HTMLButtonElement | undefined;
+  await vi.waitFor(() => {
+    found = Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.includes(text)) as HTMLButtonElement | undefined;
+    expect(found).toBeTruthy();
+    expect(found!.disabled).toBe(false);
+  });
+  return found!;
+}

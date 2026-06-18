@@ -293,6 +293,38 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	}
 }
 
+func TestInstallerReplacesCoreBinariesAtomically(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"systemctl stop xray 2>/dev/null || true",
+		"local xray_install_tmp=\"/usr/local/bin/.xray.new.$$\"",
+		"cp \"$tmp_xray/xray/xray\" \"$xray_install_tmp\" && chmod +x \"$xray_install_tmp\" && mv -f \"$xray_install_tmp\" /usr/local/bin/xray",
+		"rm -f \"$xray_install_tmp\"",
+		"systemctl stop sing-box 2>/dev/null || true",
+		"systemctl stop migate-singbox 2>/dev/null || true",
+		"local sb_install_tmp=\"/usr/local/bin/.sing-box.new.$$\"",
+		"cp \"$tmp_sb\"/sing-box-*/sing-box \"$sb_install_tmp\" && chmod +x \"$sb_install_tmp\" && mv -f \"$sb_install_tmp\" /usr/local/bin/sing-box",
+		"rm -f \"$sb_install_tmp\"",
+		"[DRY-RUN] systemctl stop xray",
+		"[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$",
+		"[DRY-RUN] systemctl stop sing-box",
+		"[DRY-RUN] systemctl stop migate-singbox",
+		"[DRY-RUN] atomic install /usr/local/bin/sing-box via /usr/local/bin/.sing-box.new.$$",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer core atomic replacement contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"cp \"$tmp_xray/xray/xray\" /usr/local/bin/xray",
+		"cp \"$tmp_sb\"/sing-box-*/sing-box /usr/local/bin/sing-box",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not directly overwrite a running core binary with %q", forbidden)
+		}
+	}
+}
+
 func TestInstallerConfiguresBoundedLogRetention(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	service := read(t, "packaging", "migate.service")

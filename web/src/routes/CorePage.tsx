@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Download, Play, RefreshCw, ShieldCheck, Trash2, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, Play, RefreshCw, RotateCcw, ShieldCheck, Square, Trash2, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
@@ -17,8 +17,8 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   const confirm = useConfirm();
   const label = core === 'xray' ? 'Xray' : 'sing-box';
   const endpoints = core === 'xray'
-    ? { status: api.xrayStatus, version: api.xrayVersion, config: api.xrayConfig, configPreview: api.xrayConfigPreview, diagnostics: api.xrayDiagnostics, logs: api.xrayLogs, validate: api.xrayValidate, apply: api.xrayApply, install: api.xrayInstall, uninstall: api.xrayUninstall }
-    : { status: api.singboxStatus, version: api.singboxVersion, config: api.singboxConfig, configPreview: api.singboxConfigPreview, diagnostics: api.singboxDiagnostics, logs: api.singboxLogs, validate: api.singboxValidate, apply: api.singboxApply, install: api.singboxInstall, uninstall: api.singboxUninstall };
+    ? { status: api.xrayStatus, version: api.xrayVersion, config: api.xrayConfig, configPreview: api.xrayConfigPreview, diagnostics: api.xrayDiagnostics, logs: api.xrayLogs, validate: api.xrayValidate, apply: api.xrayApply, install: api.xrayInstall, uninstall: api.xrayUninstall, restart: api.xrayRestart, stop: api.xrayStop }
+    : { status: api.singboxStatus, version: api.singboxVersion, config: api.singboxConfig, configPreview: api.singboxConfigPreview, diagnostics: api.singboxDiagnostics, logs: api.singboxLogs, validate: api.singboxValidate, apply: api.singboxApply, install: api.singboxInstall, uninstall: api.singboxUninstall, restart: api.singboxRestart, stop: api.singboxStop };
   const [lastResult, setLastResult] = useState<{ ok: boolean; message: string; detail?: string } | null>(null);
   const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: coreStatusRefetchInterval(visible), staleTime: 10_000 });
   const versionQuery = useQuery({ queryKey: [core, 'version'], queryFn: endpoints.version, retry: false, staleTime: 10 * 60_000 });
@@ -61,6 +61,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
       statusQuery.refetch();
+      versionQuery.refetch();
       diagnosticsQuery.refetch();
     },
     onError: (error) => setActionError(error, `${label} 安装失败`, setLastResult, showToast),
@@ -72,9 +73,34 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
       statusQuery.refetch();
+      versionQuery.refetch();
       diagnosticsQuery.refetch();
     },
     onError: (error) => setActionError(error, `${label} 卸载失败`, setLastResult, showToast),
+  });
+  const restart = useMutation({
+    mutationFn: endpoints.restart,
+    onSuccess: (data) => {
+      const result = coreActionResult(data, `${label} 已重启`);
+      setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
+      showToast(text(result.message), result.ok ? 'success' : 'error');
+      statusQuery.refetch();
+      versionQuery.refetch();
+      diagnosticsQuery.refetch();
+    },
+    onError: (error) => setActionError(error, `${label} 重启失败`, setLastResult, showToast),
+  });
+  const stop = useMutation({
+    mutationFn: endpoints.stop,
+    onSuccess: (data) => {
+      const result = coreActionResult(data, `${label} 已停止`);
+      setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
+      showToast(text(result.message), result.ok ? 'success' : 'error');
+      statusQuery.refetch();
+      versionQuery.refetch();
+      diagnosticsQuery.refetch();
+    },
+    onError: (error) => setActionError(error, `${label} 停止失败`, setLastResult, showToast),
   });
   if (statusQuery.isLoading) return <LoadingBlock />;
   const status = statusQuery.data;
@@ -90,6 +116,8 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
             <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); diagnosticsQuery.refetch(); configPreviewQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
             <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
             <SpinnerButton className="btn secondary" loading={install.isPending} onClick={async () => (await confirm({ title: text(`${installActionLabel} ${label}？`), description: text(installed ? '该操作会重新执行安装脚本，通常用于升级或修复当前核心。' : '该操作会执行系统安装命令。') })) && install.mutate()}><Download className="h-4 w-4" /> {text(installActionLabel)}</SpinnerButton>
+            <SpinnerButton className="btn secondary" loading={restart.isPending} disabled={!installed} title={text(installed ? '重启核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`重启 ${label} 核心？`), description: text('该操作会通过 systemd 重启核心服务。') })) && restart.mutate()}><RotateCcw className="h-4 w-4" /> {text('重启核心')}</SpinnerButton>
+            <SpinnerButton className="btn danger" loading={stop.isPending} disabled={!installed} title={text(installed ? '停止核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`停止 ${label} 核心？`), description: text('该操作会停止核心服务，入站连接会中断。'), tone: 'danger' })) && stop.mutate()}><Square className="h-4 w-4" /> {text('停止核心')}</SpinnerButton>
             <SpinnerButton className="btn danger" loading={uninstall.isPending} disabled={!installed} title={text(installed ? '卸载核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`卸载 ${label} 核心？`), description: text('该操作会删除或停用系统服务。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('卸载核心')}</SpinnerButton>
             <SpinnerButton className="btn primary" loading={apply.isPending} onClick={async () => (await confirm({ title: text(`应用 ${label} 配置？`), description: text('该操作会重新生成并应用核心配置。') })) && apply.mutate()}><Play className="h-4 w-4" /> {text('应用')}</SpinnerButton>
           </div>

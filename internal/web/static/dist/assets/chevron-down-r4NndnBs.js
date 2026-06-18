@@ -1,1 +1,0 @@
-import{C as e}from"./index-C9VBITN_.js";var t=e(`chevron-down`,[[`path`,{d:`m6 9 6 6 6-6`,key:`qrunsl`}]]);export{t};

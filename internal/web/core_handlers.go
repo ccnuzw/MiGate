@@ -47,7 +47,7 @@ func coreInstallHandler(core string, runner func(script string) ([]byte, error))
 		var commands []string
 		switch core {
 		case "xray":
-			commands = []string{"download Xray release", "verify Xray release checksum", "install /usr/local/bin/xray", "write /etc/systemd/system/xray.service", "systemctl enable --now xray"}
+			commands = []string{"download Xray release", "verify Xray release checksum", "systemctl stop xray", "atomic install /usr/local/bin/xray", "write /etc/systemd/system/xray.service", "systemctl restart xray"}
 			script = `set -euo pipefail
 arch="$(uname -m)"
 case "$arch" in
@@ -63,7 +63,8 @@ for dep in curl unzip; do
 done
 version="${XRAY_VERSION:-26.3.27}"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+install_tmp=""
+trap 'rm -rf "$tmp"; [ -z "${install_tmp:-}" ] || rm -f "$install_tmp"' EXIT
 asset_name="Xray-linux-${asset_arch}.zip"
 url="https://github.com/XTLS/Xray-core/releases/download/v${version}/${asset_name}"
 dgst_url="${url}.dgst"
@@ -82,8 +83,15 @@ else
   echo "sha256sum or shasum is required" >&2; exit 1
 fi
 unzip -oq "$tmp/$asset_name" -d "$tmp/xray"
-cp "$tmp/xray/xray" /usr/local/bin/xray
-chmod +x /usr/local/bin/xray
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  systemctl stop xray 2>/dev/null || true
+fi
+install_tmp="/usr/local/bin/.xray.new.$$"
+rm -f "$install_tmp"
+cp "$tmp/xray/xray" "$install_tmp"
+chmod +x "$install_tmp"
+mv -f "$install_tmp" /usr/local/bin/xray
+install_tmp=""
 mkdir -p /usr/local/share/xray /usr/local/migate /usr/local/etc/xray
 [ -f "$tmp/xray/geosite.dat" ] && cp "$tmp/xray/geosite.dat" /usr/local/share/xray/geosite.dat
 [ -f "$tmp/xray/geoip.dat" ] && cp "$tmp/xray/geoip.dat" /usr/local/share/xray/geoip.dat
@@ -124,7 +132,7 @@ if ! systemctl restart xray; then
 fi
 /usr/local/bin/xray version | head -1`
 		case "singbox":
-			commands = []string{"download sing-box release", "verify sing-box release checksum", "install /usr/local/bin/sing-box", "write /etc/systemd/system/sing-box.service", "systemctl enable --now sing-box"}
+			commands = []string{"download sing-box release", "verify sing-box release checksum", "systemctl stop sing-box and migate-singbox", "atomic install /usr/local/bin/sing-box", "write /etc/systemd/system/sing-box.service", "systemctl start sing-box"}
 			script = `set -euo pipefail
 arch="$(uname -m)"
 case "$arch" in
@@ -134,7 +142,8 @@ case "$arch" in
 esac
 version="${SINGBOX_VERSION:-1.13.13}"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+install_tmp=""
+trap 'rm -rf "$tmp"; [ -z "${install_tmp:-}" ] || rm -f "$install_tmp"' EXIT
 asset_name="sing-box-${version}-linux-${asset_arch}.tar.gz"
 url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset_name}"
 release_api_url="https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${version}"
@@ -164,8 +173,16 @@ else
   echo "sha256sum or shasum is required" >&2; exit 1
 fi
 tar --no-same-owner -xzf "$tmp/$asset_name" -C "$tmp"
-cp "$tmp"/sing-box-*/sing-box /usr/local/bin/sing-box
-chmod +x /usr/local/bin/sing-box
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  systemctl stop sing-box 2>/dev/null || true
+  systemctl stop migate-singbox 2>/dev/null || true
+fi
+install_tmp="/usr/local/bin/.sing-box.new.$$"
+rm -f "$install_tmp"
+cp "$tmp"/sing-box-*/sing-box "$install_tmp"
+chmod +x "$install_tmp"
+mv -f "$install_tmp" /usr/local/bin/sing-box
+install_tmp=""
 mkdir -p /etc/sing-box
 if [ ! -f /etc/sing-box/config.json ]; then
   printf '%s\n' '{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}' > /etc/sing-box/config.json
@@ -194,7 +211,8 @@ UNIT
 systemctl daemon-reload
 systemctl disable migate-singbox 2>/dev/null || true
 rm -f /etc/systemd/system/migate-singbox.service
-if ! systemctl enable --now sing-box; then
+systemctl enable sing-box
+if ! systemctl start sing-box; then
   echo "sing-box installed, but sing-box.service did not start. Apply config or check journalctl -u sing-box." >&2
 fi
 /usr/local/bin/sing-box version | head -1`
@@ -207,6 +225,53 @@ fi
 		if err != nil {
 			status = "failed"
 			writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "error": "install_failed", "output": string(out), "commands_executed": commands})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+	}
+}
+
+func coreServiceControlHandler(core, action string, runner func(script string) ([]byte, error)) http.HandlerFunc {
+	if runner == nil {
+		runner = runCoreScript
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if _, ok := decodeCoreActionPayload(w, r); !ok {
+			return
+		}
+		service := ""
+		switch core {
+		case "xray":
+			service = "xray"
+		case "singbox":
+			service = "sing-box"
+		default:
+			writeJSONError(w, http.StatusBadRequest, "unknown_core")
+			return
+		}
+		if action != "restart" && action != "stop" {
+			writeJSONError(w, http.StatusBadRequest, "unknown_action")
+			return
+		}
+		commands := []string{fmt.Sprintf("systemctl %s %s", action, service)}
+		script := fmt.Sprintf(`set -euo pipefail
+if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+  echo "systemd is unavailable; cannot %s %s.service" >&2
+  exit 1
+fi
+systemctl %s %s
+`, action, service, action, service)
+		out, err := runner(script)
+		status := action + "ed"
+		if action == "stop" {
+			status = "stopped"
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"core": core, "status": "failed", "error": action + "_failed", "output": string(out), "commands_executed": commands})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
