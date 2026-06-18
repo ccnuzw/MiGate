@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
-import type { OutputAsset, OutputChunk } from 'rollup';
 import react from '@vitejs/plugin-react';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 
 const backendProxy = {
@@ -35,6 +36,12 @@ export default defineConfig({
           if (normalized.includes('node_modules/@tanstack/react-query/')) {
             return 'query';
           }
+          if (normalized.includes('node_modules/@xyflow/')) {
+            return 'xyflow';
+          }
+          if (normalized.includes('node_modules/elkjs/')) {
+            return 'elk';
+          }
         },
       },
     },
@@ -51,17 +58,18 @@ export default defineConfig({
 });
 
 function precompressAssets() {
+  let outDir = '';
   return {
     name: 'migate-precompress-assets',
     apply: 'build' as const,
-    generateBundle(_options: unknown, bundle: Record<string, OutputAsset | OutputChunk>) {
-      for (const [fileName, asset] of Object.entries(bundle)) {
-        if (!shouldPrecompress(fileName)) continue;
-        const source = asset.type === 'asset' ? asset.source : asset.code;
-        if (source == null) continue;
-        const input = typeof source === 'string' ? Buffer.from(source) : Buffer.from(source);
-        this.emitFile({ type: 'asset', fileName: `${fileName}.gz`, source: gzipSync(input, { level: 9 }) });
-        this.emitFile({ type: 'asset', fileName: `${fileName}.br`, source: brotliCompressSync(input) });
+    configResolved(config: { build: { outDir: string } }) {
+      outDir = config.build.outDir;
+    },
+    async writeBundle() {
+      for (const filePath of await listPrecompressableFiles(outDir)) {
+        const input = await readFile(filePath);
+        await writeFile(`${filePath}.gz`, gzipSync(input, { level: 9, mtime: 0 }));
+        await writeFile(`${filePath}.br`, brotliCompressSync(input));
       }
     },
   };
@@ -69,4 +77,19 @@ function precompressAssets() {
 
 function shouldPrecompress(fileName: string) {
   return /\.(js|css|html|svg|json)$/.test(fileName);
+}
+
+async function listPrecompressableFiles(dir: string): Promise<string[]> {
+  const entries = await readdir(dir);
+  const files: string[] = [];
+  for (const entry of entries) {
+    const filePath = join(dir, entry);
+    const info = await stat(filePath);
+    if (info.isDirectory()) {
+      files.push(...await listPrecompressableFiles(filePath));
+    } else if (shouldPrecompress(filePath) && !filePath.endsWith('.gz') && !filePath.endsWith('.br')) {
+      files.push(filePath);
+    }
+  }
+  return files;
 }

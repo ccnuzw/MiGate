@@ -1,32 +1,36 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
 )
 
-func trafficSummaryHandler(store Store) http.HandlerFunc {
+func trafficSummaryHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
 			return
 		}
-		inbounds, trafficByInbound, _, ok := loadTrafficView(w, r, store)
-		if !ok {
+		view, err := cache.get(r.Context(), store)
+		if err != nil {
+			writeTrafficViewError(w, err)
 			return
 		}
 		var totalUp int64
 		var totalDown int64
 		var rateUp float64
 		var rateDown float64
-		for _, inbound := range inbounds {
-			traffic := trafficByInbound[inbound.ID]
+		for _, inbound := range view.inbounds {
+			traffic := view.trafficByInbound[inbound.ID]
 			totalUp += traffic.Up
 			totalDown += traffic.Down
 			rateUp += traffic.RateUp
@@ -39,25 +43,26 @@ func trafficSummaryHandler(store Store) http.HandlerFunc {
 			"rate_up":         rateUp,
 			"rate_down":       rateDown,
 			"rate_total":      rateUp + rateDown,
-			"status":          buildTrafficCoverage(trafficByInbound),
+			"status":          buildTrafficCoverage(view.trafficByInbound),
 			"last_updated_at": time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }
 
-func trafficInboundsHandler(store Store) http.HandlerFunc {
+func trafficInboundsHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
 			return
 		}
-		inbounds, trafficByInbound, _, ok := loadTrafficView(w, r, store)
-		if !ok {
+		view, err := cache.get(r.Context(), store)
+		if err != nil {
+			writeTrafficViewError(w, err)
 			return
 		}
-		items := make([]map[string]interface{}, 0, len(inbounds))
-		for _, inbound := range inbounds {
-			traffic := trafficByInbound[inbound.ID]
+		items := make([]map[string]interface{}, 0, len(view.inbounds))
+		for _, inbound := range view.inbounds {
+			traffic := view.trafficByInbound[inbound.ID]
 			items = append(items, map[string]interface{}{
 				"id":              inbound.ID,
 				"remark":          inbound.Remark,
@@ -78,20 +83,21 @@ func trafficInboundsHandler(store Store) http.HandlerFunc {
 	}
 }
 
-func trafficClientsHandler(store Store) http.HandlerFunc {
+func trafficClientsHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
 			return
 		}
-		inbounds, _, trafficByClient, ok := loadTrafficView(w, r, store)
-		if !ok {
+		view, err := cache.get(r.Context(), store)
+		if err != nil {
+			writeTrafficViewError(w, err)
 			return
 		}
 		items := []map[string]interface{}{}
-		for _, inbound := range inbounds {
+		for _, inbound := range view.inbounds {
 			for _, client := range inbound.Clients {
-				traffic := trafficByClient[client.ID]
+				traffic := view.trafficByClient[client.ID]
 				items = append(items, map[string]interface{}{
 					"id":              client.ID,
 					"inbound_id":      inbound.ID,
@@ -112,6 +118,78 @@ func trafficClientsHandler(store Store) http.HandlerFunc {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"clients": items})
+	}
+}
+
+type trafficView struct {
+	inbounds         []db.Inbound
+	trafficByInbound map[int64]inboundTrafficSummary
+	trafficByClient  map[int64]clientTrafficSummary
+}
+
+type trafficViewCache struct {
+	ttl       time.Duration
+	mu        sync.Mutex
+	expiresAt time.Time
+	value     trafficView
+	hasValue  bool
+	now       func() time.Time
+}
+
+func newTrafficViewCache(ttl time.Duration) *trafficViewCache {
+	return &trafficViewCache{ttl: ttl, now: time.Now}
+}
+
+func (c *trafficViewCache) get(ctx context.Context, store Store) (trafficView, error) {
+	if store == nil {
+		return trafficView{}, fmt.Errorf("store_unavailable")
+	}
+	if c == nil || c.ttl <= 0 {
+		return buildTrafficView(ctx, store)
+	}
+	now := c.now()
+	c.mu.Lock()
+	if c.hasValue && now.Before(c.expiresAt) {
+		value := c.value
+		c.mu.Unlock()
+		return value, nil
+	}
+	c.mu.Unlock()
+
+	value, err := buildTrafficView(ctx, store)
+	if err != nil {
+		return trafficView{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hasValue && c.now().Before(c.expiresAt) {
+		return c.value, nil
+	}
+	c.value = value
+	c.hasValue = true
+	c.expiresAt = c.now().Add(c.ttl)
+	return value, nil
+}
+
+func buildTrafficView(ctx context.Context, store Store) (trafficView, error) {
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		return trafficView{}, fmt.Errorf("list_inbounds_failed")
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		return trafficView{}, fmt.Errorf("list_traffic_states_failed")
+	}
+	trafficByInbound, trafficByClient := summarizeTrafficFromStates(states, inbounds)
+	return trafficView{inbounds: inbounds, trafficByInbound: trafficByInbound, trafficByClient: trafficByClient}, nil
+}
+
+func writeTrafficViewError(w http.ResponseWriter, err error) {
+	switch err.Error() {
+	case "store_unavailable":
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+	default:
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 	}
 }
 
@@ -272,18 +350,4 @@ func expectedTrafficSeriesEngines(scopeType string, inbounds []db.Inbound) map[s
 		}
 	}
 	return allowed
-}
-
-func loadTrafficView(w http.ResponseWriter, r *http.Request, store Store) ([]db.Inbound, map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary, bool) {
-	if store == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-		return nil, nil, nil, false
-	}
-	inbounds, err := store.ListInbounds(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
-		return nil, nil, nil, false
-	}
-	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), store, inbounds)
-	return inbounds, trafficByInbound, trafficByClient, true
 }

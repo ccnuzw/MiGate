@@ -174,6 +174,46 @@ func (s *countingSummaryStore) ListTrafficSamples(ctx context.Context, scopeType
 	return nil, nil
 }
 
+func TestTrafficViewCacheSharesInboundsAndStatesAcrossHandlers(t *testing.T) {
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{{
+			ID:       1,
+			Protocol: "vless",
+			Enabled:  true,
+			Clients:  []db.Client{{ID: 10, StatsKey: "c_state", Email: "user@example.com", Enabled: true}},
+		}},
+		states: []db.TrafficState{
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},
+		},
+	}
+	cache := newTrafficViewCache(5 * time.Second)
+	now := time.Unix(100, 0)
+	cache.now = func() time.Time { return now }
+
+	first, err := cache.get(context.Background(), store)
+	if err != nil {
+		t.Fatalf("first traffic view: %v", err)
+	}
+	second, err := cache.get(context.Background(), store)
+	if err != nil {
+		t.Fatalf("cached traffic view: %v", err)
+	}
+	if store.listInboundsCalls != 1 || store.listTrafficStatesCalls != 1 {
+		t.Fatalf("expected cache hit to avoid repeated scans, inbounds=%d states=%d", store.listInboundsCalls, store.listTrafficStatesCalls)
+	}
+	if first.trafficByInbound[1].Up != 10 || second.trafficByClient[10].Down != 20 {
+		t.Fatalf("unexpected cached traffic view: first=%+v second=%+v", first, second)
+	}
+
+	now = now.Add(6 * time.Second)
+	if _, err := cache.get(context.Background(), store); err != nil {
+		t.Fatalf("expired traffic view: %v", err)
+	}
+	if store.listInboundsCalls != 2 || store.listTrafficStatesCalls != 2 {
+		t.Fatalf("expected cache expiry to refresh scans, inbounds=%d states=%d", store.listInboundsCalls, store.listTrafficStatesCalls)
+	}
+}
+
 func TestOutboundStatsByProfileIDMapsGeneratedCoreTags(t *testing.T) {
 	states := []db.TrafficState{
 		{Engine: "xray", ScopeType: "outbound", ScopeKey: "xray-out-42", TotalUp: 10, TotalDown: 20, RateUp: 1, RateDown: 2, Status: "ok", LastSeenAt: "2026-06-17T00:00:00Z"},

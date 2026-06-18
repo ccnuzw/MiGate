@@ -34,6 +34,26 @@ func TestInboundCapabilitiesCoverSupportedProtocols(t *testing.T) {
 	}
 }
 
+func TestInboundShareLinkCapabilityMatchesExpectedProtocols(t *testing.T) {
+	supported := map[string]bool{
+		"vless":       true,
+		"vmess":       true,
+		"trojan":      true,
+		"shadowsocks": true,
+		"hysteria2":   true,
+		"tuic":        true,
+	}
+	for _, capability := range db.InboundCapabilities() {
+		want := supported[capability.Protocol]
+		if capability.ShareLink != want {
+			t.Fatalf("protocol %s share_link = %v, want %v", capability.Protocol, capability.ShareLink, want)
+		}
+		if db.InboundSupportsShareLink(capability.Protocol) != capability.ShareLink {
+			t.Fatalf("protocol %s share_link helper drifted from capability", capability.Protocol)
+		}
+	}
+}
+
 func TestValidateInboundCombinationRejectsUnsupportedNetworkAndSecurity(t *testing.T) {
 	if err := db.ValidateInboundCombination(db.Inbound{Protocol: "vless", Core: db.CoreXray, Network: "ws", Security: "reality", Port: 443}); err == nil {
 		t.Fatal("expected ws+reality to be rejected")

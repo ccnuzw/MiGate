@@ -12,13 +12,6 @@ export default function OverviewPage() {
   const visible = usePageVisible();
   const { text } = useI18n();
   const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
-  const trafficSeriesQuery = useQuery({
-    queryKey: ['traffic-series', 'client'],
-    queryFn: () => api.trafficSeries({ scope_type: 'client', since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), limit: 240 }),
-    refetchInterval: visible ? 15000 : false,
-    retry: false,
-    staleTime: 10_000,
-  });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false, staleTime: 5_000 });
   const [xray, singbox] = useQueries({
     queries: [
@@ -33,7 +26,7 @@ export default function OverviewPage() {
   const rates = data?.traffic_rates || emptyRates;
   const trafficStatus = data?.traffic_status;
   const protocols = Object.entries(data?.protocols || {}).map(([name, value]) => ({ name, value }));
-  const trafficSeries = trafficSeriesQuery.data?.series || data?.traffic_series || [];
+  const trafficSeries = data?.traffic_series || [];
 
   if (summary.isLoading) return <LoadingBlock />;
 
@@ -47,7 +40,6 @@ export default function OverviewPage() {
       <OverviewAlerts
           errors={[
             summary.error ? `${text('概览摘要加载失败')}：${errorText(summary.error)}` : '',
-            trafficSeriesQuery.error ? `${text('流量趋势加载失败')}：${errorText(trafficSeriesQuery.error)}` : '',
             resources.error ? `${text('资源加载失败')}：${errorText(resources.error)}` : '',
           xray.error ? `Xray ${text('状态加载失败')}：${errorText(xray.error)}` : '',
           singbox.error ? `sing-box ${text('状态加载失败')}：${errorText(singbox.error)}` : '',

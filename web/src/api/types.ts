@@ -200,7 +200,7 @@ export interface DashboardSummary {
     engines?: Record<string, string>;
   };
   protocols: Record<string, number>;
-  traffic_series: Array<{
+  traffic_series?: Array<{
     name: string;
     time?: string;
     up: number;
