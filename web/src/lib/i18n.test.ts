@@ -12,7 +12,7 @@ describe('i18n text translation', () => {
       ['导入代理池', 'Import proxy pool'],
       ['路由规则已保存', 'Routing rule saved'],
       ['应用 Xray 配置？', 'Apply Xray config?'],
-      ['设置已保存，端口或路径变更需要重启服务后生效', 'Settings saved. Port or path changes require a service restart.'],
+      ['设置已保存，端口、数据库或基础路径变更需要重启服务后生效', 'Settings saved. Port, database, or base path changes require a service restart.'],
       ['Web 基础路径', 'Web base path'],
       ['TLS 证书文件', 'TLS cert file'],
       ['HY2 混淆密码', 'HY2 obfs password'],

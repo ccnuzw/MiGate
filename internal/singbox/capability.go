@@ -46,7 +46,7 @@ func (d *CapabilityDetector) Detect(ctx context.Context) Capability {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	tmp, err := os.CreateTemp("", "migate-singbox-v2ray-api-*.json")
+	tmp, err := os.CreateTemp("", "migate-sing-box-v2ray-api-*.json")
 	if err != nil {
 		return Capability{Checked: true, Message: fmt.Sprintf("create temp config: %v", err)}
 	}

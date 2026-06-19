@@ -10,9 +10,8 @@ PANEL_USERNAME="${MIGATE_PANEL_USERNAME:-admin}"
 PANEL_PASSWORD="${MIGATE_PANEL_PASSWORD:-admin123}"
 WEB_BASE_PATH="${MIGATE_WEB_BASE_PATH:-/panel}"
 DATABASE_PATH="${MIGATE_DATABASE_PATH:-$DEV_DIR/migate-dev.db}"
-XRAY_CONFIG_DIR="${MIGATE_XRAY_CONFIG_DIR:-$DEV_DIR/xray}"
 
-mkdir -p "$DEV_DIR" "$XRAY_CONFIG_DIR"
+mkdir -p "$DEV_DIR"
 
 if [ ! -f "$CONFIG_PATH" ]; then
   cat > "$CONFIG_PATH" <<JSON
@@ -21,8 +20,7 @@ if [ ! -f "$CONFIG_PATH" ]; then
   "panel_username": "$PANEL_USERNAME",
   "panel_password": "$PANEL_PASSWORD",
   "web_base_path": "$WEB_BASE_PATH",
-  "database_path": "$DATABASE_PATH",
-  "xray_config_path": "$XRAY_CONFIG_DIR"
+  "database_path": "$DATABASE_PATH"
 }
 JSON
   chmod 600 "$CONFIG_PATH"

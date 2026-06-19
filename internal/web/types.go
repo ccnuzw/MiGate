@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/paths"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -162,12 +163,40 @@ type CoreDiagnosticAction struct {
 	Port      int    `json:"port,omitempty"`
 }
 
+type CoreStatus struct {
+	Core              string                   `json:"core"`
+	Installed         bool                     `json:"installed"`
+	Managed           bool                     `json:"managed"`
+	Service           string                   `json:"service"`
+	ServiceStatus     string                   `json:"service_status"`
+	BinaryPath        string                   `json:"binary_path"`
+	BinaryVersion     string                   `json:"binary_version"`
+	ConfigPath        string                   `json:"config_path"`
+	ConfigExists      bool                     `json:"config_exists"`
+	ConfigValid       bool                     `json:"config_valid"`
+	ConfigError       string                   `json:"config_error,omitempty"`
+	Status            string                   `json:"status,omitempty"`
+	Version           string                   `json:"version,omitempty"`
+	MemoryRSSBytes    int64                    `json:"memory_rss_bytes,omitempty"`
+	Uptime            string                   `json:"uptime,omitempty"`
+	ActiveConnections int                      `json:"active_connections,omitempty"`
+	CommandsExecuted  []string                 `json:"commands_executed,omitempty"`
+	ListeningPorts    []CoreListenerDiagnostic `json:"listening_ports,omitempty"`
+}
+
 type XrayStatus struct {
+	Core              string                   `json:"core"`
 	Service           string                   `json:"service"`
 	Status            string                   `json:"status"`
+	ServiceStatus     string                   `json:"service_status"`
 	Managed           bool                     `json:"managed"`
 	Installed         bool                     `json:"installed"`
 	Version           string                   `json:"version"`
+	BinaryPath        string                   `json:"binary_path"`
+	BinaryVersion     string                   `json:"binary_version"`
+	ConfigExists      bool                     `json:"config_exists"`
+	ConfigValid       bool                     `json:"config_valid"`
+	ConfigError       string                   `json:"config_error,omitempty"`
 	MemoryRSSBytes    int64                    `json:"memory_rss_bytes"`
 	Uptime            string                   `json:"uptime"`
 	ActiveConnections int                      `json:"active_connections"`
@@ -195,7 +224,7 @@ type XrayApplyResult struct {
 type defaultXrayController struct{}
 
 func (defaultXrayController) Status(ctx context.Context) XrayStatus {
-	return XrayStatus{Service: "xray", Status: "unknown", Managed: false, CommandsExecuted: []string{}}
+	return XrayStatus{Core: "xray", Service: paths.XrayService, Status: "unknown", ServiceStatus: "unknown", Managed: false, BinaryPath: paths.XrayBinary, ConfigPath: paths.XrayConfig, CommandsExecuted: []string{}}
 }
 
 func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
@@ -214,6 +243,7 @@ type routerConfig struct {
 	authMu             sync.RWMutex
 	sessionSecret      []byte
 	configDir          string
+	xrayConfigPath     string
 	version            string
 	basePath           string
 	statsClient        xray.StatsClient

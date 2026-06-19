@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/lockfile"
+	"github.com/imzyb/MiGate/internal/paths"
 	"github.com/imzyb/MiGate/internal/singbox"
 )
 
@@ -42,6 +44,7 @@ type SingboxDiagnostics struct {
 	Managed             bool                     `json:"managed"`
 	Service             string                   `json:"service"`
 	ServiceStatus       string                   `json:"service_status"`
+	RawServiceStatus    string                   `json:"raw_service_status,omitempty"`
 	ConfigPath          string                   `json:"config_path"`
 	ConfigExists        bool                     `json:"config_exists"`
 	ConfigValid         bool                     `json:"config_valid"`
@@ -92,6 +95,9 @@ type SingboxProbe interface {
 	Status() string
 	ConfigExists(path string) bool
 	CheckConfig(path string) error
+	MemoryRSS() int64
+	Uptime() string
+	ActiveConnections() int
 	RecentLogs(service string, lines int) []string
 }
 
@@ -102,10 +108,12 @@ func (defaultSingboxProbe) Version() (string, error)             { return singbo
 func (defaultSingboxProbe) Management() singbox.ManagementStatus { return singbox.Management() }
 func (defaultSingboxProbe) Status() string                       { return singbox.Status() }
 func (defaultSingboxProbe) ConfigExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+	return singbox.CheckConfigFile(path).OK()
 }
 func (defaultSingboxProbe) CheckConfig(path string) error { return singbox.CheckConfigPath(path) }
+func (defaultSingboxProbe) MemoryRSS() int64              { return singbox.MemoryRSS() }
+func (defaultSingboxProbe) Uptime() string                { return singbox.Uptime() }
+func (defaultSingboxProbe) ActiveConnections() int        { return singbox.ActiveConnections() }
 func (defaultSingboxProbe) RecentLogs(service string, lines int) []string {
 	if lines < 1 {
 		lines = 20
@@ -135,31 +143,77 @@ func singboxStatusHandler(cfg ...*routerConfig) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 
-		installed := singbox.IsInstalled()
+		cfg := firstRouterConfig(cfg)
+		probe := singboxProbeForConfig(cfg)
+		installed := probe.IsInstalled()
 		if !installed {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"installed": false,
-				"status":    "not_installed",
+				"core":              "sing-box",
+				"installed":         false,
+				"status":            "not_installed",
+				"service_status":    "not_installed",
+				"managed":           false,
+				"service":           singbox.ServiceName(),
+				"binary_path":       singbox.DefaultBinaryPath,
+				"binary_version":    "",
+				"config_path":       singbox.DefaultConfigPath,
+				"config_exists":     false,
+				"config_valid":      false,
+				"commands_executed": []string{},
 			})
 			return
 		}
-		management := singbox.Management()
-		status := singbox.Status()
-		ver, _ := singbox.Version()
-		ports := singboxExpectedListeningPorts(r.Context(), firstRouterConfig(cfg))
+		management := probe.Management()
+		rawStatus := strings.TrimSpace(probe.Status())
+		status := normalizeCoreServiceStatus(rawStatus)
+		ver, _ := probe.Version()
+		ports := singboxExpectedListeningPorts(r.Context(), cfg)
+		configExists := false
+		configValid := false
+		configError := ""
+		if probe.ConfigExists(singbox.DefaultConfigPath) {
+			configExists = true
+			if err := probe.CheckConfig(singbox.DefaultConfigPath); err != nil {
+				configError = err.Error()
+			} else {
+				configValid = true
+			}
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"core":               "sing-box",
 			"installed":          true,
 			"managed":            management.Managed,
 			"service":            management.Service,
 			"status":             status,
+			"service_status":     status,
+			"raw_status":         rawStatus,
+			"normalized_status":  status,
 			"version":            strings.TrimSpace(ver),
-			"memory_rss_bytes":   singbox.MemoryRSS(),
-			"uptime":             singbox.Uptime(),
-			"active_connections": singbox.ActiveConnections(),
+			"binary_path":        singbox.DefaultBinaryPath,
+			"binary_version":     strings.TrimSpace(ver),
+			"config_exists":      configExists,
+			"config_valid":       configValid,
+			"config_error":       configError,
+			"memory_rss_bytes":   probe.MemoryRSS(),
+			"uptime":             probe.Uptime(),
+			"active_connections": probe.ActiveConnections(),
 			"config_path":        singbox.DefaultConfigPath,
 			"commands_executed":  []string{},
 			"listening_ports":    ports,
 		})
+	}
+}
+
+func normalizeCoreServiceStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "active", "running":
+		return "running"
+	case "activating", "deactivating", "inactive", "failed", "stopped":
+		return "stopped"
+	case "not_installed", "not_managed":
+		return strings.TrimSpace(status)
+	default:
+		return strings.TrimSpace(status)
 	}
 }
 
@@ -278,6 +332,12 @@ func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 			return
 		}
+		unlock, err := lockfile.TryAcquire(paths.ApplyLock)
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, "apply_locked", map[string]interface{}{"detail": err.Error(), "lock_path": paths.ApplyLock})
+			return
+		}
+		defer unlock()
 
 		// Read sing-box inbounds
 		inbounds, err := cfg.store.ListInbounds(r.Context())
@@ -371,7 +431,8 @@ func buildSingboxDiagnostics(ctx context.Context, cfg *routerConfig) SingboxDiag
 		if !result.Managed {
 			result.ServiceStatus = "not_managed"
 		} else {
-			result.ServiceStatus = probe.Status()
+			result.RawServiceStatus = strings.TrimSpace(probe.Status())
+			result.ServiceStatus = normalizeCoreServiceStatus(result.RawServiceStatus)
 		}
 	} else {
 		result.ServiceStatus = "not_installed"
@@ -410,11 +471,7 @@ func buildSingboxDiagnostics(ctx context.Context, cfg *routerConfig) SingboxDiag
 	}
 	if result.Installed && !result.Managed {
 		addUniqueString(&result.Warnings, "singbox_not_systemd_managed")
-		addUniqueString(&result.Suggestions, "运行 systemctl status sing-box 确认服务是否由 systemd 托管。")
-	}
-	if result.Managed && result.Service == singbox.LegacyServiceName() {
-		addUniqueString(&result.Warnings, "legacy_migate_singbox_service")
-		addUniqueString(&result.Suggestions, "当前使用 legacy migate-singbox.service；可保留运行，后续维护时建议迁移到 sing-box.service。")
+		addUniqueString(&result.Suggestions, "运行 systemctl status "+singbox.ServiceName()+" 确认服务是否由 systemd 托管。")
 	}
 	if result.Installed && result.Managed && result.ServiceStatus != "running" {
 		addUniqueString(&result.Warnings, "singbox_service_not_running")
@@ -642,7 +699,7 @@ func validateSingboxConfigSnapshotWithRuntime(ctx context.Context, snapshot vali
 }
 
 func newSingboxApplySummary() SingboxApplySummary {
-	service := singbox.RuntimeServiceName()
+	service := singbox.ServiceName()
 	return SingboxApplySummary{
 		Applied:           false,
 		Service:           service,
@@ -1064,7 +1121,7 @@ func singboxLogsHandler() http.HandlerFunc {
 		} else if n > maxXrayLogLines {
 			lines = strconv.Itoa(maxXrayLogLines)
 		}
-		out, err := exec.Command("journalctl", "-u", singbox.RuntimeServiceName(), "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		out, err := exec.Command("journalctl", "-u", singbox.ServiceName(), "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
 		if err != nil {
 			out, err = exec.Command("tail", "-n", lines, "/var/log/syslog").CombinedOutput()
 			if err != nil {

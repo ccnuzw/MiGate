@@ -10,27 +10,27 @@ const apiMock = vi.hoisted(() => ({
   xrayStatus: vi.fn(async () => ({ service: 'xray', status: 'running', installed: true, managed: true, version: 'Xray 26.3.27', commands_executed: [] })),
   xrayVersion: vi.fn(async () => ({ version: 'Xray 26.3.27' })),
   xrayConfig: vi.fn(async () => ({})),
-  xrayConfigPreview: vi.fn(async () => ({ config_path: '/usr/local/migate/xray.json', in_sync: true })),
+  xrayConfigPreview: vi.fn(async () => ({ config_path: '/etc/migate/cores/xray.json', in_sync: true })),
   xrayDiagnostics: vi.fn(async () => ({ installed: true, service_status: 'running', config_exists: true, config_valid: true, warnings: [] })),
   xrayLogs: vi.fn(async () => ({ logs: '' })),
   xrayValidate: vi.fn(async () => ({ target: 'xray', valid: true })),
   xrayApply: vi.fn(async () => ({ status: 'applied' })),
   xrayInstall: vi.fn(async () => ({ core: 'xray', status: 'installed' })),
   xrayUninstall: vi.fn(async () => ({ core: 'xray', status: 'uninstalled' })),
-  xrayRestart: vi.fn(async () => ({ core: 'xray', status: 'restarted', commands_executed: ['systemctl restart xray'] })),
-  xrayStop: vi.fn(async () => ({ core: 'xray', status: 'stopped', commands_executed: ['systemctl stop xray'] })),
+  xrayRestart: vi.fn(async () => ({ core: 'xray', status: 'restarted', commands_executed: ['systemctl restart migate-xray'] })),
+  xrayStop: vi.fn(async () => ({ core: 'xray', status: 'stopped', commands_executed: ['systemctl stop migate-xray'] })),
   singboxStatus: vi.fn(async () => ({ service: 'sing-box', status: 'running', installed: true, managed: true, version: 'sing-box version 1.13.13', commands_executed: [] })),
   singboxVersion: vi.fn(async () => ({ version: 'sing-box version 1.13.13' })),
   singboxConfig: vi.fn(async () => ({})),
-  singboxConfigPreview: vi.fn(async () => ({ config_path: '/etc/sing-box/config.json', in_sync: true })),
+  singboxConfigPreview: vi.fn(async () => ({ config_path: '/etc/migate/cores/sing-box.json', in_sync: true })),
   singboxDiagnostics: vi.fn(async () => ({ installed: true, service_status: 'running', config_exists: true, config_valid: true, warnings: [] })),
   singboxLogs: vi.fn(async () => ({ logs: '' })),
   singboxValidate: vi.fn(async () => ({ target: 'singbox', valid: true })),
   singboxApply: vi.fn(async () => ({ status: 'applied' })),
   singboxInstall: vi.fn(async () => ({ core: 'singbox', status: 'installed' })),
   singboxUninstall: vi.fn(async () => ({ core: 'singbox', status: 'uninstalled' })),
-  singboxRestart: vi.fn(async () => ({ core: 'singbox', status: 'restarted', commands_executed: ['systemctl restart sing-box'] })),
-  singboxStop: vi.fn(async () => ({ core: 'singbox', status: 'stopped', commands_executed: ['systemctl stop sing-box'] })),
+  singboxRestart: vi.fn(async () => ({ core: 'singbox', status: 'restarted', commands_executed: ['systemctl restart migate-sing-box'] })),
+  singboxStop: vi.fn(async () => ({ core: 'singbox', status: 'stopped', commands_executed: ['systemctl stop migate-sing-box'] })),
 }));
 
 vi.mock('../api/endpoints', () => ({
@@ -108,10 +108,10 @@ describe('core action result', () => {
       message: 'sing-box 配置已应用',
       detail: 'commands:\nsing-box check\n\ndetail:\nok',
     });
-    expect(coreActionResult({ singbox: { applied: true, commands_executed: ['sing-box check -c /etc/sing-box/config.json'], output: 'ok' } }, 'sing-box 配置已应用')).toEqual({
+    expect(coreActionResult({ singbox: { applied: true, commands_executed: ['sing-box check -c /etc/migate/cores/sing-box.json'], output: 'ok' } }, 'sing-box 配置已应用')).toEqual({
       ok: true,
       message: 'sing-box 配置已应用',
-      detail: 'commands:\nsing-box check -c /etc/sing-box/config.json\n\ndetail:\nok',
+      detail: 'commands:\nsing-box check -c /etc/migate/cores/sing-box.json\n\ndetail:\nok',
     });
     expect(coreActionResult({ commands_executed: [], singbox: { applied: true, commands_executed: ['sing-box reload'], output: 'ok' } }, 'sing-box 配置已应用')).toEqual({
       ok: true,
@@ -194,12 +194,12 @@ describe('core action result', () => {
       managed: true,
       status: 'running',
       version: 'sing-box version 1.13.13',
-      config_path: '/etc/sing-box/config.json',
+      config_path: '/etc/migate/cores/sing-box.json',
       active_connections: 0,
     });
     expect(metrics).toEqual(expect.arrayContaining([
       { label: '托管', value: '已托管' },
-      { label: '配置路径', value: '/etc/sing-box/config.json' },
+      { label: '配置路径', value: '/etc/migate/cores/sing-box.json' },
     ]));
   });
 
@@ -225,11 +225,11 @@ describe('core action result', () => {
   });
 
   it('summarizes sing-box generated and disk config sync state', () => {
-    expect(configSyncState({ config_path: '/etc/sing-box/config.json', in_sync: true, disk: { config_path: '', hash: 'abc' }, generated: { config_path: '', hash: 'abc' } })).toMatchObject({
+    expect(configSyncState({ config_path: '/etc/migate/cores/sing-box.json', in_sync: true, disk: { config_path: '', hash: 'abc' }, generated: { config_path: '', hash: 'abc' } })).toMatchObject({
       ok: true,
       label: '磁盘配置与数据库生成配置一致',
     });
-    expect(configSyncState({ config_path: '/etc/sing-box/config.json', in_sync: false, reason: 'hash_mismatch', disk: { config_path: '', hash: 'old' }, generated: { config_path: '', hash: 'new' } })).toMatchObject({
+    expect(configSyncState({ config_path: '/etc/migate/cores/sing-box.json', in_sync: false, reason: 'hash_mismatch', disk: { config_path: '', hash: 'old' }, generated: { config_path: '', hash: 'new' } })).toMatchObject({
       ok: false,
       label: '磁盘配置与数据库生成配置不一致',
       detail: '原因：配置 hash 不一致 · disk: old · generated: new',
@@ -248,7 +248,7 @@ describe('core action result', () => {
       managed: true,
       service: 'sing-box',
       service_status: 'running',
-      config_path: '/etc/sing-box/config.json',
+      config_path: '/etc/migate/cores/sing-box.json',
       config_exists: true,
       config_valid: true,
       disk_generated_in_sync: false,
@@ -283,7 +283,7 @@ describe('core action result', () => {
   it('derives a user-facing core health summary from status, sync and listeners', () => {
     expect(coreHealthSummary(
       { service: 'xray', status: 'not_installed', installed: false },
-      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/etc/migate/cores/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
     )).toMatchObject({
       tone: 'error',
       headline: '核心未安装',
@@ -291,25 +291,25 @@ describe('core action result', () => {
     });
     expect(coreInstalledWithDiagnostics(
       { service: 'xray', status: 'not_installed', installed: false },
-      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/etc/migate/cores/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
     )).toBe(false);
     expect(coreInstalledWithDiagnostics(
       { service: 'xray', status: 'not_installed' },
-      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/etc/migate/cores/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
     )).toBe(false);
     expect(coreInstalledWithDiagnostics(
       { service: 'xray', status: 'unknown', version: 'not_installed' },
-      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/etc/migate/cores/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
     )).toBe(false);
     expect(coreInstalledWithDiagnostics(
       { service: 'xray', status: 'unknown', version: 'unknown' },
-      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/etc/migate/cores/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
     )).toBe(true);
 
     expect(coreHealthSummary(
       { service: 'sing-box', status: 'running', installed: true, managed: true, listening_ports: [{ inbound_id: 9, protocol: 'hysteria2', port: 21001, transport: 'udp', listening: false }] },
-      { installed: true, managed: true, service: 'sing-box', service_status: 'running', config_path: '/etc/sing-box/config.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [{ inbound_id: 9, protocol: 'hysteria2', port: 21001, transport: 'udp', listening: false }], recent_logs: [], warnings: ['singbox_missing_listeners'], suggestions: [] },
-      { config_path: '/etc/sing-box/config.json', in_sync: true, disk: { config_path: '', hash: 'a' }, generated: { config_path: '', hash: 'a' } },
+      { installed: true, managed: true, service: 'sing-box', service_status: 'running', config_path: '/etc/migate/cores/sing-box.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [{ inbound_id: 9, protocol: 'hysteria2', port: 21001, transport: 'udp', listening: false }], recent_logs: [], warnings: ['singbox_missing_listeners'], suggestions: [] },
+      { config_path: '/etc/migate/cores/sing-box.json', in_sync: true, disk: { config_path: '', hash: 'a' }, generated: { config_path: '', hash: 'a' } },
     )).toMatchObject({
       tone: 'warning',
       headline: '存在未监听端口',
@@ -318,8 +318,8 @@ describe('core action result', () => {
 
     expect(coreHealthSummary(
       { service: 'xray', status: 'running', installed: true, managed: true },
-      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/usr/local/migate/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
-      { config_path: '/usr/local/migate/xray.json', in_sync: true, disk: { config_path: '', hash: 'a' }, generated: { config_path: '', hash: 'a' } },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/etc/migate/cores/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { config_path: '/etc/migate/cores/xray.json', in_sync: true, disk: { config_path: '', hash: 'a' }, generated: { config_path: '', hash: 'a' } },
     )).toMatchObject({
       tone: 'ok',
       headline: '核心运行正常',
@@ -338,7 +338,7 @@ describe('core action result', () => {
       managed: true,
       service: 'xray',
       service_status: 'running',
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       config_exists: true,
       config_valid: true,
       disk_generated_in_sync: true,
@@ -352,7 +352,7 @@ describe('core action result', () => {
         severity: 'error',
         category: 'config',
         message: '按校验报错修复后重新应用。',
-        command: 'xray run -test -c /usr/local/migate/xray.json',
+        command: 'xray run -test -c /etc/migate/cores/xray.json',
         inbound_id: 7,
         port: 2443,
       }],
@@ -362,12 +362,12 @@ describe('core action result', () => {
       severity: '错误',
       category: '配置',
       message: '按校验报错修复后重新应用。',
-      command: 'xray run -test -c /usr/local/migate/xray.json',
+      command: 'xray run -test -c /etc/migate/cores/xray.json',
       target: '入站 7 · 端口 2443',
-      summary: '错误 · 配置 · 入站 7 · 端口 2443 · 按校验报错修复后重新应用。 · 命令：xray run -test -c /usr/local/migate/xray.json',
+      summary: '错误 · 配置 · 入站 7 · 端口 2443 · 按校验报错修复后重新应用。 · 命令：xray run -test -c /etc/migate/cores/xray.json',
     });
     expect(diagnosticSuggestionItems(diagnostics)).toEqual([
-      '错误 · 配置 · 入站 7 · 端口 2443 · 按校验报错修复后重新应用。 · 命令：xray run -test -c /usr/local/migate/xray.json',
+      '错误 · 配置 · 入站 7 · 端口 2443 · 按校验报错修复后重新应用。 · 命令：xray run -test -c /etc/migate/cores/xray.json',
     ]);
   });
 
@@ -377,7 +377,7 @@ describe('core action result', () => {
       managed: true,
       service: 'xray',
       service_status: 'running',
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       config_exists: true,
       config_valid: true,
       disk_generated_in_sync: true,
@@ -398,7 +398,7 @@ describe('core service controls', () => {
       installed: true,
       managed: true,
       version: 'Xray 26.3.27',
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       active_connections: 3,
       listening_ports: [
         { inbound_id: 10, protocol: 'vless', port: 2443, network: 'grpc', transport: 'tcp', security: 'reality', grpc_service_name: 'svc', listening: true },
@@ -406,18 +406,18 @@ describe('core service controls', () => {
       commands_executed: [],
     } as Awaited<ReturnType<typeof apiMock.xrayStatus>>);
     apiMock.xrayConfigPreview.mockResolvedValueOnce({
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       in_sync: false,
       reason: 'hash_mismatch',
-      disk: { config_path: '/usr/local/migate/xray.json', hash: 'old' },
-      generated: { config_path: '/usr/local/migate/xray.json', hash: 'new' },
+      disk: { config_path: '/etc/migate/cores/xray.json', hash: 'old' },
+      generated: { config_path: '/etc/migate/cores/xray.json', hash: 'new' },
     } as Awaited<ReturnType<typeof apiMock.xrayConfigPreview>>);
     apiMock.xrayDiagnostics.mockResolvedValueOnce({
       installed: true,
       managed: true,
       service: 'xray',
       service_status: 'running',
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       config_exists: true,
       config_valid: true,
       disk_generated_in_sync: false,
@@ -436,7 +436,7 @@ describe('core service controls', () => {
     expect(document.body.textContent).toContain('主操作');
     expect(document.body.textContent).toContain('应用配置');
     expect(document.body.textContent).toContain('配置状态');
-    expect(document.body.textContent).toContain('/usr/local/migate/xray.json');
+    expect(document.body.textContent).toContain('/etc/migate/cores/xray.json');
     expect(document.body.textContent).toContain('监听端口');
     expect(document.body.textContent).toContain('svc');
     expect(document.body.textContent).toContain('诊断');
@@ -451,7 +451,7 @@ describe('core service controls', () => {
       installed: true,
       managed: true,
       version: 'sing-box version 1.13.13',
-      config_path: '/etc/sing-box/config.json',
+      config_path: '/etc/migate/cores/sing-box.json',
       listening_ports: [
         { inbound_id: 9, protocol: 'hysteria2', port: 21001, network: 'udp', transport: 'udp', listening: false },
       ],
@@ -462,7 +462,7 @@ describe('core service controls', () => {
       managed: true,
       service: 'sing-box',
       service_status: 'running',
-      config_path: '/etc/sing-box/config.json',
+      config_path: '/etc/migate/cores/sing-box.json',
       config_exists: true,
       config_valid: true,
       disk_generated_in_sync: true,
@@ -500,7 +500,7 @@ describe('core service controls', () => {
       managed: true,
       service: 'xray',
       service_status: 'running',
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       config_exists: true,
       config_valid: true,
       disk_generated_in_sync: true,
@@ -525,7 +525,7 @@ describe('core service controls', () => {
       installed: true,
       managed: true,
       version: 'Xray 26.3.27',
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       listening_ports: [],
       commands_executed: [],
     } as Awaited<ReturnType<typeof apiMock.xrayStatus>>);
@@ -534,7 +534,7 @@ describe('core service controls', () => {
       managed: true,
       service: 'xray',
       service_status: 'running',
-      config_path: '/usr/local/migate/xray.json',
+      config_path: '/etc/migate/cores/xray.json',
       config_exists: true,
       config_valid: true,
       disk_generated_in_sync: true,

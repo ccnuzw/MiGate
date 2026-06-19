@@ -726,7 +726,6 @@ export function diagnosticWarningLabel(warning: string): string {
   const labels: Record<string, string> = {
     singbox_not_installed: 'sing-box 未安装',
     singbox_not_systemd_managed: 'sing-box 未被 systemd 托管',
-    legacy_migate_singbox_service: '正在使用 legacy migate-singbox.service',
     singbox_service_not_running: 'sing-box 服务未运行',
     singbox_config_missing: '配置文件不存在',
     singbox_config_invalid: 'sing-box check 失败',

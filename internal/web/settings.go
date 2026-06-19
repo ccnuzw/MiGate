@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+
+	"github.com/imzyb/MiGate/internal/panelconfig"
 )
 
 func settingsHandler(cfg *routerConfig) http.HandlerFunc {
@@ -27,6 +29,7 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "parse_config_failed")
 				return
 			}
+			raw = filterPanelSettings(raw)
 			if _, exists := raw["panel_password"]; exists {
 				raw["has_password"] = true
 				delete(raw, "panel_password")
@@ -39,6 +42,7 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
+			updated = filterPanelSettings(updated)
 			// Read existing to preserve password if not provided
 			existing, err := os.ReadFile(configPath)
 			if err == nil {
@@ -77,7 +81,7 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "serialize_failed")
 				return
 			}
-			if err := os.WriteFile(configPath, data, 0o600); err != nil {
+			if err := writePanelConfigFile(configPath, data); err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "write_config_failed")
 				return
 			}
@@ -87,6 +91,28 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 			methodNotAllowed(w)
 		}
 	}
+}
+
+func filterPanelSettings(raw map[string]interface{}) map[string]interface{} {
+	allowed := map[string]bool{
+		"panel_port":     true,
+		"panel_username": true,
+		"panel_password": true,
+		"web_base_path":  true,
+		"public_host":    true,
+		"trust_proxy":    true,
+		"database_path":  true,
+		"cert_domain":    true,
+		"cert_email":     true,
+		"has_password":   true,
+	}
+	filtered := make(map[string]interface{}, len(raw))
+	for key, value := range raw {
+		if allowed[key] {
+			filtered[key] = value
+		}
+	}
+	return filtered
 }
 
 func writePanelPasswordToConfig(configPath, hashedPassword string) error {
@@ -104,5 +130,9 @@ func writePanelPasswordToConfig(configPath, hashedPassword string) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(configPath, data, 0o600)
+	return writePanelConfigFile(configPath, data)
+}
+
+func writePanelConfigFile(configPath string, data []byte) error {
+	return panelconfig.WriteFile(configPath, data)
 }

@@ -8,13 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/imzyb/MiGate/internal/corefile"
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/lockfile"
+	"github.com/imzyb/MiGate/internal/paths"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -129,10 +131,10 @@ type xrayConfigSyncPreview struct {
 }
 
 func xrayConfigPath(cfg *routerConfig) string {
-	if cfg != nil && strings.TrimSpace(cfg.configDir) != "" {
-		return filepath.Join(cfg.configDir, "xray.json")
+	if cfg != nil && strings.TrimSpace(cfg.xrayConfigPath) != "" {
+		return cfg.xrayConfigPath
 	}
-	return filepath.Join("/usr/local/migate", "xray.json")
+	return paths.XrayConfig
 }
 
 func buildXrayConfigSyncPreview(ctx context.Context, cfg *routerConfig) xrayConfigSyncPreview {
@@ -241,7 +243,7 @@ func (p defaultXrayProbe) Version(ctx context.Context) string {
 	if p.controller != nil {
 		return strings.TrimSpace(p.controller.Version(ctx))
 	}
-	out, err := p.command(ctx, "xray", "version")
+	out, err := p.command(ctx, paths.XrayBinary, "version")
 	if err != nil {
 		return ""
 	}
@@ -256,7 +258,7 @@ func (p defaultXrayProbe) Managed(ctx context.Context) bool {
 	if p.controller != nil {
 		return p.controller.Status(ctx).Managed
 	}
-	out, err := p.command(ctx, "systemctl", "show", "xray", "--property=LoadState")
+	out, err := p.command(ctx, "systemctl", "show", paths.XrayService, "--property=LoadState")
 	if err != nil {
 		return false
 	}
@@ -279,7 +281,7 @@ func (p defaultXrayProbe) Status(ctx context.Context) string {
 			return status
 		}
 	}
-	out, err := p.command(ctx, "systemctl", "is-active", "xray")
+	out, err := p.command(ctx, "systemctl", "is-active", paths.XrayService)
 	if err != nil {
 		return "stopped"
 	}
@@ -290,12 +292,14 @@ func (p defaultXrayProbe) Status(ctx context.Context) string {
 }
 
 func (p defaultXrayProbe) ConfigExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+	return corefile.CheckPath(path, corefile.Requirement{Kind: corefile.KindFile, Readable: true}).OK()
 }
 
 func (p defaultXrayProbe) CheckConfig(ctx context.Context, path string) error {
-	out, err := p.command(ctx, "xray", "run", "-test", "-c", path)
+	if status := corefile.CheckPath(path, corefile.Requirement{Kind: corefile.KindFile, Readable: true}); !status.OK() {
+		return errors.New(status.Error())
+	}
+	out, err := p.command(ctx, paths.XrayBinary, "run", "-test", "-c", path)
 	if err != nil {
 		if strings.TrimSpace(out) != "" {
 			return errors.New(strings.TrimSpace(out))
@@ -362,7 +366,7 @@ func buildXrayDiagnostics(ctx context.Context, cfg *routerConfig) XrayDiagnostic
 	probe := xrayProbeForConfig(cfg)
 	path := xrayConfigPath(cfg)
 	result := XrayDiagnostics{
-		Service:             "xray",
+		Service:             paths.XrayService,
 		ServiceStatus:       "not_installed",
 		ConfigPath:          path,
 		ConfigValid:         false,
@@ -420,11 +424,11 @@ func buildXrayDiagnostics(ctx context.Context, cfg *routerConfig) XrayDiagnostic
 	}
 	if result.Installed && !result.Managed {
 		addUniqueString(&result.Warnings, "xray_not_systemd_managed")
-		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_not_systemd_managed", Severity: "warning", Category: "service", Message: "确认 Xray 服务是否由 systemd 托管。", Command: "systemctl status xray"})
+		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_not_systemd_managed", Severity: "warning", Category: "service", Message: "确认 Xray 服务是否由 systemd 托管。", Command: "systemctl status " + paths.XrayService})
 	}
 	if result.Installed && result.Managed && result.ServiceStatus != "running" {
 		addUniqueString(&result.Warnings, "xray_service_not_running")
-		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_service_not_running", Severity: "error", Category: "service", Message: "检查 Xray 服务状态和最近日志。", Command: "systemctl status xray && journalctl -u xray -n 80 --no-pager"})
+		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_service_not_running", Severity: "error", Category: "service", Message: "检查 Xray 服务状态和最近日志。", Command: "systemctl status " + paths.XrayService + " && journalctl -u " + paths.XrayService + " -n 80 --no-pager"})
 	}
 	if !result.ConfigExists {
 		addUniqueString(&result.Warnings, "xray_config_missing")
@@ -432,7 +436,7 @@ func buildXrayDiagnostics(ctx context.Context, cfg *routerConfig) XrayDiagnostic
 	}
 	if result.ConfigExists && !result.ConfigValid {
 		addUniqueString(&result.Warnings, "xray_config_invalid")
-		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_config_invalid", Severity: "error", Category: "config", Message: "按 xray 配置校验报错修复后重新应用。", Command: "xray run -test -c " + result.ConfigPath})
+		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_config_invalid", Severity: "error", Category: "config", Message: "按 xray 配置校验报错修复后重新应用。", Command: paths.XrayBinary + " run -test -c " + result.ConfigPath})
 	}
 	if result.SyncReason != "" && result.SyncReason != "store_unavailable" {
 		addUniqueString(&result.Warnings, "xray_config_out_of_sync")
@@ -443,7 +447,7 @@ func buildXrayDiagnostics(ctx context.Context, cfg *routerConfig) XrayDiagnostic
 		for _, listener := range result.MissingListeners {
 			addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_missing_listeners", Severity: "warning", Category: "listener", Message: fmt.Sprintf("检查防火墙/安全组是否放行 TCP 端口 %d。", listener.Port), InboundID: listener.InboundID, Port: listener.Port})
 		}
-		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_missing_listeners_logs", Severity: "info", Category: "log", Message: "检查 Xray 服务状态和最近日志。", Command: "systemctl status xray && journalctl -u xray -n 80 --no-pager"})
+		addXrayDiagnosticAction(&result, CoreDiagnosticAction{Code: "xray_missing_listeners_logs", Severity: "info", Category: "log", Message: "检查 Xray 服务状态和最近日志。", Command: "systemctl status " + paths.XrayService + " && journalctl -u " + paths.XrayService + " -n 80 --no-pager"})
 	}
 	addXrayLogAttribution(&result)
 	return result
@@ -828,7 +832,7 @@ func xrayApplyForWrite(ctx context.Context, ctrl XrayController) XrayApplyResult
 	}
 	result := ctrl.Apply(ctx)
 	if result.Service == "" {
-		result.Service = "xray"
+		result.Service = paths.XrayService
 	}
 	if result.CommandsExecuted == nil {
 		result.CommandsExecuted = []string{}
@@ -1101,6 +1105,24 @@ func xrayStatusHandler(cfg *routerConfig) http.HandlerFunc {
 			controller = defaultXrayController{}
 		}
 		status := controller.Status(r.Context())
+		if strings.TrimSpace(status.Core) == "" {
+			status.Core = "xray"
+		}
+		if strings.TrimSpace(status.Service) == "" {
+			status.Service = paths.XrayService
+		}
+		if strings.TrimSpace(status.ServiceStatus) == "" {
+			status.ServiceStatus = normalizeCoreServiceStatus(status.Status)
+		}
+		if strings.TrimSpace(status.Status) == "" {
+			status.Status = status.ServiceStatus
+		}
+		if strings.TrimSpace(status.BinaryPath) == "" {
+			status.BinaryPath = paths.XrayBinary
+		}
+		if strings.TrimSpace(status.BinaryVersion) == "" {
+			status.BinaryVersion = status.Version
+		}
 		if strings.TrimSpace(status.ConfigPath) == "" {
 			status.ConfigPath = xrayConfigPath(cfg)
 		}
@@ -1215,6 +1237,12 @@ func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{"commands_executed": []string{}})
 			return
 		}
+		unlock, err := lockfile.TryAcquire(paths.ApplyLock)
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, "apply_locked", map[string]interface{}{"detail": err.Error(), "lock_path": paths.ApplyLock})
+			return
+		}
+		defer unlock()
 		var controller XrayController = defaultXrayController{}
 		if cfg != nil && cfg.xrayController != nil {
 			controller = cfg.xrayController

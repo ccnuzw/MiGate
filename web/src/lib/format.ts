@@ -29,6 +29,7 @@ export function serviceLabel(status?: string): string {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized === 'running' || normalized === 'active') return '运行中';
   if (normalized === 'stopped' || normalized === 'inactive') return '已停止';
+  if (normalized === 'failed') return '失败';
   if (normalized === 'not_managed' || normalized === 'unmanaged') return '未托管';
   if (normalized === 'not_installed') return '未安装';
   if (normalized === 'unknown' || normalized === '') return '未知';

@@ -8,19 +8,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/imzyb/MiGate/internal/corefile"
+	"github.com/imzyb/MiGate/internal/paths"
 )
 
 var (
 	// DefaultBinaryPath is the default location for the sing-box binary.
-	DefaultBinaryPath = "/usr/local/bin/sing-box"
+	DefaultBinaryPath = paths.SingboxBinary
 	// DefaultConfigDir is the default directory for sing-box config and certs.
-	DefaultConfigDir = "/etc/sing-box"
+	DefaultConfigDir = paths.CoreConfigDir
 	// DefaultConfigPath is the default sing-box config file path.
-	DefaultConfigPath = "/etc/sing-box/config.json"
+	DefaultConfigPath = paths.SingboxConfig
 	// CertFile is the auto-generated self-signed certificate path.
-	CertFile = "/etc/sing-box/server.crt"
+	CertFile = "/etc/migate/cores/sing-box-server.crt"
 	// KeyFile is the auto-generated self-signed key path.
-	KeyFile = "/etc/sing-box/server.key"
+	KeyFile = "/etc/migate/cores/sing-box-server.key"
 	// SBBasePort is the starting port for sing-box inbounds (21000-21999).
 	SBBasePort = 21000
 	// SBMaxPort is the max port for sing-box inbounds.
@@ -30,8 +33,7 @@ var (
 var execCommand = exec.Command
 
 const (
-	primaryServiceName = "sing-box"
-	legacyServiceName  = "migate-singbox"
+	serviceName = paths.SingboxService
 )
 
 // ManagementStatus describes whether sing-box is managed by a known systemd
@@ -43,19 +45,22 @@ type ManagementStatus struct {
 
 // IsInstalled returns true if the sing-box binary exists.
 func IsInstalled() bool {
-	_, err := os.Stat(DefaultBinaryPath)
-	return err == nil
+	return CheckBinary().OK()
 }
 
 // CheckConfigDir ensures the config directory exists.
 func CheckConfigDir() error {
-	return os.MkdirAll(DefaultConfigDir, 0755)
+	status := corefile.EnsureDir(DefaultConfigDir, corefile.Requirement{Readable: true, Writable: true, Executable: true})
+	if !status.OK() {
+		return fmt.Errorf("sing-box config directory check failed: %s", status.Error())
+	}
+	return nil
 }
 
 // Version returns the sing-box version string.
 func Version() (string, error) {
-	if !IsInstalled() {
-		return "", fmt.Errorf("sing-box not installed")
+	if status := CheckBinary(); !status.OK() {
+		return "", fmt.Errorf("sing-box binary check failed: %s", status.Error())
 	}
 	out, err := execCommand(DefaultBinaryPath, "version").Output()
 	if err != nil {
@@ -84,9 +89,19 @@ func CheckConfig() error {
 
 // CheckConfigPath validates a specific config file with sing-box.
 func CheckConfigPath(path string) error {
+	if status := CheckBinary(); !status.OK() {
+		return fmt.Errorf("sing-box binary check failed: %s", status.Error())
+	}
+	if status := CheckConfigFile(path); !status.OK() {
+		return fmt.Errorf("sing-box config file check failed: %s", status.Error())
+	}
 	out, err := execCommand(DefaultBinaryPath, "check", "-c", path).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("sing-box config check failed: %s: %w", string(out), err)
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("sing-box config check failed for %s: %s: %w", path, detail, err)
 	}
 	return nil
 }
@@ -94,19 +109,22 @@ func CheckConfigPath(path string) error {
 // Status returns "running" if the service is active, "stopped" if it is
 // managed but inactive, or "not_managed" when no known systemd unit exists.
 func Status() string {
+	if !IsInstalled() {
+		return "not_installed"
+	}
 	if !Management().Managed {
 		return "not_managed"
 	}
 	out, err := ServiceStatus()
-	if err != nil {
-		return "stopped"
-	}
 	status := strings.TrimSpace(string(out))
+	if status == "" && err != nil {
+		return "unknown"
+	}
 	switch status {
-	case "active", "activating":
+	case "active":
 		return "running"
 	default:
-		return "stopped"
+		return status
 	}
 }
 
@@ -121,10 +139,14 @@ func Apply() error {
 
 // ApplyConfig atomically validates, installs, and restarts a generated config.
 func ApplyConfig(raw []byte) error {
+	configDir := filepath.Dir(DefaultConfigPath)
 	if err := CheckConfigDir(); err != nil {
 		return fmt.Errorf("prepare config dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(DefaultConfigDir, ".config-*.json")
+	if status := corefile.EnsureDir(configDir, corefile.Requirement{Readable: true, Writable: true, Executable: true}); !status.OK() {
+		return fmt.Errorf("prepare config path %s: %s", DefaultConfigPath, status.Error())
+	}
+	tmp, err := os.CreateTemp(configDir, ".config-*.json")
 	if err != nil {
 		return fmt.Errorf("create temp config: %w", err)
 	}
@@ -134,7 +156,7 @@ func ApplyConfig(raw []byte) error {
 		tmp.Close()
 		return fmt.Errorf("write temp config: %w", err)
 	}
-	if err := tmp.Chmod(0644); err != nil {
+	if err := tmp.Chmod(0640); err != nil {
 		tmp.Close()
 		return fmt.Errorf("chmod temp config: %w", err)
 	}
@@ -144,12 +166,9 @@ func ApplyConfig(raw []byte) error {
 	if err := CheckConfigPath(tmpPath); err != nil {
 		return fmt.Errorf("config check failed: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(DefaultConfigPath), 0755); err != nil {
-		return fmt.Errorf("prepare config path: %w", err)
-	}
 	var backupPath string
 	if _, err := os.Stat(DefaultConfigPath); err == nil {
-		backup, createErr := os.CreateTemp(filepath.Dir(DefaultConfigPath), ".config-backup-*.json")
+		backup, createErr := os.CreateTemp(configDir, ".config-backup-*.json")
 		if createErr != nil {
 			return fmt.Errorf("backup current config: %w", createErr)
 		}
@@ -187,36 +206,26 @@ func ApplyConfig(raw []byte) error {
 	return nil
 }
 
+// CheckBinary validates that the configured sing-box binary exists and is executable.
+func CheckBinary() corefile.Status {
+	return corefile.CheckPath(DefaultBinaryPath, corefile.Requirement{Kind: corefile.KindFile, Readable: true, Executable: true})
+}
+
+// CheckConfigFile validates that a sing-box config path is a readable file.
+func CheckConfigFile(path string) corefile.Status {
+	return corefile.CheckPath(path, corefile.Requirement{Kind: corefile.KindFile, Readable: true})
+}
+
 // ServiceName returns the systemd service name.
 func ServiceName() string {
-	return primaryServiceName
-}
-
-// LegacyServiceName returns the pre-migration systemd unit name. New installs
-// use ServiceName(), but runtime operations keep this fallback for upgraded VPSes.
-func LegacyServiceName() string {
-	return legacyServiceName
-}
-
-// RuntimeServiceName returns the best systemd unit to use for runtime
-// operations, preferring the upstream sing-box.service and falling back to the
-// legacy MiGate-managed unit when it is the only installed unit.
-func RuntimeServiceName() string {
-	return resolveServiceName()
+	return serviceName
 }
 
 func Management() ManagementStatus {
-	if serviceAvailable(primaryServiceName) {
-		return ManagementStatus{Managed: true, Service: primaryServiceName}
+	if serviceAvailable(serviceName) {
+		return ManagementStatus{Managed: true, Service: serviceName}
 	}
-	if serviceAvailable(legacyServiceName) {
-		return ManagementStatus{Managed: true, Service: legacyServiceName}
-	}
-	return ManagementStatus{Managed: false, Service: primaryServiceName}
-}
-
-func resolveServiceName() string {
-	return Management().Service
+	return ManagementStatus{Managed: false, Service: serviceName}
 }
 
 func serviceAvailable(name string) bool {
@@ -236,7 +245,7 @@ func serviceAvailable(name string) bool {
 
 // RestartService restarts the systemd service.
 func RestartService() (string, error) {
-	service := resolveServiceName()
+	service := ServiceName()
 	cmd := execCommand("systemctl", "restart", service)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -247,7 +256,7 @@ func RestartService() (string, error) {
 
 // ServiceStatus returns the systemd service status.
 func ServiceStatus() (string, error) {
-	service := resolveServiceName()
+	service := ServiceName()
 	cmd := execCommand("systemctl", "is-active", service)
 	out, err := cmd.CombinedOutput()
 	if err == nil || strings.TrimSpace(string(out)) != "" {
@@ -281,7 +290,7 @@ type ServiceProperties struct {
 
 // Show returns parsed systemd service properties via systemctl show.
 func Show() (*ServiceProperties, error) {
-	service := resolveServiceName()
+	service := ServiceName()
 	cmd := execCommand("systemctl", "show", service,
 		"--property=MemoryCurrent",
 		"--property=MainPID",

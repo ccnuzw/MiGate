@@ -43,6 +43,15 @@ func WithConfigDir(dir string) Option {
 	}
 }
 
+func WithXrayConfigPath(path string) Option {
+	return func(cfg *routerConfig) {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			cfg.xrayConfigPath = path
+		}
+	}
+}
+
 func WithBasePath(basePath string) Option {
 	return func(cfg *routerConfig) {
 		cfg.basePath = normalizeBasePath(basePath)
