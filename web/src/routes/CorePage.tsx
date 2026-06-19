@@ -18,8 +18,8 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   const confirm = useConfirm();
   const label = core === 'xray' ? 'Xray' : 'sing-box';
   const endpoints = core === 'xray'
-    ? { status: api.xrayStatus, version: api.xrayVersion, config: api.xrayConfig, configPreview: api.xrayConfigPreview, diagnostics: api.xrayDiagnostics, logs: api.xrayLogs, validate: api.xrayValidate, apply: api.xrayApply, install: api.xrayInstall, uninstall: api.xrayUninstall, restart: api.xrayRestart, stop: api.xrayStop }
-    : { status: api.singboxStatus, version: api.singboxVersion, config: api.singboxConfig, configPreview: api.singboxConfigPreview, diagnostics: api.singboxDiagnostics, logs: api.singboxLogs, validate: api.singboxValidate, apply: api.singboxApply, install: api.singboxInstall, uninstall: api.singboxUninstall, restart: api.singboxRestart, stop: api.singboxStop };
+    ? { status: api.xrayStatus, version: api.xrayVersion, config: api.xrayConfig, configPreview: api.xrayConfigPreview, diagnostics: api.xrayDiagnostics, logs: api.xrayLogs, validate: api.xrayValidate, apply: api.xrayApply, install: api.xrayInstall, uninstall: api.xrayUninstall, delete: api.xrayDelete, restart: api.xrayRestart, stop: api.xrayStop }
+    : { status: api.singboxStatus, version: api.singboxVersion, config: api.singboxConfig, configPreview: api.singboxConfigPreview, diagnostics: api.singboxDiagnostics, logs: api.singboxLogs, validate: api.singboxValidate, apply: api.singboxApply, install: api.singboxInstall, uninstall: api.singboxUninstall, delete: api.singboxDelete, restart: api.singboxRestart, stop: api.singboxStop };
   const [lastResult, setLastResult] = useState<{ ok: boolean; message: string; detail?: string } | null>(null);
   const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: coreStatusRefetchInterval(visible), staleTime: 10_000 });
   const versionQuery = useQuery({ queryKey: [core, 'version'], queryFn: endpoints.version, retry: false, staleTime: 10 * 60_000 });
@@ -67,12 +67,22 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   const uninstall = useMutation({
     mutationFn: endpoints.uninstall,
     onSuccess: (data) => {
-      const result = coreActionResult(data, `${label} 卸载命令已执行`);
+      const result = coreActionResult(data, `${label} 取消托管命令已执行`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
       refreshQueries([statusQuery, versionQuery, diagnosticsQuery]);
     },
-    onError: (error) => setActionError(error, `${label} 卸载失败`, setLastResult, showToast),
+    onError: (error) => setActionError(error, `${label} 取消托管失败`, setLastResult, showToast),
+  });
+  const deleteCore = useMutation({
+    mutationFn: endpoints.delete,
+    onSuccess: (data) => {
+      const result = coreActionResult(data, `${label} 删除命令已执行`);
+      setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
+      showToast(text(result.message), result.ok ? 'success' : 'error');
+      refreshQueries([statusQuery, versionQuery, diagnosticsQuery]);
+    },
+    onError: (error) => setActionError(error, `${label} 删除失败`, setLastResult, showToast),
   });
   const restart = useMutation({
     mutationFn: endpoints.restart,
@@ -136,7 +146,8 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
             <div className="core-action-group-title">{text('危险')}</div>
             <div className="core-action-row">
               <SpinnerButton className="btn danger ghost-danger" loading={stop.isPending} disabled={!installed} title={text(installed ? '停止核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`停止 ${label} 核心？`), description: text('该操作会停止核心服务，入站连接会中断。'), tone: 'danger' })) && stop.mutate()}><Square className="h-4 w-4" /> {text('停止核心')}</SpinnerButton>
-              <SpinnerButton className="btn danger ghost-danger" loading={uninstall.isPending} disabled={!installed} title={text(installed ? '卸载核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`卸载 ${label} 核心？`), description: text('该操作会删除或停用系统服务。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('卸载核心')}</SpinnerButton>
+              <SpinnerButton className="btn danger ghost-danger" loading={uninstall.isPending} disabled={!installed} title={text(installed ? '取消托管核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`取消托管 ${label} 核心？`), description: text('该操作会停止并移除 MiGate 管理的 systemd 服务，保留核心二进制和配置。'), tone: 'danger' })) && uninstall.mutate()}><Trash2 className="h-4 w-4" /> {text('取消托管核心')}</SpinnerButton>
+              <SpinnerButton className="btn danger ghost-danger" loading={deleteCore.isPending} disabled={!installed} title={text(installed ? '删除核心' : '核心未安装')} onClick={async () => installed && (await confirm({ title: text(`删除 ${label} 核心？`), description: text('该操作会停止服务并删除核心二进制，保留标准配置文件。'), tone: 'danger' })) && deleteCore.mutate()}><Trash2 className="h-4 w-4" /> {text('删除核心')}</SpinnerButton>
             </div>
           </div>
         </div>

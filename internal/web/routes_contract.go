@@ -112,6 +112,9 @@ func routeTable() []Route {
 		route(http.MethodPost, "/api/xray/uninstall", AuthRequired, CSRFRequired, "coreUninstallHandler", func(d *routeDeps) http.HandlerFunc {
 			return invalidateCoreCacheAfter(d.coreCache, []string{"xray-status", "xray-version"}, coreUninstallHandler("xray", d.cfg.coreScriptRunner))
 		}),
+		route(http.MethodPost, "/api/xray/delete", AuthRequired, CSRFRequired, "coreDeleteHandler", func(d *routeDeps) http.HandlerFunc {
+			return invalidateCoreCacheAfter(d.coreCache, []string{"xray-status", "xray-version"}, coreDeleteHandler("xray", d.cfg.coreScriptRunner))
+		}),
 		route(http.MethodPost, "/api/xray/restart", AuthRequired, CSRFRequired, "coreServiceControlHandler", func(d *routeDeps) http.HandlerFunc {
 			return invalidateCoreCacheAfter(d.coreCache, []string{"xray-status"}, coreServiceControlHandler("xray", "restart", d.cfg.coreScriptRunner))
 		}),
@@ -135,6 +138,9 @@ func routeTable() []Route {
 		}),
 		route(http.MethodPost, "/api/singbox/uninstall", AuthRequired, CSRFRequired, "coreUninstallHandler", func(d *routeDeps) http.HandlerFunc {
 			return invalidateCoreCacheAfter(d.coreCache, []string{"singbox-status", "singbox-version"}, coreUninstallHandler("singbox", d.cfg.coreScriptRunner))
+		}),
+		route(http.MethodPost, "/api/singbox/delete", AuthRequired, CSRFRequired, "coreDeleteHandler", func(d *routeDeps) http.HandlerFunc {
+			return invalidateCoreCacheAfter(d.coreCache, []string{"singbox-status", "singbox-version"}, coreDeleteHandler("singbox", d.cfg.coreScriptRunner))
 		}),
 		route(http.MethodPost, "/api/singbox/restart", AuthRequired, CSRFRequired, "coreServiceControlHandler", func(d *routeDeps) http.HandlerFunc {
 			return invalidateCoreCacheAfter(d.coreCache, []string{"singbox-status"}, coreServiceControlHandler("singbox", "restart", d.cfg.coreScriptRunner))
