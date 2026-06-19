@@ -82,23 +82,48 @@ override the safer default.
 
 ## Common Commands
 
-Check status:
+Check status and diagnostics:
 
 ```bash
+mg status
+mg doctor
+mg info
+mg ports
 systemctl status migate
 ```
 
 Restart panel:
 
 ```bash
+mg restart
+mg restart all
 systemctl restart migate
 ```
 
 View logs:
 
 ```bash
+mg logs -f
 journalctl -u migate -f
 ```
+
+Update, backup, and restore:
+
+```bash
+mg update
+mg update --check
+mg backup
+mg restore /var/lib/migate/backups/migate-backup-YYYYMMDD-HHMMSS.tar.gz
+```
+
+`mg backup` includes `/etc/migate`, `/var/lib/migate/migate.db`, and
+`/var/lib/migate/versions.json` by default, and writes archives under
+`/var/lib/migate/backups`. `mg uninstall` removes services and binaries while
+keeping config/data/logs unless the uninstaller is run with `--purge`.
+
+These paths and services are the MiGate Runtime Contract and MiGate Ops
+Contract. Standard systemd services are `migate`, `migate-xray`, and
+`migate-sing-box`.
 
 Config file:
 
@@ -128,6 +153,12 @@ Xray config:
 
 ```text
 /etc/migate/cores/xray.json
+```
+
+sing-box config:
+
+```text
+/etc/migate/cores/sing-box.json
 ```
 
 More details: `docs/install.md`.

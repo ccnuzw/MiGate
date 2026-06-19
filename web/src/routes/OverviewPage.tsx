@@ -1,11 +1,13 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
 import { useMemo } from 'react';
+import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { DashboardSummary, TrafficSeriesPoint } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
 import { formatBytes, formatDuration, formatPercent, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { refreshQueries } from '../lib/queryInvalidation';
 import { usePageVisible } from '../lib/visibility';
 
 export default function OverviewPage() {
@@ -249,7 +251,7 @@ function validationSummary(data: { valid: boolean; inbounds?: number; outbounds?
 }
 
 function errorText(error: unknown) {
-  return error instanceof Error ? error.message : String(error || 'unknown');
+  return getAPIErrorMessage(error, 'unknown');
 }
 
 export function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
@@ -276,7 +278,7 @@ export function engineStatusSummary(engines: Record<string, string> | undefined,
 }
 
 function refreshOverview(queries: Array<{ refetch: () => unknown }>) {
-  queries.forEach((query) => query.refetch());
+  refreshQueries(queries);
 }
 
 export function PageTitle({ title, description, action }: { title: string; description?: string; action?: React.ReactNode }) {

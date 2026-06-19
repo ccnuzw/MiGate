@@ -1,8 +1,9 @@
 package singbox
 
 import (
+	"context"
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,31 +11,31 @@ import (
 	"testing"
 )
 
-func TestMain(m *testing.M) {
-	if os.Getenv("SINGBOX_MANAGER_TEST_HELPER") == "1" {
-		if hasTestHelperArg("check-fail") {
-			os.Stderr.WriteString("outbounds[3]: dns outbound is deprecated\n")
-			os.Exit(1)
-		}
-		if hasTestHelperArg("restart-fail") {
-			os.Stderr.WriteString("restart failed\n")
-			os.Exit(1)
-		}
-		if out := os.Getenv("SINGBOX_MANAGER_TEST_STDOUT"); out != "" {
-			os.Stdout.WriteString(out)
-		}
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
+type fakeCommandRunner struct {
+	runOutput func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-func hasTestHelperArg(want string) bool {
-	for _, arg := range os.Args {
-		if arg == want {
-			return true
-		}
+func (r fakeCommandRunner) Run(ctx context.Context, name string, args ...string) error {
+	_, err := r.RunOutput(ctx, name, args...)
+	return err
+}
+
+func (r fakeCommandRunner) RunOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if r.runOutput == nil {
+		return nil, nil
 	}
-	return false
+	return r.runOutput(ctx, name, args...)
+}
+
+func setCommandRunner(t *testing.T, runner fakeCommandRunner) {
+	t.Helper()
+	origRunner := commandRunner
+	commandRunner = runner
+	t.Cleanup(func() { commandRunner = origRunner })
+}
+
+func commandCall(name string, args ...string) string {
+	return strings.TrimSpace(name + " " + strings.Join(args, " "))
 }
 
 func setTempSingboxBinary(t *testing.T, mode os.FileMode) string {
@@ -67,16 +68,11 @@ func TestServiceNameUsesMiGateSystemdUnit(t *testing.T) {
 }
 
 func TestManagementUsesOnlyStandardService(t *testing.T) {
-	origExec := execCommand
-	defer func() { execCommand = origExec }()
 	var calls []string
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		calls = append(calls, strings.TrimSpace(name+" "+strings.Join(args, " ")))
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=loaded\n")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, commandCall(name, args...))
+		return []byte("loaded\n"), nil
+	}})
 
 	got := Management()
 	if !got.Managed || got.Service != "migate-sing-box" {
@@ -89,17 +85,11 @@ func TestManagementUsesOnlyStandardService(t *testing.T) {
 }
 
 func TestManagementDoesNotFallbackToLegacyService(t *testing.T) {
-	origExec := execCommand
-	defer func() { execCommand = origExec }()
 	var calls []string
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		call := strings.TrimSpace(name + " " + strings.Join(args, " "))
-		calls = append(calls, call)
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=not-found\n")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, commandCall(name, args...))
+		return []byte("not-found\n"), nil
+	}})
 
 	got := Management()
 	if got.Managed || got.Service != "migate-sing-box" {
@@ -112,22 +102,17 @@ func TestManagementDoesNotFallbackToLegacyService(t *testing.T) {
 }
 
 func TestManagementReportsUnmanagedWhenNoServiceExists(t *testing.T) {
-	origExec := execCommand
 	origBinary := DefaultBinaryPath
 	defer func() {
-		execCommand = origExec
 		DefaultBinaryPath = origBinary
 	}()
 	DefaultBinaryPath = filepath.Join(t.TempDir(), "sing-box")
 	if err := os.WriteFile(DefaultBinaryPath, []byte("#!/bin/sh\n"), 0755); err != nil {
 		t.Fatalf("write fake binary: %v", err)
 	}
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=not-found\n")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("not-found\n"), nil
+	}})
 
 	got := Management()
 	if got.Managed || got.Service != "migate-sing-box" {
@@ -150,27 +135,22 @@ func TestStatusPreservesSystemdStates(t *testing.T) {
 		{active: "deactivating", want: "deactivating"},
 	} {
 		t.Run(tc.active, func(t *testing.T) {
-			origExec := execCommand
 			origBinary := DefaultBinaryPath
 			defer func() {
-				execCommand = origExec
 				DefaultBinaryPath = origBinary
 			}()
 			DefaultBinaryPath = filepath.Join(t.TempDir(), "sing-box")
 			if err := os.WriteFile(DefaultBinaryPath, []byte("#!/bin/sh\n"), 0755); err != nil {
 				t.Fatalf("write fake binary: %v", err)
 			}
-			execCommand = func(name string, args ...string) *exec.Cmd {
-				call := strings.TrimSpace(name + " " + strings.Join(args, " "))
-				cs := []string{"-test.run=TestMain", "--", "ok"}
-				cmd := exec.Command(os.Args[0], cs...)
+			setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				call := commandCall(name, args...)
 				out := "loaded\n"
 				if strings.Contains(call, "is-active") {
 					out = tc.active + "\n"
 				}
-				cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT="+out)
-				return cmd
-			}
+				return []byte(out), nil
+			}})
 			if got := Status(); got != tc.want {
 				t.Fatalf("Status()=%q, want %q", got, tc.want)
 			}
@@ -209,20 +189,13 @@ func TestCheckBinaryRequiresExecutableRegularFile(t *testing.T) {
 }
 
 func TestCheckConfigPathReportsReadableFileAndBinaryPath(t *testing.T) {
-	origExec := execCommand
-	defer func() { execCommand = origExec }()
 	setTempSingboxBinary(t, 0755)
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "config.json")
 	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{})
 	if err := CheckConfigPath(configPath); err != nil {
 		t.Fatalf("check config path: %v", err)
 	}
@@ -234,23 +207,16 @@ func TestCheckConfigPathReportsReadableFileAndBinaryPath(t *testing.T) {
 func TestApplyConfigUsesFinalConfigParentForTempFiles(t *testing.T) {
 	origDir := DefaultConfigDir
 	origPath := DefaultConfigPath
-	origExec := execCommand
 	defer func() {
 		DefaultConfigDir = origDir
 		DefaultConfigPath = origPath
-		execCommand = origExec
 	}()
 	setTempSingboxBinary(t, 0755)
 
 	base := t.TempDir()
 	DefaultConfigDir = filepath.Join(base, "default-dir")
 	DefaultConfigPath = filepath.Join(base, "final-dir", "config.json")
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{})
 	if err := ApplyConfig([]byte(`{"outbounds":[{"type":"direct","tag":"new"}]}`)); err != nil {
 		t.Fatalf("apply config: %v", err)
 	}
@@ -267,22 +233,17 @@ func TestApplyConfigUsesFinalConfigParentForTempFiles(t *testing.T) {
 }
 
 func TestManagementDoesNotTreatSystemctlErrorsAsManaged(t *testing.T) {
-	origExec := execCommand
 	origBinary := DefaultBinaryPath
 	defer func() {
-		execCommand = origExec
 		DefaultBinaryPath = origBinary
 	}()
 	DefaultBinaryPath = filepath.Join(t.TempDir(), "sing-box")
 	if err := os.WriteFile(DefaultBinaryPath, []byte("#!/bin/sh\n"), 0755); err != nil {
 		t.Fatalf("write fake binary: %v", err)
 	}
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestMain", "--", "restart-fail"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=Failed to connect to bus: permission denied\n")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("Failed to connect to bus: permission denied\n"), errors.New("restart failed")
+	}})
 
 	got := Management()
 	if got.Managed {
@@ -294,17 +255,11 @@ func TestManagementDoesNotTreatSystemctlErrorsAsManaged(t *testing.T) {
 }
 
 func TestRestartServiceUsesStandardService(t *testing.T) {
-	origExec := execCommand
-	defer func() { execCommand = origExec }()
 	var calls []string
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		call := strings.TrimSpace(name + " " + strings.Join(args, " "))
-		calls = append(calls, call)
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=loaded\n")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, commandCall(name, args...))
+		return []byte("loaded\n"), nil
+	}})
 
 	if _, err := RestartService(); err != nil {
 		t.Fatalf("restart service: %v", err)
@@ -318,11 +273,9 @@ func TestRestartServiceUsesStandardService(t *testing.T) {
 func TestApplyConfigDoesNotOverwriteExistingConfigWhenCheckFails(t *testing.T) {
 	origDir := DefaultConfigDir
 	origPath := DefaultConfigPath
-	origExec := execCommand
 	defer func() {
 		DefaultConfigDir = origDir
 		DefaultConfigPath = origPath
-		execCommand = origExec
 	}()
 	setTempSingboxBinary(t, 0755)
 
@@ -333,12 +286,9 @@ func TestApplyConfigDoesNotOverwriteExistingConfigWhenCheckFails(t *testing.T) {
 	if err := os.WriteFile(DefaultConfigPath, oldConfig, 0644); err != nil {
 		t.Fatalf("write old config: %v", err)
 	}
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestMain", "--", "check-fail"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("outbounds[3]: dns outbound is deprecated\n"), errors.New("check failed")
+	}})
 
 	err := ApplyConfig([]byte(`{"outbounds":[{"type":"dns","tag":"bad"}]}`))
 	if err == nil || !strings.Contains(err.Error(), "dns outbound is deprecated") {
@@ -356,11 +306,9 @@ func TestApplyConfigDoesNotOverwriteExistingConfigWhenCheckFails(t *testing.T) {
 func TestApplyConfigRestoresExistingConfigWhenRestartFails(t *testing.T) {
 	origDir := DefaultConfigDir
 	origPath := DefaultConfigPath
-	origExec := execCommand
 	defer func() {
 		DefaultConfigDir = origDir
 		DefaultConfigPath = origPath
-		execCommand = origExec
 	}()
 	setTempSingboxBinary(t, 0755)
 
@@ -371,16 +319,12 @@ func TestApplyConfigRestoresExistingConfigWhenRestartFails(t *testing.T) {
 	if err := os.WriteFile(DefaultConfigPath, oldConfig, 0644); err != nil {
 		t.Fatalf("write old config: %v", err)
 	}
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		helperArg := "ok"
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name == "systemctl" && len(args) > 0 && args[0] == "restart" {
-			helperArg = "restart-fail"
+			return []byte("restart failed\n"), errors.New("restart failed")
 		}
-		cs := []string{"-test.run=TestMain", "--", helperArg}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1")
-		return cmd
-	}
+		return nil, nil
+	}})
 
 	err := ApplyConfig([]byte(`{"log":{"level":"warn"},"outbounds":[{"type":"direct","tag":"new"}]}`))
 	if err == nil || !strings.Contains(err.Error(), "systemctl restart migate-sing-box failed") {
@@ -398,11 +342,9 @@ func TestApplyConfigRestoresExistingConfigWhenRestartFails(t *testing.T) {
 func TestApplyConfigDoesNotOverwriteUserBakFile(t *testing.T) {
 	origDir := DefaultConfigDir
 	origPath := DefaultConfigPath
-	origExec := execCommand
 	defer func() {
 		DefaultConfigDir = origDir
 		DefaultConfigPath = origPath
-		execCommand = origExec
 	}()
 	setTempSingboxBinary(t, 0755)
 
@@ -417,12 +359,7 @@ func TestApplyConfigDoesNotOverwriteUserBakFile(t *testing.T) {
 	if err := os.WriteFile(DefaultConfigPath+".bak", userBackup, 0644); err != nil {
 		t.Fatalf("write user backup: %v", err)
 	}
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{})
 
 	if err := ApplyConfig([]byte(`{"outbounds":[{"type":"direct","tag":"new"}]}`)); err != nil {
 		t.Fatalf("apply config: %v", err)
@@ -446,11 +383,9 @@ func TestApplyConfigDoesNotOverwriteUserBakFile(t *testing.T) {
 func TestApplyConfigReportsInstalledConfigWhenRestartFailsWithoutBackup(t *testing.T) {
 	origDir := DefaultConfigDir
 	origPath := DefaultConfigPath
-	origExec := execCommand
 	defer func() {
 		DefaultConfigDir = origDir
 		DefaultConfigPath = origPath
-		execCommand = origExec
 	}()
 	setTempSingboxBinary(t, 0755)
 
@@ -458,16 +393,12 @@ func TestApplyConfigReportsInstalledConfigWhenRestartFailsWithoutBackup(t *testi
 	DefaultConfigDir = dir
 	DefaultConfigPath = filepath.Join(dir, "config.json")
 	newConfig := []byte(`{"log":{"level":"warn"},"outbounds":[{"type":"direct","tag":"new"}]}`)
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		helperArg := "ok"
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name == "systemctl" && len(args) > 0 && args[0] == "restart" {
-			helperArg = "restart-fail"
+			return []byte("restart failed\n"), errors.New("restart failed")
 		}
-		cs := []string{"-test.run=TestMain", "--", helperArg}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1")
-		return cmd
-	}
+		return nil, nil
+	}})
 
 	err := ApplyConfig(newConfig)
 	if err == nil || !strings.Contains(err.Error(), "new config was installed but service did not start because no previous config was available to restore") {
@@ -485,11 +416,9 @@ func TestApplyConfigReportsInstalledConfigWhenRestartFailsWithoutBackup(t *testi
 func TestApplyConfigRestartsRestoredConfigWhenNewConfigRestartFails(t *testing.T) {
 	origDir := DefaultConfigDir
 	origPath := DefaultConfigPath
-	origExec := execCommand
 	defer func() {
 		DefaultConfigDir = origDir
 		DefaultConfigPath = origPath
-		execCommand = origExec
 	}()
 	setTempSingboxBinary(t, 0755)
 
@@ -500,18 +429,14 @@ func TestApplyConfigRestartsRestoredConfigWhenNewConfigRestartFails(t *testing.T
 		t.Fatalf("write old config: %v", err)
 	}
 	var restarts int32
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		helperArg := "ok"
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name == "systemctl" && len(args) > 0 && args[0] == "restart" {
 			if atomic.AddInt32(&restarts, 1) == 1 {
-				helperArg = "restart-fail"
+				return []byte("restart failed\n"), errors.New("restart failed")
 			}
 		}
-		cs := []string{"-test.run=TestMain", "--", helperArg}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1")
-		return cmd
-	}
+		return nil, nil
+	}})
 
 	err := ApplyConfig([]byte(`{"outbounds":[{"type":"direct","tag":"new"}]}`))
 	if err == nil || !strings.Contains(err.Error(), "systemctl restart migate-sing-box failed") {
@@ -523,14 +448,9 @@ func TestApplyConfigRestartsRestoredConfigWhenNewConfigRestartFails(t *testing.T
 }
 
 func TestListeningUDPPortsParsesSSOutput(t *testing.T) {
-	origExec := execCommand
-	defer func() { execCommand = origExec }()
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=UNCONN 0 0 0.0.0.0:20001 0.0.0.0:*\nUNCONN 0 0 [::]:20002 [::]:*\n")
-		return cmd
-	}
+	setCommandRunner(t, fakeCommandRunner{runOutput: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("UNCONN 0 0 0.0.0.0:20001 0.0.0.0:*\nUNCONN 0 0 [::]:20002 [::]:*\n"), nil
+	}})
 	got := ListeningUDPPorts([]int{20001, 20002, 20003})
 	if !got[20001] || !got[20002] || got[20003] {
 		t.Fatalf("unexpected UDP listening map: %+v", got)

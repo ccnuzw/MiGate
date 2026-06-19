@@ -1,16 +1,15 @@
 package web
 
 import (
-	"encoding/json"
-	"fmt"
+	"context"
 	"net/http"
-	"os"
-	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/paths"
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
+	runtimescript "github.com/imzyb/MiGate/internal/runtime/script"
+	"github.com/imzyb/MiGate/internal/service/coreadmin"
 )
 
 const maxXrayLogLines = 200
@@ -45,349 +44,16 @@ func coreInstallHandler(core string, runner func(script string) ([]byte, error))
 		if _, ok := decodeCoreActionPayload(w, r); !ok {
 			return
 		}
-		var script string
-		var commands []string
-		switch core {
-		case "xray":
-			commands = []string{"download Xray release", "verify Xray release checksum", "systemctl stop migate-xray", "atomic install /usr/local/bin/xray", "write /etc/systemd/system/migate-xray.service", "systemctl restart migate-xray"}
-			script = `set -euo pipefail
-arch="$(uname -m)"
-case "$arch" in
-  x86_64|amd64) asset_arch=64 ;;
-  aarch64|arm64) asset_arch=arm64-v8a ;;
-  *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
-esac
-for dep in curl unzip; do
-  if ! command -v "$dep" >/dev/null 2>&1; then
-    echo "$dep is required to install Xray" >&2
-    exit 1
-  fi
-done
-version="${XRAY_VERSION:-26.3.27}"
-tmp="$(mktemp -d)"
-install_tmp=""
-trap 'rm -rf "$tmp"; [ -z "${install_tmp:-}" ] || rm -f "$install_tmp"' EXIT
-asset_name="Xray-linux-${asset_arch}.zip"
-url="https://github.com/XTLS/Xray-core/releases/download/v${version}/${asset_name}"
-dgst_url="${url}.dgst"
-curl -fL "$url" -o "$tmp/$asset_name"
-curl -fL "$dgst_url" -o "$tmp/$asset_name.dgst"
-awk -F'= ' -v asset="$asset_name" '/^SHA2-256=/{print $2 "  " asset}' "$tmp/$asset_name.dgst" > "$tmp/$asset_name.sha256"
-if ! grep -Eq '^[0-9a-fA-F]{64}[[:space:]]+' "$tmp/$asset_name.sha256"; then
-  echo "invalid Xray checksum file" >&2
-  exit 1
-fi
-if command -v sha256sum >/dev/null 2>&1; then
-  (cd "$tmp" && sha256sum -c "$asset_name.sha256")
-elif command -v shasum >/dev/null 2>&1; then
-  (cd "$tmp" && shasum -a 256 -c "$asset_name.sha256")
-else
-  echo "sha256sum or shasum is required" >&2; exit 1
-fi
-unzip -oq "$tmp/$asset_name" -d "$tmp/xray"
-if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-  systemctl stop migate-xray 2>/dev/null || true
-fi
-install_tmp="/usr/local/bin/.xray.new.$$"
-rm -f "$install_tmp"
-cp "$tmp/xray/xray" "$install_tmp"
-chmod +x "$install_tmp"
-mv -f "$install_tmp" /usr/local/bin/xray
-install_tmp=""
-mkdir -p /usr/local/share/xray /etc/migate/cores /var/lib/migate/backups
-[ -f "$tmp/xray/geosite.dat" ] && cp "$tmp/xray/geosite.dat" /usr/local/share/xray/geosite.dat
-[ -f "$tmp/xray/geoip.dat" ] && cp "$tmp/xray/geoip.dat" /usr/local/share/xray/geoip.dat
-atomic_write_file() {
-  path="$1"
-  mode="$2"
-  owner="${3:-}"
-  dir="$(dirname "$path")"
-  base="$(basename "$path")"
-  tmp_file="$(mktemp "${dir}/.${base}.tmp.XXXXXX")"
-  if ! cat > "$tmp_file"; then
-    rm -f "$tmp_file"
-    return 1
-  fi
-  if [ -n "$owner" ]; then
-    chown "$owner" "$tmp_file" 2>/dev/null || true
-  fi
-  chmod "$mode" "$tmp_file"
-  mv -f "$tmp_file" "$path"
-}
-write_migate_default_xray_config() {
-  path="$1"
-  atomic_write_file "$path" 0640 root:migate <<'JSON'
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "tag": "api",
-      "listen": "127.0.0.1",
-      "port": 10085,
-      "protocol": "dokodemo-door",
-      "settings": {
-        "address": "127.0.0.1"
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "tag": "xray-out-1",
-      "protocol": "freedom",
-      "settings": {}
-    },
-    {
-      "tag": "xray-out-2",
-      "protocol": "blackhole",
-      "settings": {}
-    },
-    {
-      "tag": "xray-out-3",
-      "protocol": "dns",
-      "settings": {}
-    }
-  ],
-  "routing": {
-    "domainStrategy": "AsIs",
-    "rules": [
-      {
-        "inboundTag": [
-          "api"
-        ],
-        "outboundTag": "api"
-      }
-    ]
-  },
-  "stats": {},
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true
-      }
-    }
-  },
-  "api": {
-    "tag": "api",
-    "services": [
-      "StatsService"
-    ]
-  }
-}
-JSON
-}
-install_migate_default_xray_config() {
-  tmp_config="$(mktemp /etc/migate/cores/.xray-default.XXXXXX.json)"
-  write_migate_default_xray_config "$tmp_config"
-  /usr/local/bin/xray run -test -c "$tmp_config"
-  mv -f "$tmp_config" /etc/migate/cores/xray.json
-  chown root:migate /etc/migate/cores/xray.json 2>/dev/null || true
-  chmod 0640 /etc/migate/cores/xray.json
-}
-backup_migate_invalid_core_config() {
-  path="$1"
-  if [ ! -e "$path" ]; then
-    return 0
-  fi
-  backup="/var/lib/migate/backups/xray-config-invalid-$(date +%Y%m%d-%H%M%S).json"
-  mv -f "$path" "$backup"
-  echo "backed up invalid config: $backup" >&2
-}
-if [ ! -f /etc/migate/cores/xray.json ]; then
-  install_migate_default_xray_config
-fi
-if ! /usr/local/bin/xray run -test -c /etc/migate/cores/xray.json; then
-  echo "existing Xray config check failed; backing it up and writing MiGate default config" >&2
-  backup_migate_invalid_core_config /etc/migate/cores/xray.json
-  install_migate_default_xray_config
-  /usr/local/bin/xray run -test -c /etc/migate/cores/xray.json
-fi
-if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-  echo "systemd is unavailable; skipped migate-xray.service"
-  /usr/local/bin/xray version | sed -n '1p'
-  exit 0
-fi
-atomic_write_file /etc/systemd/system/migate-xray.service 0644 root:root <<'UNIT'
-[Unit]
-Description=MiGate managed Xray service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/xray run -c /etc/migate/cores/xray.json
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=1048576
-StandardOutput=journal
-StandardError=journal
-LogRateLimitIntervalSec=30s
-LogRateLimitBurst=200
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload
-systemctl enable migate-xray
-systemctl restart migate-xray
-systemctl is-active --quiet migate-xray
-/usr/local/bin/xray version | sed -n '1p'`
-		case "singbox":
-			commands = []string{"download sing-box release", "verify sing-box release checksum", "systemctl stop migate-sing-box", "atomic install /usr/local/bin/sing-box", "write /etc/systemd/system/migate-sing-box.service", "systemctl restart migate-sing-box"}
-			script = `set -euo pipefail
-arch="$(uname -m)"
-case "$arch" in
-  x86_64|amd64) asset_arch=amd64 ;;
-  aarch64|arm64) asset_arch=arm64 ;;
-  *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
-esac
-version="${SINGBOX_VERSION:-1.13.13}"
-tmp="$(mktemp -d)"
-install_tmp=""
-trap 'rm -rf "$tmp"; [ -z "${install_tmp:-}" ] || rm -f "$install_tmp"' EXIT
-asset_name="sing-box-${version}-linux-${asset_arch}.tar.gz"
-url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset_name}"
-release_api_url="https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${version}"
-curl -fL "$url" -o "$tmp/$asset_name"
-curl -fsSL "$release_api_url" -o "$tmp/release.json"
-digest="$(awk -v asset="$asset_name" '
-  /"name": "/ { in_asset=0 }
-  index($0, "\"name\": \"" asset "\"") { in_asset=1 }
-  in_asset && index($0, "\"digest\": \"sha256:") {
-    line=$0
-    sub(/^.*"digest": "sha256:/, "", line)
-    sub(/".*$/, "", line)
-    print line
-    exit
-  }
-' "$tmp/release.json")"
-if ! printf '%s\n' "$digest" | grep -Eq '^[0-9a-fA-F]{64}$'; then
-  echo "invalid sing-box release digest for $asset_name" >&2
-  exit 1
-fi
-printf '%s  %s\n' "$digest" "$asset_name" > "$tmp/sing-box.tar.gz.sha256"
-if command -v sha256sum >/dev/null 2>&1; then
-  (cd "$tmp" && sha256sum -c "sing-box.tar.gz.sha256")
-elif command -v shasum >/dev/null 2>&1; then
-  (cd "$tmp" && shasum -a 256 -c "sing-box.tar.gz.sha256")
-else
-  echo "sha256sum or shasum is required" >&2; exit 1
-fi
-tar --no-same-owner -xzf "$tmp/$asset_name" -C "$tmp"
-if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-  systemctl stop migate-sing-box 2>/dev/null || true
-fi
-install_tmp="/usr/local/bin/.sing-box.new.$$"
-rm -f "$install_tmp"
-cp "$tmp"/sing-box-*/sing-box "$install_tmp"
-chmod +x "$install_tmp"
-mv -f "$install_tmp" /usr/local/bin/sing-box
-install_tmp=""
-mkdir -p /etc/migate/cores /var/lib/migate/backups
-atomic_write_file() {
-  path="$1"
-  mode="$2"
-  owner="${3:-}"
-  dir="$(dirname "$path")"
-  base="$(basename "$path")"
-  tmp_file="$(mktemp "${dir}/.${base}.tmp.XXXXXX")"
-  if ! cat > "$tmp_file"; then
-    rm -f "$tmp_file"
-    return 1
-  fi
-  if [ -n "$owner" ]; then
-    chown "$owner" "$tmp_file" 2>/dev/null || true
-  fi
-  chmod "$mode" "$tmp_file"
-  mv -f "$tmp_file" "$path"
-}
-write_migate_default_singbox_config() {
-  path="$1"
-  atomic_write_file "$path" 0640 root:migate <<'JSON'
-{
-  "log": {
-    "level": "warn"
-  },
-  "inbounds": [],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "singbox-out-1"
-    },
-    {
-      "type": "block",
-      "tag": "singbox-out-2"
-    }
-  ]
-}
-JSON
-}
-install_migate_default_singbox_config() {
-  tmp_config="$(mktemp /etc/migate/cores/.sing-box-default.XXXXXX.json)"
-  write_migate_default_singbox_config "$tmp_config"
-  /usr/local/bin/sing-box check -c "$tmp_config"
-  mv -f "$tmp_config" /etc/migate/cores/sing-box.json
-  chown root:migate /etc/migate/cores/sing-box.json 2>/dev/null || true
-  chmod 0640 /etc/migate/cores/sing-box.json
-}
-backup_migate_invalid_core_config() {
-  path="$1"
-  if [ ! -e "$path" ]; then
-    return 0
-  fi
-  backup="/var/lib/migate/backups/sing-box-config-invalid-$(date +%Y%m%d-%H%M%S).json"
-  mv -f "$path" "$backup"
-  echo "backed up invalid config: $backup" >&2
-}
-if [ ! -f /etc/migate/cores/sing-box.json ]; then
-  install_migate_default_singbox_config
-fi
-if ! /usr/local/bin/sing-box check -c /etc/migate/cores/sing-box.json; then
-  echo "existing sing-box config check failed; backing it up and writing MiGate default config" >&2
-  backup_migate_invalid_core_config /etc/migate/cores/sing-box.json
-  install_migate_default_singbox_config
-  /usr/local/bin/sing-box check -c /etc/migate/cores/sing-box.json
-fi
-if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-  echo "systemd is unavailable; skipped migate-sing-box.service"
-  /usr/local/bin/sing-box version | sed -n '1p'
-  exit 0
-fi
-atomic_write_file /etc/systemd/system/migate-sing-box.service 0644 root:root <<'UNIT'
-[Unit]
-Description=sing-box service managed by MiGate
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/sing-box run -c /etc/migate/cores/sing-box.json
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload
-systemctl enable migate-sing-box
-systemctl restart migate-sing-box
-systemctl is-active --quiet migate-sing-box
-/usr/local/bin/sing-box version | sed -n '1p'`
-		default:
+		result, err := (coreadmin.Service{Runner: runner}).Install(core)
+		if err == coreadmin.ErrUnknownCore {
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
 			return
 		}
-		out, err := runner(script)
-		status := "installed"
 		if err != nil {
-			status = "failed"
-			writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "error": "install_failed", "output": string(out), "commands_executed": commands})
+			writeJSON(w, http.StatusOK, coreActionResultPayload(result))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+		writeJSON(w, http.StatusOK, coreActionResultPayload(result))
 	}
 }
 
@@ -403,90 +69,25 @@ func coreServiceControlHandler(core, action string, runner func(script string) (
 		if _, ok := decodeCoreActionPayload(w, r); !ok {
 			return
 		}
-		service := ""
-		switch core {
-		case "xray":
-			service = paths.XrayService
-		case "singbox":
-			service = paths.SingboxService
-		default:
+		result, err := (coreadmin.Service{Runner: runner}).Control(core, action)
+		if err == coreadmin.ErrUnknownCore {
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
 			return
 		}
-		if action != "restart" && action != "stop" {
+		if err == coreadmin.ErrUnknownAction {
 			writeJSONError(w, http.StatusBadRequest, "unknown_action")
 			return
 		}
-		commands := []string{fmt.Sprintf("systemctl %s %s", action, service)}
-		script := fmt.Sprintf(`set -euo pipefail
-if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-  echo "systemd is unavailable; cannot %s %s.service" >&2
-  exit 1
-fi
-load_state="$(systemctl show %s --property=LoadState --value 2>/dev/null || true)"
-if [ "$load_state" != "loaded" ]; then
-  if [ "%s" = "stop" ]; then
-    echo "%s.service is not loaded; already stopped"
-    exit 0
-  fi
-  echo "%s.service is not loaded; cannot %s" >&2
-  exit 1
-fi
-if [ "%s" = "stop" ]; then
-  active_state="$(systemctl is-active %s 2>/dev/null || true)"
-  if [ "$active_state" = "inactive" ] || [ "$active_state" = "failed" ] || [ "$active_state" = "unknown" ] || [ "$active_state" = "" ]; then
-    systemctl reset-failed %s 2>/dev/null || true
-    echo "%s.service is already $active_state"
-    exit 0
-  fi
-fi
-systemctl %s %s
-`, action, service, service, action, service, service, action, action, service, service, service, action, service)
-		out, err := runner(script)
-		status := action + "ed"
-		if action == "stop" {
-			status = "stopped"
-		}
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"core": core, "status": "failed", "error": action + "_failed", "output": string(out), "commands_executed": commands})
+			writeJSON(w, http.StatusInternalServerError, coreActionResultPayload(result))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+		writeJSON(w, http.StatusOK, coreActionResultPayload(result))
 	}
 }
 
 func runCoreScript(script string) ([]byte, error) {
-	if coreSystemdRunAvailable() {
-		unit := fmt.Sprintf("migate-core-%d-%d", os.Getpid(), time.Now().UnixNano())
-		cmd := exec.Command(
-			"systemd-run",
-			"--wait",
-			"--pipe",
-			"--quiet",
-			"--unit="+unit,
-			"--collect",
-			"--property=Type=oneshot",
-			"--property=User=root",
-			"--property=TimeoutSec=300",
-			"bash",
-			"-s",
-		)
-		cmd.Stdin = strings.NewReader(script)
-		return cmd.CombinedOutput()
-	}
-	cmd := exec.Command("bash", "-s")
-	cmd.Stdin = strings.NewReader(script)
-	return cmd.CombinedOutput()
-}
-
-func coreSystemdRunAvailable() bool {
-	if _, err := exec.LookPath("systemd-run"); err != nil {
-		return false
-	}
-	if _, err := os.Stat("/run/systemd/system"); err != nil {
-		return false
-	}
-	return true
+	return (runtimescript.Runner{Timeout: 5 * time.Minute}).RunBash(context.Background(), script)
 }
 
 func coreUninstallHandler(core string, runner func(script string) ([]byte, error)) http.HandlerFunc {
@@ -501,40 +102,30 @@ func coreUninstallHandler(core string, runner func(script string) ([]byte, error
 		if _, ok := decodeCoreActionPayload(w, r); !ok {
 			return
 		}
-		var script string
-		var commands []string
-		switch core {
-		case "xray":
-			commands = []string{"systemctl stop migate-xray", "systemctl disable migate-xray", "remove MiGate Xray service", "systemctl daemon-reload"}
-			script = `set -euo pipefail
-systemctl stop migate-xray 2>/dev/null || true
-systemctl disable migate-xray 2>/dev/null || true
-rm -f /etc/systemd/system/migate-xray.service
-systemctl daemon-reload 2>/dev/null || true
-systemctl reset-failed migate-xray 2>/dev/null || true
-printf 'Xray service disabled. Configuration and binary were kept.\n'`
-		case "singbox":
-			commands = []string{"systemctl stop migate-sing-box", "systemctl disable migate-sing-box", "remove MiGate sing-box service", "systemctl daemon-reload"}
-			script = `set -euo pipefail
-systemctl stop migate-sing-box 2>/dev/null || true
-systemctl disable migate-sing-box 2>/dev/null || true
-rm -f /etc/systemd/system/migate-sing-box.service
-systemctl daemon-reload 2>/dev/null || true
-systemctl reset-failed migate-sing-box 2>/dev/null || true
-printf 'sing-box service disabled. Configuration and binary were kept.\n'`
-		default:
+		result, err := (coreadmin.Service{Runner: runner}).Uninstall(core)
+		if err == coreadmin.ErrUnknownCore {
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
 			return
 		}
-		out, err := runner(script)
-		status := "uninstalled"
 		if err != nil {
-			status = "failed"
-			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+			writeJSON(w, http.StatusInternalServerError, coreActionResultPayload(result))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"core": core, "status": status, "output": string(out), "commands_executed": commands})
+		writeJSON(w, http.StatusOK, coreActionResultPayload(result))
 	}
+}
+
+func coreActionResultPayload(result coreadmin.ActionResult) map[string]interface{} {
+	payload := map[string]interface{}{
+		"core":              result.Core,
+		"status":            result.Status,
+		"output":            result.Output,
+		"commands_executed": result.CommandsExecuted,
+	}
+	if result.Error != "" {
+		payload["error"] = result.Error
+	}
+	return payload
 }
 
 func xrayLogsHandler() http.HandlerFunc {
@@ -552,18 +143,16 @@ func xrayLogsHandler() http.HandlerFunc {
 		} else if n > maxXrayLogLines {
 			lines = strconv.Itoa(maxXrayLogLines)
 		}
-		out, err := exec.Command("journalctl", "-u", paths.XrayService, "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		out, err := runtimecmd.RunOutput(context.Background(), "journalctl", "-u", paths.XrayService, "-n", lines, "--no-pager", "-o", "short-iso")
 		if err != nil {
 			// Fallback: try reading from syslog
-			out, err = exec.Command("tail", "-n", lines, "/var/log/syslog").CombinedOutput()
+			out, err = runtimecmd.RunOutput(context.Background(), "tail", "-n", lines, "/var/log/syslog")
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{"logs": "无法读取 Xray 日志：journalctl 和 syslog 均不可用。"})
+				writeJSON(w, http.StatusOK, map[string]string{"logs": "无法读取 Xray 日志：journalctl 和 syslog 均不可用。"})
 				return
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"logs": string(out)})
+		writeJSON(w, http.StatusOK, map[string]string{"logs": string(out)})
 	}
 }
 
@@ -574,7 +163,6 @@ func xrayVersionHandler(controller XrayController) http.HandlerFunc {
 			return
 		}
 		ver := controller.Version(r.Context())
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"version": ver})
+		writeJSON(w, http.StatusOK, map[string]string{"version": ver})
 	}
 }

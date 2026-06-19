@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { refreshTopologyDependencies } from './queryInvalidation';
+import {
+  refreshQueries,
+  refreshQuery,
+  refreshSessionDependencies,
+  refreshSessionState,
+  refreshSettingsDependencies,
+  refreshTopologyDependencies,
+  refreshUpdateDependencies,
+} from './queryInvalidation';
 
 describe('query invalidation helpers', () => {
   it('refreshes every topology dependency after topology-affecting writes', () => {
@@ -16,5 +24,38 @@ describe('query invalidation helpers', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-inbounds'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-clients'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-series'] });
+  });
+
+  it('centralizes explicit query refresh calls', () => {
+    const first = { refetch: vi.fn() };
+    const second = { refetch: vi.fn() };
+
+    refreshQuery(first);
+    refreshQueries([first, second]);
+
+    expect(first.refetch).toHaveBeenCalledTimes(2);
+    expect(second.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('centralizes settings page invalidation groups', () => {
+    const queryClient = { invalidateQueries: vi.fn() };
+
+    refreshSettingsDependencies(queryClient as never);
+    refreshUpdateDependencies(queryClient as never);
+    refreshSessionDependencies(queryClient as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['settings'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['cert-status'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['update-status'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['update-logs'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+  });
+
+  it('centralizes current session refresh after login state changes', () => {
+    const queryClient = { invalidateQueries: vi.fn() };
+
+    refreshSessionState(queryClient as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['session'] });
   });
 });

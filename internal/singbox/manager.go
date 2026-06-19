@@ -1,9 +1,9 @@
 package singbox
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/corefile"
 	"github.com/imzyb/MiGate/internal/paths"
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 )
 
 var (
@@ -30,7 +31,7 @@ var (
 	SBMaxPort = 21999
 )
 
-var execCommand = exec.Command
+var commandRunner runtimecmd.CommandRunner = runtimecmd.NewRealCommandRunner(30 * time.Second)
 
 const (
 	serviceName = paths.SingboxService
@@ -62,7 +63,7 @@ func Version() (string, error) {
 	if status := CheckBinary(); !status.OK() {
 		return "", fmt.Errorf("sing-box binary check failed: %s", status.Error())
 	}
-	out, err := execCommand(DefaultBinaryPath, "version").Output()
+	out, err := runCommandOutput(DefaultBinaryPath, "version")
 	if err != nil {
 		return "", fmt.Errorf("sing-box version: %w", err)
 	}
@@ -95,7 +96,7 @@ func CheckConfigPath(path string) error {
 	if status := CheckConfigFile(path); !status.OK() {
 		return fmt.Errorf("sing-box config file check failed: %s", status.Error())
 	}
-	out, err := execCommand(DefaultBinaryPath, "check", "-c", path).CombinedOutput()
+	out, err := runCommandOutput(DefaultBinaryPath, "check", "-c", path)
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
 		if detail == "" {
@@ -229,8 +230,7 @@ func Management() ManagementStatus {
 }
 
 func serviceAvailable(name string) bool {
-	cmd := execCommand("systemctl", "show", name, "--property=LoadState", "--value")
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandOutput("systemctl", "show", name, "--property=LoadState", "--value")
 	state := strings.TrimSpace(string(out))
 	if err != nil {
 		return false
@@ -246,8 +246,7 @@ func serviceAvailable(name string) bool {
 // RestartService restarts the systemd service.
 func RestartService() (string, error) {
 	service := ServiceName()
-	cmd := execCommand("systemctl", "restart", service)
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandOutput("systemctl", "restart", service)
 	if err != nil {
 		return string(out), fmt.Errorf("systemctl restart %s failed: %w", service, err)
 	}
@@ -257,8 +256,7 @@ func RestartService() (string, error) {
 // ServiceStatus returns the systemd service status.
 func ServiceStatus() (string, error) {
 	service := ServiceName()
-	cmd := execCommand("systemctl", "is-active", service)
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandOutput("systemctl", "is-active", service)
 	if err == nil || strings.TrimSpace(string(out)) != "" {
 		return string(out), nil
 	}
@@ -291,12 +289,11 @@ type ServiceProperties struct {
 // Show returns parsed systemd service properties via systemctl show.
 func Show() (*ServiceProperties, error) {
 	service := ServiceName()
-	cmd := execCommand("systemctl", "show", service,
+	out, err := runCommandOutput("systemctl", "show", service,
 		"--property=MemoryCurrent",
 		"--property=MainPID",
 		"--property=ActiveEnterTimestamp",
 		"--property=ActiveEnterTimestampMonotonic")
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("systemctl show %s: %w", service, err)
 	}
@@ -355,7 +352,7 @@ func Uptime() string {
 // ActiveConnections returns the number of established TCP connections
 // to sing-box ports (21000-21999 range) via ss.
 func ActiveConnections() int {
-	out, err := execCommand("ss", "-tn", "state", "established").CombinedOutput()
+	out, err := runCommandOutput("ss", "-tn", "state", "established")
 	if err != nil {
 		return 0
 	}
@@ -380,7 +377,7 @@ func ListeningUDPPorts(expected []int) map[int]bool {
 			result[port] = false
 		}
 	}
-	out, err := execCommand("ss", "-H", "-lun").CombinedOutput()
+	out, err := runCommandOutput("ss", "-H", "-lun")
 	if err != nil {
 		return result
 	}
@@ -395,6 +392,14 @@ func ListeningUDPPorts(expected []int) map[int]bool {
 		}
 	}
 	return result
+}
+
+func runCommandOutput(name string, args ...string) ([]byte, error) {
+	runner := commandRunner
+	if runner == nil {
+		runner = runtimecmd.NewRealCommandRunner(30 * time.Second)
+	}
+	return runner.RunOutput(context.Background(), name, args...)
 }
 
 func parseAddressPort(address string) int {

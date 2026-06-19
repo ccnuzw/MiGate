@@ -9,10 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/imzyb/MiGate/internal/lockfile"
+	"github.com/imzyb/MiGate/internal/paths"
+	"github.com/imzyb/MiGate/internal/service/coreadmin"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/web/static"
 )
@@ -20,9 +24,17 @@ import (
 func join(parts ...string) string { return strings.Join(parts, "") }
 
 func webPackageSource(t *testing.T) string {
+	return goPackageSource(t, ".")
+}
+
+func webAndCoreAdminSource(t *testing.T) string {
+	return webPackageSource(t) + "\n" + goPackageSource(t, "../service/coreadmin")
+}
+
+func goPackageSource(t *testing.T, root string) string {
 	t.Helper()
 	var body strings.Builder
-	err := fs.WalkDir(os.DirFS("."), ".", func(path string, entry fs.DirEntry, err error) error {
+	err := fs.WalkDir(os.DirFS(root), ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -35,7 +47,7 @@ func webPackageSource(t *testing.T) string {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		source, err := os.ReadFile(path)
+		source, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
 			return err
 		}
@@ -44,27 +56,18 @@ func webPackageSource(t *testing.T) string {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("read web package source: %v", err)
+		t.Fatalf("read package source %s: %v", root, err)
 	}
 	return body.String()
 }
 
 func webCoreInstallScript(t *testing.T, core string) string {
 	t.Helper()
-	source := webPackageSource(t)
-	startMarker := `case "` + core + `":`
-	start := strings.Index(source, startMarker)
-	if start < 0 {
-		t.Fatalf("core install branch %q not found", core)
+	plan, err := coreadmin.InstallPlan(core)
+	if err != nil {
+		t.Fatalf("core install plan %q: %v", core, err)
 	}
-	end := strings.Index(source[start+len(startMarker):], "\n\t\tcase ")
-	if end < 0 {
-		end = strings.Index(source[start+len(startMarker):], "\n\t\tdefault:")
-	}
-	if end < 0 {
-		t.Fatalf("core install branch %q end not found", core)
-	}
-	return source[start : start+len(startMarker)+end]
+	return plan.Script + "\n" + strings.Join(plan.Commands, "\n")
 }
 
 func TestRouterBackendSecurityContracts(t *testing.T) {
@@ -464,20 +467,23 @@ func TestUpdateLogsAPIReportsRecentLogs(t *testing.T) {
 }
 
 func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
-	body := webPackageSource(t)
+	body := goPackageSource(t, "../service/update")
 	for _, want := range []string{
-		`exec.Command("systemd-run"`,
-		`unit := fmt.Sprintf("migate-update-%d-%d", os.Getpid(), time.Now().UnixNano())`,
+		`updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)`,
+		`go s.runUpdateCommand(updateCtx, cancel)`,
+		`RunOutput(ctx, "systemd-run"`,
+		`unit := fmt.Sprintf("migate-update-%d-%d", s.getpid(), s.now().UnixNano())`,
 		`"--unit="+unit`,
 		`"--property=TimeoutSec=300"`,
-		`"--property=StandardOutput=append:/var/log/migate-update.log"`,
-		`"--property=StandardError=append:/var/log/migate-update.log"`,
-		`"/usr/local/bin/migate-install", "--update", "--yes"`,
+		`logPath := s.logPath()`,
+		`"--property=StandardOutput=append:"+logPath`,
+		`"--property=StandardError=append:"+logPath`,
+		`installerPath, "--update", "--yes"`,
 		`/var/log/migate-update.log`,
-		`func validateUpdaterAvailable() error`,
-		`os.Geteuid()`,
-		`exec.LookPath("systemd-run")`,
-		`os.Stat("/run/systemd/system")`,
+		`func (s Service) ValidateUpdaterAvailable() error`,
+		`s.geteuid()`,
+		`s.lookPath()("systemd-run")`,
+		`s.stat()("/run/systemd/system")`,
 		`"journalctl", "-u", "migate-update", "-u", "migate-update-*"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -495,20 +501,37 @@ func TestUpdateAPIRunsInstallerOutsideMiGateServiceCgroup(t *testing.T) {
 func TestCoreInstallRunsOutsideMiGateServiceSandboxWhenSystemdIsAvailable(t *testing.T) {
 	body := webPackageSource(t)
 	for _, want := range []string{
-		`func coreSystemdRunAvailable() bool`,
+		`runtimescript.Runner`,
+		`RunBash(context.Background(), script)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("core installer missing runtime adapter contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
 		`exec.LookPath("systemd-run")`,
-		`os.Stat("/run/systemd/system")`,
 		`exec.Command(`,
+		`exec.CommandContext(`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("web package must not directly execute core scripts, found %q", forbidden)
+		}
+	}
+	adapter := goPackageSource(t, "../runtime/script")
+	for _, want := range []string{
+		`LookPath("systemd-run")`,
+		`Stat("/run/systemd/system")`,
+		`exec.CommandContext(ctx, name, args...)`,
 		`"systemd-run"`,
 		`"--wait"`,
 		`"--pipe"`,
 		`"--property=User=root"`,
-		`"--property=TimeoutSec=300"`,
+		`"--property=TimeoutSec="+systemdTimeoutSec(timeout)`,
 		`"bash"`,
 		`"-s"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("core installer missing detached root execution contract %q", want)
+		if !strings.Contains(adapter, want) {
+			t.Fatalf("runtime script adapter missing detached root execution contract %q", want)
 		}
 	}
 }
@@ -599,6 +622,12 @@ func TestRestartEndpoint(t *testing.T) {
 }
 
 func TestAPIErrorResponsesUseJSONContentType(t *testing.T) {
+	withTempApplyLock(t)
+	unlock, err := lockfile.TryAcquire(paths.ApplyLock)
+	if err != nil {
+		t.Fatalf("acquire apply lock: %v", err)
+	}
+	defer unlock()
 	router := web.NewRouter()
 	for _, tc := range []struct {
 		method string
@@ -610,6 +639,11 @@ func TestAPIErrorResponsesUseJSONContentType(t *testing.T) {
 		{http.MethodPost, "/api/xray/apply", `{"confirm":true}`, http.StatusForbidden, "confirmation_required"},
 		{http.MethodPost, "/api/xray/apply", `{bad`, http.StatusBadRequest, "invalid_json"},
 		{http.MethodGet, "/api/restart", "", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{http.MethodGet, "/api/xray/validate", "", http.StatusOK, ""},
+		{http.MethodPost, "/api/xray/validate", "", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{http.MethodPost, "/api/singbox/validate", "", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{http.MethodGet, "/api/xray/config", "", http.StatusServiceUnavailable, "store_unavailable"},
+		{http.MethodPost, "/api/xray/apply", `{"confirm":true,"allow_system_changes":true}`, http.StatusConflict, "apply_locked"},
 	} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
@@ -623,14 +657,327 @@ func TestAPIErrorResponsesUseJSONContentType(t *testing.T) {
 		if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
 			t.Fatalf("%s %s expected JSON content type, got %q", tc.method, tc.path, contentType)
 		}
-		var payload map[string]interface{}
-		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
-			t.Fatalf("%s %s should return JSON body: %v body=%s", tc.method, tc.path, err, response.Body.String())
+		if tc.error == "" {
+			continue
 		}
-		if payload["error"] != tc.error {
-			t.Fatalf("%s %s expected error %q, got %#v", tc.method, tc.path, tc.error, payload)
+		assertStandardAPIError(t, response.Body.Bytes(), tc.error)
+	}
+}
+
+func assertStandardAPIError(t *testing.T, body []byte, wantCode string) {
+	t.Helper()
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("error response should be JSON: %v body=%s", err, string(body))
+	}
+	detail, ok := payload["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected standard error object, got %#v", payload)
+	}
+	if detail["code"] != wantCode {
+		t.Fatalf("expected error.code %q, got %#v", wantCode, detail)
+	}
+	message, ok := detail["message"].(string)
+	if !ok || message == "" {
+		t.Fatalf("expected error.message for %q, got %#v", wantCode, detail)
+	}
+}
+
+func TestAPIErrorContractFields(t *testing.T) {
+	router := web.NewRouter()
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+		status int
+		code   string
+	}{
+		{http.MethodPost, "/api/update", `{bad`, http.StatusBadRequest, "invalid_json"},
+		{http.MethodGet, "/api/update", "", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{http.MethodPost, "/api/update", `{}`, http.StatusForbidden, "confirmation_required"},
+		{http.MethodGet, "/api/xray/config", "", http.StatusServiceUnavailable, "store_unavailable"},
+	} {
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		router.ServeHTTP(response, req)
+		if response.Code != tc.status {
+			t.Fatalf("%s %s expected %d, got %d: %s", tc.method, tc.path, tc.status, response.Code, response.Body.String())
+		}
+		assertStandardAPIError(t, response.Body.Bytes(), tc.code)
+	}
+}
+
+func TestAPIApplyLockedErrorContract(t *testing.T) {
+	withTempApplyLock(t)
+	unlock, err := lockfile.TryAcquire(paths.ApplyLock)
+	if err != nil {
+		t.Fatalf("acquire apply lock: %v", err)
+	}
+	defer unlock()
+	router := web.NewRouter()
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected locked apply to return 409, got %d: %s", response.Code, response.Body.String())
+	}
+	assertStandardAPIError(t, response.Body.Bytes(), "apply_locked")
+	var payload map[string]interface{}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	detail := payload["error"].(map[string]interface{})
+	fields, ok := detail["fields"].(map[string]interface{})
+	if !ok || fields["lock_path"] == "" {
+		t.Fatalf("expected lock_path in error.fields, got %#v", payload)
+	}
+}
+
+func TestRouteContractsAreRegisteredAndEnforced(t *testing.T) {
+	contracts := map[string]web.RouteContract{}
+	for _, route := range web.RouteContracts() {
+		key := route.Method + " " + route.Path
+		if _, exists := contracts[key]; exists {
+			t.Fatalf("duplicate route contract %s", key)
+		}
+		contracts[key] = route
+	}
+	for _, want := range []web.RouteContract{
+		{Method: http.MethodPost, Path: "/api/login", Auth: web.AuthPublic, CSRF: web.CSRFRequired},
+		{Method: http.MethodGet, Path: "/api/session", Auth: web.AuthPublic, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodGet, Path: "/api/settings", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodPut, Path: "/api/settings", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodGet, Path: "/api/version", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodGet, Path: "/api/health", Auth: web.AuthPublic, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodGet, Path: "/api/xray/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodPost, Path: "/api/xray/apply", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/xray/install", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/xray/restart", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/xray/stop", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodGet, Path: "/api/singbox/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodPost, Path: "/api/singbox/apply", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/singbox/install", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/singbox/restart", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/singbox/stop", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodGet, Path: "/api/update/check", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodPost, Path: "/api/update", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodGet, Path: "/api/cert/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodPost, Path: "/api/cert/issue", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+	} {
+		got, ok := contracts[want.Method+" "+want.Path]
+		if !ok {
+			t.Fatalf("route contract missing %s %s", want.Method, want.Path)
+		}
+		if got.Auth != want.Auth || got.CSRF != want.CSRF || got.Handler == "" {
+			t.Fatalf("route contract mismatch for %s %s: %#v", want.Method, want.Path, got)
 		}
 	}
+}
+
+func TestDangerousRouteContractsAndCSRF(t *testing.T) {
+	dangerous := map[string]bool{
+		"/api/xray/apply":        true,
+		"/api/xray/install":      true,
+		"/api/xray/uninstall":    true,
+		"/api/xray/restart":      true,
+		"/api/xray/stop":         true,
+		"/api/singbox/apply":     true,
+		"/api/singbox/install":   true,
+		"/api/singbox/uninstall": true,
+		"/api/singbox/restart":   true,
+		"/api/singbox/stop":      true,
+		"/api/update":            true,
+		"/api/cert/issue":        true,
+		"/api/restart":           true,
+	}
+	declared := map[string]web.RouteContract{}
+	for _, route := range web.RouteContracts() {
+		if !strings.HasPrefix(route.Path, "/api/") {
+			t.Fatalf("API route contract path must start with /api/: %#v", route)
+		}
+		switch route.Method {
+		case http.MethodGet:
+			if route.CSRF != web.CSRFNotRequired {
+				t.Fatalf("GET API route must not require CSRF: %#v", route)
+			}
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if route.CSRF != web.CSRFRequired {
+				t.Fatalf("write API route must require CSRF: %#v", route)
+			}
+		}
+		if dangerous[route.Path] {
+			declared[route.Path] = route
+			if route.Method != http.MethodPost {
+				t.Fatalf("dangerous route %s must be POST, got %s", route.Path, route.Method)
+			}
+			if route.CSRF != web.CSRFRequired {
+				t.Fatalf("dangerous route %s must require CSRF, got %s", route.Path, route.CSRF)
+			}
+		}
+	}
+	for path := range dangerous {
+		if _, ok := declared[path]; !ok {
+			t.Fatalf("dangerous route %s is not declared in route contracts", path)
+		}
+	}
+	router := web.NewRouter(web.WithAuth("admin", "secret"))
+	login := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
+	router.ServeHTTP(login, loginReq)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
+	}
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/update", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	for _, cookie := range login.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "csrf_origin_mismatch") {
+		t.Fatalf("dangerous route must be blocked by CSRF without same-origin header, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAuthAndCSRFMiddlewareFollowRouteContracts(t *testing.T) {
+	router := web.NewRouter(web.WithAuth("admin", "secret"))
+
+	publicSession := httptest.NewRecorder()
+	router.ServeHTTP(publicSession, httptest.NewRequest(http.MethodGet, "/api/session", nil))
+	if publicSession.Code != http.StatusOK {
+		t.Fatalf("public route contract should allow unauthenticated session read, got %d: %s", publicSession.Code, publicSession.Body.String())
+	}
+
+	protectedVersion := httptest.NewRecorder()
+	router.ServeHTTP(protectedVersion, httptest.NewRequest(http.MethodGet, "/api/version", nil))
+	if protectedVersion.Code != http.StatusUnauthorized {
+		t.Fatalf("required-auth route contract should reject unauthenticated version read, got %d: %s", protectedVersion.Code, protectedVersion.Body.String())
+	}
+
+	login := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
+	router.ServeHTTP(login, loginReq)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
+	}
+
+	update := httptest.NewRecorder()
+	updateReq := httptest.NewRequest(http.MethodPost, "/api/update", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	updateReq.Header.Set("Content-Type", "application/json")
+	for _, cookie := range login.Result().Cookies() {
+		updateReq.AddCookie(cookie)
+	}
+	router.ServeHTTP(update, updateReq)
+	if update.Code != http.StatusForbidden {
+		t.Fatalf("CSRF-required route contract should reject missing origin, got %d: %s", update.Code, update.Body.String())
+	}
+	assertStandardAPIError(t, update.Body.Bytes(), "csrf_origin_mismatch")
+}
+
+func TestReadOnlyRouteContractsUseGET(t *testing.T) {
+	for _, route := range web.RouteContracts() {
+		if route.Method == http.MethodGet && route.CSRF != web.CSRFNotRequired {
+			t.Fatalf("GET route must not require CSRF: %#v", route)
+		}
+	}
+	router := web.NewRouter()
+	for _, path := range []string{"/api/health", "/api/version", "/api/update/status", "/api/update/logs"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s should be accessible, got %d: %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestRouteContractsCoverCriticalAPIBehavior(t *testing.T) {
+	contracts := map[string]web.RouteContract{}
+	for _, route := range web.RouteContracts() {
+		contracts[route.Method+" "+route.Path] = route
+	}
+	for _, want := range []web.RouteContract{
+		{Method: http.MethodPost, Path: "/api/login", Auth: web.AuthPublic, CSRF: web.CSRFRequired},
+		{Method: http.MethodGet, Path: "/api/session", Auth: web.AuthPublic, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodPost, Path: "/api/xray/apply", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/singbox/install", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPut, Path: "/api/settings", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodGet, Path: "/api/service/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+	} {
+		got, ok := contracts[want.Method+" "+want.Path]
+		if !ok {
+			t.Fatalf("route contract missing %s %s", want.Method, want.Path)
+		}
+		if got.Auth != want.Auth || got.CSRF != want.CSRF || got.Handler == "" {
+			t.Fatalf("route contract mismatch for %s %s: %#v", want.Method, want.Path, got)
+		}
+	}
+}
+
+func TestRouteContractsMatchRegisteredRouterPaths(t *testing.T) {
+	configDir := t.TempDir()
+	if err := os.WriteFile(configDir+"/panel.json", []byte(`{"panel_port":9999,"database_path":"/var/lib/migate/migate.db"}`), 0o600); err != nil {
+		t.Fatalf("write panel config: %v", err)
+	}
+	router := web.NewRouter(web.WithConfigDir(configDir))
+	checked := map[string]bool{}
+	for _, route := range web.RouteContracts() {
+		if !strings.HasPrefix(route.Path, "/api/") {
+			t.Fatalf("route contract path must start with /api/: %#v", route)
+		}
+		if checked[route.Path] {
+			continue
+		}
+		checked[route.Path] = true
+		response := httptest.NewRecorder()
+		testPath := route.Path
+		if strings.HasSuffix(testPath, "/") {
+			testPath += "1"
+		}
+		req := httptest.NewRequest(http.MethodOptions, testPath, nil)
+		router.ServeHTTP(response, req)
+		if response.Code == http.StatusNotFound {
+			t.Fatalf("route contract %s %s is not registered", route.Method, route.Path)
+		}
+	}
+	for _, critical := range []string{
+		"/api/login",
+		"/api/session",
+		"/api/inbounds",
+		"/api/outbounds",
+		"/api/routing-rules",
+		"/api/xray/apply",
+		"/api/xray/install",
+		"/api/singbox/apply",
+		"/api/singbox/install",
+		"/api/settings",
+		"/api/update",
+		"/api/restart",
+	} {
+		if !routeContractPathExists(critical) {
+			t.Fatalf("critical registered route %s must be represented in RouteContracts", critical)
+		}
+	}
+}
+
+func routeContractPathExists(path string) bool {
+	for _, route := range web.RouteContracts() {
+		if route.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRouterDoesNotServeRemovedHeavyRoutes(t *testing.T) {
@@ -650,14 +997,19 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 	for _, tc := range []struct {
 		path string
 	}{
+		{"/api/xray/apply"},
 		{"/api/xray/install"},
 		{"/api/xray/uninstall"},
 		{"/api/xray/restart"},
 		{"/api/xray/stop"},
+		{"/api/singbox/apply"},
 		{"/api/singbox/install"},
 		{"/api/singbox/uninstall"},
 		{"/api/singbox/restart"},
 		{"/api/singbox/stop"},
+		{"/api/cert/issue"},
+		{"/api/update"},
+		{"/api/restart"},
 	} {
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"confirm":true}`))
@@ -666,9 +1018,51 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("%s without allow_system_changes = %d, want 403", tc.path, response.Code)
 		}
-		if !strings.Contains(response.Body.String(), "confirmation_required") {
-			t.Fatalf("%s response missing confirmation_required: %s", tc.path, response.Body.String())
+		assertStandardAPIError(t, response.Body.Bytes(), "confirmation_required")
+	}
+}
+
+func TestCoreInstallAPIsRequireExplicitSystemChangeConfirmation(t *testing.T) {
+	router := web.NewRouter(web.WithCoreScriptRunner(func(script string) ([]byte, error) {
+		t.Fatalf("runner must not be called without confirmation")
+		return nil, nil
+	}))
+	for _, path := range []string{"/api/xray/install", "/api/singbox/install"} {
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"confirm":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, req)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("%s without allow_system_changes = %d, want 403", path, response.Code)
 		}
+		assertStandardAPIError(t, response.Body.Bytes(), "confirmation_required")
+		if !strings.Contains(response.Body.String(), `"commands_executed":[]`) {
+			t.Fatalf("%s rejection missing commands_executed: %s", path, response.Body.String())
+		}
+	}
+}
+
+func TestCoreInstallSuccessReturnsStructuredActionResult(t *testing.T) {
+	router := web.NewRouter(web.WithCoreScriptRunner(func(script string) ([]byte, error) {
+		if strings.TrimSpace(script) == "" {
+			t.Fatal("runner received empty script")
+		}
+		return []byte("sing-box 1.13.13"), nil
+	}))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/install", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"core":"singbox"`, `"status":"installed"`, `"output":"sing-box 1.13.13"`, `"commands_executed":[`, `"download sing-box release"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("install success response missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("install success response must not include error: %s", response.Body.String())
 	}
 }
 
@@ -740,10 +1134,9 @@ func TestCoreServiceControlReturnsSystemdUnavailableError(t *testing.T) {
 }
 
 func TestCoreInstallFailureReturnsStructuredActionResult(t *testing.T) {
+	var scriptSeen string
 	router := web.NewRouter(web.WithCoreScriptRunner(func(script string) ([]byte, error) {
-		if !strings.Contains(script, "Xray-linux-${asset_arch}.zip") {
-			t.Fatalf("runner received unexpected script: %s", script)
-		}
+		scriptSeen = script
 		return []byte("download Xray release failed"), errors.New("download failed")
 	}))
 	response := httptest.NewRecorder()
@@ -753,6 +1146,9 @@ func TestCoreInstallFailureReturnsStructuredActionResult(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected structured install failure response to be 200, got %d: %s", response.Code, response.Body.String())
 	}
+	if scriptSeen == "" {
+		t.Fatalf("runner was not called")
+	}
 	for _, want := range []string{`"status":"failed"`, `"error":"install_failed"`, "download Xray release"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("install failure response missing %q: %s", want, response.Body.String())
@@ -760,8 +1156,23 @@ func TestCoreInstallFailureReturnsStructuredActionResult(t *testing.T) {
 	}
 }
 
+func TestCoreInstallUnknownCoreReturnsBadRequest(t *testing.T) {
+	handler := web.ExposeForTestCoreInstallHandler("bad", func(script string) ([]byte, error) {
+		t.Fatalf("runner must not be called for unknown core")
+		return nil, nil
+	})
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/bad/install", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+	}
+	assertStandardAPIError(t, response.Body.Bytes(), "unknown_core")
+}
+
 func TestCoreInstallScriptsReplaceBinariesAtomically(t *testing.T) {
-	script := webPackageSource(t)
+	script := webAndCoreAdminSource(t)
 	for _, want := range []string{
 		`systemctl stop migate-xray 2>/dev/null || true`,
 		`install_tmp="/usr/local/bin/.xray.new.$$"`,
@@ -793,7 +1204,7 @@ func TestCoreInstallScriptsReplaceBinariesAtomically(t *testing.T) {
 }
 
 func TestCoreInstallScriptAvoidsPipefailHead(t *testing.T) {
-	script := webPackageSource(t)
+	script := webAndCoreAdminSource(t)
 	for _, want := range []string{
 		`/usr/local/bin/xray version | sed -n '1p'`,
 		`/usr/local/bin/sing-box version | sed -n '1p'`,
@@ -813,7 +1224,7 @@ func TestCoreInstallScriptAvoidsPipefailHead(t *testing.T) {
 }
 
 func TestCoreUninstallScriptsRemoveSystemdResidue(t *testing.T) {
-	script := webPackageSource(t)
+	script := webAndCoreAdminSource(t)
 	for _, want := range []string{
 		`systemctl stop migate-xray 2>/dev/null || true`,
 		`rm -f /etc/systemd/system/migate-xray.service`,
@@ -841,7 +1252,7 @@ func TestCoreUninstallScriptsRemoveSystemdResidue(t *testing.T) {
 }
 
 func TestCoreInstallScriptsSeedConfigsMatchingGeneratedDefaults(t *testing.T) {
-	script := webPackageSource(t)
+	script := webAndCoreAdminSource(t)
 	for _, want := range []string{
 		`"tag": "xray-out-1"`,
 		`"tag": "xray-out-2"`,
@@ -852,8 +1263,6 @@ func TestCoreInstallScriptsSeedConfigsMatchingGeneratedDefaults(t *testing.T) {
 		`"tag": "singbox-out-2"`,
 		`write_migate_default_xray_config()`,
 		`write_migate_default_singbox_config()`,
-		`install_migate_default_xray_config()`,
-		`install_migate_default_singbox_config()`,
 		`atomic_write_file()`,
 		`backup_migate_invalid_core_config()`,
 		`existing Xray config check failed; backing it up and writing MiGate default config`,
@@ -898,7 +1307,6 @@ func TestCoreInstallScriptsBackupInvalidConfigsBeforeRestart(t *testing.T) {
 	for _, want := range []string{
 		`if ! /usr/local/bin/xray run -test -c /etc/migate/cores/xray.json; then`,
 		`backup_migate_invalid_core_config /etc/migate/cores/xray.json`,
-		`install_migate_default_xray_config`,
 		`/usr/local/bin/xray run -test -c /etc/migate/cores/xray.json`,
 		`systemctl restart migate-xray`,
 	} {
@@ -916,7 +1324,6 @@ func TestCoreInstallScriptsBackupInvalidConfigsBeforeRestart(t *testing.T) {
 	for _, want := range []string{
 		`if ! /usr/local/bin/sing-box check -c /etc/migate/cores/sing-box.json; then`,
 		`backup_migate_invalid_core_config /etc/migate/cores/sing-box.json`,
-		`install_migate_default_singbox_config`,
 		`/usr/local/bin/sing-box check -c /etc/migate/cores/sing-box.json`,
 		`systemctl restart migate-sing-box`,
 	} {
@@ -935,7 +1342,6 @@ func TestCoreXrayInstallScriptUsesStandardConfigPathOnly(t *testing.T) {
 	script := webCoreInstallScript(t, "xray")
 	for _, want := range []string{
 		`if [ ! -f /etc/migate/cores/xray.json ]; then`,
-		`install_migate_default_xray_config`,
 		`/usr/local/bin/xray run -test -c /etc/migate/cores/xray.json`,
 	} {
 		if !strings.Contains(script, want) {
@@ -954,14 +1360,15 @@ func TestCoreXrayInstallScriptUsesStandardConfigPathOnly(t *testing.T) {
 }
 
 func TestCoreXrayInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
-	script := webPackageSource(t)
+	script := webCoreInstallScript(t, "xray")
 	for _, want := range []string{
-		`asset_name="Xray-linux-${asset_arch}.zip"`,
 		`url="https://github.com/XTLS/Xray-core/releases/download/v${version}/${asset_name}"`,
 		`dgst_url="${url}.dgst"`,
 		`curl -fL "$url" -o "$tmp/$asset_name"`,
 		`curl -fL "$dgst_url" -o "$tmp/$asset_name.dgst"`,
-		`awk -F'= ' -v asset="$asset_name" '/^SHA2-256=/{print $2 "  " asset}' "$tmp/$asset_name.dgst" > "$tmp/$asset_name.sha256"`,
+		`awk -F'= ' '/^SHA2-256=/{print $2}' "$tmp/$asset_name.dgst" | grep -E '^[0-9a-fA-F]{64}$' > "$tmp/$asset_name.digest"`,
+		`wc -l < "$tmp/$asset_name.digest"`,
+		`printf '%s  %s\n' "$digest" "$asset_name" > "$tmp/$asset_name.sha256"`,
 		`sha256sum -c "$asset_name.sha256"`,
 		`unzip -oq "$tmp/$asset_name" -d "$tmp/xray"`,
 	} {
@@ -975,9 +1382,8 @@ func TestCoreXrayInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
 }
 
 func TestCoreSingboxInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) {
-	script := webPackageSource(t)
+	script := webCoreInstallScript(t, "singbox")
 	for _, want := range []string{
-		`asset_name="sing-box-${version}-linux-${asset_arch}.tar.gz"`,
 		`url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset_name}"`,
 		`release_api_url="https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${version}"`,
 		`curl -fL "$url" -o "$tmp/$asset_name"`,
@@ -997,11 +1403,11 @@ func TestCoreSingboxInstallScriptVerifiesChecksumBeforeExtracting(t *testing.T) 
 }
 
 func TestCoreSingboxInstallCommandsIncludeChecksumVerification(t *testing.T) {
-	script := webPackageSource(t)
+	script := webCoreInstallScript(t, "singbox")
 	for _, want := range []string{
-		`"download sing-box release"`,
-		`"verify sing-box release checksum"`,
-		`"atomic install /usr/local/bin/sing-box"`,
+		`download sing-box release`,
+		`verify sing-box release checksum`,
+		`atomic install /usr/local/bin/sing-box`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("sing-box WebUI command list missing %q", want)
@@ -1010,22 +1416,25 @@ func TestCoreSingboxInstallCommandsIncludeChecksumVerification(t *testing.T) {
 }
 
 func TestCoreInstallersDoNotExecuteUnverifiedRemoteScripts(t *testing.T) {
-	script := webPackageSource(t)
+	webSource := webPackageSource(t)
+	coreadminSource := goPackageSource(t, "../service/coreadmin")
+	certSource := goPackageSource(t, "../service/cert")
+	source := webSource + "\n" + coreadminSource + "\n" + certSource
 	for _, forbidden := range []string{
 		"get.acme.sh",
 		"Xray-install/raw/main/install-release.sh",
 		`bash "$tmp/install-release.sh"`,
 	} {
-		if strings.Contains(script, forbidden) {
-			t.Fatalf("web package must not download and execute unverified remote installer %q", forbidden)
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("MiGate must not download and execute unverified remote installer %q", forbidden)
 		}
 	}
 	for _, want := range []string{
 		"refusing to download and execute unverified acme.sh installer",
 		"download Xray release",
 	} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("web package missing safe installer marker %q", want)
+		if !strings.Contains(source, want) {
+			t.Fatalf("source missing safe installer marker %q", want)
 		}
 	}
 }

@@ -7,6 +7,5 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok","mode":"single-binary"}`))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "mode": "single-binary"})
 }

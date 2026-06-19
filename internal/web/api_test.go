@@ -80,11 +80,7 @@ func TestCreateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
 			if resp.Code != http.StatusConflict {
 				t.Fatalf("expected duplicate client 409, got %d: %s", resp.Code, resp.Body.String())
 			}
-			for _, want := range []string{`"error":"duplicate_client"`, `"message"`} {
-				if !strings.Contains(resp.Body.String(), want) {
-					t.Fatalf("duplicate response missing %q: %s", want, resp.Body.String())
-				}
-			}
+			assertStandardAPIError(t, resp.Body.Bytes(), "duplicate_client")
 		}
 	}
 }
@@ -117,11 +113,7 @@ func TestUpdateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("expected duplicate client update 409, got %d: %s", resp.Code, resp.Body.String())
 	}
-	for _, want := range []string{`"error":"duplicate_client"`, `"message"`} {
-		if !strings.Contains(resp.Body.String(), want) {
-			t.Fatalf("duplicate update response missing %q: %s", want, resp.Body.String())
-		}
-	}
+	assertStandardAPIError(t, resp.Body.Bytes(), "duplicate_client")
 }
 
 func TestSocks5PoolAPIFetchesRegionsAndImportsOutbound(t *testing.T) {
@@ -479,9 +471,7 @@ func TestDeleteOutboundAPIReportsListFailureBeforeDelete(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
-		t.Fatalf("expected list_failed error, got %s", response.Body.String())
-	}
+	assertStandardAPIError(t, response.Body.Bytes(), "list_failed")
 	if failingStore.deleteCalled {
 		t.Fatal("delete should not run when old outbound lookup fails")
 	}
@@ -626,9 +616,7 @@ func TestDeleteRoutingRuleAPIReportsListFailureBeforeDelete(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
-		t.Fatalf("expected list_failed error, got %s", response.Body.String())
-	}
+	assertStandardAPIError(t, response.Body.Bytes(), "list_failed")
 	if failingStore.deleteCalled {
 		t.Fatal("delete should not run when old routing rule lookup fails")
 	}
@@ -655,9 +643,7 @@ func TestUpdateRoutingRuleAPIReportsListFailureBeforeUpdate(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
-		t.Fatalf("expected list_failed error, got %s", response.Body.String())
-	}
+	assertStandardAPIError(t, response.Body.Bytes(), "list_failed")
 	if failingStore.updateCalled {
 		t.Fatal("update should not run when old routing rule lookup fails")
 	}
@@ -678,9 +664,7 @@ func TestCreateRoutingRuleReportsSingboxListFailureInResponse(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"error":"list_failed"`) {
-		t.Fatalf("expected list_failed error, got %s", response.Body.String())
-	}
+	assertStandardAPIError(t, response.Body.Bytes(), "list_failed")
 	rules, err := store.ListRoutingRules(context.Background())
 	if err != nil {
 		t.Fatalf("list routing rules: %v", err)
@@ -1630,7 +1614,7 @@ func TestConfigValidateAPIsReturnStructuredResults(t *testing.T) {
 	router := web.NewRouter(web.WithStore(store))
 
 	xrayResp := httptest.NewRecorder()
-	router.ServeHTTP(xrayResp, httptest.NewRequest(http.MethodPost, "/api/xray/validate", nil))
+	router.ServeHTTP(xrayResp, httptest.NewRequest(http.MethodGet, "/api/xray/validate", nil))
 	if xrayResp.Code != http.StatusOK {
 		t.Fatalf("expected xray validate 200, got %d: %s", xrayResp.Code, xrayResp.Body.String())
 	}
@@ -1641,7 +1625,7 @@ func TestConfigValidateAPIsReturnStructuredResults(t *testing.T) {
 	}
 
 	singboxResp := httptest.NewRecorder()
-	router.ServeHTTP(singboxResp, httptest.NewRequest(http.MethodPost, "/api/singbox/validate", nil))
+	router.ServeHTTP(singboxResp, httptest.NewRequest(http.MethodGet, "/api/singbox/validate", nil))
 	if singboxResp.Code != http.StatusOK {
 		t.Fatalf("expected singbox validate 200, got %d: %s", singboxResp.Code, singboxResp.Body.String())
 	}
@@ -3151,9 +3135,7 @@ func TestUpdateInboundAPIWithoutStoreReturnsUnavailable(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 without store, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"error":"store_unavailable"`) {
-		t.Fatalf("expected store_unavailable error, got %s", response.Body.String())
-	}
+	assertStandardAPIError(t, response.Body.Bytes(), "store_unavailable")
 }
 
 type updateInboundRecordingStore struct {
@@ -3421,10 +3403,9 @@ func TestXrayApplyAPIRejectsWithoutDoubleConfirmation(t *testing.T) {
 		t.Fatalf("expected 403, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"error":"confirmation_required"`, `"commands_executed":[]`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("rejection response missing %q: %s", want, body)
-		}
+	assertStandardAPIError(t, response.Body.Bytes(), "confirmation_required")
+	if !strings.Contains(body, `"commands_executed":[]`) {
+		t.Fatalf("rejection response missing commands_executed: %s", body)
 	}
 	if controller.applyCalls != 0 {
 		t.Fatalf("rejected apply must not call controller, calls=%d", controller.applyCalls)
@@ -3793,7 +3774,9 @@ func TestSingboxApplyAPIReturnsMissingListenerWarning(t *testing.T) {
 		}),
 	)
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/singbox/apply", nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
@@ -4353,9 +4336,10 @@ func TestXrayApplyUsesApplyLock(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"apply_locked"`) {
+	if response.Code != http.StatusConflict {
 		t.Fatalf("expected apply lock conflict, got %d: %s", response.Code, response.Body.String())
 	}
+	assertStandardAPIError(t, response.Body.Bytes(), "apply_locked")
 }
 
 func TestXrayConfigPreviewUsesDedicatedXrayConfigPath(t *testing.T) {
@@ -4395,9 +4379,10 @@ func TestXrayConfigReturnsStoreReadFailure(t *testing.T) {
 	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
-	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"error":"list_inbounds_failed"`) {
+	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("expected list failure, got %d: %s", response.Code, response.Body.String())
 	}
+	assertStandardAPIError(t, response.Body.Bytes(), "list_inbounds_failed")
 }
 
 func TestXrayConfigReturnsBadRequestForGeneratedConfigFailure(t *testing.T) {
@@ -4415,9 +4400,7 @@ func TestXrayConfigReturnsBadRequestForGeneratedConfigFailure(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for generated config failure, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"error":"build_xray_config_failed"`) {
-		t.Fatalf("expected build_xray_config_failed response, got %s", response.Body.String())
-	}
+	assertStandardAPIError(t, response.Body.Bytes(), "build_xray_config_failed")
 }
 
 func TestXrayDiagnosticsGeneratedConfigBuildFailureHasStructuredAction(t *testing.T) {
@@ -5187,6 +5170,30 @@ func TestCertStatusReturnsCertInfoWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestCertStatusRejectsInvalidPanelConfigFields(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/panel.json"
+	if err := os.WriteFile(configPath, []byte(`{"panel_port":0,"database_path":"relative.db","cert_domain":"example.com","cert_email":"admin@example.com"}`), 0644); err != nil {
+		t.Fatalf("write panel.json: %v", err)
+	}
+
+	router := web.NewRouter(web.WithConfigDir(dir))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/cert/status", nil)
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var data map[string]interface{}
+	if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if data["domain"] != "" || data["email"] != "" {
+		t.Fatalf("invalid panel config must not be partially trusted, got %v", data)
+	}
+}
+
 func TestCertIssueValidatesRequiredFields(t *testing.T) {
 	router := web.NewRouter()
 	// Missing domain
@@ -5228,7 +5235,7 @@ func TestSettingsGetReturnsNotFoundWithoutConfigDir(t *testing.T) {
 func TestSettingsGetReturnsPanelConfig(t *testing.T) {
 	dir := t.TempDir()
 	configPath := dir + "/panel.json"
-	if err := os.WriteFile(configPath, []byte(`{"panel_port":8888,"panel_username":"admin","has_password":true,"unknown_config_path":"/var/lib/migate","web_base_path":"/migate"}`), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"panel_port":8888,"panel_username":"admin","panel_password":"secret","database_path":"/var/lib/migate/migate.db","web_base_path":"/migate"}`), 0644); err != nil {
 		t.Fatalf("write panel.json: %v", err)
 	}
 	router := web.NewRouter(web.WithConfigDir(dir))
@@ -5250,9 +5257,6 @@ func TestSettingsGetReturnsPanelConfig(t *testing.T) {
 	}
 	if data["has_password"] != true {
 		t.Fatalf("expected has_password=true, got %v", data["has_password"])
-	}
-	if _, exists := data["unknown_config_path"]; exists {
-		t.Fatalf("unknown config fields should not be exposed by settings API: %v", data["unknown_config_path"])
 	}
 }
 

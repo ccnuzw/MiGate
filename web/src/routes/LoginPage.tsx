@@ -10,6 +10,7 @@ import { api } from '../api/endpoints';
 import type { Session } from '../api/types';
 import { Field, useToast } from '../components/ui';
 import { useI18n } from '../lib/i18n';
+import { refreshSessionState } from '../lib/queryInvalidation';
 
 const schema = z.object({
   username: z.string().min(1),
@@ -38,7 +39,7 @@ export default function LoginPage() {
         default_password: false,
       });
       navigate(target, { replace: true });
-      void queryClient.invalidateQueries({ queryKey: ['session'] });
+      refreshSessionState(queryClient);
     },
     onError: () => showToast(text('登录失败，请检查用户名或密码'), 'error'),
   });

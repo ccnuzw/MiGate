@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ApiError } from '../api/client';
+import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Inbound, Outbound, ProxyPoolProxy, ProxyPoolResponse, RoutingRule } from '../api/types';
 import { EmptyState, Field, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
@@ -730,7 +730,7 @@ function protocolSlug(protocol: string) {
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback;
+  return getAPIErrorMessage(error, fallback);
 }
 
 export function ruleTitle(rule: RoutingRule, text: (value: string) => string, inbounds: Inbound[] = [], outbounds: Outbound[] = []) {

@@ -458,8 +458,7 @@ func statsHandler(store Store, statsClient xray.StatsClient) http.HandlerFunc {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -1046,8 +1045,7 @@ func systemResourcesHandler() http.HandlerFunc {
 		}
 		memTotal, memUsed, memPercent := readMemoryUsage()
 		diskTotal, diskUsed, diskPercent := readDiskUsage("/")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"cpu_percent":    defaultCPUSampler.Sample(),
 			"memory_total":   memTotal,
 			"memory_used":    memUsed,

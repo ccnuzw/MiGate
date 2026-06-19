@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 )
 
 const StatsUnsupportedMessage = "sing-box binary does not include with_v2ray_api"
@@ -96,7 +96,7 @@ func IsV2RayAPIUnsupportedOutput(output string) bool {
 }
 
 func runSingboxCheck(ctx context.Context, binaryPath, configPath string) ([]byte, error) {
-	return exec.CommandContext(ctx, binaryPath, "check", "-c", configPath).CombinedOutput()
+	return runtimecmd.NewRealCommandRunner(5*time.Second).RunOutput(ctx, binaryPath, "check", "-c", configPath)
 }
 
 func localV2RayAPICheckListen() (string, error) {

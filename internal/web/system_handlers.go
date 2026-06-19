@@ -1,12 +1,13 @@
 package web
 
 import (
-	"encoding/json"
+	"context"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 )
 
 func runningUnderGoTest() bool {
@@ -22,15 +23,14 @@ func restartHandler() http.HandlerFunc {
 		if _, ok := decodeCoreActionPayload(w, r); !ok {
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"restarting"}`))
+		writeJSON(w, http.StatusOK, StatusResponse{Status: "restarting"})
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
 		// Fork a child that restarts after a brief delay so the response is sent first
 		go func() {
 			time.Sleep(500 * time.Millisecond)
-			_ = exec.Command("systemctl", "restart", "migate").Run()
+			_ = runtimecmd.Run(context.Background(), "systemctl", "restart", "migate")
 		}()
 		if !runningUnderGoTest() {
 			go func() {
@@ -47,19 +47,18 @@ func serviceStatusHandler() http.HandlerFunc {
 			methodNotAllowed(w)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		status, detail := "unknown", ""
-		out, err := exec.Command("systemctl", "is-active", "migate").Output()
+		out, err := runtimecmd.RunOutput(r.Context(), "systemctl", "is-active", "migate")
 		if err == nil {
 			status = strings.TrimSpace(string(out))
 		}
 		if status == "active" {
-			out2, _ := exec.Command("systemctl", "show", "migate", "--property=ActiveEnterTimestamp", "--value").Output()
+			out2, _ := runtimecmd.RunOutput(r.Context(), "systemctl", "show", "migate", "--property=ActiveEnterTimestamp", "--value")
 			if len(out2) > 0 {
 				detail = "启动于 " + strings.TrimSpace(string(out2))
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"service": "migate",
 			"status":  status,
 			"detail":  detail,

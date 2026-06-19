@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/lockfile"
 	"github.com/imzyb/MiGate/internal/paths"
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 	"github.com/imzyb/MiGate/internal/singbox"
 )
 
@@ -121,7 +121,7 @@ func (defaultSingboxProbe) RecentLogs(service string, lines int) []string {
 	if lines > maxSingboxDiagnosticLogLines {
 		lines = maxSingboxDiagnosticLogLines
 	}
-	out, err := exec.Command("journalctl", "-u", service, "-n", strconv.Itoa(lines), "--no-pager", "-o", "short-iso").CombinedOutput()
+	out, err := runtimecmd.RunOutput(context.Background(), "journalctl", "-u", service, "-n", strconv.Itoa(lines), "--no-pager", "-o", "short-iso")
 	if err != nil {
 		return []string{}
 	}
@@ -141,13 +141,11 @@ func singboxStatusHandler(cfg ...*routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-
 		cfg := firstRouterConfig(cfg)
 		probe := singboxProbeForConfig(cfg)
 		installed := probe.IsInstalled()
 		if !installed {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"core":              "sing-box",
 				"installed":         false,
 				"status":            "not_installed",
@@ -179,7 +177,7 @@ func singboxStatusHandler(cfg ...*routerConfig) http.HandlerFunc {
 				configValid = true
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"core":               "sing-box",
 			"installed":          true,
 			"managed":            management.Managed,
@@ -282,7 +280,7 @@ func isTCPPortListening(port int) bool {
 		{name: "ss", args: []string{"-H", "-ltn"}},
 		{name: "netstat", args: []string{"-ltn"}},
 	} {
-		out, err := exec.Command(command.name, command.args...).Output()
+		out, err := runtimecmd.RunOutput(context.Background(), command.name, command.args...)
 		if err != nil {
 			continue
 		}
@@ -320,6 +318,9 @@ func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if _, ok := decodeCoreActionPayload(w, r); !ok {
 			return
 		}
 
@@ -383,14 +384,12 @@ func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 
 func singboxValidateHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		if r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
 		result := validateSingboxConfig(r.Context(), cfg)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(result)
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 
@@ -1091,17 +1090,16 @@ func singboxVersionHandler() http.HandlerFunc {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		if !singbox.IsInstalled() {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": "not_installed"})
+			writeJSON(w, http.StatusOK, map[string]interface{}{"version": "not_installed"})
 			return
 		}
 		ver, err := singbox.Version()
 		if err != nil {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": "unknown", "error": err.Error()})
+			writeJSON(w, http.StatusOK, map[string]interface{}{"version": "unknown", "error": err.Error()})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"version": strings.TrimSpace(ver)})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"version": strings.TrimSpace(ver)})
 	}
 }
 
@@ -1121,16 +1119,14 @@ func singboxLogsHandler() http.HandlerFunc {
 		} else if n > maxXrayLogLines {
 			lines = strconv.Itoa(maxXrayLogLines)
 		}
-		out, err := exec.Command("journalctl", "-u", singbox.ServiceName(), "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		out, err := runtimecmd.RunOutput(context.Background(), "journalctl", "-u", singbox.ServiceName(), "-n", lines, "--no-pager", "-o", "short-iso")
 		if err != nil {
-			out, err = exec.Command("tail", "-n", lines, "/var/log/syslog").CombinedOutput()
+			out, err = runtimecmd.RunOutput(context.Background(), "tail", "-n", lines, "/var/log/syslog")
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{"logs": "无法读取 Sing-box 日志：journalctl 和 syslog 均不可用。"})
+				writeJSON(w, http.StatusOK, map[string]string{"logs": "无法读取 Sing-box 日志：journalctl 和 syslog 均不可用。"})
 				return
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"logs": string(out)})
+		writeJSON(w, http.StatusOK, map[string]string{"logs": string(out)})
 	}
 }

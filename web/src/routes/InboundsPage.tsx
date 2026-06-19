@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Columns2, Copy, Edit2, Plus, Power, QrCode, RectangleHorizontal, RotateCcw, Trash2 } from 'lucide-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
-import { ApiError, appPath } from '../api/client';
+import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CertStatus, Client, Inbound, InboundCapability as ApiInboundCapability } from '../api/types';
 import { EmptyState, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
@@ -1241,9 +1241,7 @@ function shareToken(client: Client) {
 }
 
 async function fetchNodeLink(client: Client) {
-  const response = await fetch(appPath(`/sub/${shareToken(client)}`), { credentials: 'same-origin' });
-  if (!response.ok) throw new Error('share_link_unavailable');
-  return (await response.text()).trim();
+  return api.subscriptionLink(shareToken(client));
 }
 
 async function showClientQRCode(
@@ -1261,5 +1259,5 @@ async function showClientQRCode(
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback;
+  return getAPIErrorMessage(error, fallback);
 }

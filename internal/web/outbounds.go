@@ -32,8 +32,7 @@ func outboundsHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed")
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(outbounds)
+			writeJSON(w, http.StatusOK, outbounds)
 		case http.MethodPost:
 			var params db.CreateOutboundParams
 			if err := decodeJSONBody(r, &params); err != nil {
@@ -459,8 +458,7 @@ func proxyPoolListHandler(load func(context.Context) ([]socks5PoolProxy, time.Ti
 			filtered = append(filtered, proxy)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"regions": socks5PoolRegions(proxies), "proxies": filtered,
 		"cache_status": cacheStatus, "cache_updated_at": updatedAt.Format(time.RFC3339),
 		"next_refresh_at": nextSocks5PoolRefresh(time.Now()).Format(time.RFC3339),
@@ -489,8 +487,7 @@ func proxyPoolPingHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_proxy")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(pingOutbound(address, req.Port))
+	writeJSON(w, http.StatusOK, pingOutbound(address, req.Port))
 }
 
 func socks5PoolImportHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
@@ -671,8 +668,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}(ob)
 			}
 			wg.Wait()
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(results)
+			writeJSON(w, http.StatusOK, results)
 			return
 		}
 		if strings.HasSuffix(path, "/ping") {
@@ -699,13 +695,11 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 			}
 			if target == nil || !target.Enabled || target.Protocol == "freedom" || target.Protocol == "blackhole" {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{"latency": -1, "error": "not_pingable"})
+				writeJSON(w, http.StatusOK, map[string]interface{}{"latency": -1, "error": "not_pingable"})
 				return
 			}
 			result := pingOutbound(target.Address, target.Port)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(result)
+			writeJSON(w, http.StatusOK, result)
 			return
 		}
 		idStr := strings.TrimSuffix(path, "/")

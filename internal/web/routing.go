@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,8 +20,7 @@ func routingRulesHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(rules)
+			writeJSON(w, http.StatusOK, rules)
 		case http.MethodPost:
 			var params db.CreateRoutingRuleParams
 			if err := decodeJSONBody(r, &params); err != nil {

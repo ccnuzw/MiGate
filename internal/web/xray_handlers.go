@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/lockfile"
 	"github.com/imzyb/MiGate/internal/paths"
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -46,8 +46,7 @@ func xrayConfigHandler(store Store) http.HandlerFunc {
 			writeJSONError(w, http.StatusInternalServerError, "marshal_failed", map[string]interface{}{"detail": err.Error()})
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(config)
+		writeJSON(w, http.StatusOK, config)
 	}
 }
 
@@ -327,7 +326,7 @@ func (p defaultXrayProbe) command(ctx context.Context, name string, args ...stri
 	if p.runCmd != nil {
 		return p.runCmd(name, args...)
 	}
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := runtimecmd.RunOutput(ctx, name, args...)
 	return string(out), err
 }
 
@@ -1133,8 +1132,7 @@ func xrayStatusHandler(cfg *routerConfig) http.HandlerFunc {
 		if status.ListeningPorts == nil {
 			status.ListeningPorts = []CoreListenerDiagnostic{}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(status)
+		writeJSON(w, http.StatusOK, status)
 	}
 }
 
@@ -1150,14 +1148,12 @@ type configValidationResult struct {
 
 func xrayValidateHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
 			return
 		}
 		result := validateXrayConfig(r.Context(), store)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(result)
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 
@@ -1309,11 +1305,10 @@ func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			}
 		}
 
-		w.Header().Set("Content-Type", "application/json")
 		response := map[string]interface{}{"xray": xrayResult}
 		if singboxResult != nil {
 			response["singbox"] = singboxResult
 		}
-		_ = json.NewEncoder(w).Encode(response)
+		writeJSON(w, http.StatusOK, response)
 	}
 }
