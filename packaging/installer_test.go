@@ -272,8 +272,10 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 		"systemctl reset-failed migate-singbox",
 		"systemctl enable sing-box",
 		"/usr/local/bin/sing-box check -c /etc/sing-box/config.json",
-		"sing-box 配置校验失败，已跳过服务启动。",
+		"sing-box 默认配置校验失败：/etc/sing-box/config.json",
 		"journalctl -u sing-box -n 80 --no-pager",
+		"systemctl restart sing-box",
+		"systemctl is-active --quiet sing-box",
 		"sing-box 安装/修复完成",
 	} {
 		if !strings.Contains(script, want) {
@@ -284,12 +286,12 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	if serviceWrite < 0 || !strings.Contains(script[serviceWrite:], "systemctl daemon-reload") {
 		t.Fatalf("installer must daemon-reload after writing sing-box service")
 	}
-	if strings.Index(script, "/usr/local/bin/sing-box check -c /etc/sing-box/config.json") > strings.Index(script, "systemctl start sing-box") {
+	if strings.Index(script, "/usr/local/bin/sing-box check -c /etc/sing-box/config.json") > strings.Index(script, "systemctl restart sing-box") {
 		t.Fatalf("installer must check sing-box config before starting service")
 	}
-	checkBlock := script[strings.Index(script, "if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then"):]
-	if !strings.Contains(checkBlock, "已跳过服务启动") || strings.Index(checkBlock, "else") > strings.Index(checkBlock, "systemctl start sing-box") {
-		t.Fatalf("installer must skip sing-box service start when config check fails")
+	checkBlock := script[strings.Index(script, "if ! ensure_valid_singbox_config; then"):]
+	if !strings.Contains(checkBlock, "return 1") || strings.Index(checkBlock, "return 1") > strings.Index(checkBlock, "systemctl restart sing-box") {
+		t.Fatalf("installer must fail before sing-box service restart when config check fails")
 	}
 }
 
@@ -321,6 +323,64 @@ func TestInstallerReplacesCoreBinariesAtomically(t *testing.T) {
 	} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("installer must not directly overwrite a running core binary with %q", forbidden)
+		}
+	}
+}
+
+func TestInstallerXrayRepairRemovesLegacySystemdDropIn(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf",
+		"rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true",
+		"systemctl daemon-reload",
+		"systemctl restart xray",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer must remove legacy Xray systemd drop-in before restart, missing %q", want)
+		}
+	}
+	if strings.Index(script, "rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf") > strings.Index(script, "cat > /etc/systemd/system/xray.service") {
+		t.Fatalf("installer must remove legacy Xray systemd drop-in before writing service")
+	}
+}
+
+func TestInstallerSeedsCoreConfigsMatchingGeneratedDefaults(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"write_default_xray_config()",
+		"write_default_singbox_config()",
+		`"tag": "xray-out-1"`,
+		`"tag": "xray-out-2"`,
+		`"tag": "xray-out-3"`,
+		`"tag": "api"`,
+		`"StatsService"`,
+		`"tag": "singbox-out-1"`,
+		`"tag": "singbox-out-2"`,
+		`write_default_xray_config "${INSTALL_DIR}/xray.json"`,
+		`write_default_singbox_config /etc/sing-box/config.json`,
+		`ensure_valid_xray_config()`,
+		`ensure_valid_singbox_config()`,
+		`现有 Xray 配置校验失败，将备份并写入 MiGate 默认配置。`,
+		`现有 sing-box 配置校验失败，将备份并写入 MiGate 默认配置。`,
+		`.migate-backup.$(date +%Y%m%d%H%M%S)`,
+		`ln -sf "${INSTALL_DIR}/xray.json" "${CONFIG_DIR}/xray.json"`,
+		`/usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json`,
+		`systemctl is-active --quiet xray`,
+		`/usr/local/bin/sing-box check -c /etc/sing-box/config.json`,
+		`systemctl is-active --quiet sing-box`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer default core config contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`"tag": "direct"`,
+		`"tag": "blocked"`,
+		`"outbounds":[{"type":"direct","tag":"direct"}]`,
+		`"inbounds":[],"outbounds":[{"protocol":"freedom","tag":"direct"}`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not seed legacy default core config marker %q", forbidden)
 		}
 	}
 }
@@ -695,6 +755,11 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 		"systemctl stop migate-singbox",
 		"systemctl disable migate-singbox",
 		"rm -f /etc/systemd/system/migate-singbox.service",
+		"systemctl stop xray",
+		"systemctl disable xray",
+		"rm -f \"$XRAY_SERVICE_PATH\"",
+		"rm -f \"$XRAY_LEGACY_DROPIN\"",
+		"rmdir \"$XRAY_SERVICE_DROPIN_DIR\"",
 		"systemctl daemon-reload",
 		"systemctl reset-failed",
 		"--purge",
@@ -703,6 +768,8 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 		"rm -rf /etc/sing-box",
 		"rm -f /usr/local/etc/xray/config.json",
 		"rm -f /usr/local/etc/xray/xray.json",
+		"XRAY_COMPAT_CONFIG_LINK=\"/etc/migate/xray.json\"",
+		"rm -f /etc/migate/xray.json",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("uninstall script missing %q", want)

@@ -62,6 +62,11 @@ func settingsHandler(cfg *routerConfig) http.HandlerFunc {
 							updated["database_path"] = oldDP
 						}
 					}
+					if _, has := updated["xray_config_path"]; !has {
+						if oldPath, ok := existingMap["xray_config_path"]; ok {
+							updated["xray_config_path"] = oldPath
+						}
+					}
 				}
 			}
 			if pw, ok := updated["panel_password"].(string); ok && pw != "" && !IsPanelPasswordHash(pw) {

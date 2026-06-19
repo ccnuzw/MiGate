@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/imzyb/MiGate/internal/corefile"
 )
 
 var (
@@ -43,19 +45,22 @@ type ManagementStatus struct {
 
 // IsInstalled returns true if the sing-box binary exists.
 func IsInstalled() bool {
-	_, err := os.Stat(DefaultBinaryPath)
-	return err == nil
+	return CheckBinary().OK()
 }
 
 // CheckConfigDir ensures the config directory exists.
 func CheckConfigDir() error {
-	return os.MkdirAll(DefaultConfigDir, 0755)
+	status := corefile.EnsureDir(DefaultConfigDir, corefile.Requirement{Readable: true, Writable: true, Executable: true})
+	if !status.OK() {
+		return fmt.Errorf("sing-box config directory check failed: %s", status.Error())
+	}
+	return nil
 }
 
 // Version returns the sing-box version string.
 func Version() (string, error) {
-	if !IsInstalled() {
-		return "", fmt.Errorf("sing-box not installed")
+	if status := CheckBinary(); !status.OK() {
+		return "", fmt.Errorf("sing-box binary check failed: %s", status.Error())
 	}
 	out, err := execCommand(DefaultBinaryPath, "version").Output()
 	if err != nil {
@@ -84,9 +89,19 @@ func CheckConfig() error {
 
 // CheckConfigPath validates a specific config file with sing-box.
 func CheckConfigPath(path string) error {
+	if status := CheckBinary(); !status.OK() {
+		return fmt.Errorf("sing-box binary check failed: %s", status.Error())
+	}
+	if status := CheckConfigFile(path); !status.OK() {
+		return fmt.Errorf("sing-box config file check failed: %s", status.Error())
+	}
 	out, err := execCommand(DefaultBinaryPath, "check", "-c", path).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("sing-box config check failed: %s: %w", string(out), err)
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("sing-box config check failed for %s: %s: %w", path, detail, err)
 	}
 	return nil
 }
@@ -94,19 +109,22 @@ func CheckConfigPath(path string) error {
 // Status returns "running" if the service is active, "stopped" if it is
 // managed but inactive, or "not_managed" when no known systemd unit exists.
 func Status() string {
+	if !IsInstalled() {
+		return "not_installed"
+	}
 	if !Management().Managed {
 		return "not_managed"
 	}
 	out, err := ServiceStatus()
-	if err != nil {
-		return "stopped"
-	}
 	status := strings.TrimSpace(string(out))
+	if status == "" && err != nil {
+		return "unknown"
+	}
 	switch status {
-	case "active", "activating":
+	case "active":
 		return "running"
 	default:
-		return "stopped"
+		return status
 	}
 }
 
@@ -121,10 +139,14 @@ func Apply() error {
 
 // ApplyConfig atomically validates, installs, and restarts a generated config.
 func ApplyConfig(raw []byte) error {
+	configDir := filepath.Dir(DefaultConfigPath)
 	if err := CheckConfigDir(); err != nil {
 		return fmt.Errorf("prepare config dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(DefaultConfigDir, ".config-*.json")
+	if status := corefile.EnsureDir(configDir, corefile.Requirement{Readable: true, Writable: true, Executable: true}); !status.OK() {
+		return fmt.Errorf("prepare config path %s: %s", DefaultConfigPath, status.Error())
+	}
+	tmp, err := os.CreateTemp(configDir, ".config-*.json")
 	if err != nil {
 		return fmt.Errorf("create temp config: %w", err)
 	}
@@ -144,12 +166,9 @@ func ApplyConfig(raw []byte) error {
 	if err := CheckConfigPath(tmpPath); err != nil {
 		return fmt.Errorf("config check failed: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(DefaultConfigPath), 0755); err != nil {
-		return fmt.Errorf("prepare config path: %w", err)
-	}
 	var backupPath string
 	if _, err := os.Stat(DefaultConfigPath); err == nil {
-		backup, createErr := os.CreateTemp(filepath.Dir(DefaultConfigPath), ".config-backup-*.json")
+		backup, createErr := os.CreateTemp(configDir, ".config-backup-*.json")
 		if createErr != nil {
 			return fmt.Errorf("backup current config: %w", createErr)
 		}
@@ -185,6 +204,16 @@ func ApplyConfig(raw []byte) error {
 		_ = os.Remove(backupPath)
 	}
 	return nil
+}
+
+// CheckBinary validates that the configured sing-box binary exists and is executable.
+func CheckBinary() corefile.Status {
+	return corefile.CheckPath(DefaultBinaryPath, corefile.Requirement{Kind: corefile.KindFile, Readable: true, Executable: true})
+}
+
+// CheckConfigFile validates that a sing-box config path is a readable file.
+func CheckConfigFile(path string) corefile.Status {
+	return corefile.CheckPath(path, corefile.Requirement{Kind: corefile.KindFile, Readable: true})
 }
 
 // ServiceName returns the systemd service name.

@@ -845,6 +845,123 @@ restart_migate_service() {
   fi
 }
 
+write_default_xray_config() {
+  local path="$1"
+  cat > "$path" <<'JSON'
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "api",
+      "listen": "127.0.0.1",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "xray-out-1",
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "tag": "xray-out-2",
+      "protocol": "blackhole",
+      "settings": {}
+    },
+    {
+      "tag": "xray-out-3",
+      "protocol": "dns",
+      "settings": {}
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "inboundTag": [
+          "api"
+        ],
+        "outboundTag": "api"
+      }
+    ]
+  },
+  "stats": {},
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserUplink": true,
+        "statsUserDownlink": true
+      }
+    }
+  },
+  "api": {
+    "tag": "api",
+    "services": [
+      "StatsService"
+    ]
+  }
+}
+JSON
+}
+
+write_default_singbox_config() {
+  local path="$1"
+  cat > "$path" <<'JSON'
+{
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "singbox-out-1"
+    },
+    {
+      "type": "block",
+      "tag": "singbox-out-2"
+    }
+  ]
+}
+JSON
+}
+
+backup_invalid_core_config() {
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    return 0
+  fi
+  local backup="${path}.migate-backup.$(date +%Y%m%d%H%M%S)"
+  mv -f "$path" "$backup"
+  log_warn "已备份不可用配置：${backup}"
+}
+
+ensure_valid_xray_config() {
+  if /usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json; then
+    return 0
+  fi
+  log_warn "现有 Xray 配置校验失败，将备份并写入 MiGate 默认配置。"
+  backup_invalid_core_config "${INSTALL_DIR}/xray.json"
+  write_default_xray_config "${INSTALL_DIR}/xray.json"
+  /usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json
+}
+
+ensure_valid_singbox_config() {
+  if /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then
+    return 0
+  fi
+  log_warn "现有 sing-box 配置校验失败，将备份并写入 MiGate 默认配置。"
+  backup_invalid_core_config /etc/sing-box/config.json
+  write_default_singbox_config /etc/sing-box/config.json
+  /usr/local/bin/sing-box check -c /etc/sing-box/config.json
+}
+
 install_xray() {
   section "安装/修复 Xray"
   local xray_version="${XRAY_VERSION:-26.3.27}"
@@ -865,7 +982,7 @@ install_xray() {
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
       printf '[DRY-RUN] systemctl stop xray\n'
       printf '[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$\n'
-      printf '[DRY-RUN] write /etc/systemd/system/xray.service and restart xray\n'
+      printf '[DRY-RUN] remove legacy xray.service drop-in, write /etc/systemd/system/xray.service, validate config, and restart xray\n'
     else
       printf '[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$\n'
       printf '[DRY-RUN] skip /etc/systemd/system/xray.service because systemd is unavailable\n'
@@ -909,16 +1026,29 @@ install_xray() {
   [ -f "$tmp_xray/xray/geoip.dat" ] && cp "$tmp_xray/xray/geoip.dat" /usr/local/share/xray/geoip.dat
   rm -rf "$tmp_xray"
   if [ ! -f "${INSTALL_DIR}/xray.json" ]; then
-    printf '%s\n' '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"protocol":"freedom","tag":"direct"},{"protocol":"blackhole","tag":"blocked"}]}' > "${INSTALL_DIR}/xray.json"
+    write_default_xray_config "${INSTALL_DIR}/xray.json"
   fi
+  mkdir -p "$CONFIG_DIR"
+  if [ -e "${CONFIG_DIR}/xray.json" ] && [ ! -L "${CONFIG_DIR}/xray.json" ]; then
+    local compat_backup="${CONFIG_DIR}/xray.json.migate-backup.$(date +%Y%m%d%H%M%S)"
+    mv -f "${CONFIG_DIR}/xray.json" "$compat_backup"
+    log_warn "已备份旧兼容配置：${compat_backup}"
+  fi
+  ln -sf "${INSTALL_DIR}/xray.json" "${CONFIG_DIR}/xray.json"
   ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/xray.json
   ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/config.json
+  if ! ensure_valid_xray_config; then
+    log_error "Xray 默认配置校验失败：/usr/local/etc/xray/config.json"
+    return 1
+  fi
   if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
     log_warn "systemd 不可用，跳过 xray.service 写入。"
     log_info "Manual run: /usr/local/bin/xray run -config /usr/local/etc/xray/config.json"
     log_ok "Xray 安装/修复完成"
     return 0
   fi
+  rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf
+  rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true
   cat > /etc/systemd/system/xray.service <<'UNIT'
 [Unit]
 Description=MiGate managed Xray service
@@ -942,8 +1072,12 @@ UNIT
   systemctl daemon-reload
   systemctl enable xray
   if ! systemctl restart xray; then
-    log_warn "Xray 服务暂未启动，初始配置可能无法通过当前内核校验。"
-    log_warn "请在 WebUI 应用 Xray 配置后重试，或查看：journalctl -u xray -n 80 --no-pager"
+    log_error "Xray 服务启动失败。查看：journalctl -u xray -n 80 --no-pager"
+    return 1
+  fi
+  if ! systemctl is-active --quiet xray; then
+    log_error "Xray 服务未处于 active 状态。查看：systemctl status xray"
+    return 1
   fi
   log_ok "Xray 安装/修复完成"
 }
@@ -1024,7 +1158,11 @@ install_singbox() {
   rm -rf "$tmp_sb"
   mkdir -p /etc/sing-box
   if [ ! -f /etc/sing-box/config.json ]; then
-    printf '%s\n' '{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}' > /etc/sing-box/config.json
+    write_default_singbox_config /etc/sing-box/config.json
+  fi
+  if ! ensure_valid_singbox_config; then
+    log_error "sing-box 默认配置校验失败：/etc/sing-box/config.json"
+    return 1
   fi
   if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
     log_warn "systemd 不可用，跳过 sing-box.service 写入。"
@@ -1060,12 +1198,13 @@ UNIT
   systemctl daemon-reload
   systemctl reset-failed migate-singbox 2>/dev/null || true
   systemctl enable sing-box
-  if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then
-    log_warn "sing-box 配置校验失败，已跳过服务启动。请在 WebUI 应用 sing-box 配置后重试，或查看：journalctl -u sing-box -n 80 --no-pager"
-  else
-    if ! systemctl start sing-box; then
-      log_warn "sing-box 已安装并启用，但当前配置未能启动服务。请在 WebUI 应用 sing-box 配置后查看：journalctl -u sing-box -n 80 --no-pager"
-    fi
+  if ! systemctl restart sing-box; then
+    log_error "sing-box 服务启动失败。查看：journalctl -u sing-box -n 80 --no-pager"
+    return 1
+  fi
+  if ! systemctl is-active --quiet sing-box; then
+    log_error "sing-box 服务未处于 active 状态。查看：systemctl status sing-box"
+    return 1
   fi
   log_ok "sing-box 安装/修复完成"
 }

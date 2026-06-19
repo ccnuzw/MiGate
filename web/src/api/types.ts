@@ -185,6 +185,9 @@ export interface CoreStatus {
   managed?: boolean;
   installed?: boolean;
   version?: string;
+  config_exists?: boolean;
+  config_valid?: boolean;
+  config_error?: string;
   memory_rss_bytes?: number;
   uptime?: string;
   active_connections?: number;

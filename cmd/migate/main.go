@@ -63,6 +63,8 @@ type messages struct {
 	cliMenuServiceMode        string
 	statusPanelRunning        string
 	statusPanelStopped        string
+	statusXrayRunning         string
+	statusXrayStopped         string
 	statusSingboxRunning      string
 	statusSingboxStopped      string
 	doctorHeader              string
@@ -93,6 +95,8 @@ var msgZh = messages{
 	cliMenuServiceMode:        "服务模式:",
 	statusPanelRunning:        "MiGate 面板: 运行中",
 	statusPanelStopped:        "MiGate 面板: 已停止",
+	statusXrayRunning:         "Xray: 运行中",
+	statusXrayStopped:         "Xray: 已停止",
 	statusSingboxRunning:      "sing-box: 运行中",
 	statusSingboxStopped:      "sing-box: 已停止",
 	doctorHeader:              "MiGate 诊断",
@@ -123,6 +127,8 @@ var msgEn = messages{
 	cliMenuServiceMode:        "Service mode:",
 	statusPanelRunning:        "MiGate Panel: running",
 	statusPanelStopped:        "MiGate Panel: stopped",
+	statusXrayRunning:         "Xray: running",
+	statusXrayStopped:         "Xray: stopped",
 	statusSingboxRunning:      "sing-box: running",
 	statusSingboxStopped:      "sing-box: stopped",
 	doctorHeader:              "MiGate Doctor",
@@ -356,7 +362,7 @@ func printCLIMenu(w io.Writer, m messages) {
   mg start           Start MiGate panel
   mg stop            Stop MiGate panel
   mg restart         Restart MiGate panel
-  mg restart all     Restart MiGate panel and sing-box
+  mg restart all     Restart MiGate panel, Xray, and sing-box
   mg logs            Show recent logs
   mg logs -f         Follow MiGate logs
   mg update          Update to latest release
@@ -404,6 +410,7 @@ func cliStatus(stdout, stderr io.Writer, runner commandRunner, m messages) int {
 		stopped string
 	}{
 		{name: "migate", label: "MiGate", running: m.statusPanelRunning, stopped: m.statusPanelStopped},
+		{name: "xray", label: "Xray", running: m.statusXrayRunning, stopped: m.statusXrayStopped},
 		{name: resolveCLIServiceName(runner, "sing-box", "migate-singbox"), label: "sing-box", running: m.statusSingboxRunning, stopped: m.statusSingboxStopped},
 	}
 	for _, svc := range services {
@@ -535,6 +542,9 @@ func cliRestart(stderr io.Writer, runner commandRunner, args []string) int {
 	}
 	if len(args) == 1 && args[0] == "all" {
 		for _, svc := range managedServices() {
+			if svc.onlyIfManaged && !cliServiceAvailable(runner, svc.name) {
+				continue
+			}
 			if code := cliSystemctl(stderr, runner, "restart", svc.name); code != 0 {
 				return code
 			}
@@ -571,7 +581,14 @@ func cliSystemctl(stderr io.Writer, runner commandRunner, action, service string
 	if service == "sing-box" {
 		service = resolveCLIServiceName(runner, "sing-box", "migate-singbox")
 	}
-	if _, err := runner.Run("systemctl", action, service); err != nil {
+	out, err := runner.Run("systemctl", action, service)
+	if err != nil {
+		if strings.TrimSpace(out) != "" {
+			fmt.Fprint(stderr, out)
+			if !strings.HasSuffix(out, "\n") {
+				fmt.Fprintln(stderr)
+			}
+		}
 		fmt.Fprintf(stderr, "%s %s failed: %v\n", action, service, err)
 		return 1
 	}
@@ -674,8 +691,18 @@ func localizedServiceStatus(status string) string {
 	}
 }
 
-func managedServices() []struct{ name, label string } {
-	return []struct{ name, label string }{{name: "migate", label: "MiGate Panel"}, {name: "sing-box", label: "sing-box"}}
+type managedService struct {
+	name          string
+	label         string
+	onlyIfManaged bool
+}
+
+func managedServices() []managedService {
+	return []managedService{
+		{name: "migate", label: "MiGate Panel"},
+		{name: "xray", label: "Xray", onlyIfManaged: true},
+		{name: "sing-box", label: "sing-box"},
+	}
 }
 
 func panelURL(cfg panelConfig, host string) string {
@@ -735,7 +762,7 @@ func backupFiles() []string {
 			files = append(files, cfg.DatabasePath)
 		}
 		if cfg.XrayConfigPath != "" {
-			files = append(files, cfg.XrayConfigPath)
+			files = append(files, filepath.Join(web.NormalizeXrayConfigDir(cfg.XrayConfigPath), "xray.json"))
 		}
 	}
 	files = append(files, "/etc/sing-box/config.json")
@@ -774,7 +801,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	// Build Xray controller for shared use
 	var xrayCtrl web.XrayController
 	if cfg.XrayConfigPath != "" {
-		xrayCtrl = web.NewRealController(store, cfg.XrayConfigPath, execCmd)
+		xrayCtrl = web.NewRealController(store, web.NormalizeXrayConfigDir(cfg.XrayConfigPath), execCmd)
 		opts = append(opts, web.WithXrayController(xrayCtrl))
 	}
 	statsClient := xray.NewResilientStatsClient(
@@ -865,6 +892,9 @@ func routerOptionsFromConfig(cfg panelConfig, path string) []web.Option {
 		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
 	}
 	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
+	if cfg.XrayConfigPath != "" {
+		opts = append(opts, web.WithXrayConfigDir(cfg.XrayConfigPath))
+	}
 	return opts
 }
 
@@ -882,6 +912,6 @@ func readPanelConfig(path string) (panelConfig, error) {
 
 func execCmd(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

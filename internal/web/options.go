@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +42,27 @@ func WithConfigDir(dir string) Option {
 	return func(cfg *routerConfig) {
 		cfg.configDir = dir
 	}
+}
+
+func WithXrayConfigDir(dir string) Option {
+	return func(cfg *routerConfig) {
+		cfg.xrayConfigDir = NormalizeXrayConfigDir(dir)
+	}
+}
+
+// NormalizeXrayConfigDir accepts either the Xray config directory used by
+// current installs or a legacy fixed-name file path ending in xray.json.
+func NormalizeXrayConfigDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	hasTrailingSeparator := strings.HasSuffix(path, "/") || strings.HasSuffix(path, string(filepath.Separator))
+	cleaned := filepath.Clean(path)
+	if !hasTrailingSeparator && strings.EqualFold(filepath.Base(cleaned), "xray.json") {
+		return filepath.Dir(cleaned)
+	}
+	return cleaned
 }
 
 func WithBasePath(basePath string) Option {

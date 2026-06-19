@@ -115,6 +115,43 @@ func TestTryApplySingboxBestEffortMissingBinaryIsNotApplied(t *testing.T) {
 	}
 }
 
+func TestSingboxStatusUsesInjectedProbe(t *testing.T) {
+	router := NewRouter(WithSingboxProbe(fakeSingboxProbe{
+		installed:    true,
+		managed:      true,
+		service:      "sing-box",
+		status:       "failed",
+		configExists: true,
+		checkErr:     errors.New("bad config"),
+		version:      "sing-box probe-version",
+		memoryRSS:    12345,
+		uptime:       "2h",
+		connections:  7,
+	}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/status", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var data map[string]interface{}
+	if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if data["installed"] != true || data["status"] != "stopped" || data["normalized_status"] != "stopped" || data["raw_status"] != "failed" {
+		t.Fatalf("status response did not use injected probe: %+v", data)
+	}
+	if data["version"] != "sing-box probe-version" {
+		t.Fatalf("version response did not use injected probe: %+v", data)
+	}
+	if data["config_exists"] != true || data["config_valid"] != false || data["config_error"] != "bad config" {
+		t.Fatalf("config response did not use injected probe: %+v", data)
+	}
+	if data["memory_rss_bytes"] != float64(12345) || data["uptime"] != "2h" || data["active_connections"] != float64(7) {
+		t.Fatalf("runtime metrics response did not use injected probe: %+v", data)
+	}
+}
+
 func TestSingboxDiagnosticsNotInstalled(t *testing.T) {
 	restore := useTempSingboxConfigPath(t, "")
 	defer restore()
@@ -180,6 +217,23 @@ func TestSingboxDiagnosticsCheckFailed(t *testing.T) {
 	}
 	if !containsString(result.Warnings, "singbox_config_invalid") {
 		t.Fatalf("expected config invalid warning, got %+v", result.Warnings)
+	}
+}
+
+func TestSingboxDiagnosticsKeepsCompatibleServiceStatusWithRawStatus(t *testing.T) {
+	restore := useTempSingboxConfigPath(t, `{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}`)
+	defer restore()
+	cfg := &routerConfig{
+		store:        &countingSummaryStore{},
+		singboxProbe: fakeSingboxProbe{installed: true, managed: true, service: "sing-box", status: "failed", configExists: true, configValid: true, version: "sing-box 1.13.13"},
+	}
+
+	result := buildSingboxDiagnostics(context.Background(), cfg)
+	if result.ServiceStatus != "stopped" || result.RawServiceStatus != "failed" {
+		t.Fatalf("expected compatible stopped status with raw failed state, got %+v", result)
+	}
+	if !containsString(result.Warnings, "singbox_service_not_running") {
+		t.Fatalf("expected service not running warning, got %+v", result.Warnings)
 	}
 }
 
@@ -341,6 +395,9 @@ type fakeSingboxProbe struct {
 	configExists bool
 	configValid  bool
 	checkErr     error
+	memoryRSS    int64
+	uptime       string
+	connections  int
 	logs         []string
 }
 
@@ -374,6 +431,9 @@ func (p fakeSingboxProbe) CheckConfig(path string) error {
 	}
 	return errors.New("invalid")
 }
+func (p fakeSingboxProbe) MemoryRSS() int64       { return p.memoryRSS }
+func (p fakeSingboxProbe) Uptime() string         { return p.uptime }
+func (p fakeSingboxProbe) ActiveConnections() int { return p.connections }
 func (p fakeSingboxProbe) RecentLogs(service string, lines int) []string {
 	if len(p.logs) <= lines {
 		return p.logs

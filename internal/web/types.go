@@ -168,6 +168,9 @@ type XrayStatus struct {
 	Managed           bool                     `json:"managed"`
 	Installed         bool                     `json:"installed"`
 	Version           string                   `json:"version"`
+	ConfigExists      bool                     `json:"config_exists"`
+	ConfigValid       bool                     `json:"config_valid"`
+	ConfigError       string                   `json:"config_error,omitempty"`
 	MemoryRSSBytes    int64                    `json:"memory_rss_bytes"`
 	Uptime            string                   `json:"uptime"`
 	ActiveConnections int                      `json:"active_connections"`
@@ -214,6 +217,7 @@ type routerConfig struct {
 	authMu             sync.RWMutex
 	sessionSecret      []byte
 	configDir          string
+	xrayConfigDir      string
 	version            string
 	basePath           string
 	statsClient        xray.StatsClient

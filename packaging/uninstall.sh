@@ -11,6 +11,10 @@ MIGATE_INSTALL_DIR="/usr/local/migate"
 SINGBOX_CONFIG_DIR="/etc/sing-box"
 XRAY_CONFIG_LINK="/usr/local/etc/xray/config.json"
 XRAY_DEFAULT_CONFIG_LINK="/usr/local/etc/xray/xray.json"
+XRAY_COMPAT_CONFIG_LINK="/etc/migate/xray.json"
+XRAY_SERVICE_PATH="/etc/systemd/system/xray.service"
+XRAY_SERVICE_DROPIN_DIR="/etc/systemd/system/xray.service.d"
+XRAY_LEGACY_DROPIN="$XRAY_SERVICE_DROPIN_DIR/10-donot_touch_single_conf.conf"
 
 PURGE=0
 ASSUME_YES=0
@@ -39,6 +43,7 @@ Purge removes:
   - /usr/local/migate
   - /etc/sing-box
   - /usr/local/etc/xray/config.json symlink/file
+  - /etc/migate/xray.json symlink/file
 
 Third-party Xray itself is not removed.
 EOF
@@ -94,6 +99,11 @@ remove_migate_xray_link() {
   elif [ "$PURGE" -eq 1 ] && [ -f "$XRAY_DEFAULT_CONFIG_LINK" ]; then
     run_cmd rm -f "$XRAY_DEFAULT_CONFIG_LINK"
   fi
+  if [ -L "$XRAY_COMPAT_CONFIG_LINK" ]; then
+    run_cmd rm -f "$XRAY_COMPAT_CONFIG_LINK"
+  elif [ "$PURGE" -eq 1 ] && [ -f "$XRAY_COMPAT_CONFIG_LINK" ]; then
+    run_cmd rm -f "$XRAY_COMPAT_CONFIG_LINK"
+  fi
 }
 
 main() {
@@ -105,6 +115,11 @@ main() {
   run_cmd systemctl stop migate 2>/dev/null || true
   run_cmd systemctl disable migate 2>/dev/null || true
   run_cmd rm -f /etc/systemd/system/migate.service
+  run_cmd systemctl stop xray 2>/dev/null || true
+  run_cmd systemctl disable xray 2>/dev/null || true
+  run_cmd rm -f "$XRAY_SERVICE_PATH"
+  run_cmd rm -f "$XRAY_LEGACY_DROPIN"
+  run_cmd rmdir "$XRAY_SERVICE_DROPIN_DIR" 2>/dev/null || true
   run_cmd systemctl stop sing-box 2>/dev/null || true
   run_cmd systemctl disable sing-box 2>/dev/null || true
   run_cmd rm -f /etc/systemd/system/sing-box.service
@@ -123,6 +138,7 @@ main() {
     run_cmd rm -rf /etc/sing-box
     run_cmd rm -f /usr/local/etc/xray/config.json
     run_cmd rm -f /usr/local/etc/xray/xray.json
+    run_cmd rm -f /etc/migate/xray.json
   else
     remove_migate_xray_link
     echo "Keeping MiGate config/data. Use --purge --yes to remove them."
@@ -131,6 +147,8 @@ main() {
   run_cmd systemctl daemon-reload 2>/dev/null || true
   run_cmd systemctl reset-failed "$MIGATE_SERVICE" 2>/dev/null || true
   run_cmd systemctl reset-failed "$SINGBOX_SERVICE" 2>/dev/null || true
+  run_cmd systemctl reset-failed xray 2>/dev/null || true
+  run_cmd systemctl reset-failed migate-singbox 2>/dev/null || true
   run_cmd systemctl reset-failed 2>/dev/null || true
 
   echo "MiGate uninstalled."

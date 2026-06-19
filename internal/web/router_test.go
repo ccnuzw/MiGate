@@ -49,6 +49,24 @@ func webPackageSource(t *testing.T) string {
 	return body.String()
 }
 
+func webCoreInstallScript(t *testing.T, core string) string {
+	t.Helper()
+	source := webPackageSource(t)
+	startMarker := `case "` + core + `":`
+	start := strings.Index(source, startMarker)
+	if start < 0 {
+		t.Fatalf("core install branch %q not found", core)
+	}
+	end := strings.Index(source[start+len(startMarker):], "\n\t\tcase ")
+	if end < 0 {
+		end = strings.Index(source[start+len(startMarker):], "\n\t\tdefault:")
+	}
+	if end < 0 {
+		t.Fatalf("core install branch %q end not found", core)
+	}
+	return source[start : start+len(startMarker)+end]
+}
+
 func TestRouterBackendSecurityContracts(t *testing.T) {
 	body := webPackageSource(t)
 	if strings.Contains(body, `exec.Command("bash", "-c"`) || strings.Contains(body, `exec.Command("sh", "-c"`) {
@@ -673,6 +691,12 @@ func TestCoreServiceControlAPIsRunExpectedSystemctlCommands(t *testing.T) {
 				if !strings.Contains(script, `command -v systemctl`) || !strings.Contains(script, `[ ! -d /run/systemd/system ]`) {
 					t.Fatalf("service control script must fail clearly when systemd is unavailable: %s", script)
 				}
+				if !strings.Contains(script, `systemctl show `) || !strings.Contains(script, `--property=LoadState --value`) {
+					t.Fatalf("service control script must check unit load state first: %s", script)
+				}
+				if tc.status == "stopped" && (!strings.Contains(script, `systemctl is-active `) || !strings.Contains(script, `systemctl reset-failed `) || !strings.Contains(script, `already stopped`)) {
+					t.Fatalf("stop script must handle inactive or missing services idempotently: %s", script)
+				}
 				if !strings.Contains(script, tc.command) {
 					t.Fatalf("service control script missing %q: %s", tc.command, script)
 				}
@@ -765,6 +789,158 @@ func TestCoreInstallScriptsReplaceBinariesAtomically(t *testing.T) {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("WebUI core install script must not directly overwrite running binary with %q", forbidden)
 		}
+	}
+}
+
+func TestCoreXrayInstallScriptRemovesLegacyDropInAndAvoidsPipefailHead(t *testing.T) {
+	script := webPackageSource(t)
+	for _, want := range []string{
+		`rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf`,
+		`rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true`,
+		`/usr/local/bin/xray version | sed -n '1p'`,
+		`/usr/local/bin/sing-box version | sed -n '1p'`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("WebUI core install script missing resilient install contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`/usr/local/bin/xray version | head -1`,
+		`/usr/local/bin/sing-box version | head -1`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("WebUI core install script must avoid pipefail-sensitive version command %q", forbidden)
+		}
+	}
+}
+
+func TestCoreUninstallScriptsRemoveSystemdResidue(t *testing.T) {
+	script := webPackageSource(t)
+	for _, want := range []string{
+		`systemctl stop xray 2>/dev/null || true`,
+		`rm -f /etc/systemd/system/xray.service`,
+		`rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf`,
+		`rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true`,
+		`rm -f /usr/local/etc/xray/xray.json /usr/local/etc/xray/config.json`,
+		`if [ -L /etc/migate/xray.json ]; then rm -f /etc/migate/xray.json; fi`,
+		`systemctl reset-failed xray 2>/dev/null || true`,
+		`systemctl stop sing-box 2>/dev/null || true`,
+		`rm -rf /etc/systemd/system/migate-singbox.service.d`,
+		`systemctl reset-failed sing-box 2>/dev/null || true`,
+		`systemctl reset-failed migate-singbox 2>/dev/null || true`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("WebUI core uninstall script missing residue cleanup %q", want)
+		}
+	}
+	if strings.Contains(script, `rm -rf /etc/systemd/system/sing-box.service.d`) {
+		t.Fatalf("WebUI core uninstall script must not remove user-managed sing-box.service drop-ins")
+	}
+}
+
+func TestCoreInstallScriptsSeedConfigsMatchingGeneratedDefaults(t *testing.T) {
+	script := webPackageSource(t)
+	for _, want := range []string{
+		`"tag": "xray-out-1"`,
+		`"tag": "xray-out-2"`,
+		`"tag": "xray-out-3"`,
+		`"tag": "api"`,
+		`"StatsService"`,
+		`"tag": "singbox-out-1"`,
+		`"tag": "singbox-out-2"`,
+		`write_migate_default_xray_config()`,
+		`write_migate_default_singbox_config()`,
+		`backup_migate_invalid_core_config()`,
+		`/etc/migate/xray.json exists and is not a symlink; keeping it unchanged`,
+		`Move it aside or replace it with a symlink to /usr/local/migate/xray.json, then rerun install.`,
+		`existing Xray config check failed; backing it up and writing MiGate default config`,
+		`backup_migate_invalid_core_config /usr/local/migate/xray.json`,
+		`existing sing-box config check failed; backing it up and writing MiGate default config`,
+		`backup_migate_invalid_core_config /etc/sing-box/config.json`,
+		`.migate-backup.$(date +%Y%m%d%H%M%S)`,
+		`ln -sf /usr/local/migate/xray.json /etc/migate/xray.json`,
+		`/usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json`,
+		`systemctl is-active --quiet xray`,
+		`/usr/local/bin/sing-box check -c /etc/sing-box/config.json`,
+		`systemctl stop migate-singbox 2>/dev/null || true`,
+		`rm -rf /etc/systemd/system/migate-singbox.service.d`,
+		`systemctl reset-failed migate-singbox 2>/dev/null || true`,
+		`systemctl is-active --quiet sing-box`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("WebUI core install script default config contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`"tag":"direct"`,
+		`"tag":"blocked"`,
+		`"outbounds":[{"type":"direct","tag":"direct"}]`,
+		`mv -f /etc/migate/xray.json "/etc/migate/xray.json.migate-backup.`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("WebUI core install script must not seed legacy default core config marker %q", forbidden)
+		}
+	}
+}
+
+func TestCoreInstallScriptsBackupInvalidConfigsBeforeRestart(t *testing.T) {
+	xrayScript := webCoreInstallScript(t, "xray")
+	for _, want := range []string{
+		`if ! /usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json; then`,
+		`backup_migate_invalid_core_config /usr/local/migate/xray.json`,
+		`write_migate_default_xray_config`,
+		`/usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json`,
+		`systemctl restart xray`,
+	} {
+		if !strings.Contains(xrayScript, want) {
+			t.Fatalf("Xray install script missing invalid-config repair step %q", want)
+		}
+	}
+	repairIdx := strings.Index(xrayScript, `backup_migate_invalid_core_config /usr/local/migate/xray.json`)
+	restartIdx := strings.LastIndex(xrayScript, "systemctl restart xray\n")
+	if repairIdx < 0 || restartIdx < 0 || repairIdx > restartIdx {
+		t.Fatalf("Xray install script must repair invalid config before service restart")
+	}
+
+	singboxScript := webCoreInstallScript(t, "singbox")
+	for _, want := range []string{
+		`if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then`,
+		`backup_migate_invalid_core_config /etc/sing-box/config.json`,
+		`write_migate_default_singbox_config`,
+		`/usr/local/bin/sing-box check -c /etc/sing-box/config.json`,
+		`systemctl restart sing-box`,
+	} {
+		if !strings.Contains(singboxScript, want) {
+			t.Fatalf("sing-box install script missing invalid-config repair step %q", want)
+		}
+	}
+	repairIdx = strings.Index(singboxScript, `backup_migate_invalid_core_config /etc/sing-box/config.json`)
+	restartIdx = strings.LastIndex(singboxScript, "systemctl restart sing-box\n")
+	if repairIdx < 0 || restartIdx < 0 || repairIdx > restartIdx {
+		t.Fatalf("sing-box install script must repair invalid config before service restart")
+	}
+}
+
+func TestCoreXrayInstallScriptPreservesExistingCompatConfig(t *testing.T) {
+	script := webCoreInstallScript(t, "xray")
+	for _, want := range []string{
+		`if [ -e /etc/migate/xray.json ] && [ ! -L /etc/migate/xray.json ]; then`,
+		`/etc/migate/xray.json exists and is not a symlink; keeping it unchanged`,
+		`Move it aside or replace it with a symlink to /usr/local/migate/xray.json, then rerun install.`,
+		`exit 1`,
+		`ln -sf /usr/local/migate/xray.json /etc/migate/xray.json`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("Xray install script must preserve existing compat config, missing %q", want)
+		}
+	}
+	checkIdx := strings.Index(script, `if [ -e /etc/migate/xray.json ] && [ ! -L /etc/migate/xray.json ]; then`)
+	linkIdx := strings.Index(script, `ln -sf /usr/local/migate/xray.json /etc/migate/xray.json`)
+	if checkIdx < 0 || linkIdx < 0 || checkIdx > linkIdx {
+		t.Fatalf("Xray install script must check existing compat config before replacing it")
+	}
+	if strings.Contains(script, `mv -f /etc/migate/xray.json`) {
+		t.Fatalf("Xray install script must not automatically move user-owned /etc/migate/xray.json")
 	}
 }
 

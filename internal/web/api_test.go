@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -1348,6 +1349,9 @@ func (p apiTestSingboxProbe) CheckConfig(path string) error {
 	}
 	return errors.New("invalid")
 }
+func (p apiTestSingboxProbe) MemoryRSS() int64       { return 0 }
+func (p apiTestSingboxProbe) Uptime() string         { return "" }
+func (p apiTestSingboxProbe) ActiveConnections() int { return 0 }
 func (p apiTestSingboxProbe) RecentLogs(service string, lines int) []string {
 	return []string{"sing-box started"}
 }
@@ -3299,7 +3303,7 @@ func TestXrayStatusAPIFillsProductionConfigPathAndListeningPorts(t *testing.T) {
 	controller := &fakeXrayController{statusResult: &web.XrayStatus{
 		Service: "xray", Status: "running", Managed: true, Installed: true, Version: "Xray 26.3.27",
 	}}
-	router := web.NewRouter(web.WithConfigDir(dir), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithConfigDir(dir), web.WithXrayConfigDir(dir), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
 	if response.Code != http.StatusOK {
@@ -3610,11 +3614,15 @@ func TestSingboxStatusAPIReturnsManagedAndConfigPath(t *testing.T) {
 		active      string
 		wantManaged bool
 		wantStatus  string
+		wantRaw     string
 		wantService string
 	}{
-		{name: "primary service", primary: "loaded", legacy: "not-found", active: "active", wantManaged: true, wantStatus: "running", wantService: "sing-box"},
-		{name: "legacy service", primary: "not-found", legacy: "loaded", active: "inactive", wantManaged: true, wantStatus: "stopped", wantService: "migate-singbox"},
-		{name: "unmanaged", primary: "not-found", legacy: "not-found", active: "inactive", wantManaged: false, wantStatus: "not_managed", wantService: "sing-box"},
+		{name: "primary service", primary: "loaded", legacy: "not-found", active: "active", wantManaged: true, wantStatus: "running", wantRaw: "running", wantService: "sing-box"},
+		{name: "legacy service", primary: "not-found", legacy: "loaded", active: "inactive", wantManaged: true, wantStatus: "stopped", wantRaw: "inactive", wantService: "migate-singbox"},
+		{name: "failed service", primary: "loaded", legacy: "not-found", active: "failed", wantManaged: true, wantStatus: "stopped", wantRaw: "failed", wantService: "sing-box"},
+		{name: "activating service", primary: "loaded", legacy: "not-found", active: "activating", wantManaged: true, wantStatus: "stopped", wantRaw: "activating", wantService: "sing-box"},
+		{name: "deactivating service", primary: "loaded", legacy: "not-found", active: "deactivating", wantManaged: true, wantStatus: "stopped", wantRaw: "deactivating", wantService: "sing-box"},
+		{name: "unmanaged", primary: "not-found", legacy: "not-found", active: "inactive", wantManaged: false, wantStatus: "not_managed", wantRaw: "not_managed", wantService: "sing-box"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			restore := installFakeSingboxStatusCommands(t, tc.primary, tc.legacy, tc.active)
@@ -3638,6 +3646,12 @@ func TestSingboxStatusAPIReturnsManagedAndConfigPath(t *testing.T) {
 			}
 			if data["status"] != tc.wantStatus || data["service"] != tc.wantService {
 				t.Fatalf("unexpected status/service: %+v", data)
+			}
+			if data["raw_status"] != tc.wantRaw {
+				t.Fatalf("expected raw_status %q, got %+v", tc.wantRaw, data)
+			}
+			if data["normalized_status"] != tc.wantStatus {
+				t.Fatalf("normalized_status should match compatibility status: %+v", data)
 			}
 			if data["config_path"] != "/etc/sing-box/config.json" {
 				t.Fatalf("expected sing-box config path, got %+v", data)
@@ -3950,8 +3964,8 @@ func TestRealControllerStatusReportsNoInboundsWhenXrayIsInstalledButHasNoManaged
 	if !status.Installed {
 		t.Fatalf("expected xray binary to be detected as installed, got %+v", status)
 	}
-	if status.Status != "no_inbounds" {
-		t.Fatalf("empty inbound list should report no_inbounds instead of unknown/inactive: %+v", status)
+	if status.Status != "inactive" {
+		t.Fatalf("empty inbound list should not hide the systemd service state: %+v", status)
 	}
 }
 
@@ -3993,6 +4007,36 @@ func TestRealControllerStatusDoesNotReportUnknownWhenXrayBinaryIsInstalledButSer
 	}
 	if status.Managed {
 		t.Fatalf("missing xray.service should be reported as unmanaged: %+v", status)
+	}
+}
+
+func TestRealControllerStatusReportsConfigPathTypeError(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	configDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(configDir, "xray.json"), 0755); err != nil {
+		t.Fatalf("mkdir config placeholder: %v", err)
+	}
+	mockRun := func(name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "systemctl is-active xray":
+			return "active\n", nil
+		case "systemctl show xray --property=MemoryCurrent --property=MainPID --property=ActiveEnterTimestamp":
+			return "", nil
+		case "xray version":
+			return "Xray 26.3.27\n", nil
+		case "ss -tn state established":
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+	status := web.NewRealController(store, configDir, mockRun).Status(context.Background())
+	if !status.ConfigExists || status.ConfigValid || !strings.Contains(status.ConfigError, "not_file") || !strings.Contains(status.ConfigError, filepath.Join(configDir, "xray.json")) {
+		t.Fatalf("expected config path type error with real path, got %+v", status)
 	}
 }
 
@@ -4064,6 +4108,32 @@ func TestRealControllerWritesConfigAndRunsValidationBeforeRestart(t *testing.T) 
 	}
 }
 
+func TestRealControllerApplyReportsConfigPathTypeErrorBeforeWrite(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "test", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "xray.json")
+	if err := os.Mkdir(configPath, 0755); err != nil {
+		t.Fatalf("mkdir config placeholder: %v", err)
+	}
+	mockRun := func(name string, args ...string) (string, error) {
+		if name == "xray" {
+			return "ok", nil
+		}
+		return "", fmt.Errorf("unexpected command %s %s", name, strings.Join(args, " "))
+	}
+	result := web.NewRealController(store, configDir, mockRun).Apply(context.Background())
+	if result.Applied || result.Error != "stat_config_failed" || !strings.Contains(result.Detail, "not_file") || !strings.Contains(result.Detail, configPath) {
+		t.Fatalf("expected config path type error before write, got %+v", result)
+	}
+}
+
 func TestRealControllerApplyStopsOnValidationFailure(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -4078,6 +4148,11 @@ func TestRealControllerApplyStopsOnValidationFailure(t *testing.T) {
 	}
 
 	configDir := t.TempDir()
+	oldConfigPath := filepath.Join(configDir, "xray.json")
+	oldConfig := []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"old","protocol":"freedom","settings":{}}]}`)
+	if err := os.WriteFile(oldConfigPath, oldConfig, 0o644); err != nil {
+		t.Fatalf("write old config: %v", err)
+	}
 	var calls []string
 	mockRun := func(name string, args ...string) (string, error) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
@@ -4098,6 +4173,13 @@ func TestRealControllerApplyStopsOnValidationFailure(t *testing.T) {
 	}
 	if result.Applied || result.Error != "validation_failed" || !strings.Contains(result.Detail, "FAILED") || result.ConfigPath != configDir+"/xray.json" {
 		t.Fatalf("expected structured validation failure, got %+v", result)
+	}
+	gotConfig, err := os.ReadFile(oldConfigPath)
+	if err != nil {
+		t.Fatalf("read config after failed validation: %v", err)
+	}
+	if string(gotConfig) != string(oldConfig) {
+		t.Fatalf("validation failure must not replace existing config:\n%s", gotConfig)
 	}
 }
 
@@ -4129,6 +4211,96 @@ func TestRealControllerApplyReportsRestartFailure(t *testing.T) {
 	}
 }
 
+func TestRealControllerApplyRestoresExistingConfigWhenRestartFails(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "test", Protocol: "vless", Port: 8443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "xray.json")
+	oldConfig := []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"old","protocol":"freedom","settings":{}}]}`)
+	if err := os.WriteFile(configPath, oldConfig, 0o644); err != nil {
+		t.Fatalf("write old config: %v", err)
+	}
+	restarts := 0
+	var calls []string
+	mockRun := func(name string, args ...string) (string, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		calls = append(calls, cmd)
+		if cmd == "systemctl restart xray" {
+			restarts++
+			if restarts == 1 {
+				return "restart failed", fmt.Errorf("restart failed")
+			}
+		}
+		return "ok", nil
+	}
+	result := web.NewRealController(store, configDir, mockRun).Apply(context.Background())
+	if result.Applied || result.Error != "restart_failed" || result.Detail != "restart failed" {
+		t.Fatalf("expected restart failure after restore, got %+v", result)
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if string(got) != string(oldConfig) {
+		t.Fatalf("restart failure should restore previous config:\n%s", got)
+	}
+	if restarts != 2 {
+		t.Fatalf("expected restart attempted again after restore, restarts=%d calls=%v", restarts, calls)
+	}
+}
+
+func TestRealControllerNormalizesXrayConfigFilePath(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	mockRun := func(name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "systemctl is-active xray":
+			return "active\n", nil
+		case "systemctl show xray --property=MemoryCurrent --property=MainPID --property=ActiveEnterTimestamp":
+			return "", nil
+		case "xray version":
+			return "Xray 26.3.27\n", nil
+		case "ss -tn state established":
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+	configFile := filepath.Join(t.TempDir(), "xray.json")
+	status := web.NewRealController(store, configFile, mockRun).Status(context.Background())
+	if status.ConfigPath != configFile {
+		t.Fatalf("expected file-form config path to stay exact, got %+v", status)
+	}
+}
+
+func TestNormalizeXrayConfigDirOnlyConvertsFixedNameLegacyFilePath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "legacy xray file", in: "/usr/local/migate/xray.json", want: "/usr/local/migate"},
+		{name: "directory named xray json", in: "/data/xray.json/", want: "/data/xray.json"},
+		{name: "custom json name remains directory", in: "/data/custom.json", want: "/data/custom.json"},
+		{name: "normal directory", in: "/usr/local/migate", want: "/usr/local/migate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := web.NormalizeXrayConfigDir(tc.in); got != tc.want {
+				t.Fatalf("NormalizeXrayConfigDir(%q)=%q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestXrayConfigPreviewReportsMissingMismatchAndSync(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -4139,7 +4311,7 @@ func TestXrayConfigPreviewReportsMissingMismatchAndSync(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	dir := t.TempDir()
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir))
+	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigDir(dir))
 
 	missing := httptest.NewRecorder()
 	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
@@ -4171,6 +4343,34 @@ func TestXrayConfigPreviewReportsMissingMismatchAndSync(t *testing.T) {
 	router.ServeHTTP(synced, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
 	if synced.Code != http.StatusOK || !strings.Contains(synced.Body.String(), `"in_sync":true`) {
 		t.Fatalf("expected in_sync preview, got %d: %s", synced.Code, synced.Body.String())
+	}
+}
+
+func TestXrayConfigPreviewUsesDedicatedXrayConfigDir(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	panelDir := t.TempDir()
+	xrayDir := t.TempDir()
+	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(panelDir), web.WithXrayConfigDir(xrayDir))
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{
+		`"config_path":"` + xrayDir + `/xray.json"`,
+		`"reason":"disk_missing"`,
+	} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("preview should use dedicated Xray config dir, missing %q: %s", want, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), panelDir+`/xray.json`) {
+		t.Fatalf("preview must not use panel config dir for Xray disk config: %s", response.Body.String())
 	}
 }
 
@@ -4221,7 +4421,7 @@ func TestXrayDiagnosticsGeneratedConfigBuildFailureHasStructuredAction(t *testin
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
+	router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}), web.WithConfigDir(dir), web.WithXrayConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 	if response.Code != http.StatusOK {

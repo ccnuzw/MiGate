@@ -15,6 +15,27 @@ import (
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
+func loginForTest(t *testing.T, router http.Handler) *http.Cookie {
+	t.Helper()
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("expected login 200, got %d: %s", loginResp.Code, loginResp.Body.String())
+	}
+	for _, c := range loginResp.Result().Cookies() {
+		if c.Name == "migate_session" {
+			return c
+		}
+	}
+	t.Fatal("login should set session cookie")
+	return nil
+}
+
 func TestRouterFromPanelConfigOpensConfiguredDatabaseStore(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "panel.json")
@@ -66,6 +87,155 @@ func TestRouterFromPanelConfigOpensConfiguredDatabaseStore(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"remark":"真机入口"`) {
 		t.Fatalf("create response missing inbound: %s", response.Body.String())
+	}
+}
+
+func TestRouterFromPanelConfigUsesConfiguredXrayConfigDir(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel.json")
+	databasePath := filepath.Join(tmp, "migate.db")
+	xrayDir := filepath.Join(tmp, "xray-runtime")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","database_path":"` + databasePath + `","xray_config_path":"` + xrayDir + `"}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config: %v", err)
+	}
+	defer cleanup()
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("expected login 200, got %d: %s", loginResp.Code, loginResp.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Result().Cookies() {
+		if c.Name == "migate_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("login should set session cookie")
+	}
+
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil)
+	req.AddCookie(sessionCookie)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected preview 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"config_path":"`+xrayDir+`/xray.json"`) {
+		t.Fatalf("preview should use xray_config_path, got %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), filepath.Dir(configPath)+`/xray.json`) {
+		t.Fatalf("preview must not use panel config dir for Xray config: %s", response.Body.String())
+	}
+}
+
+func TestRouterFromPanelConfigAcceptsXrayConfigFilePath(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel.json")
+	databasePath := filepath.Join(tmp, "migate.db")
+	xrayFile := filepath.Join(tmp, "runtime", "xray.json")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","database_path":"` + databasePath + `","xray_config_path":"` + xrayFile + `"}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config: %v", err)
+	}
+	defer cleanup()
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{"username":"admin","password":"secret"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", "http://127.0.0.1")
+	loginReq.Host = "127.0.0.1"
+	loginReq.RemoteAddr = "127.0.0.1:12345"
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("expected login 200, got %d: %s", loginResp.Code, loginResp.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Result().Cookies() {
+		if c.Name == "migate_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("login should set session cookie")
+	}
+
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil)
+	req.AddCookie(sessionCookie)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected preview 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"config_path":"`+xrayFile+`"`) {
+		t.Fatalf("preview should normalize file-form xray_config_path, got %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), `xray.json/xray.json`) {
+		t.Fatalf("preview must not append xray.json twice: %s", response.Body.String())
+	}
+}
+
+func TestRouterFromPanelConfigXrayApplyPreservesCommandStderr(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel.json")
+	databasePath := filepath.Join(tmp, "migate.db")
+	xrayDir := filepath.Join(tmp, "runtime")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","database_path":"` + databasePath + `","xray_config_path":"` + xrayDir + `"}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "xray"), []byte("#!/bin/sh\nif [ \"$1\" = \"run\" ]; then printf 'xray stderr detail\\n' >&2; exit 1; fi\nprintf 'Xray 26.3.27\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write fake xray: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config: %v", err)
+	}
+	defer cleanup()
+	sessionCookie := loginForTest(t, router)
+
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1")
+	req.Host = "127.0.0.1"
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.AddCookie(sessionCookie)
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected structured apply response 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"error":"validation_failed"`, "xray stderr detail", `"error_output":"xray stderr detail`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("xray apply response should preserve stderr %q, got %s", want, body)
+		}
 	}
 }
 
@@ -323,6 +493,7 @@ func TestCLIStatusUsesSystemctlWithoutStartingServer(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"systemctl show sing-box --property=LoadState --value": "loaded\n",
 		"systemctl is-active migate":                           "active\n",
+		"systemctl is-active xray":                             "inactive\n",
 		"systemctl is-active sing-box":                         "inactive\n",
 	}}
 	var out bytes.Buffer
@@ -330,12 +501,13 @@ func TestCLIStatusUsesSystemctlWithoutStartingServer(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit 0, got %d", exitCode)
 	}
-	if !strings.Contains(out.String(), "MiGate 面板: 运行中") || !strings.Contains(out.String(), "sing-box: 已停止") {
+	if !strings.Contains(out.String(), "MiGate 面板: 运行中") || !strings.Contains(out.String(), "Xray: 已停止") || !strings.Contains(out.String(), "sing-box: 已停止") {
 		t.Fatalf("unexpected status output: %s", out.String())
 	}
 	want := []string{
 		"systemctl show sing-box --property=LoadState --value",
 		"systemctl is-active migate",
+		"systemctl is-active xray",
 		"systemctl is-active sing-box",
 	}
 	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
@@ -348,6 +520,7 @@ func TestCLIStatusFallsBackToLegacySingboxService(t *testing.T) {
 		"systemctl show sing-box --property=LoadState --value":       "not-found\n",
 		"systemctl show migate-singbox --property=LoadState --value": "loaded\n",
 		"systemctl is-active migate":                                 "active\n",
+		"systemctl is-active xray":                                   "inactive\n",
 		"systemctl is-active migate-singbox":                         "inactive\n",
 	}}
 	var out bytes.Buffer
@@ -359,10 +532,28 @@ func TestCLIStatusFallsBackToLegacySingboxService(t *testing.T) {
 		"systemctl show sing-box --property=LoadState --value",
 		"systemctl show migate-singbox --property=LoadState --value",
 		"systemctl is-active migate",
+		"systemctl is-active xray",
 		"systemctl is-active migate-singbox",
 	}
 	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
 		t.Fatalf("unexpected calls: %+v", runner.calls)
+	}
+}
+
+func TestCLIStatusReportsXrayNotFoundAsStopped(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string]string{
+		"systemctl show sing-box --property=LoadState --value": "loaded\n",
+		"systemctl is-active migate":                           "active\n",
+		"systemctl is-active xray":                             "unknown\n",
+		"systemctl is-active sing-box":                         "active\n",
+	}}
+	var out bytes.Buffer
+	exitCode := runCLI([]string{"status"}, &out, &bytes.Buffer{}, runner)
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d", exitCode)
+	}
+	if !strings.Contains(out.String(), "Xray: 已停止") {
+		t.Fatalf("status should include stopped Xray when unit is not active: %s", out.String())
 	}
 }
 
@@ -433,6 +624,7 @@ func TestCLIEnglishLanguageFlagSwitchesOutput(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"systemctl show sing-box --property=LoadState --value": "loaded\n",
 		"systemctl is-active migate":                           "active\n",
+		"systemctl is-active xray":                             "inactive\n",
 		"systemctl is-active sing-box":                         "inactive\n",
 	}}
 	var out bytes.Buffer
@@ -440,7 +632,7 @@ func TestCLIEnglishLanguageFlagSwitchesOutput(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit 0, got %d", exitCode)
 	}
-	if !strings.Contains(out.String(), "MiGate Panel: running") || !strings.Contains(out.String(), "sing-box: stopped") {
+	if !strings.Contains(out.String(), "MiGate Panel: running") || !strings.Contains(out.String(), "Xray: stopped") || !strings.Contains(out.String(), "sing-box: stopped") {
 		t.Fatalf("expected English status output, got: %s", out.String())
 	}
 }
@@ -497,6 +689,7 @@ func TestCLIDoctorPrintsPanelRuntimeAndResourceChecks(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"systemctl show sing-box --property=LoadState --value": "loaded\n",
 		"systemctl is-active migate":                           "active\n",
+		"systemctl is-active xray":                             "active\n",
 		"systemctl is-active sing-box":                         "inactive\n",
 		"xray version":                                         "Xray 26.3.27\n",
 		"sing-box version":                                     "sing-box version 1.13.13\n",
@@ -610,6 +803,8 @@ func TestCLILogsFollowAndRestartAllUseExpectedServices(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"journalctl -u migate -n 80 -f":                        "following\n",
 		"systemctl restart migate":                             "",
+		"systemctl show xray --property=LoadState --value":     "loaded\n",
+		"systemctl restart xray":                               "",
 		"systemctl show sing-box --property=LoadState --value": "loaded\n",
 		"systemctl restart sing-box":                           "",
 	}}
@@ -619,7 +814,7 @@ func TestCLILogsFollowAndRestartAllUseExpectedServices(t *testing.T) {
 	if code := runCLI([]string{"restart", "all"}, &bytes.Buffer{}, &bytes.Buffer{}, runner); code != 0 {
 		t.Fatalf("restart all exit %d", code)
 	}
-	want := []string{"journalctl -u migate -n 80 -f", "systemctl restart migate", "systemctl show sing-box --property=LoadState --value", "systemctl restart sing-box"}
+	want := []string{"journalctl -u migate -n 80 -f", "systemctl restart migate", "systemctl show xray --property=LoadState --value", "systemctl restart xray", "systemctl show sing-box --property=LoadState --value", "systemctl restart sing-box"}
 	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
 		t.Fatalf("unexpected calls: %+v", runner.calls)
 	}
@@ -628,6 +823,8 @@ func TestCLILogsFollowAndRestartAllUseExpectedServices(t *testing.T) {
 func TestCLIRestartAllFallsBackToLegacySingboxService(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string]string{
 		"systemctl restart migate":                                   "",
+		"systemctl show xray --property=LoadState --value":           "loaded\n",
+		"systemctl restart xray":                                     "",
 		"systemctl show sing-box --property=LoadState --value":       "not-found\n",
 		"systemctl show migate-singbox --property=LoadState --value": "loaded\n",
 		"systemctl restart migate-singbox":                           "",
@@ -637,12 +834,57 @@ func TestCLIRestartAllFallsBackToLegacySingboxService(t *testing.T) {
 	}
 	want := []string{
 		"systemctl restart migate",
+		"systemctl show xray --property=LoadState --value",
+		"systemctl restart xray",
 		"systemctl show sing-box --property=LoadState --value",
 		"systemctl show migate-singbox --property=LoadState --value",
 		"systemctl restart migate-singbox",
 	}
 	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
 		t.Fatalf("unexpected calls: %+v", runner.calls)
+	}
+}
+
+func TestCLIRestartAllReportsXrayRestartFailure(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string]string{
+			"systemctl restart migate":                         "",
+			"systemctl show xray --property=LoadState --value": "loaded\n",
+			"systemctl restart xray":                           "Unit xray.service not found\n",
+		},
+		errors: map[string]error{"systemctl restart xray": errors.New("exit status 5")},
+	}
+	var stderr bytes.Buffer
+	if code := runCLI([]string{"restart", "all"}, &bytes.Buffer{}, &stderr, runner); code != 1 {
+		t.Fatalf("restart all should fail when Xray restart fails, got %d", code)
+	}
+	wantCalls := []string{"systemctl restart migate", "systemctl show xray --property=LoadState --value", "systemctl restart xray"}
+	if strings.Join(runner.calls, "|") != strings.Join(wantCalls, "|") {
+		t.Fatalf("unexpected calls after Xray failure: %+v", runner.calls)
+	}
+	if !strings.Contains(stderr.String(), "Unit xray.service not found") || !strings.Contains(stderr.String(), "restart xray failed") {
+		t.Fatalf("stderr should mention xray restart failure, got %q", stderr.String())
+	}
+}
+
+func TestCLIRestartAllSkipsUnmanagedXrayService(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string]string{
+		"systemctl restart migate":                             "",
+		"systemctl show xray --property=LoadState --value":     "not-found\n",
+		"systemctl show sing-box --property=LoadState --value": "loaded\n",
+		"systemctl restart sing-box":                           "",
+	}}
+	if code := runCLI([]string{"restart", "all"}, &bytes.Buffer{}, &bytes.Buffer{}, runner); code != 0 {
+		t.Fatalf("restart all exit %d", code)
+	}
+	want := []string{
+		"systemctl restart migate",
+		"systemctl show xray --property=LoadState --value",
+		"systemctl show sing-box --property=LoadState --value",
+		"systemctl restart sing-box",
+	}
+	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected calls when Xray is unmanaged: %+v", runner.calls)
 	}
 }
 
@@ -712,6 +954,16 @@ func TestCommandModeKeepsLegacyConfigArgsServingButBareCommandIsCLI(t *testing.T
 		if got := detectCommandMode(tc.args); got != tc.want {
 			t.Fatalf("%v: got %v want %v", tc.args, got, tc.want)
 		}
+	}
+}
+
+func TestExecCmdPreservesStderrOnFailure(t *testing.T) {
+	out, err := execCmd("sh", "-c", "printf 'xray stderr detail' >&2; exit 1")
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	if !strings.Contains(out, "xray stderr detail") {
+		t.Fatalf("execCmd must preserve stderr, got %q", out)
 	}
 }
 

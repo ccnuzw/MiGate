@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imzyb/MiGate/internal/corefile"
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
@@ -129,8 +130,8 @@ type xrayConfigSyncPreview struct {
 }
 
 func xrayConfigPath(cfg *routerConfig) string {
-	if cfg != nil && strings.TrimSpace(cfg.configDir) != "" {
-		return filepath.Join(cfg.configDir, "xray.json")
+	if cfg != nil && strings.TrimSpace(cfg.xrayConfigDir) != "" {
+		return filepath.Join(cfg.xrayConfigDir, "xray.json")
 	}
 	return filepath.Join("/usr/local/migate", "xray.json")
 }
@@ -290,11 +291,13 @@ func (p defaultXrayProbe) Status(ctx context.Context) string {
 }
 
 func (p defaultXrayProbe) ConfigExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+	return corefile.CheckPath(path, corefile.Requirement{Kind: corefile.KindFile, Readable: true}).OK()
 }
 
 func (p defaultXrayProbe) CheckConfig(ctx context.Context, path string) error {
+	if status := corefile.CheckPath(path, corefile.Requirement{Kind: corefile.KindFile, Readable: true}); !status.OK() {
+		return errors.New(status.Error())
+	}
 	out, err := p.command(ctx, "xray", "run", "-test", "-c", path)
 	if err != nil {
 		if strings.TrimSpace(out) != "" {
