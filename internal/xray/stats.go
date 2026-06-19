@@ -11,10 +11,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 )
 
 // StatsClient provides access to Xray's traffic statistics.
@@ -124,7 +125,7 @@ func (c *StubStatsClient) Close() error {
 }
 
 func (c *CommandStatsClient) QueryAllStats(ctx context.Context) (map[string]*ClientStats, error) {
-	out, err := exec.CommandContext(ctx, c.BinaryPath, "api", "statsquery", "--server", c.Server, "-pattern", "user>>>").Output()
+	out, err := runtimecmd.NewRealCommandRunner(8*time.Second).RunOutput(ctx, c.BinaryPath, "api", "statsquery", "--server", c.Server, "-pattern", "user>>>")
 	if err != nil {
 		return nil, fmt.Errorf("xray statsquery: %w", err)
 	}
@@ -132,7 +133,7 @@ func (c *CommandStatsClient) QueryAllStats(ctx context.Context) (map[string]*Cli
 }
 
 func (c *CommandStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
-	out, err := exec.CommandContext(ctx, c.BinaryPath, "api", "statsquery", "--server", c.Server, "-pattern", ">>>traffic>>>").Output()
+	out, err := runtimecmd.NewRealCommandRunner(8*time.Second).RunOutput(ctx, c.BinaryPath, "api", "statsquery", "--server", c.Server, "-pattern", ">>>traffic>>>")
 	if err != nil {
 		return nil, fmt.Errorf("xray statsquery: %w", err)
 	}
@@ -302,7 +303,9 @@ func NewGRPCStatsClientWithEngine(ctx context.Context, addr, engine string) (*GR
 }
 
 func NewGRPCStatsClientWithEngineAndService(ctx context.Context, addr, engine, service string) (*GRPCStatsClient, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	engine = strings.TrimSpace(engine)
 	if engine == "" {
 		engine = "xray"

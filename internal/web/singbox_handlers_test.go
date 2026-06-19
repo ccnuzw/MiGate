@@ -138,11 +138,18 @@ func TestSingboxApplyUsesApplyLock(t *testing.T) {
 		return SingboxApplySummary{Applied: true}
 	}))
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/singbox/apply", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"apply_locked"`) {
+	if response.Code != http.StatusConflict {
 		t.Fatalf("expected apply lock conflict, got %d: %s", response.Code, response.Body.String())
+	}
+	var payload ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if payload.Error.Code != "apply_locked" {
+		t.Fatalf("expected apply_locked error code, got %q", payload.Error.Code)
 	}
 }
 

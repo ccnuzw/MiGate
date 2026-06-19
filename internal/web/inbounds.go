@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
@@ -38,8 +37,7 @@ func inboundCapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"capabilities": db.InboundCapabilities()})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"capabilities": db.InboundCapabilities()})
 }
 
 func realityKeypairHandler(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +50,7 @@ func realityKeypairHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "generate_reality_keypair_failed")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"private_key": privateKey, "public_key": publicKey})
+	writeJSON(w, http.StatusOK, map[string]string{"private_key": privateKey, "public_key": publicKey})
 }
 
 func applyCoreAsync(ctrl XrayController, store Store) {
@@ -247,8 +244,7 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 			}
 			views = append(views, view)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": views})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": views})
 		return
 	}
 	views := make([]inboundView, 0, len(inbounds))
@@ -273,8 +269,7 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 		}
 		views = append(views, view)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"inbounds": views})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": views})
 }
 
 func createInbound(w http.ResponseWriter, r *http.Request, store Store) (db.Inbound, bool) {
@@ -663,8 +658,7 @@ func resetClientTraffic(w http.ResponseWriter, r *http.Request, store Store, sta
 		writeJSONError(w, http.StatusNotFound, "reset_traffic_failed")
 		return false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
+	writeJSON(w, http.StatusOK, updated)
 	return true
 }
 

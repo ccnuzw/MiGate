@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ApiError } from '../api/client';
+import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Outbound, PingResult, ProxyPoolProxy, ProxyPoolResponse } from '../api/types';
 import { EmptyState, Field, FieldError, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
@@ -539,5 +539,5 @@ function proxyCountryLabel(proxy?: Pick<ProxyPoolProxy, 'country' | 'country_cod
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback;
+  return getAPIErrorMessage(error, fallback);
 }

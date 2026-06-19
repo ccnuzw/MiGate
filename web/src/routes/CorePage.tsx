@@ -1,12 +1,13 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, ChevronDown, Download, FileText, Play, RefreshCw, RotateCcw, ShieldCheck, Square, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
-import { ApiError } from '../api/client';
+import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CoreActionResponse, CoreConfigPreview, CoreDiagnosticAction, CoreDiagnostics, CoreStatus } from '../api/types';
 import { Card, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { formatBytes, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { refreshQueries, refreshQuery } from '../lib/queryInvalidation';
 import { usePageVisible } from '../lib/visibility';
 import { PageTitle } from './OverviewPage';
 
@@ -45,11 +46,10 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       const result = coreActionResult(data, `${label} 配置已应用`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.tone || (result.ok ? 'success' : 'error'));
-      statusQuery.refetch();
-      diagnosticsQuery.refetch();
+      refreshQuery(statusQuery);
+      refreshQuery(diagnosticsQuery);
       if (result.ok) {
-        configQuery.refetch();
-        configPreviewQuery.refetch();
+        refreshQueries([configQuery, configPreviewQuery]);
       }
     },
     onError: (error) => setActionError(error, `${label} 应用失败`, setLastResult, showToast),
@@ -60,9 +60,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       const result = coreActionResult(data, `${label} 安装命令已执行`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
-      statusQuery.refetch();
-      versionQuery.refetch();
-      diagnosticsQuery.refetch();
+      refreshQueries([statusQuery, versionQuery, diagnosticsQuery]);
     },
     onError: (error) => setActionError(error, `${label} 安装失败`, setLastResult, showToast),
   });
@@ -72,9 +70,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       const result = coreActionResult(data, `${label} 卸载命令已执行`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
-      statusQuery.refetch();
-      versionQuery.refetch();
-      diagnosticsQuery.refetch();
+      refreshQueries([statusQuery, versionQuery, diagnosticsQuery]);
     },
     onError: (error) => setActionError(error, `${label} 卸载失败`, setLastResult, showToast),
   });
@@ -84,9 +80,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       const result = coreActionResult(data, `${label} 已重启`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
-      statusQuery.refetch();
-      versionQuery.refetch();
-      diagnosticsQuery.refetch();
+      refreshQueries([statusQuery, versionQuery, diagnosticsQuery]);
     },
     onError: (error) => setActionError(error, `${label} 重启失败`, setLastResult, showToast),
   });
@@ -96,9 +90,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       const result = coreActionResult(data, `${label} 已停止`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.ok ? 'success' : 'error');
-      statusQuery.refetch();
-      versionQuery.refetch();
-      diagnosticsQuery.refetch();
+      refreshQueries([statusQuery, versionQuery, diagnosticsQuery]);
     },
     onError: (error) => setActionError(error, `${label} 停止失败`, setLastResult, showToast),
   });
@@ -128,7 +120,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
           <div className="core-action-group">
             <div className="core-action-group-title">{text('常用')}</div>
             <div className="core-action-row">
-              <button className="btn secondary" onClick={() => { statusQuery.refetch(); versionQuery.refetch(); diagnosticsQuery.refetch(); configPreviewQuery.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
+              <button className="btn secondary" onClick={() => refreshQueries([statusQuery, versionQuery, diagnosticsQuery, configPreviewQuery])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
               <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
               <SpinnerButton className="btn primary" loading={apply.isPending} onClick={async () => (await confirm({ title: text(`应用 ${label} 配置？`), description: text('该操作会重新生成并应用核心配置。') })) && apply.mutate()}><Play className="h-4 w-4" /> {text('应用配置')}</SpinnerButton>
             </div>
@@ -166,13 +158,13 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
           <pre className="code-block core-code-block">{status.commands_executed.join('\n')}</pre>
         </Card>
       ) : null}
-      <CoreConfigSync preview={configPreview} loading={configPreviewQuery.isLoading} error={configPreviewQuery.error} onRefresh={() => { configQuery.refetch(); configPreviewQuery.refetch(); }} text={text} />
+      <CoreConfigSync preview={configPreview} loading={configPreviewQuery.isLoading} error={configPreviewQuery.error} onRefresh={() => refreshQueries([configQuery, configPreviewQuery])} text={text} />
       <CorePortDiagnostics status={status} diagnostics={diagnostics} text={text} />
-      <CoreDiagnosticsPanel diagnostics={diagnostics} loading={diagnosticsQuery.isLoading} error={diagnosticsQuery.error} onRefresh={() => diagnosticsQuery.refetch()} text={text} />
-      <CoreDisclosure title={text('配置预览')} icon={<FileText className="h-4 w-4" />} action={<button className="btn secondary h-8" onClick={() => { configQuery.refetch(); configPreviewQuery.refetch(); }}>{text('刷新配置')}</button>}>
+      <CoreDiagnosticsPanel diagnostics={diagnostics} loading={diagnosticsQuery.isLoading} error={diagnosticsQuery.error} onRefresh={() => refreshQuery(diagnosticsQuery)} text={text} />
+      <CoreDisclosure title={text('配置预览')} icon={<FileText className="h-4 w-4" />} action={<button className="btn secondary h-8" onClick={() => refreshQueries([configQuery, configPreviewQuery])}>{text('刷新配置')}</button>}>
         <pre className="code-block core-code-block">{JSON.stringify(configQuery.data || {}, null, 2)}</pre>
       </CoreDisclosure>
-      <CoreDisclosure title={text('最近日志')} icon={<FileText className="h-4 w-4" />} action={<button className="btn secondary h-8" onClick={() => logsQuery.refetch()}>{text('加载日志')}</button>}>
+      <CoreDisclosure title={text('最近日志')} icon={<FileText className="h-4 w-4" />} action={<button className="btn secondary h-8" onClick={() => refreshQuery(logsQuery)}>{text('加载日志')}</button>}>
         <pre className="code-block core-code-block">{formatLogs(logsQuery.data, text('点击“加载日志”查看最近日志。'))}</pre>
       </CoreDisclosure>
     </div>
@@ -814,7 +806,7 @@ function isFailureStatus(status: string): boolean {
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback;
+  return getAPIErrorMessage(error, fallback);
 }
 
 function setActionError(error: unknown, fallback: string, setLastResult: (value: { ok: boolean; message: string }) => void, showToast: (title: string, tone?: 'success' | 'error' | 'info') => void) {

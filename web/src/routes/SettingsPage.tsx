@@ -2,12 +2,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp, ExternalLink, RefreshCw, RotateCcw, Save, ShieldX, UploadCloud } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { ApiError } from '../api/client';
+import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Settings } from '../api/types';
 import { Card, Field, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { serviceLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
+import { refreshQueries, refreshQuery, refreshSessionDependencies, refreshSettingsDependencies, refreshUpdateDependencies } from '../lib/queryInvalidation';
 import { PageTitle } from './OverviewPage';
 
 export default function SettingsPage() {
@@ -43,8 +44,7 @@ export default function SettingsPage() {
     onSuccess: () => {
       showToast(text('设置已保存，端口、数据库或基础路径变更需要重启服务后生效'), 'success');
       form.setValue('panel_password', '');
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
-      queryClient.invalidateQueries({ queryKey: ['cert-status'] });
+      refreshSettingsDependencies(queryClient);
     },
     onError: (error) => showToast(errorMessage(error, text('保存设置失败')), 'error'),
   });
@@ -52,8 +52,7 @@ export default function SettingsPage() {
     mutationFn: (values: Settings) => api.saveSettings(certSettingsPayload(settings.data, values)),
     onSuccess: () => {
       showToast(text('证书配置已保存'), 'success');
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
-      queryClient.invalidateQueries({ queryKey: ['cert-status'] });
+      refreshSettingsDependencies(queryClient);
     },
     onError: (error) => showToast(errorMessage(error, text('保存证书配置失败')), 'error'),
   });
@@ -69,7 +68,7 @@ export default function SettingsPage() {
     },
     onSuccess: () => {
       showToast(text('证书已获取'), 'success');
-      queryClient.invalidateQueries({ queryKey: ['cert-status'] });
+      refreshSettingsDependencies(queryClient);
     },
     onError: (error) => showToast(errorMessage(error, text('获取证书失败')), 'error'),
   });
@@ -78,9 +77,8 @@ export default function SettingsPage() {
     onSuccess: () => {
       setWatchUpdateStatus(true);
       showToast(text('更新命令已发送'), 'success');
-      queryClient.invalidateQueries({ queryKey: ['update-status'] });
-      queryClient.invalidateQueries({ queryKey: ['update-logs'] });
-      updateLogs.refetch();
+      refreshUpdateDependencies(queryClient);
+      refreshQuery(updateLogs);
     },
     onError: (error) => showToast(errorMessage(error, text('启动更新失败')), 'error'),
   });
@@ -88,7 +86,7 @@ export default function SettingsPage() {
     mutationFn: api.revokeSession,
     onSuccess: () => {
       showToast(text('会话已撤销'), 'success');
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      refreshSessionDependencies(queryClient);
     },
     onError: (error) => showToast(errorMessage(error, text('撤销会话失败')), 'error'),
   });
@@ -96,7 +94,7 @@ export default function SettingsPage() {
     mutationFn: api.revokeOtherSessions,
     onSuccess: (result) => {
       showToast(`${text('已撤销')} ${result.revoked} ${text('个其他会话')}`, 'success');
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      refreshSessionDependencies(queryClient);
     },
     onError: (error) => showToast(errorMessage(error, text('撤销其他会话失败')), 'error'),
   });
@@ -122,7 +120,7 @@ export default function SettingsPage() {
           <Field label={text('Web 基础路径')}><input placeholder="/panel" {...form.register('web_base_path')} /></Field>
           <Field label={text('数据库路径')}><input {...form.register('database_path')} /></Field>
           <div className="span-2 flex flex-wrap justify-end gap-2">
-            <button type="button" className="btn secondary" onClick={() => { settings.refetch(); cert.refetch(); service.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
+            <button type="button" className="btn secondary" onClick={() => refreshQueries([settings, cert, service])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
             <SpinnerButton type="submit" className="btn primary" loading={save.isPending}><Save className="h-4 w-4" /> {text('保存设置')}</SpinnerButton>
             <SpinnerButton type="button" className="btn danger" loading={restart.isPending} onClick={async () => (await confirm({ title: text('重启 MiGate 服务？'), description: text('服务重启后当前连接可能短暂中断。'), tone: 'danger' })) && restart.mutate()}><RotateCcw className="h-4 w-4" /> {text('重启服务')}</SpinnerButton>
           </div>
@@ -154,9 +152,9 @@ export default function SettingsPage() {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <h2 className="section-title">{text('服务维护')}</h2>
             <div className="flex flex-wrap gap-2">
-              <button className="btn secondary" onClick={() => service.refetch()}><RefreshCw className="h-4 w-4" /> {text('刷新状态')}</button>
-              <button className="btn secondary" onClick={() => updateCheck.refetch()}><RefreshCw className="h-4 w-4" /> {text('检查更新')}</button>
-              <button className="btn secondary" onClick={() => updateLogs.refetch()}><RefreshCw className="h-4 w-4" /> {text('加载更新日志')}</button>
+              <button className="btn secondary" onClick={() => refreshQuery(service)}><RefreshCw className="h-4 w-4" /> {text('刷新状态')}</button>
+              <button className="btn secondary" onClick={() => refreshQuery(updateCheck)}><RefreshCw className="h-4 w-4" /> {text('检查更新')}</button>
+              <button className="btn secondary" onClick={() => refreshQuery(updateLogs)}><RefreshCw className="h-4 w-4" /> {text('加载更新日志')}</button>
               <SpinnerButton className="btn primary" loading={update.isPending} disabled={isUpdateInProgress(updateStatus.data?.status)} onClick={async () => (await confirm({ title: text('立即更新 MiGate？'), description: text('更新器将通过 systemd-run 在服务外执行。') })) && update.mutate()}><UploadCloud className="h-4 w-4" /> {text('立即更新')}</SpinnerButton>
             </div>
           </div>
@@ -225,7 +223,7 @@ export const defaultVisibleSessions = 5;
 export const maxActiveSessionsLabel = 10;
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof ApiError ? error.message : fallback;
+  return getAPIErrorMessage(error, fallback);
 }
 
 export function settingsPayload(current: Settings | undefined, values: Settings): Settings {

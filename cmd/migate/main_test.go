@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	panelcfg "github.com/imzyb/MiGate/internal/config"
 	"github.com/imzyb/MiGate/internal/paths"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
@@ -655,22 +657,72 @@ func TestCLIOperationsMenuListsExpandedCommands(t *testing.T) {
 func TestCLIDoctorPrintsPanelRuntimeAndResourceChecks(t *testing.T) {
 	tmp := t.TempDir()
 	oldPath := defaultPanelConfigPath
+	oldXrayConfig := paths.XrayConfig
+	oldSingboxConfig := paths.SingboxConfig
+	oldBackupDir := paths.BackupDir
+	oldLogDir := paths.LogDir
+	oldRunDir := paths.RunDir
+	oldXrayBinary := paths.XrayBinary
+	oldSingboxBinary := paths.SingboxBinary
 	defaultPanelConfigPath = filepath.Join(tmp, "panel.json")
-	defer func() { defaultPanelConfigPath = oldPath }()
-	config := `{"panel_port":9999,"web_base_path":"/migate","database_path":"` + filepath.Join(tmp, "migate.db") + `"}`
+	paths.XrayConfig = filepath.Join(tmp, "cores", "xray.json")
+	paths.SingboxConfig = filepath.Join(tmp, "cores", "sing-box.json")
+	paths.BackupDir = filepath.Join(tmp, "backups")
+	paths.LogDir = filepath.Join(tmp, "logs")
+	paths.RunDir = filepath.Join(tmp, "run")
+	paths.XrayBinary = filepath.Join(tmp, "bin", "xray")
+	paths.SingboxBinary = filepath.Join(tmp, "bin", "sing-box")
+	defer func() {
+		defaultPanelConfigPath = oldPath
+		paths.XrayConfig = oldXrayConfig
+		paths.SingboxConfig = oldSingboxConfig
+		paths.BackupDir = oldBackupDir
+		paths.LogDir = oldLogDir
+		paths.RunDir = oldRunDir
+		paths.XrayBinary = oldXrayBinary
+		paths.SingboxBinary = oldSingboxBinary
+	}()
+	dbPath := filepath.Join(tmp, "migate.db")
+	config := `{"panel_port":9999,"web_base_path":"/migate","database_path":"` + dbPath + `"}`
 	if err := os.WriteFile(defaultPanelConfigPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "migate.db"), []byte("db"), 0o600); err != nil {
-		t.Fatalf("write db: %v", err)
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if _, err := database.Exec(`CREATE TABLE smoke (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create db table: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	for _, path := range []string{paths.XrayConfig, paths.SingboxConfig} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir core config: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+			t.Fatalf("write core config: %v", err)
+		}
+	}
+	for _, dir := range []string{paths.BackupDir, paths.LogDir, paths.RunDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for _, path := range []string{paths.XrayBinary, paths.SingboxBinary} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir binary dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write binary marker: %v", err)
+		}
 	}
 	runner := &fakeRunner{outputs: map[string]string{
 		"systemctl show migate-sing-box --property=LoadState --value": "loaded\n",
 		"systemctl is-active migate":                                  "active\n",
 		"systemctl is-active migate-xray":                             "active\n",
-		"systemctl is-active migate-sing-box":                         "inactive\n",
-		"xray version":                                                "Xray 26.3.27\n",
-		"sing-box version":                                            "sing-box version 1.13.13\n",
+		"systemctl is-active migate-sing-box":                         "active\n",
 		"ss -ltn":                                                     "LISTEN 0 4096 *:9999 *:*\n",
 		"free -m":                                                     "Mem: 900 400 500\nSwap: 512 0 512\n",
 		"df -h /":                                                     "/dev/sda1 50G 10G 40G 20% /\n",
@@ -681,10 +733,67 @@ func TestCLIDoctorPrintsPanelRuntimeAndResourceChecks(t *testing.T) {
 		t.Fatalf("expected exit 0, got %d", exitCode)
 	}
 	body := out.String()
-	for _, want := range []string{"MiGate 诊断", "MiGate 面板: 运行中", "WebUI: http://SERVER_IP:9999/migate", "Xray: 已安装", "sing-box: 已安装", "配置文件: 正常", "数据库: 正常", "内存", "磁盘"} {
+	for _, want := range []string{"MiGate 诊断", "MiGate 面板: 运行中", "WebUI: http://SERVER_IP:9999/migate", "Xray: 已安装", "sing-box: 已安装", "配置文件: 正常", "数据库: 正常", "核心配置", "目录", "内存", "磁盘"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestCLIDoctorReturnsFailureForCriticalMissingRuntimeState(t *testing.T) {
+	tmp := t.TempDir()
+	oldPath := defaultPanelConfigPath
+	oldXrayConfig := paths.XrayConfig
+	oldSingboxConfig := paths.SingboxConfig
+	oldBackupDir := paths.BackupDir
+	oldLogDir := paths.LogDir
+	oldRunDir := paths.RunDir
+	oldXrayBinary := paths.XrayBinary
+	oldSingboxBinary := paths.SingboxBinary
+	defaultPanelConfigPath = filepath.Join(tmp, "panel.json")
+	paths.XrayConfig = filepath.Join(tmp, "cores", "xray.json")
+	paths.SingboxConfig = filepath.Join(tmp, "cores", "sing-box.json")
+	paths.BackupDir = filepath.Join(tmp, "backups")
+	paths.LogDir = filepath.Join(tmp, "logs")
+	paths.RunDir = filepath.Join(tmp, "run")
+	paths.XrayBinary = filepath.Join(tmp, "bin", "xray")
+	paths.SingboxBinary = filepath.Join(tmp, "bin", "sing-box")
+	defer func() {
+		defaultPanelConfigPath = oldPath
+		paths.XrayConfig = oldXrayConfig
+		paths.SingboxConfig = oldSingboxConfig
+		paths.BackupDir = oldBackupDir
+		paths.LogDir = oldLogDir
+		paths.RunDir = oldRunDir
+		paths.XrayBinary = oldXrayBinary
+		paths.SingboxBinary = oldSingboxBinary
+	}()
+	if err := os.WriteFile(defaultPanelConfigPath, []byte(`{"panel_port":9999,"database_path":"`+filepath.Join(tmp, "missing.db")+`"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	runner := &fakeRunner{outputs: map[string]string{
+		"systemctl is-active migate":          "active\n",
+		"systemctl is-active migate-xray":     "inactive\n",
+		"systemctl is-active migate-sing-box": "active\n",
+		"free -m":                             "Mem: 900 400 500\n",
+		"df -h /":                             "/dev/sda1 50G 10G 40G 20% /\n",
+	}}
+	var out bytes.Buffer
+	if code := runCLI([]string{"doctor"}, &out, &bytes.Buffer{}, runner); code != 1 {
+		t.Fatalf("doctor should fail for missing critical runtime state, got %d\n%s", code, out.String())
+	}
+	body := out.String()
+	for _, want := range []string{"Xray: 已停止", "数据库: 缺失", "Xray: 未安装", "核心配置", "目录"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("doctor failure output missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestSQLiteReadOnlyDSNUsesURIWithEscapedPath(t *testing.T) {
+	got := sqliteReadOnlyDSN("/tmp/migate data/migate.db")
+	if got != "file:///tmp/migate%20data/migate.db?mode=ro" {
+		t.Fatalf("unexpected sqlite readonly dsn: %s", got)
 	}
 }
 
@@ -731,7 +840,7 @@ func TestCLIResetPasswordUpdatesConfigAndRestartsService(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit 0, got %d", exitCode)
 	}
-	updated, err := readPanelConfig(defaultPanelConfigPath)
+	updated, err := panelcfg.Load(defaultPanelConfigPath)
 	if err != nil {
 		t.Fatalf("read updated config: %v", err)
 	}
@@ -889,8 +998,40 @@ func TestCLIBackupAndRestoreUseTarWithConfigAndDataPaths(t *testing.T) {
 	if code := runCLI([]string{"restore", "/tmp/migate-backup.tar.gz"}, &bytes.Buffer{}, &bytes.Buffer{}, runner); code != 0 {
 		t.Fatalf("restore exit %d", code)
 	}
-	if len(runner.calls) != 3 {
+	want := []string{
+		"tar -czf /tmp/migate-backup.tar.gz /etc/migate /var/lib/migate/migate.db /var/lib/migate/versions.json",
+		"tar -xzf /tmp/migate-backup.tar.gz -C /",
+		"systemctl restart migate",
+	}
+	if strings.Join(runner.calls, "|") != strings.Join(want, "|") {
 		t.Fatalf("unexpected backup/restore calls: %+v", runner.calls)
+	}
+}
+
+func TestCLIBackupDefaultsToRuntimeContractBackupDirectory(t *testing.T) {
+	oldBackupDir := paths.BackupDir
+	paths.BackupDir = "/var/lib/migate/backups"
+	defer func() { paths.BackupDir = oldBackupDir }()
+	path := defaultBackupPath()
+	if !strings.HasPrefix(path, "/var/lib/migate/backups/migate-backup-") || !strings.HasSuffix(path, ".tar.gz") {
+		t.Fatalf("unexpected default backup path: %s", path)
+	}
+	if got := strings.Join(backupFiles(), "|"); got != "/etc/migate|/var/lib/migate/migate.db|/var/lib/migate/versions.json" {
+		t.Fatalf("unexpected backup files: %s", got)
+	}
+}
+
+func TestCLIBackupCreatesDestinationDirectoryBeforeTar(t *testing.T) {
+	tmp := t.TempDir()
+	backupPath := filepath.Join(tmp, "missing", "migate-backup.tar.gz")
+	runner := &fakeRunner{outputs: map[string]string{
+		"tar -czf " + backupPath + " /etc/migate /var/lib/migate/migate.db /var/lib/migate/versions.json": "",
+	}}
+	if code := runCLI([]string{"backup", backupPath}, &bytes.Buffer{}, &bytes.Buffer{}, runner); code != 0 {
+		t.Fatalf("backup exit %d", code)
+	}
+	if info, err := os.Stat(filepath.Dir(backupPath)); err != nil || !info.IsDir() {
+		t.Fatalf("backup should create destination dir, stat=%v info=%+v", err, info)
 	}
 }
 
@@ -908,7 +1049,7 @@ func TestCLIPortsShowsPanelAndListeningPorts(t *testing.T) {
 		t.Fatalf("ports exit %d", code)
 	}
 	body := out.String()
-	for _, want := range []string{"9999", "面板", "listening"} {
+	for _, want := range []string{"9999", "面板", "listening", "10085", "Xray Stats API", "10086", "sing-box Stats API"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("ports output missing %q:\n%s", want, body)
 		}
@@ -916,7 +1057,7 @@ func TestCLIPortsShowsPanelAndListeningPorts(t *testing.T) {
 }
 
 func TestCLIPanelURLNormalizesBasePath(t *testing.T) {
-	cfg := panelConfig{PanelPort: 9999, WebPath: "migate"}
+	cfg := panelcfg.Config{PanelPort: 9999, WebPath: "migate"}
 	if got := panelURL(cfg, "SERVER_IP"); got != "http://SERVER_IP:9999/migate" {
 		t.Fatalf("unexpected normalized url: %q", got)
 	}

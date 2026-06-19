@@ -949,6 +949,51 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 	}
 }
 
+func TestInstallAndUninstallScriptsKeepOpsContractPathsAndSafety(t *testing.T) {
+	install := read(t, "packaging", "install.sh")
+	uninstall := read(t, "packaging", "uninstall.sh")
+
+	for _, want := range []string{
+		`CONFIG_DIR="${MIGATE_CONFIG_DIR:-/etc/migate}"`,
+		`CONFIG_PATH="${MIGATE_CONFIG_PATH:-/etc/migate/panel.json}"`,
+		`VERSIONS_PATH="${MIGATE_VERSIONS_PATH:-/var/lib/migate/versions.json}"`,
+		`BACKUP_DIR="${MIGATE_BACKUP_DIR:-/var/lib/migate/backups}"`,
+		`RUN_DIR="${MIGATE_RUN_DIR:-/run/migate}"`,
+		`INSTALL_LOCK="${MIGATE_INSTALL_LOCK:-/run/migate/install.lock}"`,
+		`XRAY_SERVICE_PATH="${XRAY_SERVICE_PATH:-/etc/systemd/system/migate-xray.service}"`,
+		`SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-sing-box.service}"`,
+		`INSTALL_LOCK="${TMPDIR:-/tmp}/migate-install.$$.lock"`,
+	} {
+		if !strings.Contains(install, want) {
+			t.Fatalf("install script ops contract missing %q", want)
+		}
+	}
+
+	for _, want := range []string{
+		`MIGATE_SERVICE="migate"`,
+		`XRAY_SERVICE="migate-xray"`,
+		`SINGBOX_SERVICE="migate-sing-box"`,
+		`MIGATE_CONFIG_DIR="/etc/migate"`,
+		`MIGATE_DATA_DIR="/var/lib/migate"`,
+		`MIGATE_LOG_DIR="/var/log/migate"`,
+		`MIGATE_RUN_DIR="/run/migate"`,
+		"Default uninstall keeps:",
+		"Keeping MiGate config/data/logs",
+		`if [ "$PURGE" -eq 1 ]; then`,
+	} {
+		if !strings.Contains(uninstall, want) {
+			t.Fatalf("uninstall script ops contract missing %q", want)
+		}
+	}
+
+	combined := install + "\n" + uninstall
+	for _, forbidden := range []string{"/etc/sing-box/config.json", "/usr/local/migate", "/usr/local/etc/xray", "migate-singbox"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("install/uninstall scripts must not contain legacy marker %q", forbidden)
+		}
+	}
+}
+
 func TestUninstallDryRunPrintsPlannedCommands(t *testing.T) {
 	root := repoRoot(t)
 	cmd := exec.Command("bash", filepath.Join(root, "packaging", "uninstall.sh"), "--dry-run", "--yes")

@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form';
 import type { UseFormRegisterReturn } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Client, CreateClientResponse, CreateInboundResponse, Inbound } from '../api/types';
 import { Field, FieldError, Modal, SpinnerButton, useConfirm, useToast } from '../components/ui';
@@ -899,5 +900,5 @@ async function copyText(value: string, title: string, errorTitle: string, showTo
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback;
+  return getAPIErrorMessage(error, fallback);
 }

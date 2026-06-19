@@ -180,6 +180,14 @@ func TestGRPCStatsClientWithCustomServiceName(t *testing.T) {
 	}
 }
 
+func TestNewGRPCStatsClientHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := NewGRPCStatsClientWithEngineAndService(ctx, "127.0.0.1:10085", "xray", "xray.app.stats.command.StatsService"); err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
 func TestParseCommandStatsQueryOutput(t *testing.T) {
 	raw := []byte(`{"stat":[{"name":"user>>>sam@example.com>>>traffic>>>uplink","value":60300000},{"name":"user>>>sam@example.com>>>traffic>>>downlink","value":202400000}]}`)
 	stats, err := ParseStatsQueryOutput(raw)

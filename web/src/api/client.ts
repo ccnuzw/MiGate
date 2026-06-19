@@ -1,12 +1,30 @@
 export class ApiError extends Error {
   status: number;
   payload: unknown;
+  code?: string;
+  detail?: string;
+  fields?: Record<string, unknown>;
+  details?: unknown;
 
-  constructor(status: number, message: string, payload: unknown) {
+  constructor(status: number, message: string, payload: unknown, options: { code?: string; detail?: string; fields?: Record<string, unknown>; details?: unknown } = {}) {
     super(message);
     this.status = status;
     this.payload = payload;
+    this.code = options.code;
+    this.detail = options.detail;
+    this.fields = options.fields;
+    this.details = options.details ?? options.fields ?? options.detail;
   }
+}
+
+export interface APIErrorBody {
+  error?: {
+    code?: string;
+    message?: string;
+    detail?: string;
+    fields?: Record<string, unknown>;
+  };
+  status?: number;
 }
 
 export function basePath(): string {
@@ -49,7 +67,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   if (hasBody && !headers.has('Content-Type') && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
-  headers.set('Accept', 'application/json');
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json');
   const response = await fetch(appPath(path), {
     credentials: 'same-origin',
     ...init,
@@ -61,16 +79,48 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     window.location.assign(`${appPath('/login')}?next=${encodeURIComponent(current)}`);
   }
   if (!response.ok) {
-    const message =
-      payload && typeof payload === 'object' && 'message' in payload
-        ? String((payload as { message: unknown }).message)
-        : payload && typeof payload === 'object' && 'error' in payload
-          ? String((payload as { error: unknown }).error)
-          : response.statusText || 'request_failed';
-    throw new ApiError(response.status, message, payload);
+    const standardError = readStandardError(payload);
+    throw new ApiError(response.status, standardError.message || standardError.code || response.statusText || 'request_failed', payload, {
+      code: standardError.code,
+      detail: standardError.detail,
+      fields: standardError.fields,
+    });
   }
   return payload as T;
 }
+
+export async function apiText(path: string, init: RequestInit = {}, fallbackErrorCode = 'request_failed'): Promise<string> {
+  const headers = new Headers(init.headers);
+  if (!headers.has('Accept')) headers.set('Accept', 'text/plain');
+  try {
+    const response = await apiFetch<string>(path, { ...init, headers });
+    return String(response || '');
+  } catch (error) {
+    if (error instanceof ApiError && !error.code) {
+      throw new ApiError(error.status, fallbackErrorCode, error.payload, { code: fallbackErrorCode });
+    }
+    throw error;
+  }
+}
+
+function readStandardError(payload: unknown): { message?: string; code?: string; detail?: string; fields?: Record<string, unknown> } {
+  const payloadObject = payload && typeof payload === 'object' ? (payload as APIErrorBody) : null;
+  const errorObject = payloadObject && payloadObject.error && typeof payloadObject.error === 'object' ? payloadObject.error : null;
+  if (!errorObject) return {};
+  return {
+    message: errorObject.message ? String(errorObject.message) : undefined,
+    code: errorObject.code ? String(errorObject.code) : undefined,
+    detail: errorObject.detail ? String(errorObject.detail) : undefined,
+    fields: errorObject.fields && typeof errorObject.fields === 'object' ? errorObject.fields : undefined,
+  };
+}
+
+export function getAPIErrorMessage(error: unknown, fallback = 'request_failed'): string {
+  if (error instanceof ApiError) return error.message || error.code || fallback;
+  return fallback;
+}
+
+export const formatAPIError = getAPIErrorMessage;
 
 function shouldRedirectOnUnauthorized(path: string): boolean {
   const endpoint = normalizeAPIPath(path);

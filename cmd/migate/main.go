@@ -3,15 +3,15 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -19,13 +19,15 @@ import (
 	"syscall"
 	"time"
 
+	panelcfg "github.com/imzyb/MiGate/internal/config"
 	"github.com/imzyb/MiGate/internal/db"
-	"github.com/imzyb/MiGate/internal/panelconfig"
 	"github.com/imzyb/MiGate/internal/paths"
+	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 	"github.com/imzyb/MiGate/internal/scheduler"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
+	_ "modernc.org/sqlite"
 )
 
 // Version is set via ldflags at build time.
@@ -71,11 +73,19 @@ type messages struct {
 	statusSingboxStopped      string
 	doctorHeader              string
 	doctorConfigOk            string
+	doctorConfigMissing       string
 	doctorDatabaseOk          string
+	doctorDatabaseMissing     string
+	doctorDatabaseUnreadable  string
 	doctorXrayInstalled       string
 	doctorXrayNotInstalled    string
 	doctorSingboxInstalled    string
 	doctorSingboxNotInstalled string
+	doctorServiceStatus       string
+	doctorCoreConfig          string
+	doctorDirectory           string
+	doctorExists              string
+	doctorMissing             string
 	doctorMemory              string
 	doctorDisk                string
 	infoHeader                string
@@ -87,6 +97,8 @@ type messages struct {
 	resetPasswordUpdated      string
 	portsHeader               string
 	portsPanel                string
+	portsXrayAPI              string
+	portsSingboxAPI           string
 	unsupportedLanguage       string
 }
 
@@ -103,11 +115,19 @@ var msgZh = messages{
 	statusSingboxStopped:      "sing-box: 已停止",
 	doctorHeader:              "MiGate 诊断",
 	doctorConfigOk:            "配置文件: 正常",
+	doctorConfigMissing:       "配置文件: 缺失或不可读",
 	doctorDatabaseOk:          "数据库: 正常",
+	doctorDatabaseMissing:     "数据库: 缺失",
+	doctorDatabaseUnreadable:  "数据库: 不可打开",
 	doctorXrayInstalled:       "Xray: 已安装",
 	doctorXrayNotInstalled:    "Xray: 未安装",
 	doctorSingboxInstalled:    "sing-box: 已安装",
 	doctorSingboxNotInstalled: "sing-box: 未安装",
+	doctorServiceStatus:       "服务状态",
+	doctorCoreConfig:          "核心配置",
+	doctorDirectory:           "目录",
+	doctorExists:              "存在",
+	doctorMissing:             "缺失",
 	doctorMemory:              "内存:",
 	doctorDisk:                "磁盘:",
 	infoHeader:                "MiGate 信息",
@@ -119,6 +139,8 @@ var msgZh = messages{
 	resetPasswordUpdated:      "面板密码已更新:",
 	portsHeader:               "MiGate 端口",
 	portsPanel:                "面板",
+	portsXrayAPI:              "Xray Stats API",
+	portsSingboxAPI:           "sing-box Stats API",
 	unsupportedLanguage:       "不支持的语言 %q，仅支持: zh, en",
 }
 
@@ -135,11 +157,19 @@ var msgEn = messages{
 	statusSingboxStopped:      "sing-box: stopped",
 	doctorHeader:              "MiGate Doctor",
 	doctorConfigOk:            "Config: ok",
+	doctorConfigMissing:       "Config: missing or unreadable",
 	doctorDatabaseOk:          "Database: ok",
+	doctorDatabaseMissing:     "Database: missing",
+	doctorDatabaseUnreadable:  "Database: unreadable",
 	doctorXrayInstalled:       "Xray: installed",
 	doctorXrayNotInstalled:    "Xray: not installed",
 	doctorSingboxInstalled:    "sing-box: installed",
 	doctorSingboxNotInstalled: "sing-box: not installed",
+	doctorServiceStatus:       "Service status",
+	doctorCoreConfig:          "Core config",
+	doctorDirectory:           "Directory",
+	doctorExists:              "exists",
+	doctorMissing:             "missing",
 	doctorMemory:              "Memory:",
 	doctorDisk:                "Disk:",
 	infoHeader:                "MiGate Info",
@@ -151,8 +181,15 @@ var msgEn = messages{
 	resetPasswordUpdated:      "Panel password updated:",
 	portsHeader:               "MiGate Ports",
 	portsPanel:                "panel",
+	portsXrayAPI:              "Xray Stats API",
+	portsSingboxAPI:           "sing-box Stats API",
 	unsupportedLanguage:       "unsupported language %q, supported: zh, en",
 }
+
+const (
+	xrayStatsPort    = 10085
+	singboxStatsPort = 10086
+)
 
 func msg(l lang) messages {
 	if l == langEn {
@@ -175,19 +212,8 @@ type commandRunner interface {
 type osRunner struct{}
 
 func (osRunner) Run(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runtimecmd.RunOutput(context.Background(), name, args...)
 	return string(out), err
-}
-
-type panelConfig struct {
-	PanelPort     int    `json:"panel_port"`
-	PanelUsername string `json:"panel_username"`
-	PanelPassword string `json:"panel_password"`
-	WebPath       string `json:"web_base_path"`
-	PublicHost    string `json:"public_host"`
-	TrustProxy    bool   `json:"trust_proxy"`
-	DatabasePath  string `json:"database_path"`
 }
 
 func main() {
@@ -235,7 +261,7 @@ func runServer(args []string) int {
 		return 1
 	}
 
-	cfg, err := readPanelConfig(configPath)
+	cfg, err := panelcfg.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read config %s: %v\n", configPath, err)
 		return 1
@@ -431,24 +457,40 @@ func cliStatus(stdout, stderr io.Writer, runner commandRunner, m messages) int {
 }
 
 func cliDoctor(stdout, stderr io.Writer, runner commandRunner, m messages) int {
+	healthy := true
 	fmt.Fprintln(stdout, m.doctorHeader)
-	_ = cliStatus(stdout, stderr, runner, m)
-	cfg, err := readPanelConfig(defaultPanelConfigPath)
+	fmt.Fprintf(stdout, "%s:\n", m.doctorServiceStatus)
+	if !printDoctorServiceStatuses(stdout, stderr, runner, m) {
+		healthy = false
+	}
+	cfg, err := panelcfg.Load(defaultPanelConfigPath)
 	if err != nil {
-		fmt.Fprintf(stdout, "Config: missing (%v)\n", err)
+		fmt.Fprintf(stdout, "%s: %s (%v)\n", defaultPanelConfigPath, m.doctorConfigMissing, err)
+		healthy = false
 	} else {
-		fmt.Fprintln(stdout, m.doctorConfigOk)
+		fmt.Fprintf(stdout, "%s: %s\n", defaultPanelConfigPath, m.doctorConfigOk)
 		fmt.Fprintf(stdout, "WebUI: %s\n", panelURL(cfg, "SERVER_IP"))
-		if cfg.DatabasePath != "" {
-			if _, err := os.Stat(cfg.DatabasePath); err == nil {
-				fmt.Fprintln(stdout, m.doctorDatabaseOk)
-			} else {
-				fmt.Fprintf(stdout, "Database: missing (%s)\n", cfg.DatabasePath)
-			}
+		if !printDatabaseCheck(stdout, cfg.DatabasePath, m) {
+			healthy = false
 		}
 	}
-	printBinaryStatus(stdout, runner, "Xray", "xray", m)
-	printBinaryStatus(stdout, runner, "sing-box", "sing-box", m)
+	if !printBinaryStatus(stdout, "Xray", paths.XrayBinary, m) {
+		healthy = false
+	}
+	if !printBinaryStatus(stdout, "sing-box", paths.SingboxBinary, m) {
+		healthy = false
+	}
+	if !printPathStatus(stdout, m.doctorCoreConfig, paths.XrayConfig, m) {
+		healthy = false
+	}
+	if !printPathStatus(stdout, m.doctorCoreConfig, paths.SingboxConfig, m) {
+		healthy = false
+	}
+	for _, dir := range []string{paths.BackupDir, paths.LogDir, paths.RunDir} {
+		if !printPathStatus(stdout, m.doctorDirectory, dir, m) {
+			healthy = false
+		}
+	}
 	if out, err := runner.Run("ss", "-ltn"); err == nil && cfg.PanelPort > 0 {
 		fmt.Fprintf(stdout, "Panel port %d: %s\n", cfg.PanelPort, listeningStatus(out, cfg.PanelPort))
 	}
@@ -458,11 +500,82 @@ func cliDoctor(stdout, stderr io.Writer, runner commandRunner, m messages) int {
 	if out, err := runner.Run("df", "-h", "/"); err == nil {
 		fmt.Fprintf(stdout, "%s\n%s", m.doctorDisk, out)
 	}
+	if !healthy {
+		return 1
+	}
 	return 0
 }
 
+func printDoctorServiceStatuses(stdout, stderr io.Writer, runner commandRunner, m messages) bool {
+	healthy := true
+	services := []struct {
+		name    string
+		running string
+		stopped string
+	}{
+		{name: paths.PanelService, running: m.statusPanelRunning, stopped: m.statusPanelStopped},
+		{name: paths.XrayService, running: m.statusXrayRunning, stopped: m.statusXrayStopped},
+		{name: paths.SingboxService, running: m.statusSingboxRunning, stopped: m.statusSingboxStopped},
+	}
+	for _, svc := range services {
+		out, err := runner.Run("systemctl", "is-active", svc.name)
+		status := strings.TrimSpace(out)
+		if status == "active" {
+			fmt.Fprintln(stdout, svc.running)
+			continue
+		}
+		fmt.Fprintln(stdout, svc.stopped)
+		healthy = false
+		if err != nil && status == "" {
+			fmt.Fprintf(stderr, "%s status check failed: %v\n", svc.name, err)
+		}
+	}
+	return healthy
+}
+
+func printDatabaseCheck(stdout io.Writer, path string, m messages) bool {
+	if strings.TrimSpace(path) == "" {
+		return true
+	}
+	if _, err := os.Stat(path); err != nil {
+		fmt.Fprintf(stdout, "Database: %s (%s)\n", m.doctorDatabaseMissing, path)
+		return false
+	}
+	database, err := sql.Open("sqlite", sqliteReadOnlyDSN(path))
+	if err != nil {
+		fmt.Fprintf(stdout, "Database: %s (%s: %v)\n", m.doctorDatabaseUnreadable, path, err)
+		return false
+	}
+	defer database.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var schemaVersion int
+	if err := database.QueryRowContext(ctx, `PRAGMA schema_version`).Scan(&schemaVersion); err != nil {
+		fmt.Fprintf(stdout, "Database: %s (%s: %v)\n", m.doctorDatabaseUnreadable, path, err)
+		return false
+	}
+	fmt.Fprintf(stdout, "%s (%s)\n", m.doctorDatabaseOk, path)
+	return true
+}
+
+func sqliteReadOnlyDSN(path string) string {
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
+	return u.String()
+}
+
+func printPathStatus(stdout io.Writer, label, path string, m messages) bool {
+	status := m.doctorExists
+	if _, err := os.Stat(path); err != nil {
+		status = m.doctorMissing
+		fmt.Fprintf(stdout, "%s: %s %s\n", label, path, status)
+		return false
+	}
+	fmt.Fprintf(stdout, "%s: %s %s\n", label, path, status)
+	return true
+}
+
 func cliInfo(stdout, stderr io.Writer, m messages) int {
-	cfg, err := readPanelConfig(defaultPanelConfigPath)
+	cfg, err := panelcfg.Load(defaultPanelConfigPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "read %s: %v\n", defaultPanelConfigPath, err)
 		return 1
@@ -486,7 +599,7 @@ func cliResetPassword(stdout, stderr io.Writer, runner commandRunner, m messages
 		fmt.Fprintln(stderr, "usage: mg reset-password [password]")
 		return 2
 	}
-	cfg, err := readPanelConfig(defaultPanelConfigPath)
+	cfg, err := panelcfg.Load(defaultPanelConfigPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "read %s: %v\n", defaultPanelConfigPath, err)
 		return 1
@@ -507,7 +620,7 @@ func cliResetPassword(stdout, stderr io.Writer, runner commandRunner, m messages
 		return 1
 	}
 	cfg.PanelPassword = hashed
-	if err := writePanelConfig(defaultPanelConfigPath, cfg); err != nil {
+	if err := panelcfg.Save(defaultPanelConfigPath, cfg); err != nil {
 		fmt.Fprintf(stderr, "write %s: %v\n", defaultPanelConfigPath, err)
 		return 1
 	}
@@ -584,7 +697,7 @@ func cliSystemctl(stderr io.Writer, runner commandRunner, action, service string
 }
 
 func cliURL(stdout, stderr io.Writer, runner commandRunner, args []string) int {
-	cfg, err := readPanelConfig(defaultPanelConfigPath)
+	cfg, err := panelcfg.Load(defaultPanelConfigPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "read %s: %v\n", defaultPanelConfigPath, err)
 		return 1
@@ -614,6 +727,10 @@ func cliBackup(stdout, stderr io.Writer, runner commandRunner, args []string) in
 		return 2
 	}
 	files := backupFiles()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Fprintf(stderr, "create backup dir: %v\n", err)
+		return 1
+	}
 	out, err := runner.Run("tar", append([]string{"-czf", path}, files...)...)
 	fmt.Fprint(stdout, out)
 	if err != nil {
@@ -643,7 +760,7 @@ func cliRestore(stdout, stderr io.Writer, runner commandRunner, args []string) i
 }
 
 func cliPorts(stdout, stderr io.Writer, runner commandRunner, m messages) int {
-	cfg, err := readPanelConfig(defaultPanelConfigPath)
+	cfg, err := panelcfg.Load(defaultPanelConfigPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "read %s: %v\n", defaultPanelConfigPath, err)
 		return 1
@@ -659,6 +776,8 @@ func cliPorts(stdout, stderr io.Writer, runner commandRunner, m messages) int {
 	}
 	fmt.Fprintln(stdout, m.portsHeader)
 	fmt.Fprintf(stdout, "%d %s %s\n", port, m.portsPanel, listeningStatus(out, port))
+	fmt.Fprintf(stdout, "%d %s %s\n", xrayStatsPort, m.portsXrayAPI, listeningStatus(out, xrayStatsPort))
+	fmt.Fprintf(stdout, "%d %s %s\n", singboxStatsPort, m.portsSingboxAPI, listeningStatus(out, singboxStatsPort))
 	return 0
 }
 
@@ -693,7 +812,7 @@ func managedServices() []managedService {
 	}
 }
 
-func panelURL(cfg panelConfig, host string) string {
+func panelURL(cfg panelcfg.Config, host string) string {
 	port := cfg.PanelPort
 	if port == 0 {
 		port = 9999
@@ -707,20 +826,22 @@ func panelURL(cfg panelConfig, host string) string {
 	return fmt.Sprintf("http://%s:%d%s", host, port, path)
 }
 
-func printBinaryStatus(stdout io.Writer, runner commandRunner, label, command string, m messages) {
-	if out, err := runner.Run(command, "version"); err == nil && strings.TrimSpace(out) != "" {
-		if label == "Xray" {
-			fmt.Fprintln(stdout, m.doctorXrayInstalled)
-		} else {
-			fmt.Fprintln(stdout, m.doctorSingboxInstalled)
-		}
-	} else {
-		if label == "Xray" {
-			fmt.Fprintln(stdout, m.doctorXrayNotInstalled)
-		} else {
-			fmt.Fprintln(stdout, m.doctorSingboxNotInstalled)
-		}
+func printBinaryStatus(stdout io.Writer, label, path string, m messages) bool {
+	exists := false
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		exists = true
 	}
+	switch {
+	case label == "Xray" && exists:
+		fmt.Fprintf(stdout, "%s (%s)\n", m.doctorXrayInstalled, path)
+	case label == "Xray":
+		fmt.Fprintf(stdout, "%s (%s)\n", m.doctorXrayNotInstalled, path)
+	case exists:
+		fmt.Fprintf(stdout, "%s (%s)\n", m.doctorSingboxInstalled, path)
+	default:
+		fmt.Fprintf(stdout, "%s (%s)\n", m.doctorSingboxNotInstalled, path)
+	}
+	return exists
 }
 
 func listeningStatus(ssOutput string, port int) string {
@@ -747,17 +868,8 @@ func backupFiles() []string {
 	return []string{paths.ConfigDir, paths.Database, paths.VersionsFile}
 }
 
-func writePanelConfig(path string, cfg panelConfig) error {
-	b, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	return panelconfig.WriteFile(path, b)
-}
-
 func routerFromConfig(path string) (http.Handler, func(), error) {
-	cfg, err := readPanelConfig(path)
+	cfg, err := panelcfg.Load(path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -852,7 +964,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	return router, cleanup, nil
 }
 
-func routerOptionsFromConfig(cfg panelConfig, path string) []web.Option {
+func routerOptionsFromConfig(cfg panelcfg.Config, path string) []web.Option {
 	opts := []web.Option{web.WithVersion(Version)}
 	if cfg.WebPath != "" {
 		opts = append(opts, web.WithBasePath(cfg.WebPath))
@@ -871,20 +983,7 @@ func routerOptionsFromConfig(cfg panelConfig, path string) []web.Option {
 	return opts
 }
 
-func readPanelConfig(path string) (panelConfig, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return panelConfig{}, err
-	}
-	var cfg panelConfig
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		return panelConfig{}, err
-	}
-	return cfg, nil
-}
-
 func execCmd(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runtimecmd.RunOutput(context.Background(), name, args...)
 	return string(out), err
 }

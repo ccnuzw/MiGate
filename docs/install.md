@@ -76,7 +76,7 @@ write config, stop services, or remove files.
 
 ## Config Paths
 
-Default paths:
+The MiGate Runtime Contract and MiGate Ops Contract use these default paths:
 
 ```text
 Binary:        /usr/local/bin/migate
@@ -129,8 +129,11 @@ systemctl restart migate
 journalctl -u migate -f
 mg status
 mg doctor
+mg info
+mg ports
 mg logs -f
 mg restart
+mg restart all
 ```
 
 If systemd is unavailable, the installer skips service creation and prints a
@@ -195,6 +198,40 @@ migate-uninstall --purge --yes
 ```
 
 The uninstaller does not remove third-party Xray itself by default.
+
+## Update, Backup, and Restore
+
+The CLI update commands delegate to the installer entrypoint:
+
+```bash
+mg update          # migate-install --update
+mg update vX.Y.Z   # migate-install --update --version vX.Y.Z
+mg update --check  # migate-install --check, read-only
+```
+
+The WebUI update action uses the same installer entrypoint through the update
+service. HTTP handlers only validate and accept the request; update planning and
+execution stay in the service layer.
+
+Backups default to `/var/lib/migate/backups`:
+
+```bash
+mg backup
+mg backup /tmp/migate-backup.tar.gz
+mg restore /tmp/migate-backup.tar.gz
+```
+
+Default backup scope is exactly:
+
+```text
+/etc/migate
+/var/lib/migate/migate.db
+/var/lib/migate/versions.json
+```
+
+`/run/migate` and unrelated system files are not included. Restore extracts the
+archive to `/` and restarts the standard `migate` service. Use
+`mg restart all` if restored core configs should be reloaded immediately.
 
 ## Troubleshooting
 

@@ -1,5 +1,9 @@
 import type { QueryClient } from '@tanstack/react-query';
 
+type RefreshableQuery = {
+  refetch: () => unknown;
+};
+
 export function refreshTopologyDependencies(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['inbounds'] });
   queryClient.invalidateQueries({ queryKey: ['inbounds', 'traffic'] });
@@ -12,10 +16,38 @@ export function refreshTopologyDependencies(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['traffic-series'] });
 }
 
+function invalidateQueryKeys(queryClient: QueryClient, keys: string[][]) {
+  keys.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }));
+}
+
+export function refreshSettingsDependencies(queryClient: QueryClient) {
+  invalidateQueryKeys(queryClient, [['settings'], ['cert-status']]);
+}
+
+export function refreshUpdateDependencies(queryClient: QueryClient) {
+  invalidateQueryKeys(queryClient, [['update-status'], ['update-logs']]);
+}
+
+export function refreshSessionDependencies(queryClient: QueryClient) {
+  invalidateQueryKeys(queryClient, [['sessions']]);
+}
+
+export function refreshSessionState(queryClient: QueryClient) {
+  invalidateQueryKeys(queryClient, [['session']]);
+}
+
 export function refetchTopologyDependencies(queryClient: QueryClient) {
   return Promise.all([
     queryClient.refetchQueries({ queryKey: ['inbounds'] }),
     queryClient.refetchQueries({ queryKey: ['outbounds'] }),
     queryClient.refetchQueries({ queryKey: ['routing-rules'] }),
   ]);
+}
+
+export function refreshQuery(query: RefreshableQuery) {
+  return query['refetch']();
+}
+
+export function refreshQueries(queries: RefreshableQuery[]) {
+  queries.forEach(refreshQuery);
 }

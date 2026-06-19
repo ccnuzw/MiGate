@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -266,8 +265,7 @@ func trafficSeriesHandler(store Store) http.HandlerFunc {
 			return
 		}
 		points := trafficSamplesToSeries(samples, scopeType, inbounds)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"series": points})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"series": points})
 	}
 }
 

@@ -178,11 +178,12 @@ func TestAuthLoginMigratesPlaintextPasswordToHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	var saved map[string]string
+	var saved map[string]interface{}
 	if err := json.Unmarshal(raw, &saved); err != nil {
 		t.Fatalf("decode config: %v", err)
 	}
-	if !IsPanelPasswordHash(saved["panel_password"]) || !VerifyPanelPassword(saved["panel_password"], "secret") {
+	password, _ := saved["panel_password"].(string)
+	if !IsPanelPasswordHash(password) || !VerifyPanelPassword(password, "secret") {
 		t.Fatalf("expected migrated password hash, got %q", saved["panel_password"])
 	}
 }
@@ -650,12 +651,16 @@ func TestAuthSessionRevocation(t *testing.T) {
 		t.Fatalf("expected 401 for revoked session, got %d: %s", afterLogout.Code, afterLogout.Body.String())
 	}
 
-	var resp map[string]string
+	var resp map[string]interface{}
 	if err := json.NewDecoder(afterLogout.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	if resp["error"] != "session_revoked" {
-		t.Fatalf("expected 'session_revoked' error, got %q", resp["error"])
+	errorObject, ok := resp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected standard error object, got %#v", resp)
+	}
+	if errorObject["code"] != "session_revoked" {
+		t.Fatalf("expected 'session_revoked' error code, got %q", errorObject["code"])
 	}
 }
 

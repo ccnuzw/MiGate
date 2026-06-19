@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { api } from './endpoints';
-import { appPath, basePath, apiFetch } from './client';
+import { ApiError, appPath, basePath, apiFetch, getAPIErrorMessage } from './client';
 
 describe('api client', () => {
   it('detects base path from panel routes', () => {
@@ -41,22 +41,52 @@ describe('api client', () => {
     window.__MIGATE_BASE_PATH__ = undefined;
   });
 
-  it('throws ApiError for failed JSON responses', async () => {
+  it('prefers standard backend error message', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ error: 'bad' }), { status: 400, headers: { 'content-type': 'application/json' } })),
+      vi.fn(async () => new Response(JSON.stringify({ error: { code: 'duplicate_client', message: 'Email already exists' }, message: 'top-level message' }), { status: 409, headers: { 'content-type': 'application/json' } })),
     );
-    await expect(apiFetch('/api/test')).rejects.toMatchObject({ status: 400, message: 'bad' });
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({ status: 409, message: 'Email already exists' });
     vi.unstubAllGlobals();
   });
 
-  it('prefers backend message over error code', async () => {
+  it('reads standard backend error objects', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ error: 'duplicate_client', message: 'email exists' }), { status: 409, headers: { 'content-type': 'application/json' } })),
+      vi.fn(async () => new Response(JSON.stringify({ error: { code: 'invalid_json', message: 'Invalid JSON body', detail: 'body parse failed', fields: { field: 'body' } } }), { status: 400, headers: { 'content-type': 'application/json' } })),
     );
-    await expect(apiFetch('/api/test')).rejects.toMatchObject({ status: 409, message: 'email exists' });
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({
+      status: 400,
+      message: 'Invalid JSON body',
+      code: 'invalid_json',
+      detail: 'body parse failed',
+      fields: { field: 'body' },
+    });
     vi.unstubAllGlobals();
+  });
+
+  it('uses standard backend error code when message is absent', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: { code: 'confirmation_required' } }), { status: 403, headers: { 'content-type': 'application/json' } })),
+    );
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({ status: 403, message: 'confirmation_required' });
+    vi.unstubAllGlobals();
+  });
+
+  it('does not read removed legacy error payload fields', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'legacy_code', message: 'legacy message' }), { status: 400, headers: { 'content-type': 'application/json' } })),
+    );
+    await expect(apiFetch('/api/test')).rejects.toMatchObject({ status: 400, message: 'request_failed' });
+    vi.unstubAllGlobals();
+  });
+
+  it('formats only standard API client errors for UI messages', () => {
+    expect(getAPIErrorMessage(new ApiError(409, 'Email already exists', { error: { code: 'duplicate_client' } }, { code: 'duplicate_client' }), 'fallback')).toBe('Email already exists');
+    expect(getAPIErrorMessage(new Error('generic failure'), 'fallback')).toBe('fallback');
+    expect(getAPIErrorMessage('plain failure', 'fallback')).toBe('fallback');
   });
 
   it('keeps outbound fields when toggling enabled state', async () => {
@@ -142,12 +172,32 @@ describe('api client', () => {
     vi.unstubAllGlobals();
   });
 
+  it('loads subscription links as text through the API boundary', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('Accept')).toBe('text/plain');
+      return new Response('vless://example\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(api.subscriptionLink('client token')).resolves.toBe('vless://example');
+    expect(fetchMock).toHaveBeenCalledWith('/sub/client%20token', expect.any(Object));
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps subscription text errors stable when the server returns plain text', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404, statusText: '', headers: { 'content-type': 'text/plain' } })),
+    );
+    await expect(api.subscriptionLink('missing')).rejects.toMatchObject({ status: 404, message: 'share_link_unavailable', code: 'share_link_unavailable' });
+    vi.unstubAllGlobals();
+  });
+
   it('preserves current location when redirecting to login after session expiry', async () => {
     window.history.replaceState({}, '', '/panel/routing?tab=rules#top');
     window.__MIGATE_BASE_PATH__ = '/panel';
     const assign = vi.fn();
     const originalLocation = window.location;
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { 'content-type': 'application/json' } })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'unauthorized', message: 'unauthorized' } }), { status: 401, headers: { 'content-type': 'application/json' } })));
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: { ...originalLocation, assign },
@@ -164,7 +214,7 @@ describe('api client', () => {
   it('does not redirect when login itself returns 401', async () => {
     const assign = vi.fn();
     const originalLocation = window.location;
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'invalid_credentials' }), { status: 401, headers: { 'content-type': 'application/json' } })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'invalid_credentials', message: 'invalid_credentials' } }), { status: 401, headers: { 'content-type': 'application/json' } })));
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: { ...originalLocation, assign },
@@ -182,7 +232,7 @@ describe('api client', () => {
     window.__MIGATE_BASE_PATH__ = '/panel';
     const assign = vi.fn();
     const originalLocation = window.location;
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { 'content-type': 'application/json' } })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'unauthorized', message: 'unauthorized' } }), { status: 401, headers: { 'content-type': 'application/json' } })));
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: { ...originalLocation, assign },

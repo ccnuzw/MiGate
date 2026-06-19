@@ -50,16 +50,11 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		path := r.URL.Path
-		// Public paths that do not need auth
-		if path == "/login" || path == "/" || path == "/api/health" || path == "/api/login" || path == "/api/session" || strings.HasPrefix(path, "/sub/") || strings.HasPrefix(path, "/assets/") {
+		if requestAuthPolicy(r) == AuthPublic {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.Method == http.MethodGet && !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/sub/") {
-			next.ServeHTTP(w, r)
-			return
-		}
+
 		// Check session cookie
 		cookie, err := r.Cookie("migate_session")
 		if err != nil || !validateSessionToken(cookie.Value, cfg.sessionSecret) {
@@ -94,12 +89,76 @@ func authMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 
 func csrfMiddleware(next http.Handler, cfg *routerConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if cfg.authEnabled && isAPIWriteRequest(r) && !validSameOriginRequest(r, cfg) {
+		if cfg.authEnabled && requestRequiresCSRF(r) && !validSameOriginRequest(r, cfg) {
 			writeJSONError(w, http.StatusForbidden, "csrf_origin_mismatch")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestAuthPolicy(r *http.Request) AuthPolicy {
+	if r == nil {
+		return AuthRequired
+	}
+	path := r.URL.Path
+	if path == "/login" || path == "/" || strings.HasPrefix(path, "/sub/") || strings.HasPrefix(path, "/assets/") {
+		return AuthPublic
+	}
+	if r.Method == http.MethodGet && !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/sub/") {
+		return AuthPublic
+	}
+	if !strings.HasPrefix(path, "/api/") {
+		return AuthRequired
+	}
+	if route, ok := routeContractForRequest(r); ok {
+		return route.Auth
+	}
+	if pathMatchesAnyRoute(path, AuthPublic) && !pathMatchesAnyRoute(path, AuthRequired) {
+		return AuthPublic
+	}
+	return AuthRequired
+}
+
+func requestRequiresCSRF(r *http.Request) bool {
+	if !isAPIWriteRequest(r) {
+		return false
+	}
+	if route, ok := routeContractForRequest(r); ok {
+		return route.CSRF == CSRFRequired
+	}
+	if pathMatchesAnyRoute(r.URL.Path, "") {
+		return false
+	}
+	return true
+}
+
+func routeContractForRequest(r *http.Request) (RouteContract, bool) {
+	if r == nil {
+		return RouteContract{}, false
+	}
+	for _, route := range RouteContracts() {
+		if route.Method == r.Method && routePathMatches(route.Path, r.URL.Path) {
+			return route, true
+		}
+	}
+	return RouteContract{}, false
+}
+
+func pathMatchesAnyRoute(path string, auth AuthPolicy) bool {
+	for _, route := range RouteContracts() {
+		if routePathMatches(route.Path, path) && (auth == "" || route.Auth == auth) {
+			return true
+		}
+	}
+	return false
+}
+
+func routePathMatches(routePath, requestPath string) bool {
+	if strings.HasSuffix(routePath, "/") {
+		return strings.HasPrefix(requestPath, routePath)
+	}
+	return requestPath == routePath
 }
 
 func reserveSessionTouch(cfg *routerConfig, tokenHash string, minAge time.Duration) (time.Time, bool) {
