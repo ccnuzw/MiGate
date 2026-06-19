@@ -252,6 +252,7 @@ type routerConfig struct {
 	httpPoolURL        string
 	httpsPoolURL       string
 	updateCheckURL     string
+	updateStatusPath   string
 	publicHost         string
 	trustProxy         bool
 	loginLimiter       *loginLimiter

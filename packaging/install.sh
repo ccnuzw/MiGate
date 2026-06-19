@@ -6,6 +6,7 @@ VERSION="${MIGATE_VERSION:-latest}"
 INSTALL_DIR="${MIGATE_DATA_DIR:-${MIGATE_INSTALL_DIR:-/var/lib/migate}}"
 DATA_DIR="$INSTALL_DIR"
 VERSIONS_PATH="${MIGATE_VERSIONS_PATH:-/var/lib/migate/versions.json}"
+UPDATE_STATUS_PATH="${MIGATE_UPDATE_STATUS_PATH:-/var/lib/migate/update-status.json}"
 CORE_CONFIG_DIR="${MIGATE_CORE_CONFIG_DIR:-/etc/migate/cores}"
 XRAY_CONFIG_PATH="${MIGATE_XRAY_CONFIG_PATH:-/etc/migate/cores/xray.json}"
 SINGBOX_CONFIG_PATH="${MIGATE_SINGBOX_CONFIG_PATH:-/etc/migate/cores/sing-box.json}"
@@ -13,6 +14,7 @@ BACKUP_DIR="${MIGATE_BACKUP_DIR:-/var/lib/migate/backups}"
 LOG_DIR="${MIGATE_LOG_DIR:-/var/log/migate}"
 RUN_DIR="${MIGATE_RUN_DIR:-/run/migate}"
 INSTALL_LOCK="${MIGATE_INSTALL_LOCK:-/run/migate/install.lock}"
+SYSTEMD_RUNTIME_DIR="${MIGATE_SYSTEMD_RUNTIME_DIR:-/run/systemd/system}"
 CONFIG_DIR="${MIGATE_CONFIG_DIR:-/etc/migate}"
 CONFIG_PATH="${MIGATE_CONFIG_PATH:-/etc/migate/panel.json}"
 SERVICE_PATH="${MIGATE_SERVICE_PATH:-/etc/systemd/system/migate.service}"
@@ -22,6 +24,7 @@ INSTALLER_BIN="${INSTALLER_BIN:-/usr/local/bin/migate-install}"
 UNINSTALLER_BIN="${UNINSTALLER_BIN:-/usr/local/bin/migate-uninstall}"
 XRAY_SERVICE_PATH="${XRAY_SERVICE_PATH:-/etc/systemd/system/migate-xray.service}"
 SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-sing-box.service}"
+XRAY_SHARE_DIR="${MIGATE_XRAY_SHARE_DIR:-/usr/local/share/xray}"
 JOURNALD_CONF_DIR="${JOURNALD_CONF_DIR:-/etc/systemd/journald.conf.d}"
 JOURNALD_MIGATE_CONF="${JOURNALD_MIGATE_CONF:-${JOURNALD_CONF_DIR}/migate.conf}"
 LOGROTATE_CONF_DIR="${LOGROTATE_CONF_DIR:-/etc/logrotate.d}"
@@ -227,7 +230,7 @@ arch() {
 }
 
 detect_systemd() {
-  if command_exists systemctl && [ -d /run/systemd/system ]; then
+  if command_exists systemctl && [ -d "$SYSTEMD_RUNTIME_DIR" ]; then
     SYSTEMD_AVAILABLE=1
   else
     SYSTEMD_AVAILABLE=0
@@ -319,7 +322,7 @@ ensure_migate_user_group() {
 }
 
 ensure_runtime_dirs() {
-  run_cmd mkdir -p "$CONFIG_DIR" "$CORE_CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR" /usr/local/bin /usr/local/share/xray /etc/systemd/system
+  run_cmd mkdir -p "$CONFIG_DIR" "$CORE_CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR" "$(dirname "$MIGATE_BIN")" "$(dirname "$INSTALLER_BIN")" "$(dirname "$UNINSTALLER_BIN")" "$XRAY_SHARE_DIR" "$(dirname "$SERVICE_PATH")"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] set runtime ownership and permissions under /etc/migate, /var/lib/migate, /var/log/migate, /run/migate\n'
     return 0
@@ -711,13 +714,13 @@ download_release_asset() {
 install_migate_binary_from_tmp() {
   run_cmd mkdir -p "$DATA_DIR"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[DRY-RUN] install %q to %q using atomic temp file\n' "$TMP/migate" "$MIGATE_BIN"
+    printf '[DRY-RUN] install %q to %q using atomic temp file in target directory\n' "$TMP/migate" "$MIGATE_BIN"
     printf '[DRY-RUN] ln -sf %q %q\n' "$MIGATE_BIN" "$MIGATE_LINK"
     printf '[DRY-RUN] install packaged installer/uninstaller when present\n'
     return 0
   fi
   local migate_tmp
-  migate_tmp="$(mktemp /usr/local/bin/.migate.XXXXXX)"
+  migate_tmp="$(mktemp "$(dirname "$MIGATE_BIN")/.migate.XXXXXX")"
   cat "$TMP/migate" > "$migate_tmp"
   chmod +x "$migate_tmp"
   mv -f "$migate_tmp" "$MIGATE_BIN"
@@ -726,7 +729,7 @@ install_migate_binary_from_tmp() {
   log_ok "CLI 快捷命令已安装：$MIGATE_LINK"
   if [ -f "$TMP/packaging/install.sh" ]; then
     local installer_tmp
-    installer_tmp="$(mktemp /usr/local/bin/.migate-install.XXXXXX)"
+    installer_tmp="$(mktemp "$(dirname "$INSTALLER_BIN")/.migate-install.XXXXXX")"
     cat "$TMP/packaging/install.sh" > "$installer_tmp"
     chmod +x "$installer_tmp"
     mv -f "$installer_tmp" "$INSTALLER_BIN"
@@ -734,7 +737,7 @@ install_migate_binary_from_tmp() {
   fi
   if [ -f "$TMP/packaging/uninstall.sh" ]; then
     local uninstaller_tmp
-    uninstaller_tmp="$(mktemp /usr/local/bin/.migate-uninstall.XXXXXX)"
+    uninstaller_tmp="$(mktemp "$(dirname "$UNINSTALLER_BIN")/.migate-uninstall.XXXXXX")"
     cat "$TMP/packaging/uninstall.sh" > "$uninstaller_tmp"
     chmod +x "$uninstaller_tmp"
     mv -f "$uninstaller_tmp" "$UNINSTALLER_BIN"
@@ -784,6 +787,198 @@ write_versions_state() {
 }
 JSON
   log_ok "版本状态已写入：$VERSIONS_PATH"
+}
+
+write_update_status() {
+  local status="$1"
+  local current_version="${2:-}"
+  local target_version="${3:-}"
+  local message="${4:-}"
+  local health_check="${5:-}"
+  local rolled_back="${6:-false}"
+  local rollback_status="${7:-}"
+  local updated_at
+  updated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] write update status %q status=%q target=%q rollback=%q\n' "$UPDATE_STATUS_PATH" "$status" "$target_version" "$rolled_back"
+    return 0
+  fi
+  atomic_write_file "$UPDATE_STATUS_PATH" 0640 root:migate <<JSON
+{
+  "status": "$(json_escape "$status")",
+  "current_version": "$(json_escape "$current_version")",
+  "target_version": "$(json_escape "$target_version")",
+  "message": "$(json_escape "$message")",
+  "health_check": "$(json_escape "$health_check")",
+  "rolled_back": ${rolled_back},
+  "rollback_status": "$(json_escape "$rollback_status")",
+  "updated_at": "$(json_escape "$updated_at")"
+}
+JSON
+  log_ok "更新状态已写入：$UPDATE_STATUS_PATH"
+}
+
+copy_if_exists() {
+  local src="$1"
+  local dest="$2"
+  if [ -e "$src" ] || [ -L "$src" ]; then
+    cp -a "$src" "$dest"
+  fi
+}
+
+backup_upgrade_state() {
+  local backup_root="$1"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] backup %q %q %q %q %q %q under %q\n' "$MIGATE_BIN" "$INSTALLER_BIN" "$UNINSTALLER_BIN" "$SERVICE_PATH" "$VERSIONS_PATH" "$UPDATE_STATUS_PATH" "$backup_root"
+    return 0
+  fi
+  mkdir -p "$backup_root/bin" "$backup_root/systemd" "$backup_root/state"
+  copy_if_exists "$MIGATE_BIN" "$backup_root/bin/migate"
+  copy_if_exists "$INSTALLER_BIN" "$backup_root/bin/migate-install"
+  copy_if_exists "$UNINSTALLER_BIN" "$backup_root/bin/migate-uninstall"
+  copy_if_exists "$SERVICE_PATH" "$backup_root/systemd/migate.service"
+  copy_if_exists "$VERSIONS_PATH" "$backup_root/state/versions.json"
+  copy_if_exists "$UPDATE_STATUS_PATH" "$backup_root/state/update-status.json"
+  log_ok "升级前状态已备份：$backup_root"
+}
+
+restore_file_if_backed_up() {
+  local backup_file="$1"
+  local dest="$2"
+  if [ -e "$backup_file" ] || [ -L "$backup_file" ]; then
+    mkdir -p "$(dirname "$dest")"
+    cp -a "$backup_file" "$dest"
+  elif [ -d "$dest" ] && [ ! -L "$dest" ]; then
+    log_error "回滚目标是目录，未自动删除：$dest"
+    return 1
+  else
+    rm -f "$dest"
+  fi
+}
+
+restore_upgrade_state() {
+  local backup_root="$1"
+  local ok=1
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] restore old migate binaries, installer, uninstaller, service, and version state from %q\n' "$backup_root"
+    printf '[DRY-RUN] systemctl daemon-reload && systemctl restart migate && systemctl is-active migate\n'
+    return 0
+  fi
+  restore_file_if_backed_up "$backup_root/bin/migate" "$MIGATE_BIN" || ok=0
+  restore_file_if_backed_up "$backup_root/bin/migate-install" "$INSTALLER_BIN" || ok=0
+  restore_file_if_backed_up "$backup_root/bin/migate-uninstall" "$UNINSTALLER_BIN" || ok=0
+  restore_file_if_backed_up "$backup_root/systemd/migate.service" "$SERVICE_PATH" || ok=0
+  restore_file_if_backed_up "$backup_root/state/versions.json" "$VERSIONS_PATH" || ok=0
+  restore_file_if_backed_up "$backup_root/state/update-status.json" "$UPDATE_STATUS_PATH" || ok=0
+  [ "$ok" -eq 1 ] || return 1
+  chmod +x "$MIGATE_BIN" "$INSTALLER_BIN" "$UNINSTALLER_BIN" 2>/dev/null || true
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    systemctl daemon-reload || return 1
+    systemctl restart migate || return 1
+  fi
+}
+
+migate_health_url_from_config() {
+  local endpoint="$1"
+  local port
+  local web_path
+  port="$(json_number_value panel_port "$CONFIG_PATH")"
+  [ -n "$port" ] || return 1
+  web_path="$(json_string_value web_base_path "$CONFIG_PATH")"
+  web_path="$(normalize_web_base_path "${web_path:-/}")"
+  printf 'http://127.0.0.1:%s%s%s' "$port" "$web_path" "$endpoint"
+}
+
+check_migate_health() {
+  local health=""
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] systemctl is-active migate\n'
+    printf '[DRY-RUN] curl -fsS local /api/health or /api/version when panel.json has panel_port\n'
+    LAST_HEALTH_CHECK="dry-run health check planned"
+    [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+    return 0
+  fi
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    if systemctl is-active --quiet migate; then
+      health="systemctl is-active migate: active"
+    else
+      LAST_HEALTH_CHECK="systemctl is-active migate: not active"
+      [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+      return 1
+    fi
+  else
+    LAST_HEALTH_CHECK="systemd unavailable; skipped systemctl health check"
+    [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+    return 0
+  fi
+  if [ -f "$CONFIG_PATH" ] && command_exists curl; then
+    local url
+    local checked_http=0
+    for endpoint in /api/health /api/version; do
+      url="$(migate_health_url_from_config "$endpoint" || true)"
+      if [ -n "$url" ]; then
+        checked_http=1
+        if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+          health="${health}; ${url}: ok"
+          LAST_HEALTH_CHECK="$health"
+          [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+          return 0
+        fi
+        health="${health}; ${url}: failed"
+      fi
+    done
+    if [ "$checked_http" -eq 1 ]; then
+      LAST_HEALTH_CHECK="$health"
+      [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+      return 1
+    fi
+  fi
+  LAST_HEALTH_CHECK="$health"
+  [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+  return 0
+}
+
+restart_and_healthcheck_migate_service() {
+  restart_migate_service
+  check_migate_health
+}
+
+rollback_failed_upgrade() {
+  local backup_root="$1"
+  local old_version="$2"
+  local target_version="$3"
+  local reason="${4:-upgrade failed}"
+  log_error "$reason"
+  log_warn "升级失败，开始自动回滚。"
+  if restore_upgrade_state "$backup_root" && check_migate_health; then
+    log_warn "升级失败，已回滚，服务已恢复。"
+    write_update_status "failed" "${old_version:-unknown}" "$target_version" "升级失败，已回滚，服务已恢复" "${LAST_HEALTH_CHECK:-rollback health passed}" true "restored"
+  else
+    log_error "回滚失败，需要人工处理。"
+    write_update_status "failed" "${old_version:-unknown}" "$target_version" "回滚失败，需要人工处理" "${LAST_HEALTH_CHECK:-rollback health failed}" true "failed"
+  fi
+}
+
+apply_upgrade_release_from_backup() {
+  local old_version="$1"
+  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+    run_cmd systemctl stop migate 2>/dev/null || true
+  fi
+  install_migate_binary_from_tmp
+  write_config "$PANEL_PORT" "$PANEL_USERNAME" "$PANEL_PASSWORD" "$WEB_BASE_PATH"
+  configure_log_retention
+  write_systemd_service
+
+  section "核心检测"
+  if detect_core "Xray" "xray" "migate-xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
+  if detect_core "sing-box" "sing-box" "migate-sing-box"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
+  if [ "$INSTALL_XRAY" -eq 1 ] || [ "$INSTALL_SINGBOX" -eq 1 ]; then
+    log_warn "MiGate 升级事务不同时安装/修复核心；请在升级完成后单独运行 migate-install --install-xray/--install-singbox。"
+  fi
+
+  section "服务启动"
+  write_update_status "restarting" "${old_version:-unknown}" "$VERSION" "正在重启 MiGate 并执行健康检查" "" false ""
+  restart_and_healthcheck_migate_service
 }
 
 print_config_summary() {
@@ -958,7 +1153,7 @@ LimitNOFILE=1048576
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} /usr/local/bin /usr/local/share/xray /etc/systemd/system
+ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} $(dirname "$MIGATE_BIN") ${XRAY_SHARE_DIR} $(dirname "$SERVICE_PATH")
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 StandardOutput=journal
@@ -1225,9 +1420,9 @@ install_xray() {
     return 1
   fi
   ensure_runtime_dirs
-  mkdir -p /usr/local/share/xray
-  [ -f "$tmp_xray/xray/geosite.dat" ] && cp "$tmp_xray/xray/geosite.dat" /usr/local/share/xray/geosite.dat
-  [ -f "$tmp_xray/xray/geoip.dat" ] && cp "$tmp_xray/xray/geoip.dat" /usr/local/share/xray/geoip.dat
+  mkdir -p "$XRAY_SHARE_DIR"
+  [ -f "$tmp_xray/xray/geosite.dat" ] && cp "$tmp_xray/xray/geosite.dat" "$XRAY_SHARE_DIR/geosite.dat"
+  [ -f "$tmp_xray/xray/geoip.dat" ] && cp "$tmp_xray/xray/geoip.dat" "$XRAY_SHARE_DIR/geoip.dat"
   rm -rf "$tmp_xray"
   if [ ! -f "${XRAY_CONFIG_PATH}" ]; then
     install_default_xray_config
@@ -1452,6 +1647,8 @@ prompt_core_installs() {
 
 install_release_flow() {
   local mode="$1"
+  local upgrade_backup_root=""
+  local old_version=""
   require_linux_for_release
   require_root
   require_dependencies
@@ -1483,29 +1680,58 @@ install_release_flow() {
   note_current_release_state
   ensure_migate_user_group
   ensure_runtime_dirs
+  old_version="$(current_migate_version)"
+  if [ "$ACTION" = "upgrade" ]; then
+    write_update_status "downloading" "${old_version:-unknown}" "$VERSION" "正在下载并校验升级包" "" false ""
+  fi
   download_release_asset
-  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-    run_cmd systemctl stop migate 2>/dev/null || true
-  fi
-  install_migate_binary_from_tmp
-  write_config "$PANEL_PORT" "$PANEL_USERNAME" "$PANEL_PASSWORD" "$WEB_BASE_PATH"
-  configure_log_retention
-  write_systemd_service
+  if [ "$ACTION" = "upgrade" ]; then
+    upgrade_backup_root="${BACKUP_DIR}/upgrade-$(date +%Y%m%d-%H%M%S)"
+    backup_upgrade_state "$upgrade_backup_root"
+    write_update_status "installing" "${old_version:-unknown}" "$VERSION" "升级包校验完成，正在替换二进制和服务文件" "" false ""
+    MIGATE_HEALTH_RESULT_PATH="$TMP/health-check-result"
+    rm -f "$MIGATE_HEALTH_RESULT_PATH"
+    export MIGATE_HEALTH_RESULT_PATH
+    set +e
+    ( set -e; apply_upgrade_release_from_backup "$old_version" )
+    local upgrade_code="$?"
+    set -e
+    if [ -f "$MIGATE_HEALTH_RESULT_PATH" ]; then
+      LAST_HEALTH_CHECK="$(cat "$MIGATE_HEALTH_RESULT_PATH")"
+    fi
+    if [ "$upgrade_code" -eq 0 ]; then
+      write_versions_state
+      log_ok "升级成功，目标版本：${VERSION}，当前版本：$(current_migate_version)"
+      log_ok "健康检查结果：${LAST_HEALTH_CHECK:-passed}"
+      write_update_status "completed" "$(current_migate_version)" "$VERSION" "升级成功，服务已恢复可用" "${LAST_HEALTH_CHECK:-passed}" false ""
+    else
+      rollback_failed_upgrade "$upgrade_backup_root" "$old_version" "$VERSION" "升级过程失败或健康检查失败：${LAST_HEALTH_CHECK:-exit code ${upgrade_code}}"
+      return 1
+    fi
+  else
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+      run_cmd systemctl stop migate 2>/dev/null || true
+    fi
+    install_migate_binary_from_tmp
+    write_config "$PANEL_PORT" "$PANEL_USERNAME" "$PANEL_PASSWORD" "$WEB_BASE_PATH"
+    configure_log_retention
+    write_systemd_service
 
-  section "核心检测"
-  if detect_core "Xray" "xray" "migate-xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
-  if detect_core "sing-box" "sing-box" "migate-sing-box"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
-  prompt_core_installs
-  if [ "$INSTALL_XRAY" -eq 1 ]; then
-    if [ "$EXPLICIT_INSTALL_XRAY" -eq 1 ]; then install_xray; else maybe_install_core "Xray" install_xray; fi
-  fi
-  if [ "$INSTALL_SINGBOX" -eq 1 ]; then
-    if [ "$EXPLICIT_INSTALL_SINGBOX" -eq 1 ]; then install_singbox; else maybe_install_core "sing-box" install_singbox; fi
-  fi
-  write_versions_state
+    section "核心检测"
+    if detect_core "Xray" "xray" "migate-xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
+    if detect_core "sing-box" "sing-box" "migate-sing-box"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
+    prompt_core_installs
+    if [ "$INSTALL_XRAY" -eq 1 ]; then
+      if [ "$EXPLICIT_INSTALL_XRAY" -eq 1 ]; then install_xray; else maybe_install_core "Xray" install_xray; fi
+    fi
+    if [ "$INSTALL_SINGBOX" -eq 1 ]; then
+      if [ "$EXPLICIT_INSTALL_SINGBOX" -eq 1 ]; then install_singbox; else maybe_install_core "sing-box" install_singbox; fi
+    fi
 
-  section "服务启动"
-  restart_migate_service
+    section "服务启动"
+    restart_migate_service
+    write_versions_state
+  fi
   finish_message
 }
 

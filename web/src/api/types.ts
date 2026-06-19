@@ -456,8 +456,15 @@ export interface UpdateStatus {
   current_version?: string;
   target_version?: string;
   message?: string;
+  health_check?: string;
+  rolled_back?: boolean;
+  rollback_status?: string;
   started_at?: string;
   updated_at?: string;
+}
+
+export interface VersionInfo {
+  version: string;
 }
 
 export interface SessionInfo {

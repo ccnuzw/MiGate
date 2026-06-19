@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { certIssuePayload, certSettingsPayload, formatUpdateLogs, isUpdateInProgress, isUpdateTerminal, settingsPayload, updateStatusRefetchInterval } from './SettingsPage';
+import { certIssuePayload, certSettingsPayload, formatUpdateLogs, isUpdateInProgress, isUpdateTerminal, settingsPayload, updateDependencyRefetchInterval, updateStatusRefetchInterval, updateStatusSummaryKey } from './SettingsPage';
 
 describe('settings helpers', () => {
   it('sends an empty password to preserve the existing backend password', () => {
@@ -33,13 +33,23 @@ describe('settings helpers', () => {
   it('polls update status only while an update is active', () => {
     expect(isUpdateInProgress('updating')).toBe(true);
     expect(isUpdateInProgress('installing')).toBe(true);
+    expect(isUpdateInProgress('restarting')).toBe(true);
     expect(isUpdateInProgress('idle')).toBe(false);
     expect(updateStatusRefetchInterval('updating')).toBe(5000);
     expect(updateStatusRefetchInterval('idle', true)).toBe(5000);
+    expect(updateDependencyRefetchInterval(true)).toBe(5000);
+    expect(updateDependencyRefetchInterval(false)).toBe(false);
     expect(updateStatusRefetchInterval('completed')).toBe(false);
     expect(updateStatusRefetchInterval(undefined)).toBe(false);
     expect(isUpdateTerminal('failed')).toBe(true);
+    expect(isUpdateTerminal('restarting')).toBe(false);
     expect(isUpdateTerminal('updating')).toBe(false);
+  });
+
+  it('summarizes update completion and rollback states', () => {
+    expect(updateStatusSummaryKey({ status: 'completed' })).toBe('升级成功，服务已可用');
+    expect(updateStatusSummaryKey({ status: 'failed', rolled_back: true, rollback_status: 'restored' })).toBe('升级失败，已回滚，服务已恢复');
+    expect(updateStatusSummaryKey({ status: 'failed', rolled_back: true, rollback_status: 'failed' })).toBe('');
   });
 
   it('formats update logs from API responses', () => {

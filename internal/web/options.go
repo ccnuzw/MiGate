@@ -82,6 +82,12 @@ func WithUpdateCheckURL(checkURL string) Option {
 	}
 }
 
+func WithUpdateStatusPath(statusPath string) Option {
+	return func(cfg *routerConfig) {
+		cfg.updateStatusPath = strings.TrimSpace(statusPath)
+	}
+}
+
 func WithPublicHost(publicHost string) Option {
 	return func(cfg *routerConfig) {
 		cfg.publicHost = strings.TrimSpace(publicHost)

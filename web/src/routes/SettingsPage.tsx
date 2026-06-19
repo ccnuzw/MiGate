@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
-import type { Settings } from '../api/types';
+import type { Settings, UpdateStatus } from '../api/types';
 import { Card, Field, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { serviceLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
@@ -21,24 +21,57 @@ export default function SettingsPage() {
   const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, retry: false, staleTime: 60_000 });
   const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, retry: false, staleTime: 60_000 });
-  const updateCheck = useQuery({ queryKey: ['update-check'], queryFn: api.updateCheck, enabled: false });
+  const updateCheck = useQuery({
+    queryKey: ['update-check'],
+    queryFn: api.updateCheck,
+    enabled: watchUpdateStatus,
+    retry: false,
+    refetchInterval: () => updateDependencyRefetchInterval(watchUpdateStatus),
+  });
+  const version = useQuery({
+    queryKey: ['version'],
+    queryFn: api.version,
+    enabled: watchUpdateStatus,
+    retry: false,
+    refetchInterval: () => updateDependencyRefetchInterval(watchUpdateStatus),
+  });
   const updateStatus = useQuery({
     queryKey: ['update-status'],
     queryFn: api.updateStatus,
     refetchInterval: (query) => updateStatusRefetchInterval(query.state.data?.status, watchUpdateStatus),
     staleTime: 30_000,
   });
-  const updateLogs = useQuery({ queryKey: ['update-logs'], queryFn: api.updateLogs, enabled: false });
+  const updateLogs = useQuery({
+    queryKey: ['update-logs'],
+    queryFn: api.updateLogs,
+    enabled: watchUpdateStatus,
+    retry: false,
+    refetchInterval: () => updateDependencyRefetchInterval(watchUpdateStatus),
+  });
   const sessions = useQuery({ queryKey: ['sessions'], queryFn: api.sessions, retry: false, staleTime: 60_000 });
-  const service = useQuery({ queryKey: ['service-status'], queryFn: api.serviceStatus, retry: false, staleTime: 30_000 });
+  const service = useQuery({
+    queryKey: ['service-status'],
+    queryFn: api.serviceStatus,
+    retry: false,
+    staleTime: 30_000,
+    refetchInterval: () => updateDependencyRefetchInterval(watchUpdateStatus),
+  });
   const form = useForm<Settings>({ values: settings.data || {} });
   const certDomain = form.watch('cert_domain') || cert.data?.domain || '';
   const certEmail = form.watch('cert_email') || cert.data?.email || '';
   useEffect(() => {
     if (watchUpdateStatus && isUpdateTerminal(updateStatus.data?.status)) {
-      setWatchUpdateStatus(false);
+      refreshQueries([updateStatus, updateLogs, service, version, updateCheck]);
+      if (updateStatus.data?.status !== 'completed' || version.data?.version) {
+        setWatchUpdateStatus(false);
+      }
     }
-  }, [updateStatus.data?.status, watchUpdateStatus]);
+  }, [updateStatus.data?.status, version.data?.version, watchUpdateStatus]);
+  useEffect(() => {
+    if (watchUpdateStatus && version.data?.version && isUpdateTerminal(updateStatus.data?.status)) {
+      refreshQuery(updateCheck);
+    }
+  }, [updateStatus.data?.status, version.data?.version, watchUpdateStatus]);
   const save = useMutation({
     mutationFn: (values: Settings) => api.saveSettings(settingsPayload(settings.data, values)),
     onSuccess: () => {
@@ -101,6 +134,8 @@ export default function SettingsPage() {
   const sessionItems = sessions.data || [];
   const visibleSessions = showAllSessions ? sessionItems : sessionItems.slice(0, defaultVisibleSessions);
   const hiddenSessionCount = Math.max(0, sessionItems.length - visibleSessions.length);
+  const waitingForService = watchUpdateStatus && [updateStatus, updateLogs, service, version, updateCheck].some((query) => query.isError);
+  const updateSummary = updateStatusSummaryKey(updateStatus.data);
 
   if (settings.isLoading) return <LoadingBlock />;
 
@@ -166,11 +201,14 @@ export default function SettingsPage() {
             </div>
             <div className="grid gap-2">
               <div className="text-xs font-semibold uppercase tracking-wide text-panel-muted">{text('版本更新')}</div>
-              <div>{text('当前')}：{updateCheck.data?.current_version || '-'}</div>
+              <div>{text('当前')}：{version.data?.version || updateCheck.data?.current_version || updateStatus.data?.current_version || '-'}</div>
               <div>{text('最新')}：{updateCheck.data?.latest_version || '-'}</div>
               <div>{text('可更新')}：{text(updateCheck.data?.update_available ? '是' : '否')}</div>
               <div>{text('更新状态')}：{updateStatus.data?.status || '-'}</div>
+              {waitingForService ? <div>{text('正在等待服务恢复')}</div> : null}
+              {updateSummary ? <div>{text(updateSummary)}</div> : null}
               {updateStatus.data?.message ? <div>{text('消息')}：{updateStatus.data.message}</div> : null}
+              {updateStatus.data?.health_check ? <div>{text('健康检查')}：{updateStatus.data.health_check}</div> : null}
               <div>{text('日志路径')}：{updateLogs.data?.path || '/var/log/migate-update.log'}</div>
               {updateCheck.data?.release_url ? <a className="inline-flex w-fit items-center gap-1 text-teal-700" href={updateCheck.data.release_url} target="_blank" rel="noreferrer">{text('发布说明')} <ExternalLink className="h-3 w-3" /></a> : null}
             </div>
@@ -250,12 +288,27 @@ export function updateStatusRefetchInterval(status?: string, watching = false) {
   return watching || isUpdateInProgress(status) ? 5000 : false;
 }
 
+export function updateDependencyRefetchInterval(watching = false) {
+  return watching ? 5000 : false;
+}
+
 export function isUpdateInProgress(status?: string) {
-  return ['pending', 'running', 'updating', 'downloading', 'installing'].includes(String(status || '').toLowerCase());
+  return ['pending', 'running', 'updating', 'downloading', 'installing', 'restarting'].includes(String(status || '').toLowerCase());
 }
 
 export function isUpdateTerminal(status?: string) {
-  return ['started', 'restarting', 'failed', 'completed', 'idle'].includes(String(status || '').toLowerCase());
+  return ['started', 'failed', 'completed', 'idle'].includes(String(status || '').toLowerCase());
+}
+
+export function updateStatusSummaryKey(status?: Pick<UpdateStatus, 'status' | 'rolled_back' | 'rollback_status'>) {
+  if (!status) return '';
+  if (String(status.status).toLowerCase() === 'failed' && status.rolled_back && status.rollback_status === 'restored') {
+    return '升级失败，已回滚，服务已恢复';
+  }
+  if (String(status.status).toLowerCase() === 'completed') {
+    return '升级成功，服务已可用';
+  }
+  return '';
 }
 
 export function formatUpdateLogs(data: { logs?: string; lines?: string[] } | undefined, emptyMessage: string): string {

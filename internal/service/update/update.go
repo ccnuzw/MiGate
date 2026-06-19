@@ -17,23 +17,26 @@ import (
 
 const DefaultCheckURL = "https://api.github.com/repos/imzyb/MiGate/releases/latest"
 const DefaultLogPath = "/var/log/migate-update.log"
+const DefaultStatusPath = "/var/lib/migate/update-status.json"
+const stalePersistentStatusAfter = 15 * time.Minute
 const installerPath = "/usr/local/bin/migate-install"
 const installerCommand = "/usr/local/bin/migate-install --update --yes"
 
 type Service struct {
-	CheckURL  string
-	LogPath   string
-	Runner    runtimecmd.CommandRunner
-	LookPath  func(string) (string, error)
-	HTTPDo    func(*http.Request) (*http.Response, error)
-	TestMode  bool
-	State     *RuntimeState
-	MaxLines  int
-	Now       func() time.Time
-	Geteuid   func() int
-	Stat      func(string) (os.FileInfo, error)
-	Getpid    func() int
-	StartWait time.Duration
+	CheckURL   string
+	LogPath    string
+	StatusPath string
+	Runner     runtimecmd.CommandRunner
+	LookPath   func(string) (string, error)
+	HTTPDo     func(*http.Request) (*http.Response, error)
+	TestMode   bool
+	State      *RuntimeState
+	MaxLines   int
+	Now        func() time.Time
+	Geteuid    func() int
+	Stat       func(string) (os.FileInfo, error)
+	Getpid     func() int
+	StartWait  time.Duration
 }
 
 type CheckResponse struct {
@@ -51,6 +54,9 @@ type RuntimeStatus struct {
 	CurrentVersion string    `json:"current_version,omitempty"`
 	TargetVersion  string    `json:"target_version,omitempty"`
 	Message        string    `json:"message,omitempty"`
+	HealthCheck    string    `json:"health_check,omitempty"`
+	RolledBack     bool      `json:"rolled_back,omitempty"`
+	RollbackStatus string    `json:"rollback_status,omitempty"`
 	StartedAt      time.Time `json:"started_at,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at,omitempty"`
 }
@@ -144,7 +150,23 @@ func (s Service) Check(ctx context.Context, currentVersion string) (CheckRespons
 }
 
 func (s Service) Status() RuntimeStatus {
-	return s.state().Snapshot()
+	runtimeStatus := s.state().Snapshot()
+	if isRuntimeStatusActive(runtimeStatus.Status) {
+		return runtimeStatus
+	}
+	persistent, err := s.readPersistentStatus()
+	if err == nil && strings.TrimSpace(persistent.Status) != "" {
+		if isRuntimeStatusTerminal(runtimeStatus.Status) && isRuntimeStatusActive(persistent.Status) {
+			return runtimeStatus
+		}
+		if isStalePersistentStatus(persistent, s.now()) {
+			persistent.Status = "failed"
+			persistent.Message = "上次更新状态长时间未完成，已标记为失败；可重新发起更新"
+			persistent.UpdatedAt = s.now().UTC()
+		}
+		return persistent
+	}
+	return runtimeStatus
 }
 
 func (s Service) Logs(lines string) LogsResponse {
@@ -335,6 +357,13 @@ func (s Service) logPath() string {
 	return DefaultLogPath
 }
 
+func (s Service) statusPath() string {
+	if strings.TrimSpace(s.StatusPath) != "" {
+		return strings.TrimSpace(s.StatusPath)
+	}
+	return DefaultStatusPath
+}
+
 func (s Service) now() time.Time {
 	if s.Now != nil {
 		return s.Now()
@@ -387,6 +416,46 @@ func lastNonEmptyLine(text string) string {
 		}
 	}
 	return ""
+}
+
+func (s Service) readPersistentStatus() (RuntimeStatus, error) {
+	data, err := os.ReadFile(s.statusPath())
+	if err != nil {
+		return RuntimeStatus{}, err
+	}
+	var status RuntimeStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		return RuntimeStatus{}, err
+	}
+	return status, nil
+}
+
+func isRuntimeStatusActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "running", "updating", "downloading", "installing", "restarting":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRuntimeStatusTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "started", "failed", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func isStalePersistentStatus(status RuntimeStatus, now time.Time) bool {
+	if !isRuntimeStatusActive(status.Status) {
+		return false
+	}
+	if status.UpdatedAt.IsZero() {
+		return true
+	}
+	return now.UTC().Sub(status.UpdatedAt.UTC()) > stalePersistentStatusAfter
 }
 
 func (s *RuntimeState) Start(current string, now time.Time) (RuntimeStatus, bool) {

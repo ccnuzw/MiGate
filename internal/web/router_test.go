@@ -469,6 +469,25 @@ func TestUpdateStatusAPIReportsState(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusAPIReportsPersistentState(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "update-status.json")
+	if err := os.WriteFile(statusPath, []byte(`{"status":"failed","current_version":"v1.0.0","target_version":"v1.0.1","message":"升级失败，已回滚，服务已恢复","rolled_back":true,"rollback_status":"restored","health_check":"systemctl is-active migate: active"}`), 0640); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	router := web.NewRouter(web.WithUpdateStatusPath(statusPath))
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/update/status", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected update status 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	for _, want := range []string{`"status":"failed"`, `"target_version":"v1.0.1"`, `"rolled_back":true`, `"rollback_status":"restored"`, `"health_check":"systemctl is-active migate: active"`} {
+		if !strings.Contains(resp.Body.String(), want) {
+			t.Fatalf("update persistent status response missing %q: %s", want, resp.Body.String())
+		}
+	}
+}
+
 func TestUpdateLogsAPIReportsRecentLogs(t *testing.T) {
 	router := web.NewRouter()
 	resp := httptest.NewRecorder()
