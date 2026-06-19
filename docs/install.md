@@ -84,14 +84,24 @@ CLI alias:     /usr/local/bin/mg
 Installer:     /usr/local/bin/migate-install
 Uninstaller:   /usr/local/bin/migate-uninstall
 Config:        /etc/migate/panel.json
-Database:      /usr/local/migate/migate.db
-Xray config:   /usr/local/migate/xray.json
+Database:      /var/lib/migate/migate.db
+Versions:      /var/lib/migate/versions.json
+Backups:       /var/lib/migate/backups
+Xray config:   /etc/migate/cores/xray.json
+sing-box config: /etc/migate/cores/sing-box.json
 Web base path: /panel
 ```
 
 First install writes a random password when the password prompt is left blank.
 The generated password is printed once at the end of installation and is not
 stored anywhere except `panel.json`.
+
+The installer writes `/var/lib/migate/versions.json` after a completed install or
+upgrade. It records the MiGate version, configured core versions, install time,
+and installer version. Invalid core configs repaired during install are moved to
+`/var/lib/migate/backups` with names such as
+`xray-config-invalid-YYYYMMDD-HHMMSS.json`; `mg backup` still writes archives as
+`migate-backup-YYYYMMDD-HHMMSS.tar.gz`.
 
 ## systemd
 
@@ -139,8 +149,8 @@ The installer checks:
 /usr/bin/xray
 /usr/local/bin/sing-box
 /usr/bin/sing-box
-xray.service
-migate-singbox.service
+migate-xray.service
+migate-sing-box.service
 ```
 
 Version commands:
@@ -156,7 +166,7 @@ download and execution commands are printed instead.
 
 sing-box installation downloads the configured release archive, downloads
 checksums, verifies the archive before extracting, installs
-`/usr/local/bin/sing-box`, and writes `migate-singbox.service`.
+`/usr/local/bin/sing-box`, and writes `migate-sing-box.service`.
 
 MiGate and sing-box release archives are installed only after checksum
 verification. Xray and acme.sh still rely on their official upstream installer

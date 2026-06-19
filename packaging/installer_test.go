@@ -64,11 +64,11 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"CLI 命令",
 		"WebUI",
 		"xray.json",
-		"/usr/local/etc/xray/xray.json",
-		"ln -sf \"${INSTALL_DIR}/xray.json\" /usr/local/etc/xray/xray.json",
+		"/etc/migate/cores/xray.json",
 		"install_xray",
 		"Xray-linux-${xray_asset_arch}.zip",
 		"hash-password",
+		"/var/lib/migate/versions.json",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer missing %q", want)
@@ -110,6 +110,65 @@ func TestInstallerSupportsNonInteractiveActionsAndDryRun(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer non-interactive/dry-run contract missing %q", want)
 		}
+	}
+}
+
+func TestInstallerChecksRootBeforeTakingInstallLock(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	mainIdx := strings.Index(script, "main()")
+	if mainIdx < 0 {
+		t.Fatalf("installer must define main")
+	}
+	mainBody := script[mainIdx:]
+	for _, want := range []string{
+		"install|upgrade|reinstall|repair-service|install-xray-only|install-singbox-only|install-cores-only|uninstall)",
+		"require_root",
+		"with_install_lock run_action",
+	} {
+		if !strings.Contains(mainBody, want) {
+			t.Fatalf("installer main lock/root contract missing %q", want)
+		}
+	}
+	rootIdx := strings.Index(mainBody, "require_root")
+	lockIdx := strings.Index(mainBody, "with_install_lock run_action")
+	if rootIdx < 0 || lockIdx < 0 || rootIdx > lockIdx {
+		t.Fatalf("installer must check root before creating install lock")
+	}
+}
+
+func TestInstallerInstallLockCreatesParentDirectoryBeforeFallbackLock(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	lockIdx := strings.Index(script, "with_install_lock()")
+	if lockIdx < 0 {
+		t.Fatalf("installer must define with_install_lock")
+	}
+	lockBody := script[lockIdx:]
+	for _, want := range []string{
+		`mkdir -p "$(dirname "$INSTALL_LOCK")"`,
+		`( set -e; "$@" )`,
+		`code="$?"`,
+		`flock -u 9 || true`,
+		`lock_dir="${INSTALL_LOCK}.d"`,
+		`mkdir "$lock_dir"`,
+		`rmdir "$lock_dir" 2>/dev/null || true`,
+		`return "$code"`,
+	} {
+		if !strings.Contains(lockBody, want) {
+			t.Fatalf("installer lock contract missing %q", want)
+		}
+	}
+	parentIdx := strings.Index(lockBody, `mkdir -p "$(dirname "$INSTALL_LOCK")"`)
+	fallbackIdx := strings.Index(lockBody, `lock_dir="${INSTALL_LOCK}.d"`)
+	if parentIdx < 0 || fallbackIdx < 0 || parentIdx > fallbackIdx {
+		t.Fatalf("installer must create install lock parent directory before fallback lock dir")
+	}
+	fallbackBody := lockBody[fallbackIdx:]
+	runIdx := strings.Index(fallbackBody, `( set -e; "$@" )`)
+	codeIdx := strings.Index(fallbackBody, `code="$?"`)
+	cleanupIdx := strings.Index(fallbackBody, `rmdir "$lock_dir" 2>/dev/null || true`)
+	returnIdx := strings.Index(fallbackBody, `return "$code"`)
+	if runIdx < 0 || codeIdx < 0 || cleanupIdx < 0 || returnIdx < 0 || !(runIdx < codeIdx && codeIdx < cleanupIdx && cleanupIdx < returnIdx) {
+		t.Fatalf("installer fallback lock must capture action failure, remove lock dir, and return original code")
 	}
 }
 
@@ -176,12 +235,14 @@ func TestInstallerFinishMessageNormalizesWebUIPath(t *testing.T) {
 func TestInstallerConfigPathsFollowInstallDir(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"\"database_path\": \"$(json_escape \"$INSTALL_DIR\")/migate.db\"",
-		"\"xray_config_path\": \"$(json_escape \"$INSTALL_DIR\")\"",
+		"\"database_path\": \"$(json_escape \"$DATA_DIR\")/migate.db\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer config path contract missing %q", want)
 		}
+	}
+	if strings.Contains(script, "xray_"+"config_path") {
+		t.Fatalf("installer must not write legacy Xray config path field")
 	}
 }
 
@@ -193,11 +254,19 @@ func TestInstallerDetectsCorePathsVersionsAndServices(t *testing.T) {
 		"\"/usr/local/bin/${command_name}\" \"/usr/bin/${command_name}\"",
 		"core_version()",
 		"systemctl list-unit-files \"${service_name}.service\"",
-		"if detect_core \"Xray\" \"xray\" \"xray\"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi",
-		"if detect_core \"sing-box\" \"sing-box\" \"sing-box\"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi",
+		"if detect_core \"Xray\" \"xray\" \"migate-xray\"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi",
+		"if detect_core \"sing-box\" \"sing-box\" \"migate-sing-box\"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer core detection contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"if detect_core \"Xray\" \"xray\" \"xray\"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi",
+		"if detect_core \"sing-box\" \"sing-box\" \"sing-box\"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not detect legacy core service %q", forbidden)
 		}
 	}
 }
@@ -261,36 +330,30 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	for _, want := range []string{
 		"install_singbox",
 		"confirm_yes \"未检测到 sing-box，是否安装 sing-box？\"",
-		"sing-box.service",
-		"LEGACY_SINGBOX_SERVICE_PATH",
-		"LEGACY_SINGBOX_SERVICE_DROPIN_DIR",
-		"ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json",
-		"systemctl stop migate-singbox",
-		"systemctl disable migate-singbox",
-		"rm -f \"$LEGACY_SINGBOX_SERVICE_PATH\"",
-		"rm -rf \"$LEGACY_SINGBOX_SERVICE_DROPIN_DIR\"",
-		"systemctl reset-failed migate-singbox",
-		"systemctl enable sing-box",
-		"/usr/local/bin/sing-box check -c /etc/sing-box/config.json",
-		"sing-box 默认配置校验失败：/etc/sing-box/config.json",
-		"journalctl -u sing-box -n 80 --no-pager",
-		"systemctl restart sing-box",
-		"systemctl is-active --quiet sing-box",
+		"migate-sing-box.service",
+		"ExecStart=/usr/local/bin/sing-box run -c ${SINGBOX_CONFIG_PATH}",
+		"systemctl stop migate-sing-box",
+		"systemctl enable migate-sing-box",
+		`/usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"`,
+		"sing-box 默认配置校验失败：${SINGBOX_CONFIG_PATH}",
+		"journalctl -u migate-sing-box -n 80 --no-pager",
+		"systemctl restart migate-sing-box",
+		"systemctl is-active --quiet migate-sing-box",
 		"sing-box 安装/修复完成",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box runtime contract missing %q", want)
 		}
 	}
-	serviceWrite := strings.Index(script, "cat > \"$SINGBOX_SERVICE_PATH\"")
+	serviceWrite := strings.Index(script, `atomic_write_file "$SINGBOX_SERVICE_PATH" 0644 root:root`)
 	if serviceWrite < 0 || !strings.Contains(script[serviceWrite:], "systemctl daemon-reload") {
 		t.Fatalf("installer must daemon-reload after writing sing-box service")
 	}
-	if strings.Index(script, "/usr/local/bin/sing-box check -c /etc/sing-box/config.json") > strings.Index(script, "systemctl restart sing-box") {
+	if strings.Index(script, `/usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"`) > strings.Index(script, "systemctl restart migate-sing-box") {
 		t.Fatalf("installer must check sing-box config before starting service")
 	}
 	checkBlock := script[strings.Index(script, "if ! ensure_valid_singbox_config; then"):]
-	if !strings.Contains(checkBlock, "return 1") || strings.Index(checkBlock, "return 1") > strings.Index(checkBlock, "systemctl restart sing-box") {
+	if !strings.Contains(checkBlock, "return 1") || strings.Index(checkBlock, "return 1") > strings.Index(checkBlock, "systemctl restart migate-sing-box") {
 		t.Fatalf("installer must fail before sing-box service restart when config check fails")
 	}
 }
@@ -298,19 +361,19 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 func TestInstallerReplacesCoreBinariesAtomically(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"systemctl stop xray 2>/dev/null || true",
+		"systemctl stop migate-xray 2>/dev/null || true",
 		"local xray_install_tmp=\"/usr/local/bin/.xray.new.$$\"",
 		"cp \"$tmp_xray/xray/xray\" \"$xray_install_tmp\" && chmod +x \"$xray_install_tmp\" && mv -f \"$xray_install_tmp\" /usr/local/bin/xray",
 		"rm -f \"$xray_install_tmp\"",
-		"systemctl stop sing-box 2>/dev/null || true",
-		"systemctl stop migate-singbox 2>/dev/null || true",
+		"systemctl stop migate-sing-box 2>/dev/null || true",
+		"systemctl stop migate-sing-box 2>/dev/null || true",
 		"local sb_install_tmp=\"/usr/local/bin/.sing-box.new.$$\"",
 		"cp \"$tmp_sb\"/sing-box-*/sing-box \"$sb_install_tmp\" && chmod +x \"$sb_install_tmp\" && mv -f \"$sb_install_tmp\" /usr/local/bin/sing-box",
 		"rm -f \"$sb_install_tmp\"",
-		"[DRY-RUN] systemctl stop xray",
+		"[DRY-RUN] systemctl stop migate-xray",
 		"[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$",
-		"[DRY-RUN] systemctl stop sing-box",
-		"[DRY-RUN] systemctl stop migate-singbox",
+		"[DRY-RUN] systemctl stop migate-sing-box",
+		"[DRY-RUN] systemctl stop migate-sing-box",
 		"[DRY-RUN] atomic install /usr/local/bin/sing-box via /usr/local/bin/.sing-box.new.$$",
 	} {
 		if !strings.Contains(script, want) {
@@ -327,28 +390,32 @@ func TestInstallerReplacesCoreBinariesAtomically(t *testing.T) {
 	}
 }
 
-func TestInstallerXrayRepairRemovesLegacySystemdDropIn(t *testing.T) {
+func TestInstallerXrayRepairUsesStandardSystemdUnit(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf",
-		"rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true",
+		`atomic_write_file "$XRAY_SERVICE_PATH" 0644 root:root`,
 		"systemctl daemon-reload",
-		"systemctl restart xray",
+		"systemctl restart migate-xray",
 	} {
 		if !strings.Contains(script, want) {
-			t.Fatalf("installer must remove legacy Xray systemd drop-in before restart, missing %q", want)
+			t.Fatalf("installer must manage standard Xray service before restart, missing %q", want)
 		}
 	}
-	if strings.Index(script, "rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf") > strings.Index(script, "cat > /etc/systemd/system/xray.service") {
-		t.Fatalf("installer must remove legacy Xray systemd drop-in before writing service")
+	for _, forbidden := range []string{"10-donot_touch_single_conf.conf", "migate-xray.service.d"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not retain legacy Xray drop-in handling %q", forbidden)
+		}
 	}
 }
 
 func TestInstallerSeedsCoreConfigsMatchingGeneratedDefaults(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
+		"atomic_write_file()",
 		"write_default_xray_config()",
 		"write_default_singbox_config()",
+		`install_default_xray_config()`,
+		`install_default_singbox_config()`,
 		`"tag": "xray-out-1"`,
 		`"tag": "xray-out-2"`,
 		`"tag": "xray-out-3"`,
@@ -356,18 +423,26 @@ func TestInstallerSeedsCoreConfigsMatchingGeneratedDefaults(t *testing.T) {
 		`"StatsService"`,
 		`"tag": "singbox-out-1"`,
 		`"tag": "singbox-out-2"`,
-		`write_default_xray_config "${INSTALL_DIR}/xray.json"`,
-		`write_default_singbox_config /etc/sing-box/config.json`,
+		`install_default_xray_config`,
+		`install_default_singbox_config`,
 		`ensure_valid_xray_config()`,
 		`ensure_valid_singbox_config()`,
 		`现有 Xray 配置校验失败，将备份并写入 MiGate 默认配置。`,
 		`现有 sing-box 配置校验失败，将备份并写入 MiGate 默认配置。`,
-		`.migate-backup.$(date +%Y%m%d%H%M%S)`,
-		`ln -sf "${INSTALL_DIR}/xray.json" "${CONFIG_DIR}/xray.json"`,
-		`/usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json`,
-		`systemctl is-active --quiet xray`,
-		`/usr/local/bin/sing-box check -c /etc/sing-box/config.json`,
-		`systemctl is-active --quiet sing-box`,
+		`"${BACKUP_DIR}/${core}-config-invalid-$(date +%Y%m%d-%H%M%S).json"`,
+		`set_core_config_permissions()`,
+		`chown root:migate "$path"`,
+		`chmod 0640 "$path"`,
+		`/usr/local/bin/xray run -test -c "$tmp"`,
+		`/usr/local/bin/sing-box check -c "$tmp"`,
+		`mv -f "$tmp" "$XRAY_CONFIG_PATH"`,
+		`mv -f "$tmp" "$SINGBOX_CONFIG_PATH"`,
+		`set_core_config_permissions "$XRAY_CONFIG_PATH"`,
+		`set_core_config_permissions "$SINGBOX_CONFIG_PATH"`,
+		`/usr/local/bin/xray run -test -c "$XRAY_CONFIG_PATH"`,
+		`systemctl is-active --quiet migate-xray`,
+		`/usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"`,
+		`systemctl is-active --quiet migate-sing-box`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer default core config contract missing %q", want)
@@ -378,9 +453,55 @@ func TestInstallerSeedsCoreConfigsMatchingGeneratedDefaults(t *testing.T) {
 		`"tag": "blocked"`,
 		`"outbounds":[{"type":"direct","tag":"direct"}]`,
 		`"inbounds":[],"outbounds":[{"protocol":"freedom","tag":"direct"}`,
+		`ln -sf "${DATA_DIR}/xray.json" "${CONFIG_DIR}/xray.json"`,
+		`systemctl is-active --quiet xray`,
+		`systemctl is-active --quiet sing-box`,
+		strings.Join([]string{`.migate`, `-backup.$(date +%Y%m%d%H%M%S)`}, ""),
 	} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("installer must not seed legacy default core config marker %q", forbidden)
+		}
+	}
+}
+
+func TestInstallerUsesAtomicWritesForRuntimeContractFiles(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		`atomic_write_file "$CONFIG_PATH" 0640 root:migate`,
+		`atomic_write_file "$SERVICE_PATH" 0644 root:root`,
+		`atomic_write_file "$XRAY_SERVICE_PATH" 0644 root:root`,
+		`atomic_write_file "$SINGBOX_SERVICE_PATH" 0644 root:root`,
+		`atomic_write_file "$VERSIONS_PATH" 0640 root:migate`,
+		`[DRY-RUN] atomic write`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer atomic write contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`cat > "$CONFIG_PATH"`,
+		`cat > "$SERVICE_PATH"`,
+		`cat > "$XRAY_SERVICE_PATH"`,
+		`cat > "$SINGBOX_SERVICE_PATH"`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer must not directly write runtime contract file with %q", forbidden)
+		}
+	}
+}
+
+func TestInstallerWritesVersionStateFile(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		`VERSIONS_PATH="${MIGATE_VERSIONS_PATH:-/var/lib/migate/versions.json}"`,
+		`write_versions_state()`,
+		`"installed_at":`,
+		`"installer_version":`,
+		`"configured_version":`,
+		`write_versions_state`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer version state contract missing %q", want)
 		}
 	}
 }
@@ -427,7 +548,7 @@ func TestInstallerCompletionPrintsSaveableInstallSummary(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"安装完成，请保存以下信息",
-		"安装目录",
+		"数据目录",
 		"面板监听",
 		"Web base path",
 		"WebUI 地址",
@@ -541,6 +662,54 @@ func TestInstallerDoesNotAbortMainFlowWhenOptionalCoreInstallFails(t *testing.T)
 	}
 }
 
+func TestInstallerCoreOnlyAndRepairActionsEnsureMigateUserGroup(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"ensure_migate_user_group()",
+		"groupadd --system migate",
+		"useradd --system --home-dir \"$DATA_DIR\" --no-create-home --gid migate --shell /usr/sbin/nologin migate",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer migate user/group contract missing %q", want)
+		}
+	}
+	repairFlow := script[strings.Index(script, "repair_service_flow()"):]
+	for _, want := range []string{
+		"require_root",
+		"ensure_migate_user_group",
+		"write_systemd_service",
+	} {
+		if !strings.Contains(repairFlow, want) {
+			t.Fatalf("repair-service user/group contract missing %q", want)
+		}
+	}
+	if strings.Index(repairFlow, "require_root") > strings.Index(repairFlow, "ensure_migate_user_group") ||
+		strings.Index(repairFlow, "ensure_migate_user_group") > strings.Index(repairFlow, "write_systemd_service") {
+		t.Fatalf("repair-service must ensure migate user/group after root check and before service rewrite")
+	}
+	runAction := script[strings.Index(script, "run_action()"):]
+	for _, tc := range []struct {
+		action string
+		call   string
+	}{
+		{action: "install-xray-only)", call: "install_xray"},
+		{action: "install-singbox-only)", call: "install_singbox"},
+		{action: "install-cores-only)", call: "install_xray"},
+	} {
+		actionIdx := strings.Index(runAction, tc.action)
+		if actionIdx < 0 {
+			t.Fatalf("run_action missing %s", tc.action)
+		}
+		body := runAction[actionIdx:]
+		rootIdx := strings.Index(body, "require_root")
+		ensureIdx := strings.Index(body, "ensure_migate_user_group")
+		callIdx := strings.Index(body, tc.call)
+		if rootIdx < 0 || ensureIdx < 0 || callIdx < 0 || !(rootIdx < ensureIdx && ensureIdx < callIdx) {
+			t.Fatalf("%s must ensure migate user/group after root check and before %s", tc.action, tc.call)
+		}
+	}
+}
+
 func TestInstallerExplicitCoreInstallFlagsRemainStrict(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
@@ -580,15 +749,15 @@ func TestInstallerSkipsSingBoxSystemdUnitWhenSystemdUnavailable(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"if [ \"$SYSTEMD_AVAILABLE\" -ne 1 ]; then",
-		"systemd 不可用，跳过 sing-box.service 写入。",
-		"Manual run: /usr/local/bin/sing-box run -c /etc/sing-box/config.json",
-		"cat > \"$SINGBOX_SERVICE_PATH\"",
+		"systemd 不可用，跳过 migate-sing-box.service 写入。",
+		"Manual run: /usr/local/bin/sing-box run -c ${SINGBOX_CONFIG_PATH}",
+		`atomic_write_file "$SINGBOX_SERVICE_PATH" 0644 root:root`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer sing-box non-systemd contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "systemd 不可用，跳过 sing-box.service 写入。") > strings.Index(script, "cat > \"$SINGBOX_SERVICE_PATH\"") {
+	if strings.Index(script, "systemd 不可用，跳过 migate-sing-box.service 写入。") > strings.Index(script, `atomic_write_file "$SINGBOX_SERVICE_PATH" 0644 root:root`) {
 		t.Fatalf("installer must skip sing-box unit before writing service file when systemd is unavailable")
 	}
 }
@@ -616,7 +785,7 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 func TestInstallerRepairServiceRefreshesSandboxPermissions(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system",
+		"ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} /usr/local/bin /usr/local/share/xray /etc/systemd/system",
 		"repair_service_flow()",
 		"write_systemd_service",
 		"restart_migate_service",
@@ -744,32 +913,21 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 		"--dry-run",
 		"run_cmd()",
 		"[DRY-RUN]",
-		"systemctl stop migate",
-		"systemctl disable migate",
-		"rm -f /etc/systemd/system/migate.service",
-		"rm -f /usr/local/bin/migate",
-		"rm -f /usr/local/bin/mg",
-		"systemctl stop sing-box",
-		"systemctl disable sing-box",
-		"rm -f /etc/systemd/system/sing-box.service",
-		"systemctl stop migate-singbox",
-		"systemctl disable migate-singbox",
-		"rm -f /etc/systemd/system/migate-singbox.service",
-		"systemctl stop xray",
-		"systemctl disable xray",
-		"rm -f \"$XRAY_SERVICE_PATH\"",
-		"rm -f \"$XRAY_LEGACY_DROPIN\"",
-		"rmdir \"$XRAY_SERVICE_DROPIN_DIR\"",
+		`MIGATE_SERVICE="migate"`,
+		`XRAY_SERVICE="migate-xray"`,
+		`SINGBOX_SERVICE="migate-sing-box"`,
+		`systemctl stop "$service"`,
+		`systemctl disable "$service"`,
+		`rm -f "$unit_path"`,
+		`rm -f "$MIGATE_BINARY"`,
+		`rm -f "$MIGATE_LINK"`,
+		`SINGBOX_SERVICE_PATH="/etc/systemd/system/migate-sing-box.service"`,
+		`XRAY_SERVICE_PATH="/etc/systemd/system/migate-xray.service"`,
 		"systemctl daemon-reload",
 		"systemctl reset-failed",
 		"--purge",
-		"rm -rf /etc/migate",
-		"rm -rf /usr/local/migate",
-		"rm -rf /etc/sing-box",
-		"rm -f /usr/local/etc/xray/config.json",
-		"rm -f /usr/local/etc/xray/xray.json",
-		"XRAY_COMPAT_CONFIG_LINK=\"/etc/migate/xray.json\"",
-		"rm -f /etc/migate/xray.json",
+		`rm -rf "$MIGATE_CONFIG_DIR"`,
+		`rm -rf "$MIGATE_DATA_DIR"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("uninstall script missing %q", want)
@@ -778,6 +936,16 @@ func TestUninstallScriptStopsServicesAndRemovesInstalledArtifacts(t *testing.T) 
 
 	if strings.Contains(strings.ToLower(script), "xray-install") {
 		t.Fatalf("uninstall must not remove third-party Xray installation by default")
+	}
+	for _, forbidden := range []string{
+		"XRAY_LEGACY_DROPIN",
+		"XRAY_COMPAT_CONFIG_LINK",
+		"rm -f /etc/migate/cores/xray.json",
+		"rm -rf /etc/migate/cores",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("uninstall must not keep legacy runtime cleanup marker %q", forbidden)
+		}
 	}
 }
 
@@ -852,7 +1020,7 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 		"NoNewPrivileges=true",
 		"PrivateTmp=true",
 		"ProtectSystem=strict",
-		"ReadWritePaths=/etc/migate /usr/local/migate /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system",
+		"ReadWritePaths=/etc/migate /var/lib/migate /var/log/migate /run/migate /usr/local/bin /usr/local/share/xray /etc/systemd/system",
 		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
 		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
 	} {
@@ -861,9 +1029,9 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`mkdir -p "$CONFIG_DIR" "$INSTALL_DIR" /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system`,
+		`mkdir -p "$CONFIG_DIR" "$CORE_CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR" /usr/local/bin /usr/local/share/xray /etc/systemd/system`,
 		"ProtectSystem=strict",
-		"ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system",
+		"ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} /usr/local/bin /usr/local/share/xray /etc/systemd/system",
 		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
 	} {
 		if !strings.Contains(script, want) {

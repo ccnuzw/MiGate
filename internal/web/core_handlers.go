@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/imzyb/MiGate/internal/paths"
 )
 
 const maxXrayLogLines = 200
@@ -47,7 +49,7 @@ func coreInstallHandler(core string, runner func(script string) ([]byte, error))
 		var commands []string
 		switch core {
 		case "xray":
-			commands = []string{"download Xray release", "verify Xray release checksum", "systemctl stop xray", "atomic install /usr/local/bin/xray", "write /etc/systemd/system/xray.service", "systemctl restart xray"}
+			commands = []string{"download Xray release", "verify Xray release checksum", "systemctl stop migate-xray", "atomic install /usr/local/bin/xray", "write /etc/systemd/system/migate-xray.service", "systemctl restart migate-xray"}
 			script = `set -euo pipefail
 arch="$(uname -m)"
 case "$arch" in
@@ -84,7 +86,7 @@ else
 fi
 unzip -oq "$tmp/$asset_name" -d "$tmp/xray"
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-  systemctl stop xray 2>/dev/null || true
+  systemctl stop migate-xray 2>/dev/null || true
 fi
 install_tmp="/usr/local/bin/.xray.new.$$"
 rm -f "$install_tmp"
@@ -92,11 +94,29 @@ cp "$tmp/xray/xray" "$install_tmp"
 chmod +x "$install_tmp"
 mv -f "$install_tmp" /usr/local/bin/xray
 install_tmp=""
-mkdir -p /usr/local/share/xray /usr/local/migate /usr/local/etc/xray
+mkdir -p /usr/local/share/xray /etc/migate/cores /var/lib/migate/backups
 [ -f "$tmp/xray/geosite.dat" ] && cp "$tmp/xray/geosite.dat" /usr/local/share/xray/geosite.dat
 [ -f "$tmp/xray/geoip.dat" ] && cp "$tmp/xray/geoip.dat" /usr/local/share/xray/geoip.dat
+atomic_write_file() {
+  path="$1"
+  mode="$2"
+  owner="${3:-}"
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  tmp_file="$(mktemp "${dir}/.${base}.tmp.XXXXXX")"
+  if ! cat > "$tmp_file"; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+  if [ -n "$owner" ]; then
+    chown "$owner" "$tmp_file" 2>/dev/null || true
+  fi
+  chmod "$mode" "$tmp_file"
+  mv -f "$tmp_file" "$path"
+}
 write_migate_default_xray_config() {
-  cat > /usr/local/migate/xray.json <<'JSON'
+  path="$1"
+  atomic_write_file "$path" 0640 root:migate <<'JSON'
 {
   "log": {
     "loglevel": "warning"
@@ -158,41 +178,38 @@ write_migate_default_xray_config() {
 }
 JSON
 }
+install_migate_default_xray_config() {
+  tmp_config="$(mktemp /etc/migate/cores/.xray-default.XXXXXX.json)"
+  write_migate_default_xray_config "$tmp_config"
+  /usr/local/bin/xray run -test -c "$tmp_config"
+  mv -f "$tmp_config" /etc/migate/cores/xray.json
+  chown root:migate /etc/migate/cores/xray.json 2>/dev/null || true
+  chmod 0640 /etc/migate/cores/xray.json
+}
 backup_migate_invalid_core_config() {
   path="$1"
   if [ ! -e "$path" ]; then
     return 0
   fi
-  backup="${path}.migate-backup.$(date +%Y%m%d%H%M%S)"
+  backup="/var/lib/migate/backups/xray-config-invalid-$(date +%Y%m%d-%H%M%S).json"
   mv -f "$path" "$backup"
   echo "backed up invalid config: $backup" >&2
 }
-if [ ! -f /usr/local/migate/xray.json ]; then
-  write_migate_default_xray_config
+if [ ! -f /etc/migate/cores/xray.json ]; then
+  install_migate_default_xray_config
 fi
-mkdir -p /etc/migate
-if [ -e /etc/migate/xray.json ] && [ ! -L /etc/migate/xray.json ]; then
-  echo "/etc/migate/xray.json exists and is not a symlink; keeping it unchanged" >&2
-  echo "Move it aside or replace it with a symlink to /usr/local/migate/xray.json, then rerun install." >&2
-  exit 1
-fi
-ln -sf /usr/local/migate/xray.json /etc/migate/xray.json
-ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/xray.json
-ln -sf /usr/local/migate/xray.json /usr/local/etc/xray/config.json
-if ! /usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json; then
+if ! /usr/local/bin/xray run -test -c /etc/migate/cores/xray.json; then
   echo "existing Xray config check failed; backing it up and writing MiGate default config" >&2
-  backup_migate_invalid_core_config /usr/local/migate/xray.json
-  write_migate_default_xray_config
-  /usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json
+  backup_migate_invalid_core_config /etc/migate/cores/xray.json
+  install_migate_default_xray_config
+  /usr/local/bin/xray run -test -c /etc/migate/cores/xray.json
 fi
 if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-  echo "systemd is unavailable; skipped xray.service"
+  echo "systemd is unavailable; skipped migate-xray.service"
   /usr/local/bin/xray version | sed -n '1p'
   exit 0
 fi
-rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf
-rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true
-cat > /etc/systemd/system/xray.service <<'UNIT'
+atomic_write_file /etc/systemd/system/migate-xray.service 0644 root:root <<'UNIT'
 [Unit]
 Description=MiGate managed Xray service
 After=network-online.target
@@ -200,7 +217,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+ExecStart=/usr/local/bin/xray run -c /etc/migate/cores/xray.json
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
@@ -213,12 +230,12 @@ LogRateLimitBurst=200
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable xray
-systemctl restart xray
-systemctl is-active --quiet xray
+systemctl enable migate-xray
+systemctl restart migate-xray
+systemctl is-active --quiet migate-xray
 /usr/local/bin/xray version | sed -n '1p'`
 		case "singbox":
-			commands = []string{"download sing-box release", "verify sing-box release checksum", "systemctl stop sing-box and migate-singbox", "atomic install /usr/local/bin/sing-box", "write /etc/systemd/system/sing-box.service", "systemctl restart sing-box"}
+			commands = []string{"download sing-box release", "verify sing-box release checksum", "systemctl stop migate-sing-box", "atomic install /usr/local/bin/sing-box", "write /etc/systemd/system/migate-sing-box.service", "systemctl restart migate-sing-box"}
 			script = `set -euo pipefail
 arch="$(uname -m)"
 case "$arch" in
@@ -260,8 +277,7 @@ else
 fi
 tar --no-same-owner -xzf "$tmp/$asset_name" -C "$tmp"
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-  systemctl stop sing-box 2>/dev/null || true
-  systemctl stop migate-singbox 2>/dev/null || true
+  systemctl stop migate-sing-box 2>/dev/null || true
 fi
 install_tmp="/usr/local/bin/.sing-box.new.$$"
 rm -f "$install_tmp"
@@ -269,9 +285,27 @@ cp "$tmp"/sing-box-*/sing-box "$install_tmp"
 chmod +x "$install_tmp"
 mv -f "$install_tmp" /usr/local/bin/sing-box
 install_tmp=""
-mkdir -p /etc/sing-box
+mkdir -p /etc/migate/cores /var/lib/migate/backups
+atomic_write_file() {
+  path="$1"
+  mode="$2"
+  owner="${3:-}"
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  tmp_file="$(mktemp "${dir}/.${base}.tmp.XXXXXX")"
+  if ! cat > "$tmp_file"; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+  if [ -n "$owner" ]; then
+    chown "$owner" "$tmp_file" 2>/dev/null || true
+  fi
+  chmod "$mode" "$tmp_file"
+  mv -f "$tmp_file" "$path"
+}
 write_migate_default_singbox_config() {
-  cat > /etc/sing-box/config.json <<'JSON'
+  path="$1"
+  atomic_write_file "$path" 0640 root:migate <<'JSON'
 {
   "log": {
     "level": "warn"
@@ -290,30 +324,38 @@ write_migate_default_singbox_config() {
 }
 JSON
 }
+install_migate_default_singbox_config() {
+  tmp_config="$(mktemp /etc/migate/cores/.sing-box-default.XXXXXX.json)"
+  write_migate_default_singbox_config "$tmp_config"
+  /usr/local/bin/sing-box check -c "$tmp_config"
+  mv -f "$tmp_config" /etc/migate/cores/sing-box.json
+  chown root:migate /etc/migate/cores/sing-box.json 2>/dev/null || true
+  chmod 0640 /etc/migate/cores/sing-box.json
+}
 backup_migate_invalid_core_config() {
   path="$1"
   if [ ! -e "$path" ]; then
     return 0
   fi
-  backup="${path}.migate-backup.$(date +%Y%m%d%H%M%S)"
+  backup="/var/lib/migate/backups/sing-box-config-invalid-$(date +%Y%m%d-%H%M%S).json"
   mv -f "$path" "$backup"
   echo "backed up invalid config: $backup" >&2
 }
-if [ ! -f /etc/sing-box/config.json ]; then
-  write_migate_default_singbox_config
+if [ ! -f /etc/migate/cores/sing-box.json ]; then
+  install_migate_default_singbox_config
 fi
-if ! /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then
+if ! /usr/local/bin/sing-box check -c /etc/migate/cores/sing-box.json; then
   echo "existing sing-box config check failed; backing it up and writing MiGate default config" >&2
-  backup_migate_invalid_core_config /etc/sing-box/config.json
-  write_migate_default_singbox_config
-  /usr/local/bin/sing-box check -c /etc/sing-box/config.json
+  backup_migate_invalid_core_config /etc/migate/cores/sing-box.json
+  install_migate_default_singbox_config
+  /usr/local/bin/sing-box check -c /etc/migate/cores/sing-box.json
 fi
 if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-  echo "systemd is unavailable; skipped sing-box.service"
+  echo "systemd is unavailable; skipped migate-sing-box.service"
   /usr/local/bin/sing-box version | sed -n '1p'
   exit 0
 fi
-cat > /etc/systemd/system/sing-box.service <<'UNIT'
+atomic_write_file /etc/systemd/system/migate-sing-box.service 0644 root:root <<'UNIT'
 [Unit]
 Description=sing-box service managed by MiGate
 After=network-online.target
@@ -321,7 +363,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecStart=/usr/local/bin/sing-box run -c /etc/migate/cores/sing-box.json
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
@@ -330,15 +372,9 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl stop migate-singbox 2>/dev/null || true
-systemctl disable migate-singbox 2>/dev/null || true
-rm -f /etc/systemd/system/migate-singbox.service
-rm -rf /etc/systemd/system/migate-singbox.service.d
-systemctl daemon-reload
-systemctl reset-failed migate-singbox 2>/dev/null || true
-systemctl enable sing-box
-systemctl restart sing-box
-systemctl is-active --quiet sing-box
+systemctl enable migate-sing-box
+systemctl restart migate-sing-box
+systemctl is-active --quiet migate-sing-box
 /usr/local/bin/sing-box version | sed -n '1p'`
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
@@ -370,9 +406,9 @@ func coreServiceControlHandler(core, action string, runner func(script string) (
 		service := ""
 		switch core {
 		case "xray":
-			service = "xray"
+			service = paths.XrayService
 		case "singbox":
-			service = "sing-box"
+			service = paths.SingboxService
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
 			return
@@ -469,31 +505,23 @@ func coreUninstallHandler(core string, runner func(script string) ([]byte, error
 		var commands []string
 		switch core {
 		case "xray":
-			commands = []string{"systemctl stop xray", "systemctl disable xray", "remove MiGate xray service and symlinks", "systemctl daemon-reload"}
+			commands = []string{"systemctl stop migate-xray", "systemctl disable migate-xray", "remove MiGate Xray service", "systemctl daemon-reload"}
 			script = `set -euo pipefail
-systemctl stop xray 2>/dev/null || true
-systemctl disable xray 2>/dev/null || true
-rm -f /etc/systemd/system/xray.service
-rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf
-rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true
-rm -f /usr/local/etc/xray/xray.json /usr/local/etc/xray/config.json
-if [ -L /etc/migate/xray.json ]; then rm -f /etc/migate/xray.json; fi
+systemctl stop migate-xray 2>/dev/null || true
+systemctl disable migate-xray 2>/dev/null || true
+rm -f /etc/systemd/system/migate-xray.service
 systemctl daemon-reload 2>/dev/null || true
-systemctl reset-failed xray 2>/dev/null || true
-printf 'Xray service disabled and MiGate systemd unit/symlinks removed. Remove the Xray binary/package manually if it was installed outside MiGate.\n'`
+systemctl reset-failed migate-xray 2>/dev/null || true
+printf 'Xray service disabled. Configuration and binary were kept.\n'`
 		case "singbox":
-			commands = []string{"systemctl stop sing-box", "systemctl disable sing-box", "remove sing-box binary and service", "systemctl daemon-reload"}
+			commands = []string{"systemctl stop migate-sing-box", "systemctl disable migate-sing-box", "remove MiGate sing-box service", "systemctl daemon-reload"}
 			script = `set -euo pipefail
-systemctl stop sing-box 2>/dev/null || true
-systemctl disable sing-box 2>/dev/null || true
-systemctl stop migate-singbox 2>/dev/null || true
-systemctl disable migate-singbox 2>/dev/null || true
-rm -f /etc/systemd/system/sing-box.service /etc/systemd/system/migate-singbox.service /usr/local/bin/sing-box
-rm -rf /etc/systemd/system/migate-singbox.service.d
+systemctl stop migate-sing-box 2>/dev/null || true
+systemctl disable migate-sing-box 2>/dev/null || true
+rm -f /etc/systemd/system/migate-sing-box.service
 systemctl daemon-reload 2>/dev/null || true
-systemctl reset-failed sing-box 2>/dev/null || true
-systemctl reset-failed migate-singbox 2>/dev/null || true
-printf 'sing-box removed\n'`
+systemctl reset-failed migate-sing-box 2>/dev/null || true
+printf 'sing-box service disabled. Configuration and binary were kept.\n'`
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown_core")
 			return
@@ -524,7 +552,7 @@ func xrayLogsHandler() http.HandlerFunc {
 		} else if n > maxXrayLogLines {
 			lines = strconv.Itoa(maxXrayLogLines)
 		}
-		out, err := exec.Command("journalctl", "-u", "xray", "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
+		out, err := exec.Command("journalctl", "-u", paths.XrayService, "-n", lines, "--no-pager", "-o", "short-iso").CombinedOutput()
 		if err != nil {
 			// Fallback: try reading from syslog
 			out, err = exec.Command("tail", "-n", lines, "/var/log/syslog").CombinedOutput()

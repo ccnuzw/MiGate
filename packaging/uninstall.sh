@@ -2,19 +2,19 @@
 set -euo pipefail
 
 MIGATE_SERVICE="migate"
-SINGBOX_SERVICE="sing-box"
+XRAY_SERVICE="migate-xray"
+SINGBOX_SERVICE="migate-sing-box"
 MIGATE_BINARY="/usr/local/bin/migate"
+MIGATE_LINK="/usr/local/bin/mg"
+INSTALLER_BINARY="/usr/local/bin/migate-install"
+UNINSTALLER_BINARY="/usr/local/bin/migate-uninstall"
 MIGATE_SERVICE_PATH="/etc/systemd/system/migate.service"
-SINGBOX_SERVICE_PATH="/etc/systemd/system/sing-box.service"
+XRAY_SERVICE_PATH="/etc/systemd/system/migate-xray.service"
+SINGBOX_SERVICE_PATH="/etc/systemd/system/migate-sing-box.service"
 MIGATE_CONFIG_DIR="/etc/migate"
-MIGATE_INSTALL_DIR="/usr/local/migate"
-SINGBOX_CONFIG_DIR="/etc/sing-box"
-XRAY_CONFIG_LINK="/usr/local/etc/xray/config.json"
-XRAY_DEFAULT_CONFIG_LINK="/usr/local/etc/xray/xray.json"
-XRAY_COMPAT_CONFIG_LINK="/etc/migate/xray.json"
-XRAY_SERVICE_PATH="/etc/systemd/system/xray.service"
-XRAY_SERVICE_DROPIN_DIR="/etc/systemd/system/xray.service.d"
-XRAY_LEGACY_DROPIN="$XRAY_SERVICE_DROPIN_DIR/10-donot_touch_single_conf.conf"
+MIGATE_DATA_DIR="/var/lib/migate"
+MIGATE_LOG_DIR="/var/log/migate"
+MIGATE_RUN_DIR="/run/migate"
 
 PURGE=0
 ASSUME_YES=0
@@ -25,27 +25,24 @@ usage() {
 MiGate uninstaller
 
 Usage:
-  uninstall.sh [--purge] [--yes]
+  uninstall.sh [--purge] [--yes] [--dry-run]
 
 Options:
-  --purge   Also remove MiGate config/data and MiGate-managed generated configs.
+  --purge   Also remove MiGate config, data, logs, backups, and runtime files.
   --yes     Do not ask for confirmation when --purge is used.
   --dry-run Print planned commands without changing the system.
   -h,--help Show this help.
 
-Default uninstall keeps data:
-  - /etc/migate/panel.json
-  - /usr/local/migate/migate.db
-  - /usr/local/migate/xray.json
+Default uninstall keeps:
+  - /etc/migate
+  - /var/lib/migate
+  - /var/log/migate
 
 Purge removes:
   - /etc/migate
-  - /usr/local/migate
-  - /etc/sing-box
-  - /usr/local/etc/xray/config.json symlink/file
-  - /etc/migate/xray.json symlink/file
-
-Third-party Xray itself is not removed.
+  - /var/lib/migate
+  - /var/log/migate
+  - /run/migate
 EOF
 }
 
@@ -78,7 +75,7 @@ confirm_purge() {
   if [ "$PURGE" -ne 1 ] || [ "$ASSUME_YES" -eq 1 ]; then
     return
   fi
-  echo "--purge will permanently remove MiGate configuration and data."
+  echo "--purge will permanently remove MiGate configuration, data, logs, and backups."
   read -r -p "Type 'PURGE' to continue: " answer
   if [ "$answer" != "PURGE" ]; then
     echo "Purge cancelled. Re-run without --purge for service-only uninstall."
@@ -86,24 +83,12 @@ confirm_purge() {
   fi
 }
 
-remove_migate_xray_link() {
-  # MiGate installer points Xray's default config to /usr/local/migate/xray.json.
-  # Remove only that managed link/file path; do not uninstall third-party Xray.
-  if [ -L "$XRAY_CONFIG_LINK" ]; then
-    run_cmd rm -f "$XRAY_CONFIG_LINK"
-  elif [ "$PURGE" -eq 1 ] && [ -f "$XRAY_CONFIG_LINK" ]; then
-    run_cmd rm -f "$XRAY_CONFIG_LINK"
-  fi
-  if [ -L "$XRAY_DEFAULT_CONFIG_LINK" ]; then
-    run_cmd rm -f "$XRAY_DEFAULT_CONFIG_LINK"
-  elif [ "$PURGE" -eq 1 ] && [ -f "$XRAY_DEFAULT_CONFIG_LINK" ]; then
-    run_cmd rm -f "$XRAY_DEFAULT_CONFIG_LINK"
-  fi
-  if [ -L "$XRAY_COMPAT_CONFIG_LINK" ]; then
-    run_cmd rm -f "$XRAY_COMPAT_CONFIG_LINK"
-  elif [ "$PURGE" -eq 1 ] && [ -f "$XRAY_COMPAT_CONFIG_LINK" ]; then
-    run_cmd rm -f "$XRAY_COMPAT_CONFIG_LINK"
-  fi
+stop_disable_remove_service() {
+  local service="$1"
+  local unit_path="$2"
+  run_cmd systemctl stop "$service" 2>/dev/null || true
+  run_cmd systemctl disable "$service" 2>/dev/null || true
+  run_cmd rm -f "$unit_path"
 }
 
 main() {
@@ -112,43 +97,30 @@ main() {
   confirm_purge
 
   echo "Stopping MiGate services..."
-  run_cmd systemctl stop migate 2>/dev/null || true
-  run_cmd systemctl disable migate 2>/dev/null || true
-  run_cmd rm -f /etc/systemd/system/migate.service
-  run_cmd systemctl stop xray 2>/dev/null || true
-  run_cmd systemctl disable xray 2>/dev/null || true
-  run_cmd rm -f "$XRAY_SERVICE_PATH"
-  run_cmd rm -f "$XRAY_LEGACY_DROPIN"
-  run_cmd rmdir "$XRAY_SERVICE_DROPIN_DIR" 2>/dev/null || true
-  run_cmd systemctl stop sing-box 2>/dev/null || true
-  run_cmd systemctl disable sing-box 2>/dev/null || true
-  run_cmd rm -f /etc/systemd/system/sing-box.service
-  run_cmd systemctl stop migate-singbox 2>/dev/null || true
-  run_cmd systemctl disable migate-singbox 2>/dev/null || true
-  run_cmd rm -f /etc/systemd/system/migate-singbox.service
+  stop_disable_remove_service "$MIGATE_SERVICE" "$MIGATE_SERVICE_PATH"
+  stop_disable_remove_service "$XRAY_SERVICE" "$XRAY_SERVICE_PATH"
+  stop_disable_remove_service "$SINGBOX_SERVICE" "$SINGBOX_SERVICE_PATH"
 
-  echo "Removing MiGate binary..."
-  run_cmd rm -f /usr/local/bin/migate
-  run_cmd rm -f /usr/local/bin/mg
+  echo "Removing MiGate command binaries..."
+  run_cmd rm -f "$MIGATE_BINARY"
+  run_cmd rm -f "$MIGATE_LINK"
+  run_cmd rm -f "$INSTALLER_BINARY"
+  run_cmd rm -f "$UNINSTALLER_BINARY"
 
   if [ "$PURGE" -eq 1 ]; then
-    echo "Purging MiGate config/data and managed runtime files..."
-    run_cmd rm -rf /etc/migate
-    run_cmd rm -rf /usr/local/migate
-    run_cmd rm -rf /etc/sing-box
-    run_cmd rm -f /usr/local/etc/xray/config.json
-    run_cmd rm -f /usr/local/etc/xray/xray.json
-    run_cmd rm -f /etc/migate/xray.json
+    echo "Purging MiGate config, data, logs, backups, and runtime files..."
+    run_cmd rm -rf "$MIGATE_CONFIG_DIR"
+    run_cmd rm -rf "$MIGATE_DATA_DIR"
+    run_cmd rm -rf "$MIGATE_LOG_DIR"
+    run_cmd rm -rf "$MIGATE_RUN_DIR"
   else
-    remove_migate_xray_link
-    echo "Keeping MiGate config/data. Use --purge --yes to remove them."
+    echo "Keeping MiGate config/data/logs. Use --purge --yes to remove them."
   fi
 
   run_cmd systemctl daemon-reload 2>/dev/null || true
   run_cmd systemctl reset-failed "$MIGATE_SERVICE" 2>/dev/null || true
+  run_cmd systemctl reset-failed "$XRAY_SERVICE" 2>/dev/null || true
   run_cmd systemctl reset-failed "$SINGBOX_SERVICE" 2>/dev/null || true
-  run_cmd systemctl reset-failed xray 2>/dev/null || true
-  run_cmd systemctl reset-failed migate-singbox 2>/dev/null || true
   run_cmd systemctl reset-failed 2>/dev/null || true
 
   echo "MiGate uninstalled."

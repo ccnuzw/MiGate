@@ -41,7 +41,7 @@ export default function SettingsPage() {
   const save = useMutation({
     mutationFn: (values: Settings) => api.saveSettings(settingsPayload(settings.data, values)),
     onSuccess: () => {
-      showToast(text('设置已保存，端口或路径变更需要重启服务后生效'), 'success');
+      showToast(text('设置已保存，端口、数据库或基础路径变更需要重启服务后生效'), 'success');
       form.setValue('panel_password', '');
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       queryClient.invalidateQueries({ queryKey: ['cert-status'] });
@@ -121,7 +121,6 @@ export default function SettingsPage() {
           <Field label={text('新密码')} help={settings.data?.has_password ? text('留空表示保留现有密码。') : undefined}><input type="password" autoComplete="new-password" {...form.register('panel_password')} /></Field>
           <Field label={text('Web 基础路径')}><input placeholder="/panel" {...form.register('web_base_path')} /></Field>
           <Field label={text('数据库路径')}><input {...form.register('database_path')} /></Field>
-          <Field label={text('Xray 配置路径')}><input {...form.register('xray_config_path')} /></Field>
           <div className="span-2 flex flex-wrap justify-end gap-2">
             <button type="button" className="btn secondary" onClick={() => { settings.refetch(); cert.refetch(); service.refetch(); }}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
             <SpinnerButton type="submit" className="btn primary" loading={save.isPending}><Save className="h-4 w-4" /> {text('保存设置')}</SpinnerButton>

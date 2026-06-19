@@ -109,13 +109,25 @@ Config file:
 Database:
 
 ```text
-/usr/local/migate/migate.db
+/var/lib/migate/migate.db
+```
+
+Install state:
+
+```text
+/var/lib/migate/versions.json
+```
+
+Backups:
+
+```text
+/var/lib/migate/backups
 ```
 
 Xray config:
 
 ```text
-/usr/local/migate/xray.json
+/etc/migate/cores/xray.json
 ```
 
 More details: `docs/install.md`.

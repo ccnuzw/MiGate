@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/corefile"
+	"github.com/imzyb/MiGate/internal/paths"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -20,25 +21,29 @@ type CmdRunner func(name string, args ...string) (string, error)
 // RealController implements XrayController by writing config to disk,
 // validating with xray, and restarting the xray systemd service.
 type RealController struct {
-	store     Store
-	configDir string
-	runCmd    CmdRunner
+	store      Store
+	configPath string
+	runCmd     CmdRunner
 }
 
 // NewRealController creates a controller that persists the generated xray
 // configuration, validates it, and restarts the xray service.
-func NewRealController(store Store, configDir string, runCmd CmdRunner) *RealController {
-	return &RealController{store: store, configDir: NormalizeXrayConfigDir(configDir), runCmd: runCmd}
+func NewRealController(store Store, configPath string, runCmd CmdRunner) *RealController {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		configPath = paths.XrayConfig
+	}
+	return &RealController{store: store, configPath: configPath, runCmd: runCmd}
 }
 
 // Status reports whether the xray binary and systemd service appear to be
 // running on this host.
 func (c *RealController) Status(ctx context.Context) XrayStatus {
 	executed := []string{}
-	configDir := c.normalizedConfigDir()
+	configPath := c.normalizedConfigPath()
 
-	out, err := c.runCmd("systemctl", "is-active", "xray")
-	executed = append(executed, "systemctl is-active xray")
+	out, err := c.runCmd("systemctl", "is-active", paths.XrayService)
+	executed = append(executed, "systemctl is-active "+paths.XrayService)
 
 	status := "unknown"
 	managed := false
@@ -50,8 +55,8 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 		}
 	}
 
-	showOut, showErr := c.runCmd("systemctl", "show", "xray", "--property=MemoryCurrent", "--property=MainPID", "--property=ActiveEnterTimestamp")
-	executed = append(executed, "systemctl show xray --property=MemoryCurrent --property=MainPID --property=ActiveEnterTimestamp")
+	showOut, showErr := c.runCmd("systemctl", "show", paths.XrayService, "--property=MemoryCurrent", "--property=MainPID", "--property=ActiveEnterTimestamp")
+	executed = append(executed, "systemctl show "+paths.XrayService+" --property=MemoryCurrent --property=MainPID --property=ActiveEnterTimestamp")
 	memoryRSS, uptime := parseXrayServiceStatus(showOut)
 	if showErr == nil {
 		managed = true
@@ -67,7 +72,6 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 		status = "not_installed"
 	}
 
-	configPath := filepath.Join(configDir, "xray.json")
 	configExists := false
 	configValid := false
 	configError := ""
@@ -75,7 +79,7 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 	if configStatus.OK() {
 		configExists = true
 		if version != "" {
-			validateOut, validateErr := c.runCmd("xray", "run", "-test", "-c", configPath)
+			validateOut, validateErr := c.runCmd(paths.XrayBinary, "run", "-test", "-c", configPath)
 			executed = append(executed, fmt.Sprintf("xray run -test -c %s", configPath))
 			if validateErr != nil {
 				configError = strings.TrimSpace(validateOut)
@@ -97,11 +101,15 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 	executed = append(executed, "ss -tn state established")
 
 	return XrayStatus{
-		Service:           "xray",
+		Core:              "xray",
+		Service:           paths.XrayService,
 		Status:            status,
+		ServiceStatus:     status,
 		Managed:           managed,
 		Installed:         version != "",
 		Version:           version,
+		BinaryPath:        paths.XrayBinary,
+		BinaryVersion:     version,
 		ConfigExists:      configExists,
 		ConfigValid:       configValid,
 		ConfigError:       configError,
@@ -118,8 +126,8 @@ func (c *RealController) Status(ctx context.Context) XrayStatus {
 // restarts the xray systemd service.
 func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	executed := []string{}
-	configDir := c.normalizedConfigDir()
-	configPath := filepath.Join(configDir, "xray.json")
+	configPath := c.normalizedConfigPath()
+	configDir := filepath.Dir(configPath)
 	result := XrayApplyResult{
 		Applied:          false,
 		Status:           "failed",
@@ -188,7 +196,7 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 		_ = tmp.Close()
 		return fail("write_temp_failed", err.Error())
 	}
-	if err := tmp.Chmod(0644); err != nil {
+	if err := tmp.Chmod(0640); err != nil {
 		_ = tmp.Close()
 		return fail("chmod_temp_failed", err.Error())
 	}
@@ -233,8 +241,8 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	executed = append(executed, fmt.Sprintf("write %s", configPath))
 
 	// 3. Restart xray service. If restart fails, restore the previous config.
-	restartOut, err := c.runCmd("systemctl", "restart", "xray")
-	executed = append(executed, "systemctl restart xray")
+	restartOut, err := c.runCmd("systemctl", "restart", paths.XrayService)
+	executed = append(executed, "systemctl restart "+paths.XrayService)
 	if err != nil {
 		detail := strings.TrimSpace(restartOut)
 		if detail == "" {
@@ -244,8 +252,8 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 			if restoreErr := os.Rename(backupPath, configPath); restoreErr != nil {
 				return fail("restart_failed", fmt.Sprintf("%s; restore previous config failed: %v", detail, restoreErr))
 			}
-			restoreOut, restoreRestartErr := c.runCmd("systemctl", "restart", "xray")
-			executed = append(executed, "restore previous config", "systemctl restart xray")
+			restoreOut, restoreRestartErr := c.runCmd("systemctl", "restart", paths.XrayService)
+			executed = append(executed, "restore previous config", "systemctl restart "+paths.XrayService)
 			if restoreRestartErr != nil {
 				restoreDetail := strings.TrimSpace(restoreOut)
 				if restoreDetail == "" {
@@ -270,12 +278,12 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	return result
 }
 
-func (c *RealController) normalizedConfigDir() string {
-	dir := NormalizeXrayConfigDir(c.configDir)
-	if dir == "" {
-		return "/usr/local/migate"
+func (c *RealController) normalizedConfigPath() string {
+	path := strings.TrimSpace(c.configPath)
+	if path == "" {
+		return paths.XrayConfig
 	}
-	return dir
+	return path
 }
 
 func xrayApplyStatusForError(code string) string {
@@ -374,7 +382,7 @@ func isXrayHandledProtocol(protocol string) bool {
 
 // Version runs `xray version` and returns the first line.
 func (c *RealController) Version(ctx context.Context) string {
-	out, err := c.runCmd("xray", "version")
+	out, err := c.runCmd(paths.XrayBinary, "version")
 	if err != nil {
 		return ""
 	}

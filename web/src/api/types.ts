@@ -180,11 +180,15 @@ export interface Resources {
 }
 
 export interface CoreStatus {
+  core?: string;
   service: string;
   status: string;
+  service_status?: string;
   managed?: boolean;
   installed?: boolean;
   version?: string;
+  binary_path?: string;
+  binary_version?: string;
   config_exists?: boolean;
   config_valid?: boolean;
   config_error?: string;
@@ -431,7 +435,6 @@ export interface Settings {
   panel_password?: string;
   web_base_path?: string;
   database_path?: string;
-  xray_config_path?: string;
   cert_domain?: string;
   cert_email?: string;
   has_password?: boolean;

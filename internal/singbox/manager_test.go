@@ -60,13 +60,13 @@ func TestNormalizeVersionDropsTagsSuffix(t *testing.T) {
 	}
 }
 
-func TestServiceNameUsesUpstreamSystemdUnit(t *testing.T) {
-	if got := ServiceName(); got != "sing-box" {
-		t.Fatalf("expected sing-box service name, got %q", got)
+func TestServiceNameUsesMiGateSystemdUnit(t *testing.T) {
+	if got := ServiceName(); got != "migate-sing-box" {
+		t.Fatalf("expected MiGate sing-box service name, got %q", got)
 	}
 }
 
-func TestRuntimeServiceNamePrefersNewService(t *testing.T) {
+func TestManagementUsesOnlyStandardService(t *testing.T) {
 	origExec := execCommand
 	defer func() { execCommand = origExec }()
 	var calls []string
@@ -78,16 +78,17 @@ func TestRuntimeServiceNamePrefersNewService(t *testing.T) {
 		return cmd
 	}
 
-	if got := RuntimeServiceName(); got != "sing-box" {
-		t.Fatalf("expected sing-box service, got %q", got)
+	got := Management()
+	if !got.Managed || got.Service != "migate-sing-box" {
+		t.Fatalf("expected standard service to be managed, got %+v", got)
 	}
-	want := []string{"systemctl show sing-box --property=LoadState --value"}
+	want := []string{"systemctl show migate-sing-box --property=LoadState --value"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unexpected calls: %+v", calls)
 	}
 }
 
-func TestRuntimeServiceNameFallsBackToLegacyService(t *testing.T) {
+func TestManagementDoesNotFallbackToLegacyService(t *testing.T) {
 	origExec := execCommand
 	defer func() { execCommand = origExec }()
 	var calls []string
@@ -96,51 +97,15 @@ func TestRuntimeServiceNameFallsBackToLegacyService(t *testing.T) {
 		calls = append(calls, call)
 		cs := []string{"-test.run=TestMain", "--", "ok"}
 		cmd := exec.Command(os.Args[0], cs...)
-		out := "loaded\n"
-		if strings.Contains(call, "show sing-box ") {
-			out = "not-found\n"
-		}
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT="+out)
-		return cmd
-	}
-
-	if got := RuntimeServiceName(); got != "migate-singbox" {
-		t.Fatalf("expected legacy service, got %q", got)
-	}
-	want := []string{
-		"systemctl show sing-box --property=LoadState --value",
-		"systemctl show migate-singbox --property=LoadState --value",
-	}
-	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("unexpected calls: %+v", calls)
-	}
-}
-
-func TestManagementReportsLegacyServiceAsManaged(t *testing.T) {
-	origExec := execCommand
-	defer func() { execCommand = origExec }()
-	var calls []string
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		call := strings.TrimSpace(name + " " + strings.Join(args, " "))
-		calls = append(calls, call)
-		cs := []string{"-test.run=TestMain", "--", "ok"}
-		cmd := exec.Command(os.Args[0], cs...)
-		out := "loaded\n"
-		if strings.Contains(call, "show sing-box ") {
-			out = "not-found\n"
-		}
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT="+out)
+		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=not-found\n")
 		return cmd
 	}
 
 	got := Management()
-	if !got.Managed || got.Service != "migate-singbox" {
-		t.Fatalf("expected legacy service to be managed, got %+v", got)
+	if got.Managed || got.Service != "migate-sing-box" {
+		t.Fatalf("expected unmanaged standard service, got %+v", got)
 	}
-	want := []string{
-		"systemctl show sing-box --property=LoadState --value",
-		"systemctl show migate-singbox --property=LoadState --value",
-	}
+	want := []string{"systemctl show migate-sing-box --property=LoadState --value"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unexpected calls: %+v", calls)
 	}
@@ -165,7 +130,7 @@ func TestManagementReportsUnmanagedWhenNoServiceExists(t *testing.T) {
 	}
 
 	got := Management()
-	if got.Managed || got.Service != "sing-box" {
+	if got.Managed || got.Service != "migate-sing-box" {
 		t.Fatalf("expected unmanaged primary service fallback, got %+v", got)
 	}
 	if status := Status(); status != "not_managed" {
@@ -328,7 +293,7 @@ func TestManagementDoesNotTreatSystemctlErrorsAsManaged(t *testing.T) {
 	}
 }
 
-func TestRestartServiceFallsBackToLegacyService(t *testing.T) {
+func TestRestartServiceUsesStandardService(t *testing.T) {
 	origExec := execCommand
 	defer func() { execCommand = origExec }()
 	var calls []string
@@ -337,22 +302,14 @@ func TestRestartServiceFallsBackToLegacyService(t *testing.T) {
 		calls = append(calls, call)
 		cs := []string{"-test.run=TestMain", "--", "ok"}
 		cmd := exec.Command(os.Args[0], cs...)
-		out := "loaded\n"
-		if strings.Contains(call, "show sing-box ") {
-			out = "not-found\n"
-		}
-		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT="+out)
+		cmd.Env = append(os.Environ(), "SINGBOX_MANAGER_TEST_HELPER=1", "SINGBOX_MANAGER_TEST_STDOUT=loaded\n")
 		return cmd
 	}
 
 	if _, err := RestartService(); err != nil {
-		t.Fatalf("restart legacy service: %v", err)
+		t.Fatalf("restart service: %v", err)
 	}
-	want := []string{
-		"systemctl show sing-box --property=LoadState --value",
-		"systemctl show migate-singbox --property=LoadState --value",
-		"systemctl restart migate-singbox",
-	}
+	want := []string{"systemctl restart migate-sing-box"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unexpected calls: %+v", calls)
 	}
@@ -426,7 +383,7 @@ func TestApplyConfigRestoresExistingConfigWhenRestartFails(t *testing.T) {
 	}
 
 	err := ApplyConfig([]byte(`{"log":{"level":"warn"},"outbounds":[{"type":"direct","tag":"new"}]}`))
-	if err == nil || !strings.Contains(err.Error(), "systemctl restart sing-box failed") {
+	if err == nil || !strings.Contains(err.Error(), "systemctl restart migate-sing-box failed") {
 		t.Fatalf("expected restart error, got %v", err)
 	}
 	got, readErr := os.ReadFile(DefaultConfigPath)
@@ -557,7 +514,7 @@ func TestApplyConfigRestartsRestoredConfigWhenNewConfigRestartFails(t *testing.T
 	}
 
 	err := ApplyConfig([]byte(`{"outbounds":[{"type":"direct","tag":"new"}]}`))
-	if err == nil || !strings.Contains(err.Error(), "systemctl restart sing-box failed") {
+	if err == nil || !strings.Contains(err.Error(), "systemctl restart migate-sing-box failed") {
 		t.Fatalf("expected first restart error, got %v", err)
 	}
 	if got := atomic.LoadInt32(&restarts); got != 2 {

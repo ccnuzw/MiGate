@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+
+	"github.com/imzyb/MiGate/internal/paths"
 )
 
 var validDomain = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
@@ -139,15 +141,16 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			"--keylength", "ec-256",
 			"--fullchain-file", certFile,
 			"--key-file", keyFile,
-			"--reloadcmd", "systemctl restart xray || true",
+			"--reloadcmd", "systemctl restart "+paths.XrayService+" || true",
 		).CombinedOutput()
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "issue_cert_failed", map[string]interface{}{"detail": string(out)})
 			return
 		}
 
-		// Set permissions for xray user
-		exec.Command("chmod", "644", certFile, keyFile).Run()
+		_ = exec.Command("chown", "root:migate", certFile, keyFile).Run()
+		_ = exec.Command("chmod", "640", certFile).Run()
+		_ = exec.Command("chmod", "600", keyFile).Run()
 
 		// Update panel.json with cert domain/email
 		configPath := cfg.configDir + "/panel.json"
@@ -168,7 +171,7 @@ func certIssueHandler(cfg *routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusInternalServerError, "serialize_failed")
 			return
 		}
-		if err := os.WriteFile(configPath, updated, 0o600); err != nil {
+		if err := writePanelConfigFile(configPath, updated); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "write_panel_config_failed")
 			return
 		}

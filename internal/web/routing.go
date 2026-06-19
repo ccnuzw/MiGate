@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/singbox"
 )
 
 func routingRulesHandler(cfg *routerConfig) http.HandlerFunc {
@@ -215,8 +216,8 @@ func routingChangeAffectsCoreStrict(ctx context.Context, store Store, rule db.Ro
 func failedSingboxListSummary(err error) SingboxApplySummary {
 	return SingboxApplySummary{
 		Applied:          false,
-		Service:          "sing-box",
-		ConfigPath:       "/etc/sing-box/config.json",
+		Service:          singbox.ServiceName(),
+		ConfigPath:       singbox.DefaultConfigPath,
 		CommandsExecuted: []string{},
 		Error:            "list_failed",
 		Detail:           err.Error(),

@@ -59,7 +59,10 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"migate-linux-${ARCH}.tar.gz",
-		"/usr/local/migate",
+		"/var/lib/migate",
+		"/var/lib/migate/backups",
+		"/var/lib/migate/versions.json",
+		"/etc/migate/cores",
 		"systemctl enable migate",
 		"systemctl restart migate",
 		"detect_existing_install()",
@@ -76,6 +79,31 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 	for _, word := range forbidden {
 		if strings.Contains(lower, word) {
 			t.Fatalf("installer must not contain %q:\n%s", word, script)
+		}
+	}
+}
+
+func TestRuntimeContractDoesNotAdvertiseLegacyPathsOrServices(t *testing.T) {
+	for _, file := range []string{
+		filepath.Join("packaging", "install.sh"),
+		filepath.Join("packaging", "uninstall.sh"),
+		filepath.Join("packaging", "migate.service"),
+		filepath.Join("cmd", "migate", "main.go"),
+		filepath.Join("internal", "web", "core_handlers.go"),
+		filepath.Join("internal", "singbox", "manager.go"),
+	} {
+		content := read(t, file)
+		for _, forbidden := range []string{
+			"/usr/local/" + "migate",
+			"/etc/sing-box/" + "config.json",
+			"/usr/local/etc/" + "xray",
+			"migate-" + "singbox",
+			"ExecStart=/usr/local/bin/xray run -config",
+			"ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/" + "config.json",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s must not contain legacy runtime contract %q", file, forbidden)
+			}
 		}
 	}
 }

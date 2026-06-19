@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/lockfile"
+	"github.com/imzyb/MiGate/internal/paths"
 	"github.com/imzyb/MiGate/internal/singbox"
 )
 
@@ -112,6 +115,34 @@ func TestTryApplySingboxBestEffortMissingBinaryIsNotApplied(t *testing.T) {
 	}
 	if result.Detail != "singbox_not_installed" || !containsString(result.Warnings, "singbox_not_installed") {
 		t.Fatalf("expected missing binary warning, got %+v", result)
+	}
+}
+
+func TestSingboxApplyUsesApplyLock(t *testing.T) {
+	origApplyLock := paths.ApplyLock
+	paths.ApplyLock = filepath.Join(t.TempDir(), "apply.lock")
+	t.Cleanup(func() { paths.ApplyLock = origApplyLock })
+	unlock, err := lockfile.TryAcquire(paths.ApplyLock)
+	if err != nil {
+		t.Fatalf("acquire apply lock: %v", err)
+	}
+	defer unlock()
+	origBinary := singbox.DefaultBinaryPath
+	singbox.DefaultBinaryPath = filepath.Join(t.TempDir(), "sing-box")
+	t.Cleanup(func() { singbox.DefaultBinaryPath = origBinary })
+	if err := os.WriteFile(singbox.DefaultBinaryPath, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	router := NewRouter(WithStore(&countingSummaryStore{}), WithSingboxApplier(func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary {
+		return SingboxApplySummary{Applied: true}
+	}))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/apply", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"apply_locked"`) {
+		t.Fatalf("expected apply lock conflict, got %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -287,7 +318,7 @@ func TestCreateSingboxInboundAppliedWithMissingListenerWarning(t *testing.T) {
 	router := NewRouter(
 		WithStore(store),
 		WithSingboxApplier(func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary {
-			return SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/sing-box/config.json", CommandsExecuted: []string{"sing-box check"}}
+			return SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{"sing-box check"}}
 		}),
 		WithSingboxListenerDiagnostics(func(ctx context.Context) []SingboxListenerDiagnostic {
 			return []SingboxListenerDiagnostic{{InboundID: 1, Protocol: "hysteria2", Port: 21000, Transport: "udp", Listening: false}}

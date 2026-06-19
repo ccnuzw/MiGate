@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/panelconfig"
+	"github.com/imzyb/MiGate/internal/paths"
 	"github.com/imzyb/MiGate/internal/scheduler"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/web"
@@ -29,7 +31,7 @@ import (
 // Version is set via ldflags at build time.
 var Version = "dev"
 
-var defaultPanelConfigPath = "/etc/migate/panel.json"
+var defaultPanelConfigPath = paths.PanelConfig
 
 type lang string
 
@@ -179,14 +181,13 @@ func (osRunner) Run(name string, args ...string) (string, error) {
 }
 
 type panelConfig struct {
-	PanelPort      int    `json:"panel_port"`
-	PanelUsername  string `json:"panel_username"`
-	PanelPassword  string `json:"panel_password"`
-	WebPath        string `json:"web_base_path"`
-	PublicHost     string `json:"public_host"`
-	TrustProxy     bool   `json:"trust_proxy"`
-	DatabasePath   string `json:"database_path"`
-	XrayConfigPath string `json:"xray_config_path"`
+	PanelPort     int    `json:"panel_port"`
+	PanelUsername string `json:"panel_username"`
+	PanelPassword string `json:"panel_password"`
+	WebPath       string `json:"web_base_path"`
+	PublicHost    string `json:"public_host"`
+	TrustProxy    bool   `json:"trust_proxy"`
+	DatabasePath  string `json:"database_path"`
 }
 
 func main() {
@@ -300,7 +301,7 @@ func runCLI(args []string, stdout, stderr io.Writer, runner commandRunner) int {
 	case "hash-password":
 		return cliHashPassword(stdout, stderr, args[1:])
 	case "start", "stop":
-		return cliSystemctl(stderr, runner, args[0], "migate")
+		return cliSystemctl(stderr, runner, args[0], paths.PanelService)
 	case "restart":
 		return cliRestart(stderr, runner, args[1:])
 	case "logs":
@@ -316,7 +317,7 @@ func runCLI(args []string, stdout, stderr io.Writer, runner commandRunner) int {
 	case "ports":
 		return cliPorts(stdout, stderr, runner, m)
 	case "uninstall":
-		out, err := runner.Run("/usr/local/bin/migate-uninstall", args[1:]...)
+		out, err := runner.Run(paths.Uninstaller, args[1:]...)
 		fmt.Fprint(stdout, out)
 		if err != nil {
 			fmt.Fprintf(stderr, "uninstall failed: %v\n", err)
@@ -392,7 +393,7 @@ func cliUpdate(stdout, stderr io.Writer, runner commandRunner, args []string) in
 			return 2
 		}
 	}
-	out, err := runner.Run("/usr/local/bin/migate-install", updateArgs...)
+	out, err := runner.Run(paths.Installer, updateArgs...)
 	fmt.Fprint(stdout, out)
 	if err != nil {
 		fmt.Fprintf(stderr, "update failed: %v\n", err)
@@ -409,9 +410,9 @@ func cliStatus(stdout, stderr io.Writer, runner commandRunner, m messages) int {
 		running string
 		stopped string
 	}{
-		{name: "migate", label: "MiGate", running: m.statusPanelRunning, stopped: m.statusPanelStopped},
-		{name: "xray", label: "Xray", running: m.statusXrayRunning, stopped: m.statusXrayStopped},
-		{name: resolveCLIServiceName(runner, "sing-box", "migate-singbox"), label: "sing-box", running: m.statusSingboxRunning, stopped: m.statusSingboxStopped},
+		{name: paths.PanelService, label: "MiGate", running: m.statusPanelRunning, stopped: m.statusPanelStopped},
+		{name: paths.XrayService, label: "Xray", running: m.statusXrayRunning, stopped: m.statusXrayStopped},
+		{name: paths.SingboxService, label: "sing-box", running: m.statusSingboxRunning, stopped: m.statusSingboxStopped},
 	}
 	for _, svc := range services {
 		out, err := runner.Run("systemctl", "is-active", svc.name)
@@ -510,7 +511,7 @@ func cliResetPassword(stdout, stderr io.Writer, runner commandRunner, m messages
 		fmt.Fprintf(stderr, "write %s: %v\n", defaultPanelConfigPath, err)
 		return 1
 	}
-	if code := cliSystemctl(stderr, runner, "restart", "migate"); code != 0 {
+	if code := cliSystemctl(stderr, runner, "restart", paths.PanelService); code != 0 {
 		return code
 	}
 	fmt.Fprintf(stdout, "%s %s\n", m.resetPasswordUpdated, password)
@@ -518,7 +519,7 @@ func cliResetPassword(stdout, stderr io.Writer, runner commandRunner, m messages
 }
 
 func cliLogs(stdout, stderr io.Writer, runner commandRunner, args []string) int {
-	logArgs := []string{"-u", "migate", "-n", "80"}
+	logArgs := []string{"-u", paths.PanelService, "-n", "80"}
 	if len(args) == 1 && args[0] == "-f" {
 		logArgs = append(logArgs, "-f")
 	} else if len(args) == 0 {
@@ -538,7 +539,7 @@ func cliLogs(stdout, stderr io.Writer, runner commandRunner, args []string) int 
 
 func cliRestart(stderr io.Writer, runner commandRunner, args []string) int {
 	if len(args) == 0 {
-		return cliSystemctl(stderr, runner, "restart", "migate")
+		return cliSystemctl(stderr, runner, "restart", paths.PanelService)
 	}
 	if len(args) == 1 && args[0] == "all" {
 		for _, svc := range managedServices() {
@@ -555,16 +556,6 @@ func cliRestart(stderr io.Writer, runner commandRunner, args []string) int {
 	return 2
 }
 
-func resolveCLIServiceName(runner commandRunner, primary, legacy string) string {
-	if cliServiceAvailable(runner, primary) {
-		return primary
-	}
-	if cliServiceAvailable(runner, legacy) {
-		return legacy
-	}
-	return primary
-}
-
 func cliServiceAvailable(runner commandRunner, service string) bool {
 	out, err := runner.Run("systemctl", "show", service, "--property=LoadState", "--value")
 	state := strings.TrimSpace(out)
@@ -578,9 +569,6 @@ func cliServiceAvailable(runner commandRunner, service string) bool {
 }
 
 func cliSystemctl(stderr io.Writer, runner commandRunner, action, service string) int {
-	if service == "sing-box" {
-		service = resolveCLIServiceName(runner, "sing-box", "migate-singbox")
-	}
 	out, err := runner.Run("systemctl", action, service)
 	if err != nil {
 		if strings.TrimSpace(out) != "" {
@@ -647,7 +635,7 @@ func cliRestore(stdout, stderr io.Writer, runner commandRunner, args []string) i
 		fmt.Fprintf(stderr, "restore failed: %v\n", err)
 		return 1
 	}
-	if code := cliSystemctl(stderr, runner, "restart", "migate"); code != 0 {
+	if code := cliSystemctl(stderr, runner, "restart", paths.PanelService); code != 0 {
 		return code
 	}
 	fmt.Fprintln(stdout, "Restore completed")
@@ -699,9 +687,9 @@ type managedService struct {
 
 func managedServices() []managedService {
 	return []managedService{
-		{name: "migate", label: "MiGate Panel"},
-		{name: "xray", label: "Xray", onlyIfManaged: true},
-		{name: "sing-box", label: "sing-box"},
+		{name: paths.PanelService, label: "MiGate Panel"},
+		{name: paths.XrayService, label: "Xray", onlyIfManaged: true},
+		{name: paths.SingboxService, label: "sing-box", onlyIfManaged: true},
 	}
 }
 
@@ -752,21 +740,11 @@ func generatedPassword() (string, error) {
 }
 
 func defaultBackupPath() string {
-	return "/root/migate-backup-" + time.Now().Format("20060102-150405") + ".tar.gz"
+	return filepath.Join(paths.BackupDir, "migate-backup-"+time.Now().Format("20060102-150405")+".tar.gz")
 }
 
 func backupFiles() []string {
-	files := []string{defaultPanelConfigPath}
-	if cfg, err := readPanelConfig(defaultPanelConfigPath); err == nil {
-		if cfg.DatabasePath != "" {
-			files = append(files, cfg.DatabasePath)
-		}
-		if cfg.XrayConfigPath != "" {
-			files = append(files, filepath.Join(web.NormalizeXrayConfigDir(cfg.XrayConfigPath), "xray.json"))
-		}
-	}
-	files = append(files, "/etc/sing-box/config.json")
-	return files
+	return []string{paths.ConfigDir, paths.Database, paths.VersionsFile}
 }
 
 func writePanelConfig(path string, cfg panelConfig) error {
@@ -775,7 +753,7 @@ func writePanelConfig(path string, cfg panelConfig) error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o600)
+	return panelconfig.WriteFile(path, b)
 }
 
 func routerFromConfig(path string) (http.Handler, func(), error) {
@@ -798,14 +776,11 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 
 	opts = append(opts, web.WithStore(store))
 
-	// Build Xray controller for shared use
-	var xrayCtrl web.XrayController
-	if cfg.XrayConfigPath != "" {
-		xrayCtrl = web.NewRealController(store, web.NormalizeXrayConfigDir(cfg.XrayConfigPath), execCmd)
-		opts = append(opts, web.WithXrayController(xrayCtrl))
-	}
+	// Build Xray controller for shared use.
+	xrayCtrl := web.NewRealController(store, paths.XrayConfig, execCmd)
+	opts = append(opts, web.WithXrayController(xrayCtrl))
 	statsClient := xray.NewResilientStatsClient(
-		xray.NewCommandStatsClient("/usr/local/bin/xray", "127.0.0.1:10085"),
+		xray.NewCommandStatsClient(paths.XrayBinary, "127.0.0.1:10085"),
 		xray.NewStubStatsClient(),
 	)
 	var singboxStatsClient singbox.StatsClient
@@ -892,9 +867,7 @@ func routerOptionsFromConfig(cfg panelConfig, path string) []web.Option {
 		opts = append(opts, web.WithAuth(cfg.PanelUsername, cfg.PanelPassword))
 	}
 	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
-	if cfg.XrayConfigPath != "" {
-		opts = append(opts, web.WithXrayConfigDir(cfg.XrayConfigPath))
-	}
+	opts = append(opts, web.WithXrayConfigPath(paths.XrayConfig))
 	return opts
 }
 

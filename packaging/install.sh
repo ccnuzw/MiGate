@@ -3,7 +3,16 @@ set -euo pipefail
 
 REPO="${MIGATE_REPO:-imzyb/MiGate}"
 VERSION="${MIGATE_VERSION:-latest}"
-INSTALL_DIR="${MIGATE_INSTALL_DIR:-/usr/local/migate}"
+INSTALL_DIR="${MIGATE_DATA_DIR:-${MIGATE_INSTALL_DIR:-/var/lib/migate}}"
+DATA_DIR="$INSTALL_DIR"
+VERSIONS_PATH="${MIGATE_VERSIONS_PATH:-/var/lib/migate/versions.json}"
+CORE_CONFIG_DIR="${MIGATE_CORE_CONFIG_DIR:-/etc/migate/cores}"
+XRAY_CONFIG_PATH="${MIGATE_XRAY_CONFIG_PATH:-/etc/migate/cores/xray.json}"
+SINGBOX_CONFIG_PATH="${MIGATE_SINGBOX_CONFIG_PATH:-/etc/migate/cores/sing-box.json}"
+BACKUP_DIR="${MIGATE_BACKUP_DIR:-/var/lib/migate/backups}"
+LOG_DIR="${MIGATE_LOG_DIR:-/var/log/migate}"
+RUN_DIR="${MIGATE_RUN_DIR:-/run/migate}"
+INSTALL_LOCK="${MIGATE_INSTALL_LOCK:-/run/migate/install.lock}"
 CONFIG_DIR="${MIGATE_CONFIG_DIR:-/etc/migate}"
 CONFIG_PATH="${MIGATE_CONFIG_PATH:-/etc/migate/panel.json}"
 SERVICE_PATH="${MIGATE_SERVICE_PATH:-/etc/systemd/system/migate.service}"
@@ -11,9 +20,8 @@ MIGATE_BIN="${MIGATE_BIN:-/usr/local/bin/migate}"
 MIGATE_LINK="${MIGATE_LINK:-/usr/local/bin/mg}"
 INSTALLER_BIN="${INSTALLER_BIN:-/usr/local/bin/migate-install}"
 UNINSTALLER_BIN="${UNINSTALLER_BIN:-/usr/local/bin/migate-uninstall}"
-SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/sing-box.service}"
-LEGACY_SINGBOX_SERVICE_PATH="${LEGACY_SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-singbox.service}"
-LEGACY_SINGBOX_SERVICE_DROPIN_DIR="${LEGACY_SINGBOX_SERVICE_DROPIN_DIR:-${LEGACY_SINGBOX_SERVICE_PATH}.d}"
+XRAY_SERVICE_PATH="${XRAY_SERVICE_PATH:-/etc/systemd/system/migate-xray.service}"
+SINGBOX_SERVICE_PATH="${SINGBOX_SERVICE_PATH:-/etc/systemd/system/migate-sing-box.service}"
 JOURNALD_CONF_DIR="${JOURNALD_CONF_DIR:-/etc/systemd/journald.conf.d}"
 JOURNALD_MIGATE_CONF="${JOURNALD_MIGATE_CONF:-${JOURNALD_CONF_DIR}/migate.conf}"
 LOGROTATE_CONF_DIR="${LOGROTATE_CONF_DIR:-/etc/logrotate.d}"
@@ -60,6 +68,41 @@ log_info() { printf '  [INFO] %s\n' "$*"; }
 log_ok() { printf '  [ OK ] %s\n' "$*"; }
 log_warn() { printf '  [WARN] %s\n' "$*"; }
 log_error() { printf '  [ERR ] %s\n' "$*" >&2; }
+
+with_install_lock() {
+  local code=0
+  local lock_dir=""
+  if [ "$DRY_RUN" -eq 1 ] && [ "$INSTALL_LOCK" = "/run/migate/install.lock" ]; then
+    INSTALL_LOCK="${TMPDIR:-/tmp}/migate-install.$$.lock"
+  fi
+  mkdir -p "$(dirname "$INSTALL_LOCK")"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$INSTALL_LOCK"
+    if ! flock -n 9; then
+      log_error "另一个安装/修复流程正在运行：$INSTALL_LOCK"
+      exit 1
+    fi
+    set +e
+    ( set -e; "$@" )
+    code="$?"
+    set -e
+    flock -u 9 || true
+    return "$code"
+  fi
+
+  lock_dir="${INSTALL_LOCK}.d"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    log_error "另一个安装/修复流程正在运行：$INSTALL_LOCK"
+    exit 1
+  fi
+  set +e
+  ( set -e; "$@" )
+  code="$?"
+  set -e
+  rmdir "$lock_dir" 2>/dev/null || true
+  return "$code"
+}
+
 section() {
   printf '\n'
   line
@@ -95,7 +138,7 @@ print_banner() {
   section "MiGate 一键安装器"
   kv "仓库" "$REPO"
   kv "版本" "$VERSION"
-  kv "安装目录" "$INSTALL_DIR"
+  kv "数据目录" "$DATA_DIR"
   kv "配置文件" "$CONFIG_PATH"
   if [ "$DRY_RUN" -eq 1 ]; then
     log_warn "当前为 dry-run 模式，只打印计划执行的操作。"
@@ -248,6 +291,63 @@ require_dependencies() {
   fi
 }
 
+ensure_migate_user_group() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] ensure group/user migate:migate\n'
+    return 0
+  fi
+  if ! getent group migate >/dev/null 2>&1; then
+    groupadd --system migate
+  fi
+  if ! id -u migate >/dev/null 2>&1; then
+    useradd --system --home-dir "$DATA_DIR" --no-create-home --gid migate --shell /usr/sbin/nologin migate
+  fi
+}
+
+ensure_runtime_dirs() {
+  run_cmd mkdir -p "$CONFIG_DIR" "$CORE_CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR" /usr/local/bin /usr/local/share/xray /etc/systemd/system
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] set runtime ownership and permissions under /etc/migate, /var/lib/migate, /var/log/migate, /run/migate\n'
+    return 0
+  fi
+  chown root:migate "$CONFIG_DIR" "$CORE_CONFIG_DIR"
+  chmod 0750 "$CONFIG_DIR" "$CORE_CONFIG_DIR"
+  chown migate:migate "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"
+  chmod 0750 "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"
+}
+
+set_core_config_permissions() {
+  local path="$1"
+  chown root:migate "$path"
+  chmod 0640 "$path"
+}
+
+atomic_write_file() {
+  local path="$1"
+  local mode="$2"
+  local owner="${3:-}"
+  local dir
+  local base
+  local tmp
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] atomic write %q via %q with mode %s%s\n' "$path" "${dir}/.${base}.tmp.XXXXXX" "$mode" "${owner:+ owner ${owner}}"
+    return 0
+  fi
+  mkdir -p "$dir"
+  tmp="$(mktemp "${dir}/.${base}.tmp.XXXXXX")"
+  if ! cat > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ -n "$owner" ]; then
+    chown "$owner" "$tmp"
+  fi
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$path"
+}
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -373,11 +473,11 @@ detect_existing_install() {
   else
     log_info "面板配置：未找到"
   fi
-  if [ -f "${INSTALL_DIR}/migate.db" ]; then
+  if [ -f "${DATA_DIR}/migate.db" ]; then
     found=1
-    log_ok "数据库：${INSTALL_DIR}/migate.db"
+    log_ok "数据库：${DATA_DIR}/migate.db"
   else
-    log_info "数据库：未找到 (${INSTALL_DIR}/migate.db)"
+    log_info "数据库：未找到 (${DATA_DIR}/migate.db)"
   fi
   if pgrep -x migate >/dev/null 2>&1; then
     found=1
@@ -595,7 +695,7 @@ download_release_asset() {
 }
 
 install_migate_binary_from_tmp() {
-  run_cmd mkdir -p "$INSTALL_DIR"
+  run_cmd mkdir -p "$DATA_DIR"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] install %q to %q using atomic temp file\n' "$TMP/migate" "$MIGATE_BIN"
     printf '[DRY-RUN] ln -sf %q %q\n' "$MIGATE_BIN" "$MIGATE_LINK"
@@ -643,6 +743,35 @@ check_update() {
   fi
 }
 
+write_versions_state() {
+  local installed_at
+  local xray_version
+  local singbox_version
+  installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  xray_version="$(core_version "$(core_binary_path xray)")"
+  singbox_version="$(core_version "$(core_binary_path sing-box)")"
+  xray_version="${xray_version:-configured ${XRAY_VERSION:-26.3.27}}"
+  singbox_version="${singbox_version:-configured ${SINGBOX_VERSION:-1.13.13}}"
+  atomic_write_file "$VERSIONS_PATH" 0640 root:migate <<JSON
+{
+  "migate": {
+    "version": "$(json_escape "$VERSION")"
+  },
+  "xray": {
+    "version": "$(json_escape "$xray_version")",
+    "configured_version": "$(json_escape "${XRAY_VERSION:-26.3.27}")"
+  },
+  "sing_box": {
+    "version": "$(json_escape "$singbox_version")",
+    "configured_version": "$(json_escape "${SINGBOX_VERSION:-1.13.13}")"
+  },
+  "installed_at": "$(json_escape "$installed_at")",
+  "installer_version": "$(json_escape "$VERSION")"
+}
+JSON
+  log_ok "版本状态已写入：$VERSIONS_PATH"
+}
+
 print_config_summary() {
   section "安装配置摘要"
   kv "面板监听" "${PANEL_BIND_HOST}:${PANEL_PORT}"
@@ -656,8 +785,8 @@ print_config_summary() {
     kv "管理员密码" "使用刚才输入的密码"
   fi
   kv "配置文件" "$CONFIG_PATH"
-  kv "数据库" "${INSTALL_DIR}/migate.db"
-  kv "Xray 配置" "${INSTALL_DIR}/xray.json"
+  kv "数据库" "${DATA_DIR}/migate.db"
+  kv "Xray 配置" "${XRAY_CONFIG_PATH}"
 }
 
 configure_log_retention() {
@@ -671,7 +800,7 @@ configure_log_retention() {
     return 0
   fi
   mkdir -p "$JOURNALD_CONF_DIR"
-  cat > "$JOURNALD_MIGATE_CONF" <<'CONF'
+  atomic_write_file "$JOURNALD_MIGATE_CONF" 0644 root:root <<'CONF'
 [Journal]
 SystemMaxUse=128M
 SystemKeepFree=512M
@@ -683,7 +812,7 @@ CONF
   log_ok "journald 日志保留策略已写入：$JOURNALD_MIGATE_CONF"
   if command_exists logrotate; then
     mkdir -p "$LOGROTATE_CONF_DIR"
-    cat > "$LOGROTATE_MIGATE_CONF" <<'CONF'
+    atomic_write_file "$LOGROTATE_MIGATE_CONF" 0644 root:root <<'CONF'
 /var/log/migate-update.log {
   size 5M
   rotate 3
@@ -712,23 +841,21 @@ write_config() {
     log_ok "保留已有配置：$CONFIG_PATH"
     return 0
   fi
-  run_cmd mkdir -p "$CONFIG_DIR"
+  ensure_runtime_dirs
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[DRY-RUN] write panel config %q with mode 600\n' "$CONFIG_PATH"
+    printf '[DRY-RUN] write panel config %q with mode 640\n' "$CONFIG_PATH"
     return 0
   fi
   panel_password_hash="$("$MIGATE_BIN" hash-password "$panel_password")"
-  cat > "$CONFIG_PATH" <<JSON
+  atomic_write_file "$CONFIG_PATH" 0640 root:migate <<JSON
 {
   "panel_port": ${panel_port},
   "panel_username": "$(json_escape "$panel_username")",
   "panel_password": "$(json_escape "$panel_password_hash")",
   "web_base_path": "$(json_escape "$web_base_path")",
-  "database_path": "$(json_escape "$INSTALL_DIR")/migate.db",
-  "xray_config_path": "$(json_escape "$INSTALL_DIR")"
+  "database_path": "$(json_escape "$DATA_DIR")/migate.db"
 }
 JSON
-  chmod 600 "$CONFIG_PATH"
   log_ok "配置已写入：$CONFIG_PATH"
 }
 
@@ -795,8 +922,8 @@ write_systemd_service() {
     printf '[DRY-RUN] write %q\n' "$SERVICE_PATH"
     return 0
   fi
-  mkdir -p "$CONFIG_DIR" "$INSTALL_DIR" /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system
-  cat > "$SERVICE_PATH" <<UNIT
+  ensure_runtime_dirs
+  atomic_write_file "$SERVICE_PATH" 0644 root:root <<UNIT
 [Unit]
 Description=MiGate Service
 After=network-online.target
@@ -804,8 +931,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# MiGate still runs as root because this service manages systemd units, writes
+# root-owned core configs, and binds/administers system resources during install
+# and repair flows.
 User=root
-WorkingDirectory=${INSTALL_DIR}
+WorkingDirectory=${DATA_DIR}
 ExecStart=${MIGATE_BIN} serve --host ${PANEL_BIND_HOST} --config ${CONFIG_PATH}
 Restart=on-failure
 RestartSec=5s
@@ -813,7 +943,7 @@ LimitNOFILE=1048576
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=${CONFIG_DIR} ${INSTALL_DIR} /var/log /etc/sing-box /etc/xray /usr/local/bin /usr/local/share/xray /usr/local/etc/xray /etc/systemd/system
+ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} /usr/local/bin /usr/local/share/xray /etc/systemd/system
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 StandardOutput=journal
@@ -847,7 +977,7 @@ restart_migate_service() {
 
 write_default_xray_config() {
   local path="$1"
-  cat > "$path" <<'JSON'
+  atomic_write_file "$path" 0640 root:migate <<'JSON'
 {
   "log": {
     "loglevel": "warning"
@@ -912,7 +1042,7 @@ JSON
 
 write_default_singbox_config() {
   local path="$1"
-  cat > "$path" <<'JSON'
+  atomic_write_file "$path" 0640 root:migate <<'JSON'
 {
   "log": {
     "level": "warn"
@@ -934,32 +1064,52 @@ JSON
 
 backup_invalid_core_config() {
   local path="$1"
+  local core="$2"
   if [ ! -e "$path" ]; then
     return 0
   fi
-  local backup="${path}.migate-backup.$(date +%Y%m%d%H%M%S)"
+  ensure_runtime_dirs
+  local backup="${BACKUP_DIR}/${core}-config-invalid-$(date +%Y%m%d-%H%M%S).json"
   mv -f "$path" "$backup"
   log_warn "已备份不可用配置：${backup}"
 }
 
+install_default_xray_config() {
+  local tmp
+  tmp="$(mktemp "${CORE_CONFIG_DIR}/.xray-default.XXXXXX.json")"
+  write_default_xray_config "$tmp"
+  /usr/local/bin/xray run -test -c "$tmp"
+  mv -f "$tmp" "$XRAY_CONFIG_PATH"
+  set_core_config_permissions "$XRAY_CONFIG_PATH"
+}
+
+install_default_singbox_config() {
+  local tmp
+  tmp="$(mktemp "${CORE_CONFIG_DIR}/.sing-box-default.XXXXXX.json")"
+  write_default_singbox_config "$tmp"
+  /usr/local/bin/sing-box check -c "$tmp"
+  mv -f "$tmp" "$SINGBOX_CONFIG_PATH"
+  set_core_config_permissions "$SINGBOX_CONFIG_PATH"
+}
+
 ensure_valid_xray_config() {
-  if /usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json; then
+  if /usr/local/bin/xray run -test -c "$XRAY_CONFIG_PATH"; then
     return 0
   fi
   log_warn "现有 Xray 配置校验失败，将备份并写入 MiGate 默认配置。"
-  backup_invalid_core_config "${INSTALL_DIR}/xray.json"
-  write_default_xray_config "${INSTALL_DIR}/xray.json"
-  /usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json
+  backup_invalid_core_config "${XRAY_CONFIG_PATH}" "xray"
+  install_default_xray_config
+  /usr/local/bin/xray run -test -c "$XRAY_CONFIG_PATH"
 }
 
 ensure_valid_singbox_config() {
-  if /usr/local/bin/sing-box check -c /etc/sing-box/config.json; then
+  if /usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"; then
     return 0
   fi
   log_warn "现有 sing-box 配置校验失败，将备份并写入 MiGate 默认配置。"
-  backup_invalid_core_config /etc/sing-box/config.json
-  write_default_singbox_config /etc/sing-box/config.json
-  /usr/local/bin/sing-box check -c /etc/sing-box/config.json
+  backup_invalid_core_config "$SINGBOX_CONFIG_PATH" "sing-box"
+  install_default_singbox_config
+  /usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"
 }
 
 install_xray() {
@@ -980,12 +1130,12 @@ install_xray() {
     printf '[DRY-RUN] extract SHA2-256 to "$tmp_xray/%s.sha256"\n' "$xray_artifact"
     printf '[DRY-RUN] verify sha256 with "%s.sha256"\n' "$xray_artifact"
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-      printf '[DRY-RUN] systemctl stop xray\n'
+      printf '[DRY-RUN] systemctl stop migate-xray\n'
       printf '[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$\n'
-      printf '[DRY-RUN] remove legacy xray.service drop-in, write /etc/systemd/system/xray.service, validate config, and restart xray\n'
+      printf '[DRY-RUN] write /etc/systemd/system/migate-xray.service, validate config, and restart migate-xray\n'
     else
       printf '[DRY-RUN] atomic install /usr/local/bin/xray via /usr/local/bin/.xray.new.$$\n'
-      printf '[DRY-RUN] skip /etc/systemd/system/xray.service because systemd is unavailable\n'
+      printf '[DRY-RUN] skip /etc/systemd/system/migate-xray.service because systemd is unavailable\n'
     fi
     return 0
   fi
@@ -1012,7 +1162,7 @@ install_xray() {
   log_info "解压并安装 Xray"
   unzip -oq "$tmp_xray/$xray_artifact" -d "$tmp_xray/xray"
   if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-    systemctl stop xray 2>/dev/null || true
+    systemctl stop migate-xray 2>/dev/null || true
   fi
   local xray_install_tmp="/usr/local/bin/.xray.new.$$"
   rm -f "$xray_install_tmp"
@@ -1021,35 +1171,26 @@ install_xray() {
     rm -rf "$tmp_xray"
     return 1
   fi
-  mkdir -p /usr/local/share/xray "$INSTALL_DIR" /usr/local/etc/xray
+  ensure_runtime_dirs
+  mkdir -p /usr/local/share/xray
   [ -f "$tmp_xray/xray/geosite.dat" ] && cp "$tmp_xray/xray/geosite.dat" /usr/local/share/xray/geosite.dat
   [ -f "$tmp_xray/xray/geoip.dat" ] && cp "$tmp_xray/xray/geoip.dat" /usr/local/share/xray/geoip.dat
   rm -rf "$tmp_xray"
-  if [ ! -f "${INSTALL_DIR}/xray.json" ]; then
-    write_default_xray_config "${INSTALL_DIR}/xray.json"
+  if [ ! -f "${XRAY_CONFIG_PATH}" ]; then
+    install_default_xray_config
   fi
-  mkdir -p "$CONFIG_DIR"
-  if [ -e "${CONFIG_DIR}/xray.json" ] && [ ! -L "${CONFIG_DIR}/xray.json" ]; then
-    local compat_backup="${CONFIG_DIR}/xray.json.migate-backup.$(date +%Y%m%d%H%M%S)"
-    mv -f "${CONFIG_DIR}/xray.json" "$compat_backup"
-    log_warn "已备份旧兼容配置：${compat_backup}"
-  fi
-  ln -sf "${INSTALL_DIR}/xray.json" "${CONFIG_DIR}/xray.json"
-  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/xray.json
-  ln -sf "${INSTALL_DIR}/xray.json" /usr/local/etc/xray/config.json
+  set_core_config_permissions "$XRAY_CONFIG_PATH"
   if ! ensure_valid_xray_config; then
-    log_error "Xray 默认配置校验失败：/usr/local/etc/xray/config.json"
+    log_error "Xray 默认配置校验失败：/etc/migate/cores/xray.json"
     return 1
   fi
   if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
-    log_warn "systemd 不可用，跳过 xray.service 写入。"
-    log_info "Manual run: /usr/local/bin/xray run -config /usr/local/etc/xray/config.json"
+    log_warn "systemd 不可用，跳过 migate-xray.service 写入。"
+    log_info "Manual run: /usr/local/bin/xray run -c ${XRAY_CONFIG_PATH}"
     log_ok "Xray 安装/修复完成"
     return 0
   fi
-  rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf
-  rmdir /etc/systemd/system/xray.service.d 2>/dev/null || true
-  cat > /etc/systemd/system/xray.service <<'UNIT'
+  atomic_write_file "$XRAY_SERVICE_PATH" 0644 root:root <<UNIT
 [Unit]
 Description=MiGate managed Xray service
 After=network-online.target
@@ -1057,7 +1198,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+ExecStart=/usr/local/bin/xray run -c ${XRAY_CONFIG_PATH}
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
@@ -1070,13 +1211,13 @@ LogRateLimitBurst=200
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  systemctl enable xray
-  if ! systemctl restart xray; then
-    log_error "Xray 服务启动失败。查看：journalctl -u xray -n 80 --no-pager"
+  systemctl enable migate-xray
+  if ! systemctl restart migate-xray; then
+    log_error "Xray 服务启动失败。查看：journalctl -u migate-xray -n 80 --no-pager"
     return 1
   fi
-  if ! systemctl is-active --quiet xray; then
-    log_error "Xray 服务未处于 active 状态。查看：systemctl status xray"
+  if ! systemctl is-active --quiet migate-xray; then
+    log_error "Xray 服务未处于 active 状态。查看：systemctl status migate-xray"
     return 1
   fi
   log_ok "Xray 安装/修复完成"
@@ -1100,10 +1241,9 @@ install_singbox() {
     printf '[DRY-RUN] extract GitHub asset digest for %q > "$tmp_sb/%s.sha256"\n' "$sb_artifact" "$sb_artifact"
     printf '[DRY-RUN] sha256sum -c "%s.sha256"\n' "$sb_artifact"
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-      printf '[DRY-RUN] systemctl stop sing-box\n'
-      printf '[DRY-RUN] systemctl stop migate-singbox\n'
+      printf '[DRY-RUN] systemctl stop migate-sing-box\n'
       printf '[DRY-RUN] atomic install /usr/local/bin/sing-box via /usr/local/bin/.sing-box.new.$$\n'
-      printf '[DRY-RUN] write %q and enable --now sing-box\n' "$SINGBOX_SERVICE_PATH"
+      printf '[DRY-RUN] write %q and restart migate-sing-box\n' "$SINGBOX_SERVICE_PATH"
     else
       printf '[DRY-RUN] atomic install /usr/local/bin/sing-box via /usr/local/bin/.sing-box.new.$$\n'
       printf '[DRY-RUN] skip %q because systemd is unavailable\n' "$SINGBOX_SERVICE_PATH"
@@ -1145,8 +1285,7 @@ install_singbox() {
   log_info "解压并安装 sing-box"
   tar --no-same-owner -xzf "$tmp_sb/$sb_artifact" -C "$tmp_sb"
   if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-    systemctl stop sing-box 2>/dev/null || true
-    systemctl stop migate-singbox 2>/dev/null || true
+    systemctl stop migate-sing-box 2>/dev/null || true
   fi
   local sb_install_tmp="/usr/local/bin/.sing-box.new.$$"
   rm -f "$sb_install_tmp"
@@ -1156,29 +1295,30 @@ install_singbox() {
     return 1
   fi
   rm -rf "$tmp_sb"
-  mkdir -p /etc/sing-box
-  if [ ! -f /etc/sing-box/config.json ]; then
-    write_default_singbox_config /etc/sing-box/config.json
+  ensure_runtime_dirs
+  if [ ! -f "$SINGBOX_CONFIG_PATH" ]; then
+    install_default_singbox_config
   fi
+  set_core_config_permissions "$SINGBOX_CONFIG_PATH"
   if ! ensure_valid_singbox_config; then
-    log_error "sing-box 默认配置校验失败：/etc/sing-box/config.json"
+    log_error "sing-box 默认配置校验失败：${SINGBOX_CONFIG_PATH}"
     return 1
   fi
   if [ "$SYSTEMD_AVAILABLE" -ne 1 ]; then
-    log_warn "systemd 不可用，跳过 sing-box.service 写入。"
-    log_info "Manual run: /usr/local/bin/sing-box run -c /etc/sing-box/config.json"
+    log_warn "systemd 不可用，跳过 migate-sing-box.service 写入。"
+    log_info "Manual run: /usr/local/bin/sing-box run -c ${SINGBOX_CONFIG_PATH}"
     log_ok "sing-box 安装/修复完成"
     return 0
   fi
-  cat > "$SINGBOX_SERVICE_PATH" <<'UNIT'
+  atomic_write_file "$SINGBOX_SERVICE_PATH" 0644 root:root <<UNIT
 [Unit]
-Description=sing-box service managed by MiGate
+Description=MiGate managed sing-box service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecStart=/usr/local/bin/sing-box run -c ${SINGBOX_CONFIG_PATH}
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
@@ -1191,19 +1331,13 @@ LogRateLimitBurst=200
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  systemctl stop migate-singbox 2>/dev/null || true
-  systemctl disable migate-singbox 2>/dev/null || true
-  rm -f "$LEGACY_SINGBOX_SERVICE_PATH"
-  rm -rf "$LEGACY_SINGBOX_SERVICE_DROPIN_DIR"
-  systemctl daemon-reload
-  systemctl reset-failed migate-singbox 2>/dev/null || true
-  systemctl enable sing-box
-  if ! systemctl restart sing-box; then
-    log_error "sing-box 服务启动失败。查看：journalctl -u sing-box -n 80 --no-pager"
+  systemctl enable migate-sing-box
+  if ! systemctl restart migate-sing-box; then
+    log_error "sing-box 服务启动失败。查看：journalctl -u migate-sing-box -n 80 --no-pager"
     return 1
   fi
-  if ! systemctl is-active --quiet sing-box; then
-    log_error "sing-box 服务未处于 active 状态。查看：systemctl status sing-box"
+  if ! systemctl is-active --quiet migate-sing-box; then
+    log_error "sing-box 服务未处于 active 状态。查看：systemctl status migate-sing-box"
     return 1
   fi
   log_ok "sing-box 安装/修复完成"
@@ -1294,6 +1428,8 @@ install_release_flow() {
 
   section "安装 MiGate"
   note_current_release_state
+  ensure_migate_user_group
+  ensure_runtime_dirs
   download_release_asset
   if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
     run_cmd systemctl stop migate 2>/dev/null || true
@@ -1304,8 +1440,8 @@ install_release_flow() {
   write_systemd_service
 
   section "核心检测"
-  if detect_core "Xray" "xray" "xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
-  if detect_core "sing-box" "sing-box" "sing-box"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
+  if detect_core "Xray" "xray" "migate-xray"; then XRAY_FOUND=1; else XRAY_FOUND=0; fi
+  if detect_core "sing-box" "sing-box" "migate-sing-box"; then SINGBOX_FOUND=1; else SINGBOX_FOUND=0; fi
   prompt_core_installs
   if [ "$INSTALL_XRAY" -eq 1 ]; then
     if [ "$EXPLICIT_INSTALL_XRAY" -eq 1 ]; then install_xray; else maybe_install_core "Xray" install_xray; fi
@@ -1313,6 +1449,7 @@ install_release_flow() {
   if [ "$INSTALL_SINGBOX" -eq 1 ]; then
     if [ "$EXPLICIT_INSTALL_SINGBOX" -eq 1 ]; then install_singbox; else maybe_install_core "sing-box" install_singbox; fi
   fi
+  write_versions_state
 
   section "服务启动"
   restart_migate_service
@@ -1322,6 +1459,7 @@ install_release_flow() {
 repair_service_flow() {
   require_root
   detect_systemd
+  ensure_migate_user_group
   section "修复 systemd 服务"
   configure_log_retention
   write_systemd_service
@@ -1406,7 +1544,7 @@ finish_message() {
   section "安装完成，请保存以下信息"
   kv "MiGate 二进制" "$MIGATE_BIN"
   kv "CLI 命令" "mg"
-  kv "安装目录" "${INSTALL_DIR}"
+  kv "数据目录" "${DATA_DIR}"
   kv "面板监听" "${PANEL_BIND_HOST}:${PANEL_PORT}"
   kv "Web base path" "$web_path"
   kv "WebUI 地址" "http://${host_ip}:${PANEL_PORT}${web_path}"
@@ -1419,18 +1557,18 @@ finish_message() {
     kv "管理员密码" "保留已有配置中的密码"
   fi
   kv "面板配置" "${CONFIG_PATH}"
-  kv "数据库" "${INSTALL_DIR}/migate.db"
-  kv "Xray 配置" "${INSTALL_DIR}/xray.json"
+  kv "数据库" "${DATA_DIR}/migate.db"
+  kv "Xray 配置" "${XRAY_CONFIG_PATH}"
   if [ -n "$xray_bin" ]; then
     kv "Xray 二进制" "${xray_bin} ($(core_version "$xray_bin"))"
-    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "Xray 服务" "systemctl status xray"; fi
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "Xray 服务" "systemctl status migate-xray"; fi
   else
     log_warn "Xray 二进制：未找到"
   fi
-  kv "sing-box 配置" "/etc/sing-box/config.json"
+  kv "sing-box 配置" "/etc/migate/cores/sing-box.json"
   if [ -n "$singbox_bin" ]; then
     kv "sing-box 二进制" "${singbox_bin} ($(core_version "$singbox_bin"))"
-    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "sing-box 服务" "systemctl status sing-box"; fi
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "sing-box 服务" "systemctl status migate-sing-box"; fi
   else
     log_warn "sing-box 二进制：未找到"
   fi
@@ -1448,6 +1586,49 @@ finish_message() {
   log_info "如果你需要公网访问面板，请用 Nginx/Caddy 反向代理到 ${PANEL_BIND_HOST}:${PANEL_PORT}${web_path}，并启用 HTTPS。"
   log_info "如果服务启动失败，请运行：journalctl -u migate -n 80 --no-pager"
   log_info "如果核心不可用，请运行：mg doctor"
+}
+
+run_action() {
+  case "$ACTION" in
+    install|upgrade|reinstall)
+      install_release_flow "$([ "$REGENERATE_CONFIG" -eq 1 ] && printf 'fresh' || printf 'preserve')"
+      ;;
+    repair-service)
+      repair_service_flow
+      ;;
+    install-xray-only)
+      require_linux_for_release
+      require_root
+      detect_systemd
+      ensure_migate_user_group
+      install_xray
+      ;;
+    install-singbox-only)
+      require_linux_for_release
+      require_root
+      detect_systemd
+      ensure_migate_user_group
+      install_singbox
+      ;;
+    install-cores-only)
+      require_linux_for_release
+      require_root
+      detect_systemd
+      ensure_migate_user_group
+      install_xray
+      install_singbox
+      ;;
+    uninstall)
+      uninstall_flow
+      ;;
+    exit)
+      log_info "退出。"
+      ;;
+    *)
+      log_error "unknown action: ${ACTION}"
+      exit 2
+      ;;
+  esac
 }
 
 main() {
@@ -1478,40 +1659,12 @@ main() {
   fi
 
   case "$ACTION" in
-    install|upgrade|reinstall)
-      install_release_flow "$([ "$REGENERATE_CONFIG" -eq 1 ] && printf 'fresh' || printf 'preserve')"
-      ;;
-    repair-service)
-      repair_service_flow
-      ;;
-    install-xray-only)
-      require_linux_for_release
+    install|upgrade|reinstall|repair-service|install-xray-only|install-singbox-only|install-cores-only|uninstall)
       require_root
-      detect_systemd
-      install_xray
-      ;;
-    install-singbox-only)
-      require_linux_for_release
-      require_root
-      detect_systemd
-      install_singbox
-      ;;
-    install-cores-only)
-      require_linux_for_release
-      require_root
-      detect_systemd
-      install_xray
-      install_singbox
-      ;;
-    uninstall)
-      uninstall_flow
-      ;;
-    exit)
-      log_info "退出。"
+      with_install_lock run_action
       ;;
     *)
-      log_error "unknown action: ${ACTION}"
-      exit 2
+      run_action
       ;;
   esac
 }

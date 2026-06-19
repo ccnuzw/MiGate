@@ -10,19 +10,20 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/corefile"
+	"github.com/imzyb/MiGate/internal/paths"
 )
 
 var (
 	// DefaultBinaryPath is the default location for the sing-box binary.
-	DefaultBinaryPath = "/usr/local/bin/sing-box"
+	DefaultBinaryPath = paths.SingboxBinary
 	// DefaultConfigDir is the default directory for sing-box config and certs.
-	DefaultConfigDir = "/etc/sing-box"
+	DefaultConfigDir = paths.CoreConfigDir
 	// DefaultConfigPath is the default sing-box config file path.
-	DefaultConfigPath = "/etc/sing-box/config.json"
+	DefaultConfigPath = paths.SingboxConfig
 	// CertFile is the auto-generated self-signed certificate path.
-	CertFile = "/etc/sing-box/server.crt"
+	CertFile = "/etc/migate/cores/sing-box-server.crt"
 	// KeyFile is the auto-generated self-signed key path.
-	KeyFile = "/etc/sing-box/server.key"
+	KeyFile = "/etc/migate/cores/sing-box-server.key"
 	// SBBasePort is the starting port for sing-box inbounds (21000-21999).
 	SBBasePort = 21000
 	// SBMaxPort is the max port for sing-box inbounds.
@@ -32,8 +33,7 @@ var (
 var execCommand = exec.Command
 
 const (
-	primaryServiceName = "sing-box"
-	legacyServiceName  = "migate-singbox"
+	serviceName = paths.SingboxService
 )
 
 // ManagementStatus describes whether sing-box is managed by a known systemd
@@ -156,7 +156,7 @@ func ApplyConfig(raw []byte) error {
 		tmp.Close()
 		return fmt.Errorf("write temp config: %w", err)
 	}
-	if err := tmp.Chmod(0644); err != nil {
+	if err := tmp.Chmod(0640); err != nil {
 		tmp.Close()
 		return fmt.Errorf("chmod temp config: %w", err)
 	}
@@ -218,34 +218,14 @@ func CheckConfigFile(path string) corefile.Status {
 
 // ServiceName returns the systemd service name.
 func ServiceName() string {
-	return primaryServiceName
-}
-
-// LegacyServiceName returns the pre-migration systemd unit name. New installs
-// use ServiceName(), but runtime operations keep this fallback for upgraded VPSes.
-func LegacyServiceName() string {
-	return legacyServiceName
-}
-
-// RuntimeServiceName returns the best systemd unit to use for runtime
-// operations, preferring the upstream sing-box.service and falling back to the
-// legacy MiGate-managed unit when it is the only installed unit.
-func RuntimeServiceName() string {
-	return resolveServiceName()
+	return serviceName
 }
 
 func Management() ManagementStatus {
-	if serviceAvailable(primaryServiceName) {
-		return ManagementStatus{Managed: true, Service: primaryServiceName}
+	if serviceAvailable(serviceName) {
+		return ManagementStatus{Managed: true, Service: serviceName}
 	}
-	if serviceAvailable(legacyServiceName) {
-		return ManagementStatus{Managed: true, Service: legacyServiceName}
-	}
-	return ManagementStatus{Managed: false, Service: primaryServiceName}
-}
-
-func resolveServiceName() string {
-	return Management().Service
+	return ManagementStatus{Managed: false, Service: serviceName}
 }
 
 func serviceAvailable(name string) bool {
@@ -265,7 +245,7 @@ func serviceAvailable(name string) bool {
 
 // RestartService restarts the systemd service.
 func RestartService() (string, error) {
-	service := resolveServiceName()
+	service := ServiceName()
 	cmd := execCommand("systemctl", "restart", service)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -276,7 +256,7 @@ func RestartService() (string, error) {
 
 // ServiceStatus returns the systemd service status.
 func ServiceStatus() (string, error) {
-	service := resolveServiceName()
+	service := ServiceName()
 	cmd := execCommand("systemctl", "is-active", service)
 	out, err := cmd.CombinedOutput()
 	if err == nil || strings.TrimSpace(string(out)) != "" {
@@ -310,7 +290,7 @@ type ServiceProperties struct {
 
 // Show returns parsed systemd service properties via systemctl show.
 func Show() (*ServiceProperties, error) {
-	service := resolveServiceName()
+	service := ServiceName()
 	cmd := execCommand("systemctl", "show", service,
 		"--property=MemoryCurrent",
 		"--property=MainPID",

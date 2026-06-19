@@ -106,8 +106,7 @@ For local smoke tests, create a temporary config like:
   "panel_username": "admin",
   "panel_password": "admin123",
   "web_base_path": "/panel",
-  "database_path": "/tmp/migate-dev.db",
-  "xray_config_path": "/tmp/migate-xray"
+  "database_path": "/tmp/migate-dev.db"
 }
 ```
 
