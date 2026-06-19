@@ -115,6 +115,31 @@ func coreUninstallHandler(core string, runner func(script string) ([]byte, error
 	}
 }
 
+func coreDeleteHandler(core string, runner func(script string) ([]byte, error)) http.HandlerFunc {
+	if runner == nil {
+		runner = runCoreScript
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if _, ok := decodeCoreActionPayload(w, r); !ok {
+			return
+		}
+		result, err := (coreadmin.Service{Runner: runner}).Delete(core)
+		if err == coreadmin.ErrUnknownCore {
+			writeJSONError(w, http.StatusBadRequest, "unknown_core")
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, coreActionResultPayload(result))
+			return
+		}
+		writeJSON(w, http.StatusOK, coreActionResultPayload(result))
+	}
+}
+
 func coreActionResultPayload(result coreadmin.ActionResult) map[string]interface{} {
 	payload := map[string]interface{}{
 		"core":              result.Core,

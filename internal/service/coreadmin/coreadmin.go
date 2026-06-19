@@ -69,7 +69,15 @@ func (s Service) Uninstall(core string) (ActionResult, error) {
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return s.runPlan(plan, "uninstalled", "uninstall_failed")
+	return s.runPlan(plan, "unmanaged", "unmanage_failed")
+}
+
+func (s Service) Delete(core string) (ActionResult, error) {
+	plan, err := DeletePlan(core)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	return s.runPlan(plan, "deleted", "delete_failed")
 }
 
 func (s Service) runPlan(plan Plan, successStatus, failureError string) (ActionResult, error) {
@@ -169,6 +177,39 @@ rm -f /etc/systemd/system/migate-sing-box.service
 systemctl daemon-reload 2>/dev/null || true
 systemctl reset-failed migate-sing-box 2>/dev/null || true
 printf 'sing-box service disabled. Configuration and binary were kept.\n'`,
+		}, nil
+	default:
+		return Plan{}, ErrUnknownCore
+	}
+}
+
+func DeletePlan(core string) (Plan, error) {
+	switch core {
+	case "xray":
+		return Plan{
+			Core:     core,
+			Commands: []string{"systemctl stop migate-xray", "systemctl disable migate-xray", "remove MiGate Xray service", "remove /usr/local/bin/xray", "systemctl daemon-reload"},
+			Script: `set -euo pipefail
+systemctl stop migate-xray 2>/dev/null || true
+systemctl disable migate-xray 2>/dev/null || true
+rm -f /etc/systemd/system/migate-xray.service
+rm -f /usr/local/bin/xray
+systemctl daemon-reload 2>/dev/null || true
+systemctl reset-failed migate-xray 2>/dev/null || true
+printf 'Xray core binary removed. Configuration was kept.\n'`,
+		}, nil
+	case "singbox":
+		return Plan{
+			Core:     core,
+			Commands: []string{"systemctl stop migate-sing-box", "systemctl disable migate-sing-box", "remove MiGate sing-box service", "remove /usr/local/bin/sing-box", "systemctl daemon-reload"},
+			Script: `set -euo pipefail
+systemctl stop migate-sing-box 2>/dev/null || true
+systemctl disable migate-sing-box 2>/dev/null || true
+rm -f /etc/systemd/system/migate-sing-box.service
+rm -f /usr/local/bin/sing-box
+systemctl daemon-reload 2>/dev/null || true
+systemctl reset-failed migate-sing-box 2>/dev/null || true
+printf 'sing-box core binary removed. Configuration was kept.\n'`,
 		}, nil
 	default:
 		return Plan{}, ErrUnknownCore

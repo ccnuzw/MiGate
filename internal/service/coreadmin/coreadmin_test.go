@@ -164,12 +164,33 @@ func TestUninstallPlanBuildsScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("uninstall plan: %v", err)
 	}
-	for _, want := range []string{"systemctl stop migate-sing-box", "rm -f /etc/systemd/system/migate-sing-box.service", "sing-box service disabled"} {
+	for _, want := range []string{"systemctl stop migate-sing-box", "rm -f /etc/systemd/system/migate-sing-box.service", "sing-box service disabled", "Configuration and binary were kept"} {
 		if !strings.Contains(plan.Script, want) {
 			t.Fatalf("script missing %q:\n%s", want, plan.Script)
 		}
 	}
+	if strings.Contains(plan.Script, "rm -f /usr/local/bin/sing-box") {
+		t.Fatalf("uninstall must keep sing-box binary:\n%s", plan.Script)
+	}
 	if len(plan.Commands) != 4 {
+		t.Fatalf("commands = %+v", plan.Commands)
+	}
+}
+
+func TestDeletePlanRemovesCoreBinaryAndKeepsConfig(t *testing.T) {
+	plan, err := DeletePlan("xray")
+	if err != nil {
+		t.Fatalf("delete plan: %v", err)
+	}
+	for _, want := range []string{"systemctl stop migate-xray", "rm -f /etc/systemd/system/migate-xray.service", "rm -f /usr/local/bin/xray", "Configuration was kept"} {
+		if !strings.Contains(plan.Script, want) {
+			t.Fatalf("script missing %q:\n%s", want, plan.Script)
+		}
+	}
+	if strings.Contains(plan.Script, "/etc/migate/cores/xray.json") {
+		t.Fatalf("delete must keep xray config:\n%s", plan.Script)
+	}
+	if len(plan.Commands) != 5 {
 		t.Fatalf("commands = %+v", plan.Commands)
 	}
 }

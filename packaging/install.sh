@@ -183,6 +183,20 @@ run_cmd() {
   "$@"
 }
 
+enable_systemd_service() {
+  local service="$1"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] systemctl enable %s\n' "$service"
+    return 0
+  fi
+  if systemctl enable "$service" >/dev/null; then
+    log_ok "${service}.service 已启用"
+    return 0
+  fi
+  log_error "${service}.service 启用失败"
+  return 1
+}
+
 command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -312,8 +326,8 @@ ensure_runtime_dirs() {
   fi
   chown root:migate "$CONFIG_DIR" "$CORE_CONFIG_DIR"
   chmod 0750 "$CONFIG_DIR" "$CORE_CONFIG_DIR"
-  chown migate:migate "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"
-  chmod 0750 "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"
+  chown root:migate "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"
+  chmod 0770 "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"
 }
 
 set_core_config_permissions() {
@@ -787,6 +801,7 @@ print_config_summary() {
   kv "配置文件" "$CONFIG_PATH"
   kv "数据库" "${DATA_DIR}/migate.db"
   kv "Xray 配置" "${XRAY_CONFIG_PATH}"
+  kv "sing-box 配置" "${SINGBOX_CONFIG_PATH}"
 }
 
 configure_log_retention() {
@@ -963,7 +978,7 @@ restart_migate_service() {
     return 0
   fi
   run_cmd systemctl daemon-reload
-  run_cmd systemctl enable migate
+  enable_systemd_service migate
   run_cmd systemctl restart migate
   if [ "$DRY_RUN" -eq 0 ]; then
     if systemctl is-active migate >/dev/null 2>&1; then
@@ -1074,11 +1089,47 @@ backup_invalid_core_config() {
   log_warn "已备份不可用配置：${backup}"
 }
 
+check_xray_config_silent() {
+  /usr/local/bin/xray run -test -c "$1" >/dev/null 2>&1
+}
+
+check_singbox_config_silent() {
+  /usr/local/bin/sing-box check -c "$1" >/dev/null 2>&1
+}
+
+validate_xray_config() {
+  local path="$1"
+  local success_message="${2:-}"
+  local output
+  if output="$(/usr/local/bin/xray run -test -c "$path" 2>&1)"; then
+    if [ -n "$success_message" ]; then
+      log_ok "$success_message"
+    fi
+    return 0
+  fi
+  printf '%s\n' "$output" >&2
+  return 1
+}
+
+validate_singbox_config() {
+  local path="$1"
+  local success_message="${2:-}"
+  local output
+  if output="$(/usr/local/bin/sing-box check -c "$path" 2>&1)"; then
+    if [ -n "$success_message" ]; then
+      log_ok "$success_message"
+    fi
+    return 0
+  fi
+  printf '%s\n' "$output" >&2
+  return 1
+}
+
 install_default_xray_config() {
   local tmp
   tmp="$(mktemp "${CORE_CONFIG_DIR}/.xray-default.XXXXXX.json")"
   write_default_xray_config "$tmp"
-  /usr/local/bin/xray run -test -c "$tmp"
+  validate_xray_config "$tmp"
   mv -f "$tmp" "$XRAY_CONFIG_PATH"
   set_core_config_permissions "$XRAY_CONFIG_PATH"
 }
@@ -1087,29 +1138,31 @@ install_default_singbox_config() {
   local tmp
   tmp="$(mktemp "${CORE_CONFIG_DIR}/.sing-box-default.XXXXXX.json")"
   write_default_singbox_config "$tmp"
-  /usr/local/bin/sing-box check -c "$tmp"
+  validate_singbox_config "$tmp"
   mv -f "$tmp" "$SINGBOX_CONFIG_PATH"
   set_core_config_permissions "$SINGBOX_CONFIG_PATH"
 }
 
 ensure_valid_xray_config() {
-  if /usr/local/bin/xray run -test -c "$XRAY_CONFIG_PATH"; then
+  if check_xray_config_silent "$XRAY_CONFIG_PATH"; then
+    log_ok "Xray 配置校验通过：${XRAY_CONFIG_PATH}"
     return 0
   fi
   log_warn "现有 Xray 配置校验失败，将备份并写入 MiGate 默认配置。"
   backup_invalid_core_config "${XRAY_CONFIG_PATH}" "xray"
   install_default_xray_config
-  /usr/local/bin/xray run -test -c "$XRAY_CONFIG_PATH"
+  validate_xray_config "$XRAY_CONFIG_PATH" "Xray 配置校验通过：${XRAY_CONFIG_PATH}"
 }
 
 ensure_valid_singbox_config() {
-  if /usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"; then
+  if check_singbox_config_silent "$SINGBOX_CONFIG_PATH"; then
+    log_ok "sing-box 配置校验通过：${SINGBOX_CONFIG_PATH}"
     return 0
   fi
   log_warn "现有 sing-box 配置校验失败，将备份并写入 MiGate 默认配置。"
   backup_invalid_core_config "$SINGBOX_CONFIG_PATH" "sing-box"
   install_default_singbox_config
-  /usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"
+  validate_singbox_config "$SINGBOX_CONFIG_PATH" "sing-box 配置校验通过：${SINGBOX_CONFIG_PATH}"
 }
 
 install_xray() {
@@ -1211,7 +1264,7 @@ LogRateLimitBurst=200
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  systemctl enable migate-xray
+  enable_systemd_service migate-xray
   if ! systemctl restart migate-xray; then
     log_error "Xray 服务启动失败。查看：journalctl -u migate-xray -n 80 --no-pager"
     return 1
@@ -1331,7 +1384,7 @@ LogRateLimitBurst=200
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  systemctl enable migate-sing-box
+  enable_systemd_service migate-sing-box
   if ! systemctl restart migate-sing-box; then
     log_error "sing-box 服务启动失败。查看：journalctl -u migate-sing-box -n 80 --no-pager"
     return 1
@@ -1565,7 +1618,7 @@ finish_message() {
   else
     log_warn "Xray 二进制：未找到"
   fi
-  kv "sing-box 配置" "/etc/migate/cores/sing-box.json"
+  kv "sing-box 配置" "${SINGBOX_CONFIG_PATH}"
   if [ -n "$singbox_bin" ]; then
     kv "sing-box 二进制" "${singbox_bin} ($(core_version "$singbox_bin"))"
     if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then kv "sing-box 服务" "systemctl status migate-sing-box"; fi

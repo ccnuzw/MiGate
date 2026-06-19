@@ -31,6 +31,23 @@ func webAndCoreAdminSource(t *testing.T) string {
 	return webPackageSource(t) + "\n" + goPackageSource(t, "../service/coreadmin")
 }
 
+func sourceBetween(t *testing.T, source, start, end string) string {
+	t.Helper()
+	startIndex := strings.Index(source, start)
+	if startIndex < 0 {
+		t.Fatalf("source missing start marker %q", start)
+	}
+	tail := source[startIndex:]
+	if end == "" {
+		return tail
+	}
+	endIndex := strings.Index(tail, end)
+	if endIndex < 0 {
+		t.Fatalf("source missing end marker %q after %q", end, start)
+	}
+	return tail[:endIndex]
+}
+
 func goPackageSource(t *testing.T, root string) string {
 	t.Helper()
 	var body strings.Builder
@@ -756,11 +773,13 @@ func TestRouteContractsAreRegisteredAndEnforced(t *testing.T) {
 		{Method: http.MethodGet, Path: "/api/xray/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
 		{Method: http.MethodPost, Path: "/api/xray/apply", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodPost, Path: "/api/xray/install", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/xray/delete", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodPost, Path: "/api/xray/restart", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodPost, Path: "/api/xray/stop", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodGet, Path: "/api/singbox/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
 		{Method: http.MethodPost, Path: "/api/singbox/apply", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodPost, Path: "/api/singbox/install", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
+		{Method: http.MethodPost, Path: "/api/singbox/delete", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodPost, Path: "/api/singbox/restart", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodPost, Path: "/api/singbox/stop", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodGet, Path: "/api/update/check", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
@@ -783,11 +802,13 @@ func TestDangerousRouteContractsAndCSRF(t *testing.T) {
 		"/api/xray/apply":        true,
 		"/api/xray/install":      true,
 		"/api/xray/uninstall":    true,
+		"/api/xray/delete":       true,
 		"/api/xray/restart":      true,
 		"/api/xray/stop":         true,
 		"/api/singbox/apply":     true,
 		"/api/singbox/install":   true,
 		"/api/singbox/uninstall": true,
+		"/api/singbox/delete":    true,
 		"/api/singbox/restart":   true,
 		"/api/singbox/stop":      true,
 		"/api/update":            true,
@@ -1000,11 +1021,13 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 		{"/api/xray/apply"},
 		{"/api/xray/install"},
 		{"/api/xray/uninstall"},
+		{"/api/xray/delete"},
 		{"/api/xray/restart"},
 		{"/api/xray/stop"},
 		{"/api/singbox/apply"},
 		{"/api/singbox/install"},
 		{"/api/singbox/uninstall"},
+		{"/api/singbox/delete"},
 		{"/api/singbox/restart"},
 		{"/api/singbox/stop"},
 		{"/api/cert/issue"},
@@ -1224,7 +1247,8 @@ func TestCoreInstallScriptAvoidsPipefailHead(t *testing.T) {
 }
 
 func TestCoreUninstallScriptsRemoveSystemdResidue(t *testing.T) {
-	script := webAndCoreAdminSource(t)
+	source := webAndCoreAdminSource(t)
+	script := sourceBetween(t, source, "func UninstallPlan(core string) (Plan, error)", "func DeletePlan(core string) (Plan, error)")
 	for _, want := range []string{
 		`systemctl stop migate-xray 2>/dev/null || true`,
 		`rm -f /etc/systemd/system/migate-xray.service`,
@@ -1246,8 +1270,41 @@ func TestCoreUninstallScriptsRemoveSystemdResidue(t *testing.T) {
 			t.Fatalf("WebUI core uninstall script must not keep legacy cleanup marker %q", forbidden)
 		}
 	}
+	for _, forbidden := range []string{
+		`rm -f /usr/local/bin/xray
+systemctl daemon-reload`,
+		`rm -f /usr/local/bin/sing-box
+systemctl daemon-reload`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("WebUI core uninstall must keep core binary; delete action owns removal marker %q", forbidden)
+		}
+	}
 	if strings.Contains(script, `rm -rf /etc/systemd/system/migate-sing-box.service.d`) {
 		t.Fatalf("WebUI core uninstall script must not remove user-managed migate-sing-box.service drop-ins")
+	}
+}
+
+func TestCoreDeleteScriptsRemoveCoreBinariesAndKeepConfigs(t *testing.T) {
+	source := webAndCoreAdminSource(t)
+	script := sourceBetween(t, source, "func DeletePlan(core string) (Plan, error)", "")
+	for _, want := range []string{
+		`rm -f /usr/local/bin/xray`,
+		`rm -f /usr/local/bin/sing-box`,
+		`Xray core binary removed. Configuration was kept.`,
+		`sing-box core binary removed. Configuration was kept.`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("WebUI core delete script missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`rm -f /etc/migate/cores/xray.json`,
+		`rm -f /etc/migate/cores/sing-box.json`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("WebUI core delete must keep config file marker %q", forbidden)
+		}
 	}
 }
 

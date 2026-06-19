@@ -55,7 +55,7 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"panel_password",
 		"web_base_path",
 		"migate-linux-${ARCH}.tar.gz",
-		"systemctl enable migate",
+		"enable_systemd_service migate",
 		"systemctl restart migate",
 		"MIGATE_PANEL_BIND_HOST=0.0.0.0",
 		"mktemp /usr/local/bin/.migate-uninstall.XXXXXX",
@@ -333,9 +333,10 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 		"migate-sing-box.service",
 		"ExecStart=/usr/local/bin/sing-box run -c ${SINGBOX_CONFIG_PATH}",
 		"systemctl stop migate-sing-box",
-		"systemctl enable migate-sing-box",
-		`/usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"`,
+		"enable_systemd_service migate-sing-box",
+		`check_singbox_config_silent "$SINGBOX_CONFIG_PATH"`,
 		"sing-box 默认配置校验失败：${SINGBOX_CONFIG_PATH}",
+		"sing-box 配置校验通过：${SINGBOX_CONFIG_PATH}",
 		"journalctl -u migate-sing-box -n 80 --no-pager",
 		"systemctl restart migate-sing-box",
 		"systemctl is-active --quiet migate-sing-box",
@@ -349,10 +350,12 @@ func TestInstallerOffersSingBoxRuntime(t *testing.T) {
 	if serviceWrite < 0 || !strings.Contains(script[serviceWrite:], "systemctl daemon-reload") {
 		t.Fatalf("installer must daemon-reload after writing sing-box service")
 	}
-	if strings.Index(script, `/usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"`) > strings.Index(script, "systemctl restart migate-sing-box") {
+	singboxConfigCheck := strings.Index(script, "if ! ensure_valid_singbox_config; then")
+	singboxRestart := strings.Index(script, "systemctl restart migate-sing-box")
+	if singboxConfigCheck < 0 || singboxRestart < 0 || singboxConfigCheck > singboxRestart {
 		t.Fatalf("installer must check sing-box config before starting service")
 	}
-	checkBlock := script[strings.Index(script, "if ! ensure_valid_singbox_config; then"):]
+	checkBlock := script[singboxConfigCheck:]
 	if !strings.Contains(checkBlock, "return 1") || strings.Index(checkBlock, "return 1") > strings.Index(checkBlock, "systemctl restart migate-sing-box") {
 		t.Fatalf("installer must fail before sing-box service restart when config check fails")
 	}
@@ -433,15 +436,21 @@ func TestInstallerSeedsCoreConfigsMatchingGeneratedDefaults(t *testing.T) {
 		`set_core_config_permissions()`,
 		`chown root:migate "$path"`,
 		`chmod 0640 "$path"`,
-		`/usr/local/bin/xray run -test -c "$tmp"`,
-		`/usr/local/bin/sing-box check -c "$tmp"`,
+		`validate_xray_config "$tmp"`,
+		`validate_singbox_config "$tmp"`,
 		`mv -f "$tmp" "$XRAY_CONFIG_PATH"`,
 		`mv -f "$tmp" "$SINGBOX_CONFIG_PATH"`,
 		`set_core_config_permissions "$XRAY_CONFIG_PATH"`,
 		`set_core_config_permissions "$SINGBOX_CONFIG_PATH"`,
-		`/usr/local/bin/xray run -test -c "$XRAY_CONFIG_PATH"`,
+		`check_xray_config_silent "$XRAY_CONFIG_PATH"`,
+		`check_singbox_config_silent "$SINGBOX_CONFIG_PATH"`,
+		`validate_xray_config "$XRAY_CONFIG_PATH" "Xray 配置校验通过：${XRAY_CONFIG_PATH}"`,
+		`validate_singbox_config "$SINGBOX_CONFIG_PATH" "sing-box 配置校验通过：${SINGBOX_CONFIG_PATH}"`,
+		`check_xray_config_silent "$XRAY_CONFIG_PATH"`,
+		`Xray 配置校验通过：${XRAY_CONFIG_PATH}`,
 		`systemctl is-active --quiet migate-xray`,
-		`/usr/local/bin/sing-box check -c "$SINGBOX_CONFIG_PATH"`,
+		`check_singbox_config_silent "$SINGBOX_CONFIG_PATH"`,
+		`sing-box 配置校验通过：${SINGBOX_CONFIG_PATH}`,
 		`systemctl is-active --quiet migate-sing-box`,
 	} {
 		if !strings.Contains(script, want) {
@@ -1075,6 +1084,8 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 	}
 	for _, want := range []string{
 		`mkdir -p "$CONFIG_DIR" "$CORE_CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR" /usr/local/bin /usr/local/share/xray /etc/systemd/system`,
+		`chown root:migate "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"`,
+		`chmod 0770 "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"`,
 		"ProtectSystem=strict",
 		"ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} /usr/local/bin /usr/local/share/xray /etc/systemd/system",
 		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",

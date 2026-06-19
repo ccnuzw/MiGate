@@ -127,7 +127,7 @@ func TestInstallerDownloadsReleaseTarballOnly(t *testing.T) {
 		"/var/lib/migate/backups",
 		"/var/lib/migate/versions.json",
 		"/etc/migate/cores",
-		"systemctl enable migate",
+		"enable_systemd_service migate",
 		"systemctl restart migate",
 		"detect_existing_install()",
 		"read_existing_config_defaults()",
