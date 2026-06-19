@@ -21,7 +21,11 @@ function invalidateQueryKeys(queryClient: QueryClient, keys: string[][]) {
 }
 
 export function refreshSettingsDependencies(queryClient: QueryClient) {
-  invalidateQueryKeys(queryClient, [['settings'], ['cert-status']]);
+  invalidateQueryKeys(queryClient, [['settings'], ['cert-status'], ['certificates'], ['certificate-inbounds']]);
+}
+
+export function refreshCertificateApplyDependencies(queryClient: QueryClient) {
+  invalidateQueryKeys(queryClient, [['cert-status'], ['certificates'], ['certificate-inbounds'], ['inbounds'], ['dashboard-summary']]);
 }
 
 export function refreshUpdateDependencies(queryClient: QueryClient) {

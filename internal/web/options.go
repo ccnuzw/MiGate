@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"net"
 	"strings"
 	"time"
 
+	certsvc "github.com/imzyb/MiGate/internal/service/cert"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -40,6 +42,25 @@ func WithSingboxRuntime(runtime SingboxRuntime) Option {
 func WithConfigDir(dir string) Option {
 	return func(cfg *routerConfig) {
 		cfg.configDir = dir
+	}
+}
+
+func WithCertDir(dir string) Option {
+	return func(cfg *routerConfig) {
+		cfg.certDir = strings.TrimSpace(dir)
+	}
+}
+
+func WithCertPreflightHooks(lookupIP func(context.Context, string) ([]net.IP, error), listenTCP func(string, string) (net.Listener, error)) Option {
+	return func(cfg *routerConfig) {
+		cfg.certLookupIP = lookupIP
+		cfg.certListenTCP = listenTCP
+	}
+}
+
+func WithCertIssuer(issuer certsvc.Issuer) Option {
+	return func(cfg *routerConfig) {
+		cfg.certIssuer = issuer
 	}
 }
 

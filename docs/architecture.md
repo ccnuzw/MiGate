@@ -15,6 +15,7 @@ MiGate keeps runtime behavior behind stable package boundaries. New code must fo
 The MiGate Runtime Contract remains:
 
 - panel config: `/etc/migate/panel.json`
+- certificate assets: `/etc/migate/certs`
 - core configs: `/etc/migate/cores/xray.json`, `/etc/migate/cores/sing-box.json`
 - database: `/var/lib/migate/migate.db`
 - services: `migate`, `migate-xray`, `migate-sing-box`
@@ -68,6 +69,7 @@ Standard paths:
 - config dir: `/etc/migate`
 - panel config: `/etc/migate/panel.json`
 - core config dir: `/etc/migate/cores`
+- certificate dir: `/etc/migate/certs`
 - Xray config: `/etc/migate/cores/xray.json`
 - sing-box config: `/etc/migate/cores/sing-box.json`
 - data dir: `/var/lib/migate`
@@ -80,6 +82,11 @@ Standard paths:
 - binaries: `/usr/local/bin/migate`, `/usr/local/bin/mg`,
   `/usr/local/bin/migate-install`, `/usr/local/bin/migate-uninstall`,
   `/usr/local/bin/xray`, `/usr/local/bin/sing-box`
+
+The `migate.service` sandbox uses `ProtectSystem=strict` and grants
+`ReadWritePaths=/etc/migate ...`; therefore managed certificate files must live
+under `/etc/migate/certs`, not `/etc/xray/certs`. Xray and sing-box read those
+paths from generated inbound TLS configuration.
 
 Standard services:
 
@@ -185,8 +192,8 @@ Schema behavior is part of the API contract for existing installations: table na
 
 The service layer keeps business logic outside HTTP handlers. Handlers should only check methods, decode requests, enforce confirmation gates, call services, and write responses.
 
-- `internal/service/settings` owns typed settings reads/updates, password hashing orchestration, and cert field persistence.
-- `internal/service/cert` owns certificate request validation, status inspection, ACME invocation, cert file permission updates, and saving cert domain/email through settings persistence.
+- `internal/service/settings` owns typed settings reads/updates and password hashing orchestration.
+- `internal/service/cert` owns certificate preflight diagnostics, ACME HTTP-01 issuance through a Go native issuer, import validation, certificate metadata parsing, renewal decisions, operation logs, and applying managed certificate paths to TLS inbounds.
 - `internal/service/update` owns release checks, updater availability validation, update runtime state, update logs, and detached `systemd-run` updater execution.
 - `internal/service/coreadmin` owns core install, uninstall, restart, and stop management logic. It builds the plans, shell scripts, command lists, service-name resolution, runner invocation, and `ActionResult` shaping for those workflows.
 - `internal/web/core_handlers.go` is a thin HTTP layer for core management actions: method checks, JSON decoding, confirmation gates, service calls, and response writing.

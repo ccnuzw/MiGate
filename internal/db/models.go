@@ -2,6 +2,71 @@ package db
 
 import "strings"
 
+const (
+	CertStatusIssued       = "issued"
+	CertStatusPending      = "pending"
+	CertStatusFailed       = "failed"
+	CertStatusExpired      = "expired"
+	CertStatusExpiringSoon = "expiring_soon"
+
+	CertSourceACME   = "acme"
+	CertSourceImport = "import"
+)
+
+type Certificate struct {
+	ID               int64     `json:"id"`
+	Name             string    `json:"name"`
+	Source           string    `json:"source"`
+	Status           string    `json:"status"`
+	Domains          []string  `json:"domains"`
+	CertPath         string    `json:"cert_path"`
+	KeyPath          string    `json:"key_path"`
+	NotBefore        string    `json:"not_before,omitempty"`
+	NotAfter         string    `json:"not_after,omitempty"`
+	Fingerprint      string    `json:"fingerprint,omitempty"`
+	Serial           string    `json:"serial,omitempty"`
+	IssueEmail       string    `json:"issue_email,omitempty"`
+	ACMEDirectoryURL string    `json:"acme_directory_url,omitempty"`
+	ChallengeMethod  string    `json:"challenge_method,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+	CreatedAt        string    `json:"created_at,omitempty"`
+	UpdatedAt        string    `json:"updated_at,omitempty"`
+	LastRenewed      string    `json:"last_renewed,omitempty"`
+	UsageCount       int       `json:"usage_count"`
+	Usages           []Inbound `json:"usages,omitempty"`
+}
+
+type CertificateOperation struct {
+	ID            int64  `json:"id"`
+	CertificateID int64  `json:"certificate_id,omitempty"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	Code          string `json:"code,omitempty"`
+	Message       string `json:"message,omitempty"`
+	Detail        string `json:"detail,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+}
+
+type UpsertCertificateParams struct {
+	ID               int64
+	Name             string
+	Source           string
+	Status           string
+	Domains          []string
+	CertPath         string
+	KeyPath          string
+	NotBefore        string
+	NotAfter         string
+	Fingerprint      string
+	Serial           string
+	IssueEmail       string
+	ACMEDirectoryURL string
+	ChallengeMethod  string
+	LastError        string
+	LastRenewed      string
+}
+
 type RoutingRule struct {
 	ID          int64  `json:"id"`
 	InboundID   int64  `json:"inbound_id,omitempty"`

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { certIssuePayload, certSettingsPayload, formatUpdateLogs, isUpdateInProgress, isUpdateTerminal, settingsPayload, updateDependencyRefetchInterval, updateStatusRefetchInterval, updateStatusSummaryKey } from './SettingsPage';
+import { ApiError } from '../api/client';
+import { certificateStatusLabel, certIssuePayload, certSettingsPayload, formatUpdateLogs, isUpdateInProgress, isUpdateTerminal, parseDomains, preflightFromAPIError, settingsPayload, toggleID, updateDependencyRefetchInterval, updateStatusRefetchInterval, updateStatusSummaryKey } from './SettingsPage';
 
 describe('settings helpers', () => {
   it('sends an empty password to preserve the existing backend password', () => {
@@ -56,5 +57,19 @@ describe('settings helpers', () => {
     expect(formatUpdateLogs(undefined, 'empty')).toBe('empty');
     expect(formatUpdateLogs({ lines: ['a', 'b'] }, 'empty')).toBe('a\nb');
     expect(formatUpdateLogs({ logs: 'raw log' }, 'empty')).toBe('raw log');
+  });
+
+  it('normalizes certificate domains and statuses', () => {
+    expect(parseDomains('Example.com, www.example.com  example.com')).toEqual(['example.com', 'www.example.com']);
+    expect(certificateStatusLabel('expiring_soon')).toBe('即将到期');
+    expect(toggleID([1, 2], 2)).toEqual([1]);
+    expect(toggleID([1], 2)).toEqual([1, 2]);
+  });
+
+  it('extracts preflight checks from standard API error fields', () => {
+    const preflight = { ok: false, checks: [{ code: 'http_01_port_unavailable', status: 'failed', detail: 'bind failed' }] };
+    const error = new ApiError(409, 'preflight_failed', { error: { code: 'preflight_failed', fields: { preflight } } }, { code: 'preflight_failed', fields: { preflight } });
+    expect(preflightFromAPIError(error)).toEqual(preflight);
+    expect(preflightFromAPIError(new Error('legacy'))).toBeNull();
   });
 });

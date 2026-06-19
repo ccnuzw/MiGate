@@ -3,12 +3,20 @@ package web_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +33,55 @@ import (
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
 )
+
+func testCertificatePair(t *testing.T, domain string) (string, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: domain},
+		DNSNames:     []string{domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "fullchain.pem")
+	keyPath := filepath.Join(dir, "privkey.pem")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
+}
+
+func openWebTestStore(t *testing.T) *db.Store {
+	t.Helper()
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
 
 func withTempApplyLock(t *testing.T) {
 	t.Helper()
@@ -67,7 +124,7 @@ func TestCreateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()))
 	for i := 0; i < 2; i++ {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients", strings.NewReader(`{"email":"sam@example.com","uuid":"11111111-1111-4111-8111-111111111111"}`))
@@ -105,7 +162,7 @@ func TestUpdateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second client: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()))
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(second.ID, 10), strings.NewReader(`{"email":"sam@example.com","enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -3265,7 +3322,7 @@ func TestXrayStatusAPIIsReadOnly(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "grpc", Protocol: "vless", Port: 2443, Network: "grpc", Security: "reality", GrpcServiceName: "svc"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/xray/status", nil)
 	router.ServeHTTP(response, req)
@@ -3323,7 +3380,7 @@ func TestXrayStatusAPIReturnsListeningPortsWithTransportDetails(t *testing.T) {
 		}
 	}
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
 	if response.Code != http.StatusOK {
@@ -5131,23 +5188,17 @@ func TestCertStatusReturnsEmptyStateWhenNotConfigured(t *testing.T) {
 }
 
 func TestCertStatusReturnsCertInfoWhenConfigured(t *testing.T) {
-	dir := t.TempDir()
-	configPath := dir + "/panel.json"
-	if err := os.WriteFile(configPath, []byte(`{"cert_domain":"example.com","cert_email":"admin@example.com"}`), 0644); err != nil {
-		t.Fatalf("write panel.json: %v", err)
-	}
-	certDir := dir + "/certs/example.com"
-	if err := os.MkdirAll(certDir, 0755); err != nil {
-		t.Fatalf("mkdir cert dir: %v", err)
-	}
-	if err := os.WriteFile(certDir+"/fullchain.pem", []byte("fake cert"), 0644); err != nil {
-		t.Fatalf("write fullchain: %v", err)
-	}
-	if err := os.WriteFile(certDir+"/privkey.pem", []byte("fake key"), 0644); err != nil {
-		t.Fatalf("write privkey: %v", err)
+	store := openWebTestStore(t)
+	cert, key := testCertificatePair(t, "example.com")
+	imported, err := store.UpsertCertificate(context.Background(), db.UpsertCertificateParams{
+		Name: "example.com", Source: db.CertSourceImport, Status: db.CertStatusIssued, Domains: []string{"example.com"}, CertPath: cert, KeyPath: key,
+		NotBefore: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), NotAfter: time.Now().Add(90 * 24 * time.Hour).UTC().Format(time.RFC3339),
+	})
+	if err != nil || imported.ID == 0 {
+		t.Fatalf("seed certificate: %v", err)
 	}
 
-	router := web.NewRouter(web.WithConfigDir(dir))
+	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/cert/status", nil)
 	router.ServeHTTP(response, req)
@@ -5195,7 +5246,7 @@ func TestCertStatusRejectsInvalidPanelConfigFields(t *testing.T) {
 }
 
 func TestCertIssueValidatesRequiredFields(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
 	// Missing domain
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"","email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
@@ -5212,13 +5263,252 @@ func TestCertIssueValidatesRequiredFields(t *testing.T) {
 	if response2.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty email, got %d: %s", response2.Code, response2.Body.String())
 	}
-	// Not available (no configDir)
+	// Not available (no certificate store)
 	response3 := httptest.NewRecorder()
 	req3 := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"example.com","email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
 	req3.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(response3, req3)
-	if response3.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 when no configDir, got %d: %s", response3.Code, response3.Body.String())
+	web.NewRouter().ServeHTTP(response3, req3)
+	if response3.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no store, got %d: %s", response3.Code, response3.Body.String())
+	}
+}
+
+func TestCertIssuePreflightFailuresReturnStructuredClientErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		certDir    string
+		lookupIP   func(context.Context, string) ([]net.IP, error)
+		listenTCP  func(string, string) (net.Listener, error)
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:    "dns not resolved",
+			certDir: t.TempDir(),
+			lookupIP: func(context.Context, string) ([]net.IP, error) {
+				return nil, fmt.Errorf("no such host")
+			},
+			listenTCP: func(string, string) (net.Listener, error) {
+				return net.Listen("tcp", "127.0.0.1:0")
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "domain_not_resolved",
+		},
+		{
+			name:    "http 01 port unavailable",
+			certDir: t.TempDir(),
+			lookupIP: func(context.Context, string) ([]net.IP, error) {
+				return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			},
+			listenTCP: func(string, string) (net.Listener, error) {
+				return nil, fmt.Errorf("bind: address already in use")
+			},
+			wantStatus: http.StatusConflict,
+			wantCode:   "http_01_port_unavailable",
+		},
+		{
+			name:    "cert dir not writable",
+			certDir: filepath.Join(t.TempDir(), "missing", "certs"),
+			lookupIP: func(context.Context, string) ([]net.IP, error) {
+				return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			},
+			listenTCP: func(string, string) (net.Listener, error) {
+				return net.Listen("tcp", "127.0.0.1:0")
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "cert_dir_not_writable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantCode == "cert_dir_not_writable" {
+				if err := os.WriteFile(filepath.Dir(tt.certDir), []byte("file"), 0644); err != nil {
+					t.Fatalf("prepare unwritable parent: %v", err)
+				}
+			}
+			router := web.NewRouter(web.WithStore(openWebTestStore(t)), web.WithCertDir(tt.certDir), web.WithCertPreflightHooks(tt.lookupIP, tt.listenTCP))
+			resp := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/certificates", strings.NewReader(`{"domains":["example.com"],"email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(resp, req)
+			if resp.Code != tt.wantStatus || resp.Code == http.StatusInternalServerError {
+				t.Fatalf("expected %d, got %d: %s", tt.wantStatus, resp.Code, resp.Body.String())
+			}
+			body := resp.Body.String()
+			var payload struct {
+				Error struct {
+					Code   string                 `json:"code"`
+					Fields map[string]interface{} `json:"fields"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(body), &payload); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if payload.Error.Code != "preflight_failed" {
+				t.Fatalf("expected preflight_failed, got %#v", payload.Error.Code)
+			}
+			preflight, ok := payload.Error.Fields["preflight"].(map[string]interface{})
+			if !ok || preflight["ok"] != false || !strings.Contains(body, tt.wantCode) {
+				t.Fatalf("missing structured preflight %s: %#v body=%s", tt.wantCode, payload.Error.Fields, body)
+			}
+		})
+	}
+}
+
+func TestCertificatePreflightValidationErrorUsesStandardErrorObject(t *testing.T) {
+	router := web.NewRouter(web.WithStore(openWebTestStore(t)), web.WithCertDir(t.TempDir()))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/certificates/preflight", strings.NewReader(`{"domains":[],"email":"admin@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.Bytes()
+	assertStandardAPIError(t, body, "domain_required")
+	if !bytes.Contains(body, []byte(`"preflight"`)) || !bytes.Contains(body, []byte(`"domain_required"`)) {
+		t.Fatalf("expected structured preflight in error fields: %s", string(body))
+	}
+}
+
+func TestCertificateFixedChildRoutesReturnMethodNotAllowed(t *testing.T) {
+	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/certificates/preflight"},
+		{http.MethodGet, "/api/certificates/import"},
+		{http.MethodGet, "/api/certificates/renew-due"},
+		{http.MethodPost, "/api/certificates/inbounds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, httptest.NewRequest(tt.method, tt.path, nil))
+			if resp.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("expected 405, got %d: %s", resp.Code, resp.Body.String())
+			}
+			assertStandardAPIError(t, resp.Body.Bytes(), "method_not_allowed")
+		})
+	}
+}
+
+func TestRenewedCertificateCoreApplyReloadsUsageFromStore(t *testing.T) {
+	store := openWebTestStore(t)
+	cert, err := store.UpsertCertificate(context.Background(), db.UpsertCertificateParams{
+		Name: "example.com", Source: db.CertSourceACME, Status: db.CertStatusIssued, Domains: []string{"example.com"}, CertPath: "/etc/migate/certs/example/fullchain.pem", KeyPath: "/etc/migate/certs/example/privkey.pem",
+		NotBefore: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), NotAfter: time.Now().Add(90 * 24 * time.Hour).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("seed certificate: %v", err)
+	}
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "tls", Protocol: "vless", Port: 24444, Network: "tcp", Security: "tls", TLSCertFile: cert.CertPath, TLSKeyFile: cert.KeyPath})
+	if err != nil || inbound.ID == 0 {
+		t.Fatalf("create inbound: %v", err)
+	}
+	controller := &fakeXrayController{}
+	apply := web.CertificateCoreApplyFunc(web.WithStore(store), web.WithXrayController(controller))
+	payload := apply(context.Background(), []db.Certificate{{ID: cert.ID}})
+	if controller.applyCalls != 1 {
+		t.Fatalf("expected xray apply after reloading certificate usage, calls=%d payload=%#v", controller.applyCalls, payload)
+	}
+	if _, ok := payload["xray"]; !ok {
+		t.Fatalf("expected xray apply payload, got %#v", payload)
+	}
+}
+
+func TestCertificateImportListAndOperationsAPI(t *testing.T) {
+	store := openWebTestStore(t)
+	certPath, keyPath := testCertificatePair(t, "example.com")
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()))
+
+	missingConfirm := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/certificates/import", strings.NewReader(`{"name":"example","fullchain":"x","private_key":"y","confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(missingConfirm, req)
+	if missingConfirm.Code != http.StatusForbidden {
+		t.Fatalf("expected confirmation_required status, got %d: %s", missingConfirm.Code, missingConfirm.Body.String())
+	}
+	assertStandardAPIError(t, missingConfirm.Body.Bytes(), "confirmation_required")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":                 "example",
+		"fullchain":            string(certPEM),
+		"private_key":          string(keyPEM),
+		"confirm":              true,
+		"allow_system_changes": true,
+	})
+	resp := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/certificates/import", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected import 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var imported struct {
+		Certificate db.Certificate `json:"certificate"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&imported); err != nil {
+		t.Fatalf("decode import: %v", err)
+	}
+	if imported.Certificate.ID == 0 || imported.Certificate.Domains[0] != "example.com" || imported.Certificate.Fingerprint == "" {
+		t.Fatalf("unexpected imported certificate: %#v", imported.Certificate)
+	}
+
+	listResp := httptest.NewRecorder()
+	router.ServeHTTP(listResp, httptest.NewRequest(http.MethodGet, "/api/certificates", nil))
+	if listResp.Code != http.StatusOK || !strings.Contains(listResp.Body.String(), `"certificates"`) {
+		t.Fatalf("unexpected list response: %d %s", listResp.Code, listResp.Body.String())
+	}
+	opsResp := httptest.NewRecorder()
+	router.ServeHTTP(opsResp, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/certificates/%d/operations", imported.Certificate.ID), nil))
+	if opsResp.Code != http.StatusOK || !strings.Contains(opsResp.Body.String(), `"operations"`) {
+		t.Fatalf("unexpected operations response: %d %s", opsResp.Code, opsResp.Body.String())
+	}
+}
+
+func TestCertificateApplyAPIWritesTLSInboundAndReturnsCoreSummary(t *testing.T) {
+	store := openWebTestStore(t)
+	certPath, keyPath := testCertificatePair(t, "example.com")
+	certificate, err := store.UpsertCertificate(context.Background(), db.UpsertCertificateParams{
+		Name: "example.com", Source: db.CertSourceImport, Status: db.CertStatusIssued, Domains: []string{"example.com"}, CertPath: certPath, KeyPath: keyPath,
+		NotBefore: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), NotAfter: time.Now().Add(90 * 24 * time.Hour).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("seed certificate: %v", err)
+	}
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "tls", Protocol: "vless", Port: 24443, Network: "tcp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	controller := &fakeXrayController{}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	body := fmt.Sprintf(`{"inbound_ids":[%d],"confirm":true,"allow_system_changes":true}`, inbound.ID)
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/certificates/%d/apply", certificate.ID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected apply 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if controller.applyCalls != 1 || !strings.Contains(resp.Body.String(), `"xray"`) {
+		t.Fatalf("expected xray apply summary, calls=%d body=%s", controller.applyCalls, resp.Body.String())
+	}
+	loaded, err := store.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded[0].TLSCertFile != certPath || loaded[0].TLSKeyFile != keyPath || loaded[0].TLSSNI != "example.com" {
+		t.Fatalf("certificate not applied to inbound: %#v", loaded[0])
 	}
 }
 

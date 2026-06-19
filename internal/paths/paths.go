@@ -3,6 +3,7 @@ package paths
 var (
 	ConfigDir       = "/etc/migate"
 	CoreConfigDir   = "/etc/migate/cores"
+	CertDir         = "/etc/migate/certs"
 	PanelConfig     = "/etc/migate/panel.json"
 	XrayConfig      = "/etc/migate/cores/xray.json"
 	SingboxConfig   = "/etc/migate/cores/sing-box.json"

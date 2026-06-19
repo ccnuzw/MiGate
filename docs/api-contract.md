@@ -8,6 +8,8 @@ MiGate API handlers live in `internal/web`. New endpoints must follow this contr
 - Operations use sub-paths: `/api/xray/apply`, `/api/singbox/restart`, `/api/update/check`.
 - Status reads are `GET`: `/api/xray/status`, `/api/singbox/status`, `/api/service/status`.
 - Dangerous operations are `POST` and require explicit confirmation fields.
+- Certificate assets use `/api/certificates`; legacy `/api/cert/status` and
+  `/api/cert/issue` are compatibility endpoints only.
 
 ## Success Responses
 
@@ -97,6 +99,40 @@ Example:
   "allow_system_changes": true
 }
 ```
+
+## Certificate Management
+
+Certificate management endpoints expose durable certificate assets and
+operation diagnostics:
+
+- `GET /api/certificates` returns `{ "certificates": [...] }`.
+- `POST /api/certificates/preflight` validates domain syntax, email syntax,
+  DNS resolution, HTTP-01 port 80 availability, cert directory writability, and
+  core apply impact. It returns `{ "preflight": { "ok": true, "checks": [...] } }`.
+- `POST /api/certificates` issues an HTTP-01 ACME certificate through the Go
+  native issuer. It requires confirmation fields and returns the certificate
+  plus preflight checks.
+- `POST /api/certificates/import` imports `fullchain` and `private_key`,
+  validates the key pair, parses SANs, validity, fingerprint, and serial, and
+  stores files under `/etc/migate/certs`.
+- `POST /api/certificates/{id}/apply` writes `tls_cert_file` and `tls_key_file`
+  to selected TLS inbounds and returns Xray/sing-box apply summaries.
+- `POST /api/certificates/{id}/delete` deletes an unused managed certificate
+  record. Certificates still referenced by inbounds return `certificate_in_use`.
+- `GET /api/certificates/{id}/operations` returns recent issue, import, renew,
+  apply, and delete operation records.
+- `POST /api/certificates/renew-due` checks ACME-managed certificates and
+  renews those expiring within the requested threshold, defaulting to 30 days.
+
+Stable certificate error codes include `domain_not_resolved`,
+`http_01_port_unavailable`, `cert_dir_not_writable`, `acme_issue_failed`,
+`invalid_domain`, `invalid_email`, `invalid_certificate`,
+`certificate_key_mismatch`, `certificate_not_found`, and
+`certificate_in_use`.
+
+DNS-01 is reserved in the service model for a future provider-backed
+implementation. This version intentionally does not hard-code a single DNS
+provider.
 
 ## Status Responses
 

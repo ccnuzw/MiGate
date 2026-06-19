@@ -1,14 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronUp, ExternalLink, RefreshCw, RotateCcw, Save, ShieldX, UploadCloud } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ChevronDown, ChevronUp, ExternalLink, FileKey2, Link2, RefreshCw, RotateCcw, Save, ShieldCheck, ShieldX, Trash2, UploadCloud } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { getAPIErrorMessage } from '../api/client';
+import { ApiError, getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
-import type { Settings, UpdateStatus } from '../api/types';
+import type { CertificatePreflight, Inbound, ManagedCertificate, Settings, UpdateStatus } from '../api/types';
 import { Card, Field, LoadingBlock, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { serviceLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
-import { refreshQueries, refreshQuery, refreshSessionDependencies, refreshSettingsDependencies, refreshUpdateDependencies } from '../lib/queryInvalidation';
+import { refreshCertificateApplyDependencies, refreshQueries, refreshQuery, refreshSessionDependencies, refreshSettingsDependencies, refreshUpdateDependencies } from '../lib/queryInvalidation';
 import { PageTitle } from './OverviewPage';
 
 export default function SettingsPage() {
@@ -18,9 +18,19 @@ export default function SettingsPage() {
   const { text } = useI18n();
   const [watchUpdateStatus, setWatchUpdateStatus] = useState(false);
   const [showAllSessions, setShowAllSessions] = useState(false);
+  const [certDomainsInput, setCertDomainsInput] = useState('');
+  const [certEmailInput, setCertEmailInput] = useState('');
+  const [importName, setImportName] = useState('');
+  const [importFullchain, setImportFullchain] = useState('');
+  const [importKey, setImportKey] = useState('');
+  const [selectedCertId, setSelectedCertId] = useState<number | null>(null);
+  const [selectedInboundIds, setSelectedInboundIds] = useState<number[]>([]);
+  const [preflightResult, setPreflightResult] = useState<CertificatePreflight | null>(null);
   const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, retry: false, staleTime: 60_000 });
   const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, retry: false, staleTime: 60_000 });
+  const certificates = useQuery({ queryKey: ['certificates'], queryFn: api.certificates, retry: false, staleTime: 60_000 });
+  const certificateInbounds = useQuery({ queryKey: ['certificate-inbounds'], queryFn: api.certificateInboundTargets, retry: false, staleTime: 60_000 });
   const updateCheck = useQuery({
     queryKey: ['update-check'],
     queryFn: api.updateCheck,
@@ -59,6 +69,9 @@ export default function SettingsPage() {
   const form = useForm<Settings>({ values: settings.data || {} });
   const certDomain = form.watch('cert_domain') || cert.data?.domain || '';
   const certEmail = form.watch('cert_email') || cert.data?.email || '';
+  const managedCertificates = certificates.data?.certificates || [];
+  const tlsInbounds = certificateInbounds.data?.inbounds || [];
+  const selectedCertificate = useMemo(() => managedCertificates.find((item) => item.id === selectedCertId) || managedCertificates[0], [managedCertificates, selectedCertId]);
   useEffect(() => {
     if (watchUpdateStatus && isUpdateTerminal(updateStatus.data?.status)) {
       refreshQueries([updateStatus, updateLogs, service, version, updateCheck]);
@@ -104,6 +117,58 @@ export default function SettingsPage() {
       refreshSettingsDependencies(queryClient);
     },
     onError: (error) => showToast(errorMessage(error, text('获取证书失败')), 'error'),
+  });
+  const preflightCert = useMutation({
+    mutationFn: () => api.certificatePreflight(parseDomains(certDomainsInput || certDomain), certEmailInput || certEmail),
+    onSuccess: (result) => setPreflightResult(result.preflight),
+    onError: (error) => showToast(errorMessage(error, text('预检查失败')), 'error'),
+  });
+  const createManagedCert = useMutation({
+    mutationFn: () => api.createCertificate(parseDomains(certDomainsInput || certDomain), certEmailInput || certEmail),
+    onSuccess: (result) => {
+      setPreflightResult(result.preflight);
+      showToast(text('证书申请已完成'), 'success');
+      refreshSettingsDependencies(queryClient);
+    },
+    onError: (error) => {
+      const preflight = preflightFromAPIError(error);
+      if (preflight) setPreflightResult(preflight);
+      showToast(errorMessage(error, text('证书申请失败')), 'error');
+    },
+  });
+  const importCert = useMutation({
+    mutationFn: () => api.importCertificate({ name: importName, fullchain: importFullchain, private_key: importKey }),
+    onSuccess: () => {
+      setImportFullchain('');
+      setImportKey('');
+      showToast(text('证书已导入'), 'success');
+      refreshSettingsDependencies(queryClient);
+    },
+    onError: (error) => showToast(errorMessage(error, text('导入证书失败')), 'error'),
+  });
+  const renewCerts = useMutation({
+    mutationFn: () => api.renewDueCertificates(30),
+    onSuccess: (result) => {
+      showToast(`${text('续期检查完成')}：${result.renewal?.renewed?.length || 0} ${text('个已续期')}`, 'success');
+      refreshSettingsDependencies(queryClient);
+    },
+    onError: (error) => showToast(errorMessage(error, text('续期检查失败')), 'error'),
+  });
+  const applyCert = useMutation({
+    mutationFn: () => api.applyCertificate(selectedCertificate?.id || 0, selectedInboundIds),
+    onSuccess: () => {
+      showToast(text('证书已应用到入站'), 'success');
+      refreshCertificateApplyDependencies(queryClient);
+    },
+    onError: (error) => showToast(errorMessage(error, text('应用证书失败')), 'error'),
+  });
+  const deleteCert = useMutation({
+    mutationFn: (id: number) => api.deleteCertificate(id),
+    onSuccess: () => {
+      showToast(text('证书已删除'), 'success');
+      refreshSettingsDependencies(queryClient);
+    },
+    onError: (error) => showToast(errorMessage(error, text('删除证书失败')), 'error'),
   });
   const update = useMutation({
     mutationFn: api.update,
@@ -167,7 +232,7 @@ export default function SettingsPage() {
             <h2 className="section-title">{text('TLS 证书配置')}</h2>
             <div className="flex flex-wrap gap-2">
               <SpinnerButton type="button" className="btn secondary" loading={saveCert.isPending} onClick={form.handleSubmit((values) => saveCert.mutate(values))}><Save className="h-4 w-4" /> {text('保存证书配置')}</SpinnerButton>
-              <SpinnerButton className="btn primary" loading={issueCert.isPending} disabled={!certDomain || !certEmail} onClick={async () => (await confirm({ title: text('获取 TLS 证书？'), description: text('该操作会调用 acme.sh 并可能占用 80 端口。') })) && issueCert.mutate()}>{text('获取证书')}</SpinnerButton>
+              <SpinnerButton className="btn primary" loading={issueCert.isPending} disabled={!certDomain || !certEmail} onClick={async () => (await confirm({ title: text('获取 TLS 证书？'), description: text('兼容接口会使用 MiGate 原生 ACME HTTP-01 申请证书，并可能占用 80 端口。') })) && issueCert.mutate()}>{text('兼容申请')}</SpinnerButton>
             </div>
           </div>
           <div className="grid gap-4">
@@ -175,12 +240,34 @@ export default function SettingsPage() {
               <Field label={text('证书域名')}><input placeholder="example.com" {...form.register('cert_domain')} /></Field>
               <Field label={text('证书邮箱')}><input placeholder="admin@example.com" {...form.register('cert_email')} /></Field>
             </div>
-            <div className="grid gap-2 text-sm text-panel-muted">
-              <div>{text('状态')}：{text(cert.data?.issued ? '已获取' : cert.data?.domain ? '未获取' : '未配置')}</div>
-              <div>{text('域名')}：{cert.data?.domain || certDomain || '-'}</div>
-              <div className="break-all">{text('证书')}：{cert.data?.cert_path || '-'}</div>
-              <div className="break-all">{text('私钥')}：{cert.data?.key_path || '-'}</div>
-            </div>
+            <CertificateManager
+              certificates={managedCertificates}
+              tlsInbounds={tlsInbounds}
+              selectedCertificate={selectedCertificate}
+              selectedInboundIds={selectedInboundIds}
+              preflight={preflightResult}
+              certDomainsInput={certDomainsInput}
+              certEmailInput={certEmailInput}
+              importName={importName}
+              importFullchain={importFullchain}
+              importKey={importKey}
+              loading={certificates.isLoading || certificateInbounds.isLoading}
+              busy={preflightCert.isPending || createManagedCert.isPending || importCert.isPending || renewCerts.isPending || applyCert.isPending || deleteCert.isPending}
+              onDomainsChange={setCertDomainsInput}
+              onEmailChange={setCertEmailInput}
+              onImportNameChange={setImportName}
+              onImportFullchainChange={setImportFullchain}
+              onImportKeyChange={setImportKey}
+              onSelectCertificate={(id) => setSelectedCertId(id)}
+              onToggleInbound={(id) => setSelectedInboundIds(toggleID(selectedInboundIds, id))}
+              onPreflight={() => preflightCert.mutate()}
+              onCreate={async () => (await confirm({ title: text('申请 TLS 证书？'), description: text('MiGate 将执行 HTTP-01 预检查和 ACME 签发，可能短暂占用 80 端口。') })) && createManagedCert.mutate()}
+              onImport={async () => (await confirm({ title: text('导入 TLS 证书？'), description: text('导入后证书和私钥会写入 /etc/migate/certs。') })) && importCert.mutate()}
+              onRenew={async () => (await confirm({ title: text('检查并续期证书？'), description: text('30 天内到期的 ACME 证书会尝试续期。') })) && renewCerts.mutate()}
+              onApply={async () => (await confirm({ title: text('应用证书到入站？'), description: text('该操作会更新入站 TLS 路径并重新应用对应核心配置。') })) && applyCert.mutate()}
+              onDelete={async (id) => (await confirm({ title: text('删除证书？'), description: text('仍被入站使用的证书不会被删除。'), tone: 'danger' })) && deleteCert.mutate(id)}
+              text={text}
+            />
           </div>
         </Card>
         <Card className="p-5">
@@ -282,6 +369,201 @@ export function certIssuePayload(values: Settings, current?: { domain?: string; 
     domain: values.cert_domain || current?.domain || '',
     email: values.cert_email || current?.email || '',
   };
+}
+
+export function parseDomains(value: string | string[]): string[] {
+  const items = Array.isArray(value) ? value : value.split(/[\s,，]+/);
+  return Array.from(new Set(items.map((item) => item.trim().toLowerCase()).filter(Boolean)));
+}
+
+export function certificateStatusLabel(status?: string) {
+  switch (status) {
+    case 'issued':
+      return '有效';
+    case 'expiring_soon':
+      return '即将到期';
+    case 'expired':
+      return '已过期';
+    case 'pending':
+      return '处理中';
+    case 'failed':
+      return '失败';
+    default:
+      return status || '未知';
+  }
+}
+
+export function certificateStatusTone(status?: string) {
+  if (status === 'issued') return 'text-emerald-700 bg-emerald-50 border-emerald-200';
+  if (status === 'expiring_soon') return 'text-amber-800 bg-amber-50 border-amber-200';
+  if (status === 'expired' || status === 'failed') return 'text-red-700 bg-red-50 border-red-200';
+  return 'text-panel-muted bg-panel-soft border-panel-line';
+}
+
+export function preflightFromAPIError(error: unknown): CertificatePreflight | null {
+  if (!(error instanceof ApiError)) return null;
+  const preflight = error.fields?.preflight;
+  if (!preflight || typeof preflight !== 'object') return null;
+  const candidate = preflight as Partial<CertificatePreflight>;
+  if (typeof candidate.ok !== 'boolean' || !Array.isArray(candidate.checks)) return null;
+  return {
+    ok: candidate.ok,
+    checks: candidate.checks.filter((check): check is CertificatePreflight['checks'][number] => !!check && typeof check === 'object' && typeof (check as { code?: unknown }).code === 'string' && typeof (check as { status?: unknown }).status === 'string'),
+  };
+}
+
+export function toggleID(ids: number[], id: number) {
+  return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
+}
+
+function CertificateManager({
+  certificates,
+  tlsInbounds,
+  selectedCertificate,
+  selectedInboundIds,
+  preflight,
+  certDomainsInput,
+  certEmailInput,
+  importName,
+  importFullchain,
+  importKey,
+  loading,
+  busy,
+  onDomainsChange,
+  onEmailChange,
+  onImportNameChange,
+  onImportFullchainChange,
+  onImportKeyChange,
+  onSelectCertificate,
+  onToggleInbound,
+  onPreflight,
+  onCreate,
+  onImport,
+  onRenew,
+  onApply,
+  onDelete,
+  text,
+}: {
+  certificates: ManagedCertificate[];
+  tlsInbounds: Inbound[];
+  selectedCertificate?: ManagedCertificate;
+  selectedInboundIds: number[];
+  preflight: CertificatePreflight | null;
+  certDomainsInput: string;
+  certEmailInput: string;
+  importName: string;
+  importFullchain: string;
+  importKey: string;
+  loading: boolean;
+  busy: boolean;
+  onDomainsChange: (value: string) => void;
+  onEmailChange: (value: string) => void;
+  onImportNameChange: (value: string) => void;
+  onImportFullchainChange: (value: string) => void;
+  onImportKeyChange: (value: string) => void;
+  onSelectCertificate: (id: number) => void;
+  onToggleInbound: (id: number) => void;
+  onPreflight: () => void;
+  onCreate: () => void;
+  onImport: () => void;
+  onRenew: () => void;
+  onApply: () => void;
+  onDelete: (id: number) => void;
+  text: (value: string) => string;
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="rounded-md border border-panel-line bg-panel-soft p-4">
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label={text('申请域名 / SAN')} help={text('多个域名可用逗号或空格分隔。')}>
+            <input value={certDomainsInput} onChange={(event) => onDomainsChange(event.target.value)} placeholder="example.com www.example.com" />
+          </Field>
+          <Field label={text('ACME 邮箱')}>
+            <input value={certEmailInput} onChange={(event) => onEmailChange(event.target.value)} placeholder="admin@example.com" />
+          </Field>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <SpinnerButton className="btn secondary h-8" loading={busy} onClick={onPreflight}><ShieldCheck className="h-4 w-4" /> {text('运行预检查')}</SpinnerButton>
+          <SpinnerButton className="btn primary h-8" loading={busy} onClick={onCreate}><FileKey2 className="h-4 w-4" /> {text('申请证书')}</SpinnerButton>
+          <SpinnerButton className="btn secondary h-8" loading={busy} onClick={onRenew}><RefreshCw className="h-4 w-4" /> {text('检查续期')}</SpinnerButton>
+        </div>
+        {preflight ? (
+          <div className="mt-3 grid gap-2">
+            {preflight.checks.map((check) => (
+              <div key={`${check.code}-${check.detail}`} className="flex flex-wrap items-center gap-2 text-xs">
+                <span className={`rounded border px-2 py-0.5 ${certificateStatusTone(check.status === 'failed' ? 'failed' : check.status === 'warning' ? 'expiring_soon' : 'issued')}`}>{text(check.status)}</span>
+                <span className="font-medium text-panel-text">{check.code}</span>
+                {check.detail ? <span className="break-all text-panel-muted">{check.detail}</span> : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="rounded-md border border-panel-line">
+        <div className="grid grid-cols-[1.2fr_0.8fr_0.7fr_auto] gap-3 border-b border-panel-line px-3 py-2 text-xs font-semibold text-panel-muted">
+          <span>{text('证书')}</span>
+          <span>{text('到期时间')}</span>
+          <span>{text('使用')}</span>
+          <span>{text('操作')}</span>
+        </div>
+        {loading ? <div className="p-3 text-sm text-panel-muted">{text('加载中...')}</div> : null}
+        {!loading && certificates.length === 0 ? <div className="p-3 text-sm text-panel-muted">{text('暂无托管证书')}</div> : null}
+        {certificates.map((cert) => (
+          <div key={cert.id} className="grid grid-cols-[1.2fr_0.8fr_0.7fr_auto] gap-3 border-b border-panel-line px-3 py-3 text-sm last:border-b-0">
+            <button className="min-w-0 text-left" onClick={() => onSelectCertificate(cert.id)}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-panel-text">{cert.name || cert.domains?.[0] || `#${cert.id}`}</span>
+                <span className={`rounded border px-2 py-0.5 text-xs ${certificateStatusTone(cert.status)}`}>{text(certificateStatusLabel(cert.status))}</span>
+              </div>
+              <div className="mt-1 break-all text-xs text-panel-muted">{cert.domains?.join(', ') || '-'}</div>
+              <div className="mt-1 break-all text-xs text-panel-muted">{cert.cert_path}</div>
+              {cert.last_error ? <div className="mt-1 break-all text-xs text-red-600">{cert.last_error}</div> : null}
+            </button>
+            <div className="text-panel-muted">{formatDate(cert.not_after)}</div>
+            <div className="text-panel-muted">{cert.usage_count || 0}</div>
+            <button className="icon-button h-8 w-8" title={text('删除证书')} onClick={() => onDelete(cert.id)}><Trash2 className="h-4 w-4" /></button>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-md border border-panel-line bg-panel-soft p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold text-panel-text">{text('应用到 TLS 入站')}</div>
+          <SpinnerButton className="btn primary h-8" loading={busy} disabled={!selectedCertificate || selectedInboundIds.length === 0} onClick={onApply}><Link2 className="h-4 w-4" /> {text('应用证书')}</SpinnerButton>
+        </div>
+        <div className="mb-3 text-xs text-panel-muted">{text('当前证书')}：{selectedCertificate?.name || selectedCertificate?.domains?.[0] || '-'}</div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {tlsInbounds.map((inbound) => (
+            <label key={inbound.id} className="flex items-center gap-2 rounded border border-panel-line bg-panel-surface px-3 py-2 text-sm">
+              <input type="checkbox" checked={selectedInboundIds.includes(inbound.id)} onChange={() => onToggleInbound(inbound.id)} />
+              <span className="min-w-0 flex-1 truncate">{inbound.remark || inbound.protocol} · {inbound.protocol} · {inbound.port}</span>
+            </label>
+          ))}
+          {tlsInbounds.length === 0 ? <div className="text-sm text-panel-muted">{text('暂无可绑定的 TLS 入站')}</div> : null}
+        </div>
+      </div>
+
+      <div className="rounded-md border border-panel-line bg-panel-soft p-4">
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label={text('导入名称')}><input value={importName} onChange={(event) => onImportNameChange(event.target.value)} placeholder="example.com" /></Field>
+          <div />
+          <Field label={text('Fullchain PEM')}><textarea className="min-h-28" value={importFullchain} onChange={(event) => onImportFullchainChange(event.target.value)} /></Field>
+          <Field label={text('Private Key PEM')}><textarea className="min-h-28" value={importKey} onChange={(event) => onImportKeyChange(event.target.value)} /></Field>
+        </div>
+        <div className="mt-3 flex justify-end">
+          <SpinnerButton className="btn secondary h-8" loading={busy} disabled={!importFullchain || !importKey} onClick={onImport}><UploadCloud className="h-4 w-4" /> {text('导入证书')}</SpinnerButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatDate(value?: string) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString();
 }
 
 export function updateStatusRefetchInterval(status?: string, watching = false) {

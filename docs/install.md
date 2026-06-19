@@ -87,6 +87,7 @@ Config:        /etc/migate/panel.json
 Database:      /var/lib/migate/migate.db
 Versions:      /var/lib/migate/versions.json
 Backups:       /var/lib/migate/backups
+Certificates:  /etc/migate/certs
 Xray config:   /etc/migate/cores/xray.json
 sing-box config: /etc/migate/cores/sing-box.json
 Web base path: /panel
@@ -172,9 +173,10 @@ checksums, verifies the archive before extracting, installs
 `/usr/local/bin/sing-box`, and writes `migate-sing-box.service`.
 
 MiGate and sing-box release archives are installed only after checksum
-verification. Xray and acme.sh still rely on their official upstream installer
-scripts, so treat those actions as privileged system changes and keep the WebUI
-behind trusted administrator access.
+verification. Certificate issuance no longer depends on `acme.sh`; the WebUI
+uses MiGate's Go native ACME HTTP-01 issuer and stores managed certificate
+assets under `/etc/migate/certs`. HTTP-01 still requires public DNS resolution
+for the requested domain and temporary access to TCP port 80 on the host.
 
 Skipping core installation does not block the panel installation. Xray-backed
 protocols or sing-box-backed protocols may not listen until the relevant core is

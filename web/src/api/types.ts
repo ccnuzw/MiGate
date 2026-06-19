@@ -475,6 +475,61 @@ export interface SessionInfo {
   expires_at: string;
 }
 
+export interface CertificateOperation {
+  id: number;
+  certificate_id?: number;
+  type: string;
+  status: string;
+  code?: string;
+  message?: string;
+  detail?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ManagedCertificate {
+  id: number;
+  name: string;
+  source: 'acme' | 'import' | string;
+  status: 'issued' | 'pending' | 'failed' | 'expired' | 'expiring_soon' | string;
+  domains: string[];
+  cert_path: string;
+  key_path: string;
+  not_before?: string;
+  not_after?: string;
+  fingerprint?: string;
+  serial?: string;
+  issue_email?: string;
+  acme_directory_url?: string;
+  challenge_method?: string;
+  last_error?: string;
+  usage_count: number;
+  usages?: Inbound[];
+}
+
+export interface CertificatePreflightCheck {
+  code: string;
+  status: 'ok' | 'warning' | 'failed' | string;
+  message?: string;
+  detail?: string;
+}
+
+export interface CertificatePreflight {
+  ok: boolean;
+  checks: CertificatePreflightCheck[];
+}
+
+export interface CertificateApplyResponse {
+  status?: string;
+  inbounds?: Inbound[];
+  warnings?: string[];
+  xray?: XrayApplySummary;
+  singbox?: SingboxApplySummary;
+  applied?: boolean;
+  error?: string;
+  detail?: string;
+}
+
 export interface CertStatus {
   domain: string;
   email: string;

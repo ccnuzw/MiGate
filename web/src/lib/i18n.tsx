@@ -558,7 +558,7 @@ const zhToEn: Record<string, string> = {
   '重启 MiGate 服务？': 'Restart MiGate service?',
   '服务重启后当前连接可能短暂中断。': 'The current connection may be interrupted briefly.',
   '获取 TLS 证书？': 'Issue TLS certificate?',
-  '该操作会调用 acme.sh 并可能占用 80 端口。': 'This calls acme.sh and may use port 80.',
+  '兼容接口会使用 MiGate 原生 ACME HTTP-01 申请证书，并可能占用 80 端口。': 'The compatibility API uses MiGate native ACME HTTP-01 issuance and may use port 80.',
   '立即更新 MiGate？': 'Update MiGate now?',
   '更新器将通过 systemd-run 在服务外执行。': 'The updater runs outside the service through systemd-run.',
   '撤销该会话？': 'Revoke this session?',

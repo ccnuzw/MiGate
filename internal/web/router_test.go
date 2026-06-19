@@ -818,21 +818,23 @@ func TestRouteContractsAreRegisteredAndEnforced(t *testing.T) {
 
 func TestDangerousRouteContractsAndCSRF(t *testing.T) {
 	dangerous := map[string]bool{
-		"/api/xray/apply":        true,
-		"/api/xray/install":      true,
-		"/api/xray/uninstall":    true,
-		"/api/xray/delete":       true,
-		"/api/xray/restart":      true,
-		"/api/xray/stop":         true,
-		"/api/singbox/apply":     true,
-		"/api/singbox/install":   true,
-		"/api/singbox/uninstall": true,
-		"/api/singbox/delete":    true,
-		"/api/singbox/restart":   true,
-		"/api/singbox/stop":      true,
-		"/api/update":            true,
-		"/api/cert/issue":        true,
-		"/api/restart":           true,
+		"POST /api/xray/apply":        true,
+		"POST /api/xray/install":      true,
+		"POST /api/xray/uninstall":    true,
+		"POST /api/xray/delete":       true,
+		"POST /api/xray/restart":      true,
+		"POST /api/xray/stop":         true,
+		"POST /api/singbox/apply":     true,
+		"POST /api/singbox/install":   true,
+		"POST /api/singbox/uninstall": true,
+		"POST /api/singbox/delete":    true,
+		"POST /api/singbox/restart":   true,
+		"POST /api/singbox/stop":      true,
+		"POST /api/update":            true,
+		"POST /api/cert/issue":        true,
+		"POST /api/certificates":      true,
+		"POST /api/certificates/":     true,
+		"POST /api/restart":           true,
 	}
 	declared := map[string]web.RouteContract{}
 	for _, route := range web.RouteContracts() {
@@ -849,8 +851,9 @@ func TestDangerousRouteContractsAndCSRF(t *testing.T) {
 				t.Fatalf("write API route must require CSRF: %#v", route)
 			}
 		}
-		if dangerous[route.Path] {
-			declared[route.Path] = route
+		key := route.Method + " " + route.Path
+		if dangerous[key] {
+			declared[key] = route
 			if route.Method != http.MethodPost {
 				t.Fatalf("dangerous route %s must be POST, got %s", route.Path, route.Method)
 			}
@@ -859,9 +862,9 @@ func TestDangerousRouteContractsAndCSRF(t *testing.T) {
 			}
 		}
 	}
-	for path := range dangerous {
-		if _, ok := declared[path]; !ok {
-			t.Fatalf("dangerous route %s is not declared in route contracts", path)
+	for key := range dangerous {
+		if _, ok := declared[key]; !ok {
+			t.Fatalf("dangerous route %s is not declared in route contracts", key)
 		}
 	}
 	router := web.NewRouter(web.WithAuth("admin", "secret"))
@@ -1050,6 +1053,11 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 		{"/api/singbox/restart"},
 		{"/api/singbox/stop"},
 		{"/api/cert/issue"},
+		{"/api/certificates"},
+		{"/api/certificates/import"},
+		{"/api/certificates/renew-due"},
+		{"/api/certificates/1/apply"},
+		{"/api/certificates/1/delete"},
 		{"/api/update"},
 		{"/api/restart"},
 	} {
@@ -1506,7 +1514,7 @@ func TestCoreInstallersDoNotExecuteUnverifiedRemoteScripts(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"refusing to download and execute unverified acme.sh installer",
+		"golang.org/x/crypto/acme",
 		"download Xray release",
 	} {
 		if !strings.Contains(source, want) {

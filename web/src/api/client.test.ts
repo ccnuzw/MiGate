@@ -65,6 +65,20 @@ describe('api client', () => {
     vi.unstubAllGlobals();
   });
 
+  it('keeps structured preflight fields from standard error objects', async () => {
+    const preflight = { ok: false, checks: [{ code: 'domain_not_resolved', status: 'failed', detail: 'example.com' }] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: { code: 'preflight_failed', fields: { preflight } } }), { status: 400, headers: { 'content-type': 'application/json' } })),
+    );
+    await expect(apiFetch('/api/certificates')).rejects.toMatchObject({
+      status: 400,
+      code: 'preflight_failed',
+      fields: { preflight },
+    });
+    vi.unstubAllGlobals();
+  });
+
   it('uses standard backend error code when message is absent', async () => {
     vi.stubGlobal(
       'fetch',
@@ -149,6 +163,22 @@ describe('api client', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/singbox/delete', expect.any(Object));
     expect(fetchMock).toHaveBeenCalledWith('/api/singbox/restart', expect.any(Object));
     expect(fetchMock).toHaveBeenCalledWith('/api/singbox/stop', expect.any(Object));
+    vi.unstubAllGlobals();
+  });
+
+  it('sends explicit confirmation for certificate management actions', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ confirm: true, allow_system_changes: true });
+      return new Response(JSON.stringify({ status: 'ok', certificate: { id: 1 }, renewal: { checked: [], renewed: [], failed: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await api.createCertificate(['example.com'], 'admin@example.com');
+    await api.importCertificate({ fullchain: 'cert', private_key: 'key' });
+    await api.applyCertificate(1, [2]);
+    await api.renewDueCertificates();
+    await api.deleteCertificate(1);
+    expect(fetchMock).toHaveBeenCalledWith('/api/certificates/1/delete', expect.objectContaining({ method: 'POST' }));
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     vi.unstubAllGlobals();
   });
 

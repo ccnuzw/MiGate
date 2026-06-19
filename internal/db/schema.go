@@ -134,6 +134,37 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
   rate_down REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'waiting'
 );
+CREATE TABLE IF NOT EXISTS certificates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL,
+  domains TEXT NOT NULL DEFAULT '',
+  cert_path TEXT NOT NULL,
+  key_path TEXT NOT NULL,
+  not_before TEXT NOT NULL DEFAULT '',
+  not_after TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL DEFAULT '',
+  serial TEXT NOT NULL DEFAULT '',
+  issue_email TEXT NOT NULL DEFAULT '',
+  acme_directory_url TEXT NOT NULL DEFAULT '',
+  challenge_method TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  last_renewed TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS certificate_operations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  certificate_id INTEGER NULL REFERENCES certificates(id) ON DELETE SET NULL,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  code TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_outbound_id ON routing_rules(outbound_id);
@@ -148,12 +179,51 @@ CREATE INDEX IF NOT EXISTS idx_traffic_states_scope ON traffic_states(scope_type
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_lookup ON traffic_samples(scope_type, scope_key, sampled_at);
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_scope_time ON traffic_samples(scope_type, sampled_at);
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_sampled_at ON traffic_samples(sampled_at);
+CREATE INDEX IF NOT EXISTS idx_certificates_status ON certificates(status);
+CREATE INDEX IF NOT EXISTS idx_certificates_not_after ON certificates(not_after);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_cert_key ON certificates(cert_path, key_path);
+CREATE INDEX IF NOT EXISTS idx_certificate_operations_certificate_id ON certificate_operations(certificate_id, id);
 `)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "certificates", "issue_email", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "certificates", "acme_directory_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "certificates", "challenge_method", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.seedDefaultOutbounds(ctx); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition)
+	return err
 }
