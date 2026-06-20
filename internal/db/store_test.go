@@ -3143,6 +3143,65 @@ func TestGetClientTrafficUsageFallsBackWhenExpectedEngineMissing(t *testing.T) {
 	}
 }
 
+func TestCertificateAssetsAndInboundUsage(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "tls", Protocol: "vless", Port: 28100, Network: "tcp", Security: "tls", TLSSNI: "custom.example.com"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	emptySNIInbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "tls-empty-sni", Protocol: "vless", Port: 28101, Network: "tcp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create empty sni inbound: %v", err)
+	}
+	cert, err := store.UpsertCertificate(ctx, db.UpsertCertificateParams{
+		Name:             "example.com",
+		Source:           db.CertSourceACME,
+		Status:           db.CertStatusIssued,
+		Domains:          []string{"example.com", "www.example.com"},
+		CertPath:         "/etc/migate/certs/example/fullchain.pem",
+		KeyPath:          "/etc/migate/certs/example/privkey.pem",
+		NotBefore:        "2026-06-20T00:00:00Z",
+		NotAfter:         "2026-09-20T00:00:00Z",
+		Fingerprint:      "ABC",
+		Serial:           "123",
+		IssueEmail:       "ops@example.com",
+		ACMEDirectoryURL: "https://acme.example/directory",
+		ChallengeMethod:  "http-01",
+	})
+	if err != nil {
+		t.Fatalf("upsert certificate: %v", err)
+	}
+	if _, err := store.RecordCertificateOperation(ctx, db.CertificateOperation{CertificateID: cert.ID, Type: "import", Status: "success"}); err != nil {
+		t.Fatalf("record operation: %v", err)
+	}
+	updated, err := store.ApplyCertificateToInbounds(ctx, cert, []int64{inbound.ID, emptySNIInbound.ID})
+	if err != nil {
+		t.Fatalf("apply certificate: %v", err)
+	}
+	if len(updated) != 2 || updated[0].TLSCertFile != cert.CertPath || updated[0].TLSKeyFile != cert.KeyPath || updated[0].TLSSNI != "custom.example.com" || updated[1].TLSSNI != "example.com" {
+		t.Fatalf("unexpected applied inbound: %#v", updated)
+	}
+	loaded, err := store.GetCertificate(ctx, cert.ID)
+	if err != nil {
+		t.Fatalf("get certificate: %v", err)
+	}
+	if loaded.UsageCount != 2 || len(loaded.Usages) != 2 || len(loaded.Domains) != 2 || loaded.IssueEmail != "ops@example.com" || loaded.ACMEDirectoryURL == "" || loaded.ChallengeMethod != "http-01" {
+		t.Fatalf("unexpected usage metadata: %#v", loaded)
+	}
+	ops, err := store.ListCertificateOperations(ctx, cert.ID, 10)
+	if err != nil {
+		t.Fatalf("list operations: %v", err)
+	}
+	if len(ops) != 1 || ops[0].Type != "import" {
+		t.Fatalf("unexpected operations: %#v", ops)
+	}
+}
+
 func findTrafficState(states []db.TrafficState, engine, scopeType, scopeKey string) *db.TrafficState {
 	for i := range states {
 		if states[i].Engine == engine && states[i].ScopeType == scopeType && states[i].ScopeKey == scopeKey {

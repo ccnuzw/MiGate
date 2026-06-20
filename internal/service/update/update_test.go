@@ -289,6 +289,110 @@ func TestLogsReadsTailWhenLogExists(t *testing.T) {
 	}
 }
 
+func TestStatusReadsPersistentStatusWhenRuntimeIdle(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "update-status.json")
+	if err := os.WriteFile(statusPath, []byte(`{
+  "status": "failed",
+  "current_version": "v1.0.0",
+  "target_version": "v1.0.1",
+  "message": "升级失败，已回滚，服务已恢复",
+  "health_check": "systemctl is-active migate: active",
+  "rolled_back": true,
+  "rollback_status": "restored",
+  "updated_at": "2026-06-19T01:02:03Z"
+}`), 0640); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	status := (Service{State: NewRuntimeState(), StatusPath: statusPath}).Status()
+	if status.Status != "failed" || !status.RolledBack || status.RollbackStatus != "restored" || status.TargetVersion != "v1.0.1" {
+		t.Fatalf("unexpected persistent status: %#v", status)
+	}
+}
+
+func TestStatusKeepsActiveRuntimeStatusAheadOfPersistentStatus(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "update-status.json")
+	if err := os.WriteFile(statusPath, []byte(`{"status":"completed","message":"old"}`), 0640); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	state := NewRuntimeState()
+	if _, ok := state.Start("v1.0.0", time.Now()); !ok {
+		t.Fatal("start runtime status")
+	}
+	status := (Service{State: state, StatusPath: statusPath}).Status()
+	if status.Status != "updating" || status.Message != "update command accepted" {
+		t.Fatalf("runtime active status should win: %#v", status)
+	}
+}
+
+func TestStatusKeepsRuntimeFailureAheadOfPersistentInProgress(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "update-status.json")
+	if err := os.WriteFile(statusPath, []byte(`{
+  "status": "downloading",
+  "current_version": "v1.0.0",
+  "target_version": "v1.0.1",
+  "message": "downloading",
+  "updated_at": "2026-06-19T01:02:03Z"
+}`), 0640); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	state := NewRuntimeState()
+	if _, ok := state.Start("v1.0.0", time.Now()); !ok {
+		t.Fatal("start runtime status")
+	}
+	state.Finish("failed", "systemd-run failed before installer completed", time.Now())
+	status := (Service{State: state, StatusPath: statusPath}).Status()
+	if status.Status != "failed" || !strings.Contains(status.Message, "systemd-run failed") {
+		t.Fatalf("runtime failure should win over persistent in-progress: %#v", status)
+	}
+}
+
+func TestStatusMarksStalePersistentInProgressAsFailed(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "update-status.json")
+	if err := os.WriteFile(statusPath, []byte(`{
+  "status": "installing",
+  "current_version": "v1.0.0",
+  "target_version": "v1.0.1",
+  "message": "still installing",
+  "updated_at": "2026-06-19T01:00:00Z"
+}`), 0640); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	status := (Service{
+		State:      NewRuntimeState(),
+		StatusPath: statusPath,
+		Now:        func() time.Time { return time.Date(2026, 6, 19, 1, 16, 1, 0, time.UTC) },
+	}).Status()
+	if status.Status != "failed" || !strings.Contains(status.Message, "长时间未完成") {
+		t.Fatalf("stale in-progress status should be failed: %#v", status)
+	}
+}
+
+func TestStatusKeepsFreshPersistentInProgress(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "update-status.json")
+	if err := os.WriteFile(statusPath, []byte(`{
+  "status": "restarting",
+  "current_version": "v1.0.0",
+  "target_version": "v1.0.1",
+  "message": "restarting",
+  "updated_at": "2026-06-19T01:10:00Z"
+}`), 0640); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	status := (Service{
+		State:      NewRuntimeState(),
+		StatusPath: statusPath,
+		Now:        func() time.Time { return time.Date(2026, 6, 19, 1, 12, 0, 0, time.UTC) },
+	}).Status()
+	if status.Status != "restarting" || status.Message != "restarting" {
+		t.Fatalf("fresh in-progress status should remain active: %#v", status)
+	}
+}
+
 func TestValidateUpdaterAvailable(t *testing.T) {
 	executable := fakeFileInfo{mode: 0755}
 	service := Service{

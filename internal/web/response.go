@@ -23,6 +23,10 @@ type serviceError interface {
 	ServiceDetail() string
 }
 
+type serviceErrorFields interface {
+	ServiceFields() map[string]interface{}
+}
+
 type StatusResponse struct {
 	Status   string        `json:"status"`
 	Warnings []interface{} `json:"warnings,omitempty"`
@@ -66,7 +70,11 @@ func WriteError(w http.ResponseWriter, status int, apiError APIError, legacyFiel
 
 func writeServiceError(w http.ResponseWriter, status int, err error) {
 	if serviceErr, ok := err.(serviceError); ok {
-		WriteError(w, status, APIError{Code: serviceErr.ServiceCode(), Detail: serviceErr.ServiceDetail()}, nil)
+		var fields map[string]interface{}
+		if fieldErr, ok := err.(serviceErrorFields); ok {
+			fields = fieldErr.ServiceFields()
+		}
+		WriteError(w, status, APIError{Code: serviceErr.ServiceCode(), Detail: serviceErr.ServiceDetail(), Fields: fields}, nil)
 		return
 	}
 	WriteError(w, status, APIError{Code: "request_failed", Detail: err.Error()}, nil)

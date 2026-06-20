@@ -54,8 +54,8 @@ describe('inbound payload helpers', () => {
     reality_private_key: 'private-key',
     reality_public_key: 'public-key',
     ss_method: '2022-blake3-aes-128-gcm',
-    tls_cert_file: '/etc/xray/certs/example.pem',
-    tls_key_file: '/etc/xray/certs/example.key',
+    tls_cert_file: '/etc/migate/certs/example/fullchain.pem',
+    tls_key_file: '/etc/migate/certs/example/privkey.pem',
     tls_sni: 'example.com',
     tls_fingerprint: 'chrome',
     tls_alpn: 'h2,http/1.1',
@@ -503,10 +503,10 @@ describe('inbound payload helpers', () => {
   });
 
   it('allows attaching a settings certificate only after it is issued with both files', () => {
-    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: false, cert_path: '/etc/xray/certs/example.com.pem', key_path: '/etc/xray/certs/example.com.key' })).toBe(false);
-    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/xray/certs/example.com.pem', key_path: '' })).toBe(false);
-    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '   ', key_path: '/etc/xray/certs/example.com.key' })).toBe(false);
-    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/xray/certs/example.com.pem', key_path: '/etc/xray/certs/example.com.key' })).toBe(true);
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: false, cert_path: '/etc/migate/certs/example/fullchain.pem', key_path: '/etc/migate/certs/example/privkey.pem' })).toBe(false);
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/migate/certs/example/fullchain.pem', key_path: '' })).toBe(false);
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '   ', key_path: '/etc/migate/certs/example/privkey.pem' })).toBe(false);
+    expect(hasAttachableSettingCert({ domain: 'example.com', email: 'admin@example.com', issued: true, cert_path: '/etc/migate/certs/example/fullchain.pem', key_path: '/etc/migate/certs/example/privkey.pem' })).toBe(true);
   });
 
   it('merges lightweight traffic refresh without replacing full config fields', () => {

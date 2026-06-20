@@ -11,8 +11,10 @@ MiGate has not shipped a stable public config API yet, so the schema is strict:
 - `Load(path)` rejects unknown JSON fields.
 - `Save(path, cfg)` writes only known `Config` fields.
 - `Update(path, mutate)` loads typed `Config`, validates it, normalizes write defaults, and saves typed JSON.
-- Settings and cert APIs must not preserve, pass through, or create unknown fields with arbitrary maps.
-- `internal/service/cert` saves `cert_domain` and `cert_email` through typed settings/config persistence after successful issue.
+- Settings APIs must not preserve, pass through, or create unknown fields with arbitrary maps.
+- `cert_domain` and `cert_email` are compatibility settings for the legacy
+  `/api/cert/*` UI flow. Managed certificate assets live in SQLite, not
+  `panel.json`.
 
 ## Fields
 
@@ -25,8 +27,28 @@ MiGate has not shipped a stable public config API yet, so the schema is strict:
 | `public_host` | `PublicHost` | empty | trimmed |
 | `trust_proxy` | `TrustProxy` | `false` | boolean |
 | `database_path` | `DatabasePath` | `/var/lib/migate/migate.db` | required on save, absolute path, no NUL byte |
-| `cert_domain` | `CertDomain` | empty | trimmed; cert issue validates domain syntax before saving |
-| `cert_email` | `CertEmail` | empty | trimmed; cert issue validates email syntax before saving |
+| `cert_domain` | `CertDomain` | empty | compatibility field; trimmed |
+| `cert_email` | `CertEmail` | empty | compatibility field; trimmed |
+
+## Certificate Assets
+
+Managed TLS certificates are stored in the application database with file
+assets under `/etc/migate/certs`.
+
+The certificate asset model records:
+
+- domains / SANs
+- status: `issued`, `pending`, `failed`, `expired`, `expiring_soon`
+- certificate and private key paths
+- `not_before`, `not_after`
+- SHA-256 fingerprint and serial number
+- last error
+- usage count and TLS inbound references
+
+Certificate operation records store issue, import, renew, apply, delete, and
+failure diagnostics. These records are exposed through
+`GET /api/certificates/{id}/operations` so UI and API clients can surface
+actionable errors instead of raw command output.
 
 ## Read Versus Write Defaults
 

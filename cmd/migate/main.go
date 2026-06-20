@@ -24,6 +24,7 @@ import (
 	"github.com/imzyb/MiGate/internal/paths"
 	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
 	"github.com/imzyb/MiGate/internal/scheduler"
+	certsvc "github.com/imzyb/MiGate/internal/service/cert"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
@@ -930,6 +931,14 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	// Traffic sync scheduler keeps retrying Xray StatsService because Xray may
 	// become available only after the panel starts and applies generated config.
 	trafficSched := scheduler.NewTrafficSyncSchedulerWithSingboxConfig(store, statsClient, singboxStatsClient, singboxInbounds, 1*time.Minute)
+	certService := certsvc.Service{Store: store, CertDir: paths.CertDir}
+	certRenewSched := scheduler.NewCertificateRenewScheduler(certService, scheduler.CertificateRenewSchedulerOptions{
+		Days:         30,
+		Interval:     24 * time.Hour,
+		StartDelay:   30 * time.Second,
+		Timeout:      10 * time.Minute,
+		ApplyRenewed: web.CertificateCoreApplyFunc(append(opts, web.WithStore(store))...),
+	})
 
 	router := web.NewRouter(opts...)
 
@@ -948,6 +957,12 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		trafficSched.Start()
 	}()
 	<-trafficStarted
+	schedWG.Add(1)
+	go func() {
+		defer schedWG.Done()
+		log.Println("certificate renew scheduler started")
+		certRenewSched.Start()
+	}()
 
 	var cleanupOnce sync.Once
 	cleanup := func() {
@@ -956,6 +971,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 			stopHTTPProxyCache()
 			stopHTTPSProxyCache()
 			trafficSched.Stop()
+			certRenewSched.Stop()
 			schedWG.Wait()
 			closeStore()
 		})

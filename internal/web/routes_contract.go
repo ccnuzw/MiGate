@@ -156,6 +156,10 @@ func routeTable() []Route {
 		route(http.MethodGet, "/api/singbox/logs", AuthRequired, CSRFNotRequired, "singboxLogsHandler", func(*routeDeps) http.HandlerFunc { return singboxLogsHandler() }),
 		route(http.MethodGet, "/api/cert/status", AuthRequired, CSRFNotRequired, "certStatusHandler", func(d *routeDeps) http.HandlerFunc { return certStatusHandler(d.cfg) }),
 		route(http.MethodPost, "/api/cert/issue", AuthRequired, CSRFRequired, "certIssueHandler", func(d *routeDeps) http.HandlerFunc { return certIssueHandler(d.cfg) }),
+		route(http.MethodGet, "/api/certificates", AuthRequired, CSRFNotRequired, "certificatesHandler", func(d *routeDeps) http.HandlerFunc { return certificatesHandler(d.cfg) }),
+		route(http.MethodPost, "/api/certificates", AuthRequired, CSRFRequired, "certificatesHandler", func(d *routeDeps) http.HandlerFunc { return certificatesHandler(d.cfg) }),
+		route(http.MethodGet, "/api/certificates/", AuthRequired, CSRFNotRequired, "certificateChildrenHandler", func(d *routeDeps) http.HandlerFunc { return certificateChildrenHandler(d.cfg) }),
+		route(http.MethodPost, "/api/certificates/", AuthRequired, CSRFRequired, "certificateChildrenHandler", func(d *routeDeps) http.HandlerFunc { return certificateChildrenHandler(d.cfg) }),
 		route(http.MethodGet, "/api/settings", AuthRequired, CSRFNotRequired, "settingsHandler", func(d *routeDeps) http.HandlerFunc { return settingsHandler(d.cfg) }),
 		route(http.MethodPut, "/api/settings", AuthRequired, CSRFRequired, "settingsHandler", func(d *routeDeps) http.HandlerFunc { return settingsHandler(d.cfg) }),
 		route(http.MethodPost, "/api/restart", AuthRequired, CSRFRequired, "restartHandler", func(*routeDeps) http.HandlerFunc { return restartHandler() }),
@@ -163,7 +167,7 @@ func routeTable() []Route {
 		route(http.MethodGet, "/api/version", AuthRequired, CSRFNotRequired, "versionHandler", func(d *routeDeps) http.HandlerFunc { return versionHandler(d.cfg.version) }),
 		route(http.MethodGet, "/api/update/check", AuthRequired, CSRFNotRequired, "updateCheckHandler", func(d *routeDeps) http.HandlerFunc { return updateCheckHandler(d.cfg) }),
 		route(http.MethodPost, "/api/update", AuthRequired, CSRFRequired, "updateHandler", func(d *routeDeps) http.HandlerFunc { return updateHandler(d.cfg.version) }),
-		route(http.MethodGet, "/api/update/status", AuthRequired, CSRFNotRequired, "updateStatusHandler", func(*routeDeps) http.HandlerFunc { return updateStatusHandler() }),
-		route(http.MethodGet, "/api/update/logs", AuthRequired, CSRFNotRequired, "updateLogsHandler", func(*routeDeps) http.HandlerFunc { return updateLogsHandler() }),
+		route(http.MethodGet, "/api/update/status", AuthRequired, CSRFNotRequired, "updateStatusHandler", func(d *routeDeps) http.HandlerFunc { return updateStatusHandler(d.cfg) }),
+		route(http.MethodGet, "/api/update/logs", AuthRequired, CSRFNotRequired, "updateLogsHandler", func(d *routeDeps) http.HandlerFunc { return updateLogsHandler(d.cfg) }),
 	}
 }

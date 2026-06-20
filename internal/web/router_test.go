@@ -469,6 +469,25 @@ func TestUpdateStatusAPIReportsState(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusAPIReportsPersistentState(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "update-status.json")
+	if err := os.WriteFile(statusPath, []byte(`{"status":"failed","current_version":"v1.0.0","target_version":"v1.0.1","message":"升级失败，已回滚，服务已恢复","rolled_back":true,"rollback_status":"restored","health_check":"systemctl is-active migate: active"}`), 0640); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	router := web.NewRouter(web.WithUpdateStatusPath(statusPath))
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/update/status", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected update status 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	for _, want := range []string{`"status":"failed"`, `"target_version":"v1.0.1"`, `"rolled_back":true`, `"rollback_status":"restored"`, `"health_check":"systemctl is-active migate: active"`} {
+		if !strings.Contains(resp.Body.String(), want) {
+			t.Fatalf("update persistent status response missing %q: %s", want, resp.Body.String())
+		}
+	}
+}
+
 func TestUpdateLogsAPIReportsRecentLogs(t *testing.T) {
 	router := web.NewRouter()
 	resp := httptest.NewRecorder()
@@ -799,21 +818,23 @@ func TestRouteContractsAreRegisteredAndEnforced(t *testing.T) {
 
 func TestDangerousRouteContractsAndCSRF(t *testing.T) {
 	dangerous := map[string]bool{
-		"/api/xray/apply":        true,
-		"/api/xray/install":      true,
-		"/api/xray/uninstall":    true,
-		"/api/xray/delete":       true,
-		"/api/xray/restart":      true,
-		"/api/xray/stop":         true,
-		"/api/singbox/apply":     true,
-		"/api/singbox/install":   true,
-		"/api/singbox/uninstall": true,
-		"/api/singbox/delete":    true,
-		"/api/singbox/restart":   true,
-		"/api/singbox/stop":      true,
-		"/api/update":            true,
-		"/api/cert/issue":        true,
-		"/api/restart":           true,
+		"POST /api/xray/apply":        true,
+		"POST /api/xray/install":      true,
+		"POST /api/xray/uninstall":    true,
+		"POST /api/xray/delete":       true,
+		"POST /api/xray/restart":      true,
+		"POST /api/xray/stop":         true,
+		"POST /api/singbox/apply":     true,
+		"POST /api/singbox/install":   true,
+		"POST /api/singbox/uninstall": true,
+		"POST /api/singbox/delete":    true,
+		"POST /api/singbox/restart":   true,
+		"POST /api/singbox/stop":      true,
+		"POST /api/update":            true,
+		"POST /api/cert/issue":        true,
+		"POST /api/certificates":      true,
+		"POST /api/certificates/":     true,
+		"POST /api/restart":           true,
 	}
 	declared := map[string]web.RouteContract{}
 	for _, route := range web.RouteContracts() {
@@ -830,8 +851,9 @@ func TestDangerousRouteContractsAndCSRF(t *testing.T) {
 				t.Fatalf("write API route must require CSRF: %#v", route)
 			}
 		}
-		if dangerous[route.Path] {
-			declared[route.Path] = route
+		key := route.Method + " " + route.Path
+		if dangerous[key] {
+			declared[key] = route
 			if route.Method != http.MethodPost {
 				t.Fatalf("dangerous route %s must be POST, got %s", route.Path, route.Method)
 			}
@@ -840,9 +862,9 @@ func TestDangerousRouteContractsAndCSRF(t *testing.T) {
 			}
 		}
 	}
-	for path := range dangerous {
-		if _, ok := declared[path]; !ok {
-			t.Fatalf("dangerous route %s is not declared in route contracts", path)
+	for key := range dangerous {
+		if _, ok := declared[key]; !ok {
+			t.Fatalf("dangerous route %s is not declared in route contracts", key)
 		}
 	}
 	router := web.NewRouter(web.WithAuth("admin", "secret"))
@@ -1031,6 +1053,11 @@ func TestCoreInstallUninstallAPIsRequireExplicitSystemChangeConfirmation(t *test
 		{"/api/singbox/restart"},
 		{"/api/singbox/stop"},
 		{"/api/cert/issue"},
+		{"/api/certificates"},
+		{"/api/certificates/import"},
+		{"/api/certificates/renew-due"},
+		{"/api/certificates/1/apply"},
+		{"/api/certificates/1/delete"},
 		{"/api/update"},
 		{"/api/restart"},
 	} {
@@ -1487,7 +1514,7 @@ func TestCoreInstallersDoNotExecuteUnverifiedRemoteScripts(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"refusing to download and execute unverified acme.sh installer",
+		"golang.org/x/crypto/acme",
 		"download Xray release",
 	} {
 		if !strings.Contains(source, want) {

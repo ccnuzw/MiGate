@@ -2,11 +2,13 @@ package web
 
 import (
 	"context"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/paths"
+	certsvc "github.com/imzyb/MiGate/internal/service/cert"
 	"github.com/imzyb/MiGate/internal/singbox"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -235,6 +237,9 @@ func (defaultXrayController) Version(ctx context.Context) string { return "" }
 
 type routerConfig struct {
 	store              Store
+	certLookupIP       func(context.Context, string) ([]net.IP, error)
+	certListenTCP      func(network, address string) (net.Listener, error)
+	certIssuer         certsvc.Issuer
 	xrayController     XrayController
 	singboxRuntime     SingboxRuntime
 	authEnabled        bool
@@ -243,6 +248,7 @@ type routerConfig struct {
 	authMu             sync.RWMutex
 	sessionSecret      []byte
 	configDir          string
+	certDir            string
 	xrayConfigPath     string
 	version            string
 	basePath           string
@@ -252,6 +258,7 @@ type routerConfig struct {
 	httpPoolURL        string
 	httpsPoolURL       string
 	updateCheckURL     string
+	updateStatusPath   string
 	publicHost         string
 	trustProxy         bool
 	loginLimiter       *loginLimiter

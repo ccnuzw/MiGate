@@ -33,6 +33,15 @@ func read(t *testing.T, parts ...string) string {
 	return string(b)
 }
 
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
 func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
@@ -58,7 +67,7 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"enable_systemd_service migate",
 		"systemctl restart migate",
 		"MIGATE_PANEL_BIND_HOST=0.0.0.0",
-		"mktemp /usr/local/bin/.migate-uninstall.XXXXXX",
+		`mktemp "$(dirname "$UNINSTALLER_BIN")/.migate-uninstall.XXXXXX"`,
 		"mv -f \"$uninstaller_tmp\" \"$UNINSTALLER_BIN\"",
 		"ln -sf \"$MIGATE_BIN\" \"$MIGATE_LINK\"",
 		"CLI 命令",
@@ -654,6 +663,7 @@ func TestInstallerDoesNotAbortMainFlowWhenOptionalCoreInstallFails(t *testing.T)
 		"MiGate 安装/升级将继续",
 		"if [ \"$EXPLICIT_INSTALL_XRAY\" -eq 1 ]; then install_xray; else maybe_install_core \"Xray\" install_xray; fi",
 		"if [ \"$EXPLICIT_INSTALL_SINGBOX\" -eq 1 ]; then install_singbox; else maybe_install_core \"sing-box\" install_singbox; fi",
+		"MiGate 升级事务不同时安装/修复核心",
 		"install-singbox-only)",
 		"install_singbox",
 		"install-xray-only)",
@@ -663,11 +673,10 @@ func TestInstallerDoesNotAbortMainFlowWhenOptionalCoreInstallFails(t *testing.T)
 			t.Fatalf("installer optional core failure contract missing %q", want)
 		}
 	}
-	if strings.Index(script, "if [ \"$EXPLICIT_INSTALL_XRAY\" -eq 1 ]; then install_xray; else maybe_install_core \"Xray\" install_xray; fi") > strings.Index(script, "section \"服务启动\"") {
-		t.Fatalf("installer main flow must handle optional Xray failure before service startup")
-	}
-	if strings.Index(script, "if [ \"$EXPLICIT_INSTALL_SINGBOX\" -eq 1 ]; then install_singbox; else maybe_install_core \"sing-box\" install_singbox; fi") > strings.Index(script, "section \"服务启动\"") {
-		t.Fatalf("installer main flow must handle optional sing-box failure before service startup")
+	upgradeBody := script[strings.Index(script, "apply_upgrade_release_from_backup()"):]
+	upgradeBody = upgradeBody[:strings.Index(upgradeBody, "print_config_summary()")]
+	if strings.Contains(upgradeBody, "install_xray; else maybe_install_core") || strings.Contains(upgradeBody, "install_singbox; else maybe_install_core") {
+		t.Fatalf("upgrade transaction must not run core installers without backing up core state")
 	}
 }
 
@@ -728,6 +737,7 @@ func TestInstallerExplicitCoreInstallFlagsRemainStrict(t *testing.T) {
 		"--install-singbox) INSTALL_SINGBOX=1; EXPLICIT_INSTALL_SINGBOX=1",
 		"if [ \"$EXPLICIT_INSTALL_XRAY\" -eq 1 ]; then install_xray; else maybe_install_core \"Xray\" install_xray; fi",
 		"if [ \"$EXPLICIT_INSTALL_SINGBOX\" -eq 1 ]; then install_singbox; else maybe_install_core \"sing-box\" install_singbox; fi",
+		"MiGate 升级事务不同时安装/修复核心",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer explicit core strictness contract missing %q", want)
@@ -794,7 +804,7 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 func TestInstallerRepairServiceRefreshesSandboxPermissions(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
-		"ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} /usr/local/bin /usr/local/share/xray /etc/systemd/system",
+		`ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} $(dirname "$MIGATE_BIN") ${XRAY_SHARE_DIR} $(dirname "$SERVICE_PATH")`,
 		"repair_service_flow()",
 		"write_systemd_service",
 		"restart_migate_service",
@@ -869,7 +879,7 @@ func TestInstallerUpdateFlowRefreshesServiceEvenWhenCurrent(t *testing.T) {
 	}
 }
 
-func TestInstallerUpdateSkipsCorePromptsUnlessExplicitlyRequested(t *testing.T) {
+func TestInstallerUpdateDoesNotInstallCoresInsideUpgradeTransaction(t *testing.T) {
 	root := repoRoot(t)
 	cmd := exec.Command("bash", filepath.Join(root, "packaging", "install.sh"), "--upgrade", "--yes", "--dry-run")
 	out, err := cmd.CombinedOutput()
@@ -877,18 +887,12 @@ func TestInstallerUpdateSkipsCorePromptsUnlessExplicitlyRequested(t *testing.T) 
 		t.Fatalf("dry-run upgrade failed: %v\n%s", err, out)
 	}
 	text := string(out)
-	for _, want := range []string{
-		"未指定 --install-xray，跳过 Xray 安装。",
-		"未指定 --install-singbox，跳过 sing-box 安装。",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("dry-run upgrade missing %q:\n%s", want, text)
-		}
-	}
 	for _, forbidden := range []string{
 		"[DRY-RUN] install /usr/local/bin/xray",
 		"[DRY-RUN] install /usr/local/bin/sing-box",
 		"确认安装/修复",
+		"未指定 --install-xray",
+		"未指定 --install-singbox",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("dry-run upgrade must not run/prompt core install %q:\n%s", forbidden, text)
@@ -900,7 +904,7 @@ func TestInstallerReplacesRunningBinaryAtomicallyDuringUpdate(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	for _, want := range []string{
 		"local migate_tmp",
-		"mktemp /usr/local/bin/.migate.XXXXXX",
+		`mktemp "$(dirname "$MIGATE_BIN")/.migate.XXXXXX"`,
 		"cat \"$TMP/migate\" > \"$migate_tmp\"",
 		"chmod +x \"$migate_tmp\"",
 		"mv -f \"$migate_tmp\" \"$MIGATE_BIN\"",
@@ -912,6 +916,117 @@ func TestInstallerReplacesRunningBinaryAtomicallyDuringUpdate(t *testing.T) {
 	}
 	if strings.Contains(script, "cp \"$TMP/migate\" /usr/local/bin/migate") {
 		t.Fatalf("installer must not cp over the running migate binary; use temp file plus atomic mv")
+	}
+}
+
+func TestInstallerUpgradeSuccessWritesPersistentStatusAfterHealthCheck(t *testing.T) {
+	env := newInstallerHarness(t, "success")
+	result := env.run(t)
+	if result.err != nil {
+		t.Fatalf("upgrade failed: %v\n%s", result.err, result.output)
+	}
+	if got := readFile(t, env.migateBin); !strings.Contains(got, "new migate") {
+		t.Fatalf("expected new migate binary, got %q", got)
+	}
+	if got := readFile(t, env.servicePath); !strings.Contains(got, "ExecStart="+env.migateBin) {
+		t.Fatalf("expected rewritten service, got %q", got)
+	}
+	status := readFile(t, env.updateStatusPath)
+	for _, want := range []string{`"status": "completed"`, `"target_version": "v2.0.0"`, `"health_check": "systemctl is-active migate: active`, `"rolled_back": false`} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("successful status missing %q: %s", want, status)
+		}
+	}
+	versions := readFile(t, env.versionsPath)
+	if !strings.Contains(versions, `"installer_version": "v2.0.0"`) {
+		t.Fatalf("versions state must be written after success: %s", versions)
+	}
+}
+
+func TestInstallerUpgradeRollsBackOldBinaryAndServiceWhenNewHealthCheckFails(t *testing.T) {
+	env := newInstallerHarness(t, "fail-new")
+	result := env.run(t)
+	if result.err == nil {
+		t.Fatalf("expected failed upgrade with rollback\n%s", result.output)
+	}
+	if got := readFile(t, env.migateBin); !strings.Contains(got, "old migate") {
+		t.Fatalf("expected old migate binary after rollback, got %q", got)
+	}
+	if got := readFile(t, env.servicePath); !strings.Contains(got, "old-service") {
+		t.Fatalf("expected old service after rollback, got %q", got)
+	}
+	status := readFile(t, env.updateStatusPath)
+	for _, want := range []string{`"status": "failed"`, `"message": "升级失败，已回滚，服务已恢复"`, `"rolled_back": true`, `"rollback_status": "restored"`} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("rollback status missing %q: %s", want, status)
+		}
+	}
+	if !strings.Contains(result.output, "升级失败，已回滚") {
+		t.Fatalf("rollback output missing clear message:\n%s", result.output)
+	}
+}
+
+func TestInstallerUpgradeRollsBackWhenLocalAPIHealthFails(t *testing.T) {
+	env := newInstallerHarness(t, "fail-http")
+	result := env.run(t)
+	if result.err == nil {
+		t.Fatalf("expected local API health failure with rollback\n%s", result.output)
+	}
+	if got := readFile(t, env.migateBin); !strings.Contains(got, "old migate") {
+		t.Fatalf("expected old migate binary after API health rollback, got %q", got)
+	}
+	status := readFile(t, env.updateStatusPath)
+	for _, want := range []string{`"status": "failed"`, `"message": "升级失败，已回滚，服务已恢复"`, `"rolled_back": true`, `"rollback_status": "restored"`} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("API health rollback status missing %q: %s", want, status)
+		}
+	}
+	if !strings.Contains(result.output, "/api/health: failed") || !strings.Contains(result.output, "/api/version: failed") {
+		t.Fatalf("API health rollback output missing endpoint failures:\n%s", result.output)
+	}
+}
+
+func TestInstallerUpgradeRollsBackWhenReplacementFailsAfterBackup(t *testing.T) {
+	env := newInstallerHarness(t, "fail-replace")
+	result := env.run(t)
+	if result.err == nil {
+		t.Fatalf("expected replacement failure with rollback\n%s", result.output)
+	}
+	if got := readFile(t, env.migateBin); !strings.Contains(got, "old migate") {
+		t.Fatalf("expected old migate binary after replacement rollback, got %q", got)
+	}
+	if got := readFile(t, env.servicePath); !strings.Contains(got, "old-service") {
+		t.Fatalf("expected old service after replacement rollback, got %q", got)
+	}
+	status := readFile(t, env.updateStatusPath)
+	for _, want := range []string{`"status": "failed"`, `"message": "升级失败，已回滚，服务已恢复"`, `"rolled_back": true`, `"rollback_status": "restored"`} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("replacement rollback status missing %q: %s", want, status)
+		}
+	}
+	if !strings.Contains(result.output, "升级过程失败或健康检查失败") || !strings.Contains(result.output, "升级失败，已回滚") {
+		t.Fatalf("replacement rollback output missing clear messages:\n%s", result.output)
+	}
+}
+
+func TestInstallerRollbackDoesNotDeleteUnexpectedDirectories(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		`elif [ -d "$dest" ] && [ ! -L "$dest" ]; then`,
+		`log_error "回滚目标是目录，未自动删除：$dest"`,
+		`return 1`,
+		`restore_file_if_backed_up "$backup_root/bin/migate" "$MIGATE_BIN" || ok=0`,
+		`[ "$ok" -eq 1 ] || return 1`,
+		`systemctl daemon-reload || return 1`,
+		`systemctl restart migate || return 1`,
+		`rm -f "$dest"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("rollback directory safety contract missing %q", want)
+		}
+	}
+	if strings.Contains(script, `rm -rf "$dest"`) {
+		t.Fatalf("rollback must not recursively delete configured target paths")
 	}
 }
 
@@ -1083,11 +1198,11 @@ func TestServiceUsesGeneratedPanelConfigAndSingleBinary(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`mkdir -p "$CONFIG_DIR" "$CORE_CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR" /usr/local/bin /usr/local/share/xray /etc/systemd/system`,
+		`mkdir -p "$CONFIG_DIR" "$CORE_CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR" "$(dirname "$MIGATE_BIN")" "$(dirname "$INSTALLER_BIN")" "$(dirname "$UNINSTALLER_BIN")" "$XRAY_SHARE_DIR" "$(dirname "$SERVICE_PATH")"`,
 		`chown root:migate "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"`,
 		`chmod 0770 "$DATA_DIR" "$BACKUP_DIR" "$LOG_DIR" "$RUN_DIR"`,
 		"ProtectSystem=strict",
-		"ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} /usr/local/bin /usr/local/share/xray /etc/systemd/system",
+		`ReadWritePaths=${CONFIG_DIR} ${DATA_DIR} ${LOG_DIR} ${RUN_DIR} $(dirname "$MIGATE_BIN") ${XRAY_SHARE_DIR} $(dirname "$SERVICE_PATH")`,
 		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
 	} {
 		if !strings.Contains(script, want) {
@@ -1232,4 +1347,190 @@ func tarEntries(t *testing.T, path string) map[string]bool {
 		entries[header.Name] = true
 	}
 	return entries
+}
+
+type installerHarness struct {
+	root             string
+	binDir           string
+	fakeBin          string
+	releaseDir       string
+	configDir        string
+	dataDir          string
+	backupDir        string
+	logDir           string
+	runDir           string
+	systemdDir       string
+	configPath       string
+	servicePath      string
+	migateBin        string
+	migateLink       string
+	installerBin     string
+	uninstallerBin   string
+	versionsPath     string
+	updateStatusPath string
+	scenario         string
+}
+
+type installerRunResult struct {
+	output string
+	err    error
+}
+
+func newInstallerHarness(t *testing.T, scenario string) *installerHarness {
+	t.Helper()
+	root := t.TempDir()
+	env := &installerHarness{
+		root:       root,
+		binDir:     filepath.Join(root, "bin"),
+		fakeBin:    filepath.Join(root, "fake-bin"),
+		releaseDir: filepath.Join(root, "release"),
+		configDir:  filepath.Join(root, "etc", "migate"),
+		dataDir:    filepath.Join(root, "var", "lib", "migate"),
+		backupDir:  filepath.Join(root, "var", "lib", "migate", "backups"),
+		logDir:     filepath.Join(root, "var", "log", "migate"),
+		runDir:     filepath.Join(root, "run", "migate"),
+		systemdDir: filepath.Join(root, "etc", "systemd", "system"),
+		scenario:   scenario,
+	}
+	env.configPath = filepath.Join(env.configDir, "panel.json")
+	env.servicePath = filepath.Join(env.systemdDir, "migate.service")
+	env.migateBin = filepath.Join(env.binDir, "migate")
+	env.migateLink = filepath.Join(env.binDir, "mg")
+	env.installerBin = filepath.Join(env.binDir, "migate-install")
+	env.uninstallerBin = filepath.Join(env.binDir, "migate-uninstall")
+	env.versionsPath = filepath.Join(env.dataDir, "versions.json")
+	env.updateStatusPath = filepath.Join(env.dataDir, "update-status.json")
+	for _, dir := range []string{env.binDir, env.fakeBin, env.releaseDir, env.configDir, env.dataDir, env.backupDir, env.logDir, env.runDir, env.systemdDir, filepath.Join(env.root, "run", "systemd", "system")} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	writeExecutable(t, env.migateBin, "#!/usr/bin/env bash\ncase \"$1\" in version) echo 'MiGate version: v1.0.0' ;; hash-password) echo 'hashed-password' ;; *) echo 'old migate' ;; esac\n")
+	writeExecutable(t, env.installerBin, "#!/usr/bin/env bash\necho old installer\n")
+	writeExecutable(t, env.uninstallerBin, "#!/usr/bin/env bash\necho old uninstaller\n")
+	if err := os.WriteFile(env.servicePath, []byte("[Service]\nExecStart=old-service\n"), 0644); err != nil {
+		t.Fatalf("write service: %v", err)
+	}
+	if err := os.WriteFile(env.configPath, []byte(`{"panel_port":19999,"panel_username":"admin","web_base_path":"/panel","database_path":"`+env.dataDir+`/migate.db"}`), 0640); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(env.versionsPath, []byte(`{"installer_version":"v1.0.0"}`), 0640); err != nil {
+		t.Fatalf("write versions: %v", err)
+	}
+	createFakeRelease(t, env.releaseDir)
+	env.writeFakeCommands(t)
+	return env
+}
+
+func (h *installerHarness) run(t *testing.T) installerRunResult {
+	t.Helper()
+	cmd := exec.Command("bash", filepath.Join(repoRoot(t), "packaging", "install.sh"), "--upgrade", "--yes")
+	cmd.Env = append(os.Environ(),
+		"PATH="+h.fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"MIGATE_VERSION=v2.0.0",
+		"MIGATE_REPO=local/MiGate",
+		"MIGATE_DATA_DIR="+h.dataDir,
+		"MIGATE_BACKUP_DIR="+h.backupDir,
+		"MIGATE_LOG_DIR="+h.logDir,
+		"MIGATE_RUN_DIR="+h.runDir,
+		"MIGATE_INSTALL_LOCK="+filepath.Join(h.runDir, "install.lock"),
+		"MIGATE_CONFIG_DIR="+h.configDir,
+		"MIGATE_CONFIG_PATH="+h.configPath,
+		"MIGATE_CORE_CONFIG_DIR="+filepath.Join(h.configDir, "cores"),
+		"MIGATE_XRAY_CONFIG_PATH="+filepath.Join(h.configDir, "cores", "xray.json"),
+		"MIGATE_SINGBOX_CONFIG_PATH="+filepath.Join(h.configDir, "cores", "sing-box.json"),
+		"MIGATE_SERVICE_PATH="+h.servicePath,
+		"MIGATE_BIN="+h.migateBin,
+		"MIGATE_LINK="+h.migateLink,
+		"INSTALLER_BIN="+h.installerBin,
+		"UNINSTALLER_BIN="+h.uninstallerBin,
+		"MIGATE_VERSIONS_PATH="+h.versionsPath,
+		"MIGATE_UPDATE_STATUS_PATH="+h.updateStatusPath,
+		"MIGATE_XRAY_SHARE_DIR="+filepath.Join(h.root, "usr", "local", "share", "xray"),
+		"JOURNALD_CONF_DIR="+filepath.Join(h.root, "etc", "systemd", "journald.conf.d"),
+		"LOGROTATE_CONF_DIR="+filepath.Join(h.root, "etc", "logrotate.d"),
+		"MIGATE_FAKE_RELEASE_DIR="+h.releaseDir,
+		"MIGATE_TEST_SCENARIO="+h.scenario,
+		"MIGATE_TEST_STATE="+filepath.Join(h.root, "systemctl-state"),
+		"MIGATE_SYSTEMD_RUNTIME_DIR="+filepath.Join(h.root, "run", "systemd", "system"),
+	)
+	out, err := cmd.CombinedOutput()
+	return installerRunResult{output: string(out), err: err}
+}
+
+func createFakeRelease(t *testing.T, releaseDir string) {
+	t.Helper()
+	work := filepath.Join(releaseDir, "work")
+	if err := os.MkdirAll(filepath.Join(work, "packaging"), 0755); err != nil {
+		t.Fatalf("mkdir release work: %v", err)
+	}
+	writeExecutable(t, filepath.Join(work, "migate"), "#!/usr/bin/env bash\ncase \"$1\" in version) echo 'MiGate version: v2.0.0' ;; hash-password) echo 'hashed-password' ;; *) echo 'new migate' ;; esac\n")
+	writeExecutable(t, filepath.Join(work, "packaging", "install.sh"), "#!/usr/bin/env bash\necho new installer\n")
+	writeExecutable(t, filepath.Join(work, "packaging", "uninstall.sh"), "#!/usr/bin/env bash\necho new uninstaller\n")
+	archive := filepath.Join(releaseDir, "migate-linux-amd64.tar.gz")
+	file, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	for _, rel := range []string{"migate", "packaging/install.sh", "packaging/uninstall.sh"} {
+		path := filepath.Join(work, rel)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat release file: %v", err)
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			t.Fatalf("tar header: %v", err)
+		}
+		header.Name = rel
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatalf("tar write header: %v", err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read release file: %v", err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatalf("tar write file: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("archive close: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(releaseDir, "checksums.txt"), []byte("skip  migate-linux-amd64.tar.gz\n"), 0644); err != nil {
+		t.Fatalf("write checksums: %v", err)
+	}
+}
+
+func (h *installerHarness) writeFakeCommands(t *testing.T) {
+	t.Helper()
+	writeExecutable(t, filepath.Join(h.fakeBin, "uname"), "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-s\" ]; then echo Linux; else echo x86_64; fi\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "id"), "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then echo 0; else /usr/bin/id \"$@\"; fi\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "getent"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "pgrep"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "chown"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "journalctl"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "ss"), "#!/usr/bin/env bash\nexit 1\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "cat"), "#!/usr/bin/env bash\nif [ \"${MIGATE_TEST_SCENARIO:-}\" = \"fail-replace\" ] && [ \"$#\" -eq 1 ] && [ \"$(basename \"$1\")\" = \"migate\" ]; then exit 1; fi\n/bin/cat \"$@\"\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "curl"), "#!/usr/bin/env bash\nset -euo pipefail\nout=''\nurl=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o) out=\"$2\"; shift 2 ;;\n    --max-time) shift 2 ;;\n    -*) shift ;;\n    *) url=\"$1\"; shift ;;\n  esac\ndone\nif [ -n \"$out\" ]; then\n  case \"$url\" in\n    *checksums.txt) cp \"$MIGATE_FAKE_RELEASE_DIR/checksums.txt\" \"$out\" ;;\n    *migate-linux-amd64.tar.gz) cp \"$MIGATE_FAKE_RELEASE_DIR/migate-linux-amd64.tar.gz\" \"$out\" ;;\n    *) echo '{}' > \"$out\" ;;\n  esac\n  exit 0\nfi\ncase \"$url\" in\n  *api/health|*api/version)\n    count=0\n    [ -f \"${MIGATE_TEST_STATE:-}\" ] && count=$(cat \"$MIGATE_TEST_STATE\")\n    if [ \"${MIGATE_TEST_SCENARIO:-}\" = \"fail-http\" ] && [ \"$count\" -eq 1 ]; then exit 7; fi\n    exit 0\n    ;;\n  *releases/latest) echo '{\"tag_name\":\"v2.0.0\"}' ;;\n  *) echo '{}' ;;\nesac\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "sha256sum"), "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-c\" ]; then exit 0; fi\n/usr/bin/shasum -a 256 \"$@\"\n")
+	writeExecutable(t, filepath.Join(h.fakeBin, "systemctl"), "#!/usr/bin/env bash\nset -euo pipefail\nstate=\"${MIGATE_TEST_STATE:-/tmp/migate-test-systemctl-state}\"\ncmd=\"${1:-}\"\nsvc=\"${2:-}\"\ncase \"$cmd\" in\n  list-unit-files|daemon-reload|enable|stop) exit 0 ;;\n  restart)\n    if [ \"$svc\" = \"migate\" ]; then\n      count=0\n      [ -f \"$state\" ] && count=$(cat \"$state\")\n      count=$((count + 1))\n      echo \"$count\" > \"$state\"\n    fi\n    exit 0\n    ;;\n  is-active)\n    count=0\n    [ -f \"$state\" ] && count=$(cat \"$state\")\n    if [ \"${MIGATE_TEST_SCENARIO:-}\" = \"fail-new\" ] && [ \"$count\" -eq 1 ]; then exit 3; fi\n    if [ \"${2:-}\" != \"--quiet\" ]; then echo active; fi\n    exit 0\n    ;;\nesac\nexit 0\n")
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir executable dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
 }
