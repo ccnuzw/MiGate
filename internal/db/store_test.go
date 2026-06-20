@@ -1297,6 +1297,71 @@ func TestStoreDeleteRoutingRule(t *testing.T) {
 	}
 }
 
+func TestStoreMigratesLegacyOutboundsBeforeCreatingSubscriptionIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-index.db")
+	legacy, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	_, err = legacy.ExecContext(context.Background(), `
+CREATE TABLE outbounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tag TEXT NOT NULL UNIQUE,
+  remark TEXT NOT NULL,
+  protocol TEXT NOT NULL,
+  address TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL DEFAULT 0,
+  username TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+INSERT INTO outbounds (tag, remark, protocol, address, port, enabled, sort, created_at) VALUES
+  ('legacy-1', 'legacy-1', 'socks', '10.0.0.1', 1080, 1, 0, '2026-01-01T00:00:00Z');
+`)
+	if err != nil {
+		legacy.Close()
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := db.Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer store.Close()
+
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list migrated outbounds: %v", err)
+	}
+	var found bool
+	for _, outbound := range outbounds {
+		if outbound.Tag == "legacy-1" {
+			found = true
+			if outbound.Source != "manual" {
+				t.Fatalf("expected migrated source manual, got %+v", outbound)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected legacy outbound after migration, got %+v", outbounds)
+	}
+
+	check, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open migrated db for index check: %v", err)
+	}
+	defer check.Close()
+	var indexName string
+	if err := check.QueryRowContext(context.Background(), `SELECT name FROM sqlite_master WHERE type='index' AND name='idx_outbounds_subscription'`).Scan(&indexName); err != nil {
+		t.Fatalf("expected subscription index after migration: %v", err)
+	}
+}
+
 func TestStoreMigratesAndCreatesInboundWithClients(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

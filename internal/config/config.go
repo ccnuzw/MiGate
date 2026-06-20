@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/imzyb/MiGate/internal/panelconfig"
@@ -39,9 +38,6 @@ func Load(path string) (Config, error) {
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return Config{}, err
-	}
-	if err := rejectUnknownFields(raw); err != nil {
 		return Config{}, err
 	}
 	var cfg Config
@@ -115,11 +111,6 @@ func Validate(cfg Config) error {
 }
 
 func ValidateLoaded(cfg Config, rawFields ...map[string]json.RawMessage) error {
-	if len(rawFields) > 0 {
-		if err := rejectUnknownFields(rawFields[0]); err != nil {
-			return err
-		}
-	}
 	panelPortPresent := false
 	if len(rawFields) > 0 && rawFields[0] != nil {
 		_, panelPortPresent = rawFields[0]["panel_port"]
@@ -171,36 +162,4 @@ func normalizeWebPath(path, fallback string) string {
 		path = "/" + path
 	}
 	return strings.TrimRight(path, "/")
-}
-
-func rejectUnknownFields(raw map[string]json.RawMessage) error {
-	if raw == nil {
-		return nil
-	}
-	allowed := allowedConfigFields()
-	var unknown []string
-	for key := range raw {
-		if !allowed[key] {
-			unknown = append(unknown, key)
-		}
-	}
-	if len(unknown) == 0 {
-		return nil
-	}
-	sort.Strings(unknown)
-	return fmt.Errorf("unknown config field(s): %s", strings.Join(unknown, ", "))
-}
-
-func allowedConfigFields() map[string]bool {
-	return map[string]bool{
-		"panel_port":     true,
-		"panel_username": true,
-		"panel_password": true,
-		"web_base_path":  true,
-		"public_host":    true,
-		"trust_proxy":    true,
-		"database_path":  true,
-		"cert_domain":    true,
-		"cert_email":     true,
-	}
 }

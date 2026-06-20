@@ -190,7 +190,6 @@ CREATE TABLE IF NOT EXISTS certificate_operations (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
-CREATE INDEX IF NOT EXISTS idx_outbounds_subscription ON outbounds(subscription_id, subscription_identity);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_outbound_id ON routing_rules(outbound_id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_client_id ON routing_rules(client_id);
@@ -244,6 +243,9 @@ CREATE INDEX IF NOT EXISTS idx_outbound_subscriptions_priority_id ON outbound_su
 		return err
 	}
 	if err := s.ensureColumn(ctx, "outbound_subscriptions", "last_attempt_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_outbounds_subscription ON outbounds(subscription_id, subscription_identity)`); err != nil {
 		return err
 	}
 	if err := s.seedDefaultOutbounds(ctx); err != nil {
