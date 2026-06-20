@@ -5828,6 +5828,18 @@ func TestCertificateImportListAndOperationsAPI(t *testing.T) {
 	}
 }
 
+func TestCertificateImportValidationErrorsReturnBadRequest(t *testing.T) {
+	router := web.NewRouter(web.WithStore(openWebTestStore(t)), web.WithCertDir(t.TempDir()))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/certificates/import", strings.NewReader(`{"name":"bad","fullchain":"not a cert","private_key":"not a key","confirm":true,"allow_system_changes":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected import validation 400, got %d: %s", resp.Code, resp.Body.String())
+	}
+	assertStandardAPIError(t, resp.Body.Bytes(), "invalid_certificate")
+}
+
 func TestCertificateApplyAPIWritesTLSInboundAndReturnsCoreSummary(t *testing.T) {
 	store := openWebTestStore(t)
 	certPath, keyPath := testCertificatePair(t, "example.com")
@@ -5838,7 +5850,7 @@ func TestCertificateApplyAPIWritesTLSInboundAndReturnsCoreSummary(t *testing.T) 
 	if err != nil {
 		t.Fatalf("seed certificate: %v", err)
 	}
-	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "tls", Protocol: "vless", Port: 24443, Network: "tcp", Security: "tls"})
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "tls", Protocol: "vless", Port: 24443, Network: "tcp", Security: "tls", TLSSNI: "old.example.com"})
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}

@@ -3692,7 +3692,7 @@ func TestCertificateAssetsAndInboundUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply certificate: %v", err)
 	}
-	if len(updated) != 2 || updated[0].TLSCertFile != cert.CertPath || updated[0].TLSKeyFile != cert.KeyPath || updated[0].TLSSNI != "custom.example.com" || updated[1].TLSSNI != "example.com" {
+	if len(updated) != 2 || updated[0].TLSCertFile != cert.CertPath || updated[0].TLSKeyFile != cert.KeyPath || updated[0].TLSSNI != "example.com" || updated[1].TLSSNI != "example.com" {
 		t.Fatalf("unexpected applied inbound: %#v", updated)
 	}
 	loaded, err := store.GetCertificate(ctx, cert.ID)

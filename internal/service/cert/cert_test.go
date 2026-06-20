@@ -118,7 +118,7 @@ func (s *memoryStore) ApplyCertificateToInbounds(ctx context.Context, cert db.Ce
 				}
 				s.inbounds[i].TLSCertFile = cert.CertPath
 				s.inbounds[i].TLSKeyFile = cert.KeyPath
-				if s.inbounds[i].TLSSNI == "" && len(cert.Domains) > 0 {
+				if len(cert.Domains) > 0 {
 					s.inbounds[i].TLSSNI = cert.Domains[0]
 				}
 				updated = append(updated, s.inbounds[i])
@@ -203,8 +203,65 @@ func TestImportCertificateValidatesAndStoresMetadata(t *testing.T) {
 	if cert.Status != db.CertStatusIssued || cert.CertPath == "" || cert.KeyPath == "" || len(cert.Domains) != 2 || cert.Fingerprint == "" {
 		t.Fatalf("unexpected cert: %#v", cert)
 	}
+	if filepath.Base(cert.KeyPath) != "privkey.key" {
+		t.Fatalf("private key path = %q, want privkey.key suffix", cert.KeyPath)
+	}
 	if _, err := os.Stat(cert.CertPath); err != nil {
 		t.Fatalf("cert file not written: %v", err)
+	}
+}
+
+func TestImportCertificateWithSameAssetPathUpdatesExistingRecord(t *testing.T) {
+	firstCert, firstKey, err := selfSignedPair([]string{"example.com"}, time.Now().Add(90*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCert, secondKey, err := selfSignedPair([]string{"example.com"}, time.Now().Add(120*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &memoryStore{}
+	service := Service{Store: store, CertDir: t.TempDir(), Now: fixedNow}
+	first, err := service.Import(context.Background(), ImportRequest{Name: "example.com", Fullchain: string(firstCert), Key: string(firstKey)})
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	second, err := service.Import(context.Background(), ImportRequest{Name: "example.com", Fullchain: string(secondCert), Key: string(secondKey)})
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if second.ID != first.ID || len(store.certs) != 1 {
+		t.Fatalf("same asset import should update existing record, first=%#v second=%#v count=%d", first, second, len(store.certs))
+	}
+	if second.Fingerprint == first.Fingerprint || second.NotAfter == first.NotAfter {
+		t.Fatalf("existing record metadata was not refreshed: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestImportCertificateReusesLegacyPEMKeyPathRecord(t *testing.T) {
+	certPEM, keyPEM, err := selfSignedPair([]string{"example.com"}, time.Now().Add(90*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	store := &memoryStore{certs: []db.Certificate{{
+		ID:       7,
+		Name:     "example.com",
+		Source:   db.CertSourceACME,
+		Status:   db.CertStatusIssued,
+		Domains:  []string{"example.com"},
+		CertPath: filepath.Join(dir, "example.com", "fullchain.pem"),
+		KeyPath:  filepath.Join(dir, "example.com", "privkey.pem"),
+	}}}
+	cert, err := (Service{Store: store, CertDir: dir, Now: fixedNow}).Import(context.Background(), ImportRequest{Name: "example.com", Fullchain: string(certPEM), Key: string(keyPEM)})
+	if err != nil {
+		t.Fatalf("import over legacy path: %v", err)
+	}
+	if cert.ID != 7 || len(store.certs) != 1 || filepath.Base(cert.KeyPath) != "privkey.pem" {
+		t.Fatalf("legacy PEM key path record was not reused: cert=%#v count=%d", cert, len(store.certs))
+	}
+	if _, err := os.Stat(cert.KeyPath); err != nil {
+		t.Fatalf("legacy key path was not written: %v", err)
 	}
 }
 
@@ -235,6 +292,18 @@ func TestStatusAndRenewalDecision(t *testing.T) {
 	}
 	if service.ShouldRenew(issued, 30) || !service.ShouldRenew(soon, 30) {
 		t.Fatalf("unexpected renewal decision")
+	}
+}
+
+func TestStatusReturnsIssueEmail(t *testing.T) {
+	now := fixedNow()
+	store := &memoryStore{certs: []db.Certificate{{
+		ID: 1, Source: db.CertSourceACME, Status: db.CertStatusIssued, Domains: []string{"example.com"}, IssueEmail: "ops@example.com",
+		CertPath: "/cert.pem", KeyPath: "/key.key", NotAfter: now.Add(60 * 24 * time.Hour).Format(time.RFC3339),
+	}}}
+	status := (Service{Store: store, Now: func() time.Time { return now }}).Status(context.Background())
+	if status.Email != "ops@example.com" || status.Domain != "example.com" || !status.Issued {
+		t.Fatalf("unexpected status response: %#v", status)
 	}
 }
 
@@ -291,6 +360,89 @@ func TestIssueUsesIssuerAndRecordsCertificate(t *testing.T) {
 	}
 }
 
+func TestIssueWithSameAssetPathUpdatesExistingRecord(t *testing.T) {
+	now := fixedNow()
+	firstCert, firstKey, err := selfSignedPair([]string{"example.com"}, now.Add(90*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCert, secondKey, err := selfSignedPair([]string{"example.com"}, now.Add(120*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := &stubIssuer{certPEM: firstCert, keyPEM: firstKey}
+	store := &memoryStore{}
+	service := Service{
+		Store:   store,
+		CertDir: t.TempDir(),
+		Issuer:  issuer,
+		Now:     fixedNow,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+		ListenTCP: func(string, string) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	first, _, err := service.Issue(context.Background(), IssueRequest{Domain: "example.com", Email: "admin@example.com"})
+	if err != nil {
+		t.Fatalf("first issue: %v", err)
+	}
+	issuer.certPEM = secondCert
+	issuer.keyPEM = secondKey
+	second, _, err := service.Issue(context.Background(), IssueRequest{Domain: "example.com", Email: "admin@example.com"})
+	if err != nil {
+		t.Fatalf("second issue: %v", err)
+	}
+	if second.ID != first.ID || len(store.certs) != 1 {
+		t.Fatalf("same asset issue should update existing record, first=%#v second=%#v count=%d", first, second, len(store.certs))
+	}
+	if second.Fingerprint == first.Fingerprint || second.NotAfter == first.NotAfter {
+		t.Fatalf("existing issue metadata was not refreshed: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestIssueCertificateReusesLegacyPEMKeyPathRecord(t *testing.T) {
+	now := fixedNow()
+	certPEM, keyPEM, err := selfSignedPair([]string{"example.com"}, now.Add(90*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	store := &memoryStore{certs: []db.Certificate{{
+		ID:       8,
+		Name:     "example.com",
+		Source:   db.CertSourceACME,
+		Status:   db.CertStatusIssued,
+		Domains:  []string{"example.com"},
+		CertPath: filepath.Join(dir, "example.com", "fullchain.pem"),
+		KeyPath:  filepath.Join(dir, "example.com", "privkey.pem"),
+	}}}
+	issuer := &stubIssuer{certPEM: certPEM, keyPEM: keyPEM}
+	service := Service{
+		Store:   store,
+		CertDir: dir,
+		Issuer:  issuer,
+		Now:     fixedNow,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+		ListenTCP: func(string, string) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	cert, _, err := service.Issue(context.Background(), IssueRequest{Domain: "example.com", Email: "admin@example.com"})
+	if err != nil {
+		t.Fatalf("issue over legacy path: %v", err)
+	}
+	if cert.ID != 8 || len(store.certs) != 1 || filepath.Base(cert.KeyPath) != "privkey.pem" {
+		t.Fatalf("legacy PEM key path record was not reused: cert=%#v count=%d", cert, len(store.certs))
+	}
+	if _, err := os.Stat(cert.KeyPath); err != nil {
+		t.Fatalf("legacy key path was not written: %v", err)
+	}
+}
+
 func TestRenewUsesOriginalACMEMetadata(t *testing.T) {
 	now := fixedNow()
 	certPEM, keyPEM, err := selfSignedPair([]string{"example.com"}, now.Add(90*24*time.Hour))
@@ -341,7 +493,7 @@ func TestRenewDueOnlyRenewsDueACMECertificates(t *testing.T) {
 	}
 }
 
-func TestApplyPreservesExistingSNIAndFillsEmptySNI(t *testing.T) {
+func TestApplySynchronizesSNIWithCertificateDomain(t *testing.T) {
 	store := &memoryStore{
 		certs: []db.Certificate{{ID: 1, Source: db.CertSourceImport, Status: db.CertStatusIssued, Domains: []string{"cert.example.com"}, CertPath: "/cert.pem", KeyPath: "/key.pem"}},
 		inbounds: []db.Inbound{
@@ -353,11 +505,8 @@ func TestApplyPreservesExistingSNIAndFillsEmptySNI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply returned error: %v", err)
 	}
-	if updated[0].TLSSNI != "custom.example.com" {
-		t.Fatalf("existing SNI was overwritten: %#v", updated[0])
-	}
-	if updated[1].TLSSNI != "cert.example.com" {
-		t.Fatalf("empty SNI was not filled: %#v", updated[1])
+	if updated[0].TLSSNI != "cert.example.com" || updated[1].TLSSNI != "cert.example.com" {
+		t.Fatalf("SNI was not synchronized with certificate domain: %#v", updated)
 	}
 }
 

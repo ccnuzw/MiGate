@@ -228,9 +228,9 @@ func (s *Store) ApplyCertificateToInbounds(ctx context.Context, cert Certificate
 		if NormalizeInboundSecurity(existing.Protocol, existing.Security) != "tls" {
 			return nil, fmt.Errorf("inbound %d is not a TLS inbound", id)
 		}
-		nextSNI := strings.TrimSpace(existing.TLSSNI)
+		nextSNI := firstDomain(cert.Domains)
 		if nextSNI == "" {
-			nextSNI = firstDomain(cert.Domains)
+			nextSNI = strings.TrimSpace(existing.TLSSNI)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE inbounds SET tls_cert_file=?, tls_key_file=?, tls_sni=? WHERE id=?`, cert.CertPath, cert.KeyPath, nextSNI, id); err != nil {
 			return nil, err

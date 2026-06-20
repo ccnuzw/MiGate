@@ -115,7 +115,24 @@ func shareLink(host string, inbound db.Inbound, client db.Client) (string, error
 		return "", fmt.Errorf("unsupported share link protocol: %s", protocol)
 	}
 	inbound.Protocol = protocol
-	return generator(subscriptionHost(host), inbound, client), nil
+	return generator(shareEndpointHost(subscriptionHost(host), inbound), inbound, client), nil
+}
+
+func shareEndpointHost(fallback string, inbound db.Inbound) string {
+	if db.NormalizeInboundSecurity(inbound.Protocol, inbound.Security) != "tls" {
+		return fallback
+	}
+	if strings.TrimSpace(inbound.TLSCertFile) == "" || strings.TrimSpace(inbound.TLSKeyFile) == "" {
+		return fallback
+	}
+	sni := strings.TrimSpace(inbound.TLSSNI)
+	if !validSubscriptionHost(sni) {
+		return fallback
+	}
+	if ip := net.ParseIP(sni); ip != nil && strings.Contains(sni, ":") {
+		return "[" + sni + "]"
+	}
+	return sni
 }
 
 func universalShareLink(host string, inbound db.Inbound, client db.Client) string {

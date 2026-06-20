@@ -315,7 +315,7 @@ func certServiceFor(cfg *routerConfig) certService {
 func certErrorStatus(err error) int {
 	if serviceErr, ok := err.(certsvc.Error); ok {
 		switch serviceErr.Code {
-		case "domain_required", "email_required", certsvc.CodeInvalidDomain, certsvc.CodeInvalidEmail, "inbound_ids_required", certsvc.CodeDomainNotResolved, certsvc.CodeCertDirNotWritable:
+		case "domain_required", "email_required", certsvc.CodeInvalidDomain, certsvc.CodeInvalidEmail, certsvc.CodeInvalidCertificate, certsvc.CodePrivateKeyMismatch, "inbound_ids_required", certsvc.CodeDomainNotResolved, certsvc.CodeCertDirNotWritable:
 			return http.StatusBadRequest
 		case certsvc.CodePreflightFailed:
 			if preflightHasFailedCode(serviceErr.Preflight, certsvc.CodeHTTP01PortUnavailable) {

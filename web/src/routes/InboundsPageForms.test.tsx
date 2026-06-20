@@ -119,6 +119,25 @@ describe('inbound and client modal credential behavior', () => {
     await waitForText('节点已保存');
     expect(document.body.textContent).not.toContain('sing-box 配置未生效');
   });
+
+  it('fills the TLS SNI with the settings certificate domain when attaching the certificate', async () => {
+    apiMock.certStatus.mockResolvedValueOnce({
+      issued: true,
+      cert_path: '/etc/migate/certs/hkcm.example.kg/fullchain.pem',
+      key_path: '/etc/migate/certs/hkcm.example.kg/privkey.key',
+      domain: 'hkcm.example.kg',
+    });
+    renderModal(<InboundModal inbound={{ ...createDefaultInbound(), id: 8, security: 'tls', tls_sni: 'example.com' }} onClose={() => undefined} onSaved={() => undefined} />);
+
+    await vi.waitFor(() => {
+      expect(buttonByText('使用设置页证书')).not.toBeDisabled();
+    });
+    clickButtonByText('使用设置页证书');
+
+    expect(inputByLabel('域名 / SNI').value).toBe('hkcm.example.kg');
+    clickButtonByText('高级设置');
+    expect(inputByLabel('TLS 私钥文件').value).toBe('/etc/migate/certs/hkcm.example.kg/privkey.key');
+  });
 });
 
 function renderModal(node: React.ReactNode) {
@@ -168,9 +187,14 @@ function inputByLabel(label: string) {
 }
 
 function clickButtonByText(text: string) {
+  const button = buttonByText(text);
+  act(() => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
+
+function buttonByText(text: string) {
   const button = Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.includes(text));
   if (!button) throw new Error(`missing button text: ${text}`);
-  act(() => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  return button as HTMLButtonElement;
 }
 
 function clickButtonByTitle(title: string) {
