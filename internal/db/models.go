@@ -1,6 +1,9 @@
 package db
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 const (
 	CertStatusIssued       = "issued"
@@ -11,6 +14,10 @@ const (
 
 	CertSourceACME   = "acme"
 	CertSourceImport = "import"
+
+	OutboundSourceManual       = "manual"
+	OutboundSourceSubscription = "subscription"
+	OutboundSourceProxyPool    = "proxy_pool"
 )
 
 type Certificate struct {
@@ -157,38 +164,104 @@ type Inbound struct {
 }
 
 type Outbound struct {
-	ID             int64    `json:"id"`
-	Tag            string   `json:"tag"`
-	Remark         string   `json:"remark"`
-	Protocol       string   `json:"protocol"`
-	Address        string   `json:"address"`
-	Port           int      `json:"port"`
-	Username       string   `json:"username"`
-	Password       string   `json:"password"`
-	SupportedCores []string `json:"supported_cores"`
-	Enabled        bool     `json:"enabled"`
-	Sort           int      `json:"sort"`
+	ID                   int64    `json:"id"`
+	Tag                  string   `json:"tag"`
+	Remark               string   `json:"remark"`
+	Protocol             string   `json:"protocol"`
+	Address              string   `json:"address"`
+	Port                 int      `json:"port"`
+	Username             string   `json:"username"`
+	Password             string   `json:"password"`
+	SupportedCores       []string `json:"supported_cores"`
+	Enabled              bool     `json:"enabled"`
+	Sort                 int      `json:"sort"`
+	Source               string   `json:"source"`
+	SubscriptionID       int64    `json:"subscription_id,omitempty"`
+	SubscriptionIdentity string   `json:"subscription_identity,omitempty"`
+	RawLink              string   `json:"raw_link,omitempty"`
+	SettingsJSON         string   `json:"settings_json,omitempty"`
+	LastSeenAt           string   `json:"last_seen_at,omitempty"`
 }
 
 type CreateOutboundParams struct {
-	Tag      string `json:"tag"`
-	Remark   string `json:"remark"`
-	Protocol string `json:"protocol"`
-	Address  string `json:"address"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Tag                  string `json:"tag"`
+	Remark               string `json:"remark"`
+	Protocol             string `json:"protocol"`
+	Address              string `json:"address"`
+	Port                 int    `json:"port"`
+	Username             string `json:"username"`
+	Password             string `json:"password"`
+	Source               string `json:"source,omitempty"`
+	SubscriptionID       int64  `json:"subscription_id,omitempty"`
+	SubscriptionIdentity string `json:"subscription_identity,omitempty"`
+	RawLink              string `json:"raw_link,omitempty"`
+	SettingsJSON         string `json:"settings_json,omitempty"`
 }
 
 type UpdateOutboundParams struct {
-	Tag      string `json:"tag"`
-	Remark   string `json:"remark"`
-	Protocol string `json:"protocol"`
-	Address  string `json:"address"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Enabled  bool   `json:"enabled"`
+	Tag          string `json:"tag"`
+	Remark       string `json:"remark"`
+	Protocol     string `json:"protocol"`
+	Address      string `json:"address"`
+	Port         int    `json:"port"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	Enabled      bool   `json:"enabled"`
+	SettingsJSON string `json:"settings_json,omitempty"`
+}
+
+type OutboundSubscription struct {
+	ID                    int64  `json:"id"`
+	Remark                string `json:"remark"`
+	URL                   string `json:"url"`
+	TagPrefix             string `json:"tag_prefix"`
+	UpdateIntervalSeconds int    `json:"update_interval_seconds"`
+	Enabled               bool   `json:"enabled"`
+	AllowPrivate          bool   `json:"allow_private"`
+	Prepend               bool   `json:"prepend"`
+	Priority              int    `json:"priority"`
+	LastFetchedAt         string `json:"last_fetched_at,omitempty"`
+	LastAttemptAt         string `json:"last_attempt_at,omitempty"`
+	LastError             string `json:"last_error,omitempty"`
+	LinkIdentitiesJSON    string `json:"link_identities_json,omitempty"`
+	CreatedAt             string `json:"created_at,omitempty"`
+	UpdatedAt             string `json:"updated_at,omitempty"`
+	OutboundCount         int    `json:"outbound_count"`
+}
+
+type CreateOutboundSubscriptionParams struct {
+	Remark                string `json:"remark"`
+	URL                   string `json:"url"`
+	TagPrefix             string `json:"tag_prefix"`
+	UpdateIntervalSeconds int    `json:"update_interval_seconds"`
+	Enabled               bool   `json:"enabled"`
+	AllowPrivate          bool   `json:"allow_private"`
+	Prepend               bool   `json:"prepend"`
+}
+
+type UpdateOutboundSubscriptionParams struct {
+	Remark                string `json:"remark"`
+	URL                   string `json:"url"`
+	TagPrefix             string `json:"tag_prefix"`
+	UpdateIntervalSeconds int    `json:"update_interval_seconds"`
+	Enabled               bool   `json:"enabled"`
+	AllowPrivate          bool   `json:"allow_private"`
+	Prepend               bool   `json:"prepend"`
+}
+
+type MaterializedSubscriptionOutbound struct {
+	ID                   int64
+	Tag                  string
+	Remark               string
+	Protocol             string
+	Address              string
+	Port                 int
+	Username             string
+	Password             string
+	SubscriptionIdentity string
+	RawLink              string
+	SettingsJSON         string
+	Position             int
 }
 
 type Client struct {
@@ -224,6 +297,34 @@ func (c Client) PasswordValue() string {
 		return c.Password
 	}
 	return c.UUID
+}
+
+type OutboundSettings struct {
+	Security      string   `json:"security,omitempty"`
+	Network       string   `json:"network,omitempty"`
+	TLS           bool     `json:"tls,omitempty"`
+	Reality       bool     `json:"reality,omitempty"`
+	SNI           string   `json:"sni,omitempty"`
+	Host          string   `json:"host,omitempty"`
+	Path          string   `json:"path,omitempty"`
+	Flow          string   `json:"flow,omitempty"`
+	Fingerprint   string   `json:"fp,omitempty"`
+	PublicKey     string   `json:"pbk,omitempty"`
+	ShortID       string   `json:"sid,omitempty"`
+	ALPN          []string `json:"alpn,omitempty"`
+	Method        string   `json:"method,omitempty"`
+	ServiceName   string   `json:"service_name,omitempty"`
+	AllowInsecure bool     `json:"allow_insecure,omitempty"`
+}
+
+func ParseOutboundSettings(raw string) OutboundSettings {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return OutboundSettings{}
+	}
+	var settings OutboundSettings
+	_ = json.Unmarshal([]byte(raw), &settings)
+	return settings
 }
 
 type TrafficRawStat struct {

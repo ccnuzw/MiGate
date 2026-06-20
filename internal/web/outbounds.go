@@ -39,6 +39,10 @@ func outboundsHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
+			params.Source = db.OutboundSourceManual
+			params.SubscriptionID = 0
+			params.SubscriptionIdentity = ""
+			params.RawLink = ""
 			scope, err := loadCoreInboundScope(r.Context(), store)
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
@@ -556,6 +560,7 @@ func proxyPoolImportHandler(cfg *routerConfig, outboundProtocol string, tagProto
 		Port:     req.Port,
 		Username: strings.TrimSpace(req.Username),
 		Password: req.Password,
+		Source:   db.OutboundSourceProxyPool,
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "create_outbound_failed")
@@ -711,7 +716,8 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodPut:
 			var params db.UpdateOutboundParams
-			if err := decodeJSONBody(r, &params); err != nil {
+			body, err := decodeJSONBodyRaw(r, &params)
+			if err != nil {
 				writeJSONError(w, http.StatusBadRequest, "invalid_json")
 				return
 			}
@@ -719,6 +725,9 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
+			}
+			if hadPrevious && !jsonObjectHasKey(body, "settings_json") {
+				params.SettingsJSON = previous.SettingsJSON
 			}
 			scope, err := loadCoreInboundScope(r.Context(), store)
 			if err != nil {
@@ -729,6 +738,8 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
 					writeJSONError(w, http.StatusNotFound, "not_found")
+				} else if strings.Contains(err.Error(), "subscription_disabled") {
+					writeJSONError(w, http.StatusBadRequest, "subscription_disabled")
 				} else {
 					writeJSONError(w, http.StatusBadRequest, "update_failed")
 				}

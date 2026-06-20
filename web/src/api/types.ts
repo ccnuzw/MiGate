@@ -146,7 +146,45 @@ export interface Outbound {
   supported_cores?: Array<'xray' | 'sing-box' | string>;
   enabled: boolean;
   sort?: number;
+  source?: 'manual' | 'subscription' | 'proxy_pool' | string;
+  subscription_id?: number;
+  subscription_identity?: string;
+  raw_link?: string;
+  settings_json?: string;
+  last_seen_at?: string;
   [key: string]: unknown;
+}
+
+export interface OutboundSubscription {
+  id: number;
+  remark: string;
+  url: string;
+  tag_prefix: string;
+  update_interval_seconds: number;
+  enabled: boolean;
+  allow_private: boolean;
+  prepend: boolean;
+  priority: number;
+  last_fetched_at?: string;
+  last_attempt_at?: string;
+  last_error?: string;
+  link_identities_json?: string;
+  outbound_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface OutboundSubscriptionSkippedEntry {
+  raw: string;
+  reason: string;
+  protocol?: string;
+}
+
+export interface OutboundSubscriptionPreview {
+  nodes: Array<Record<string, unknown>>;
+  count: number;
+  skipped_count: number;
+  skipped: OutboundSubscriptionSkippedEntry[];
 }
 
 export interface RoutingRule {

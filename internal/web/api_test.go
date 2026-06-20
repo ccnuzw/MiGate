@@ -357,7 +357,7 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 		}
 	}
 
-	payload := []byte(`{"tag":"proxy-socks","remark":"SOCKS代理","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret","supported_cores":["xray"]}`)
+	payload := []byte(`{"tag":"proxy-socks","remark":"SOCKS代理","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret","supported_cores":["xray"],"source":"subscription","subscription_id":123,"subscription_identity":"spoofed","raw_link":"trojan://spoofed"}`)
 	created := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -377,6 +377,9 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	}
 	if len(outbounds) != 4 || outbounds[3].Tag != "proxy-socks" {
 		t.Fatalf("outbound was not persisted: %+v", outbounds)
+	}
+	if outbounds[3].Source != db.OutboundSourceManual || outbounds[3].SubscriptionID != 0 || outbounds[3].SubscriptionIdentity != "" || outbounds[3].RawLink != "" {
+		t.Fatalf("public create should ignore spoofed source metadata: %+v", outbounds[3])
 	}
 	if !db.SupportsCore(outbounds[3].SupportedCores, db.CoreXray) || !db.SupportsCore(outbounds[3].SupportedCores, db.CoreSingbox) {
 		t.Fatalf("request supported_cores should not narrow protocol-derived response cores: %+v", outbounds[3].SupportedCores)
@@ -425,6 +428,193 @@ func TestUpdateOutboundAPIUpdatesFields(t *testing.T) {
 	}
 }
 
+func TestUpdateOutboundAPIProtectsSubscriptionNodeConnectionFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: true})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", SettingsJSON: `{"tls":true}`, Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	var target db.Outbound
+	for _, outbound := range mustListOutbounds(t, store) {
+		if outbound.SubscriptionID == sub.ID {
+			target = outbound
+		}
+	}
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"tag":"changed","remark":"可改备注","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret","enabled":false,"settings_json":"{\"security\":\"none\"}"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(target.ID, 10), bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"tag":"sub1-a"`, `"protocol":"trojan"`, `"address":"example.com"`, `"port":443`, `"enabled":false`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("subscription update response missing preserved field %q: %s", want, response.Body.String())
+		}
+	}
+	for _, outbound := range mustListOutbounds(t, store) {
+		if outbound.ID == target.ID {
+			if outbound.Tag != target.Tag || outbound.Protocol != target.Protocol || outbound.Address != target.Address || outbound.SettingsJSON != target.SettingsJSON {
+				t.Fatalf("subscription connection fields should be preserved, before=%+v after=%+v", target, outbound)
+			}
+			if outbound.Remark != "可改备注" || outbound.Enabled {
+				t.Fatalf("editable subscription fields not updated: %+v", outbound)
+			}
+		}
+	}
+}
+
+func TestCreateOutboundAPIDoesNotCreateSpoofedSubscriptionNode(t *testing.T) {
+	store := openWebTestStore(t)
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"tag":"spoofed-sub","protocol":"socks","address":"127.0.0.1","port":1080,"source":"subscription","subscription_id":42,"subscription_identity":"fake","raw_link":"trojan://fake"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/outbounds", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201 creating normal outbound, got %d: %s", response.Code, response.Body.String())
+	}
+	outbounds := mustListOutbounds(t, store)
+	for _, outbound := range outbounds {
+		if outbound.Tag == "spoofed-sub" {
+			if outbound.Source == db.OutboundSourceSubscription || outbound.SubscriptionID != 0 || outbound.SubscriptionIdentity != "" || outbound.RawLink != "" {
+				t.Fatalf("public create should not persist spoofed subscription metadata: %+v", outbound)
+			}
+			return
+		}
+	}
+	t.Fatalf("created outbound not found: %+v", outbounds)
+}
+
+func TestUpdateOutboundAPIRejectsEnablingDisabledSubscriptionNode(t *testing.T) {
+	store := openWebTestStore(t)
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: true})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	var target db.Outbound
+	for _, outbound := range mustListOutbounds(t, store) {
+		if outbound.SubscriptionID == sub.ID {
+			target = outbound
+		}
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: false}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"tag":"sub1-a","remark":"a","protocol":"trojan","address":"example.com","port":443,"password":"pw","enabled":true}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(target.ID, 10), bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "subscription_disabled") {
+		t.Fatalf("expected subscription_disabled response, got %s", response.Body.String())
+	}
+	for _, outbound := range mustListOutbounds(t, store) {
+		if outbound.ID == target.ID && outbound.Enabled {
+			t.Fatalf("disabled subscription node should remain disabled: %+v", outbound)
+		}
+	}
+}
+
+func TestUpdateOutboundAPIKeepsSettingsJSONWhenOmitted(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "proxy-vless", Protocol: "vless", Address: "example.com", Port: 443, Username: "11111111-1111-4111-8111-111111111111", SettingsJSON: `{"security":"reality","sni":"example.com"}`,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"tag":"proxy-vless-v2","remark":"VLESS代理v2","protocol":"vless","address":"example.org","port":443,"username":"11111111-1111-4111-8111-111111111111","password":"","enabled":true}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, o := range outbounds {
+		if o.ID == ob.ID {
+			if o.SettingsJSON != `{"security":"reality","sni":"example.com"}` {
+				t.Fatalf("expected settings_json to be preserved when omitted, got %+v", o)
+			}
+			return
+		}
+	}
+	t.Fatalf("updated outbound not found")
+}
+
+func TestUpdateOutboundAPIClearsSettingsJSONWhenExplicitEmpty(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ob, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "proxy-vless", Protocol: "vless", Address: "example.com", Port: 443, Username: "11111111-1111-4111-8111-111111111111", SettingsJSON: `{"security":"tls"}`,
+	})
+	if err != nil {
+		t.Fatalf("create outbound: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	payload := []byte(`{"tag":"proxy-vless-v2","remark":"VLESS代理v2","protocol":"vless","address":"example.org","port":443,"username":"11111111-1111-4111-8111-111111111111","password":"","enabled":true,"settings_json":""}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, o := range outbounds {
+		if o.ID == ob.ID {
+			if o.SettingsJSON != "" {
+				t.Fatalf("expected settings_json to be cleared when explicit empty, got %+v", o)
+			}
+			return
+		}
+	}
+	t.Fatalf("updated outbound not found")
+}
+
 func TestUpdateOutboundAPIRejectsUnknownID(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -442,6 +632,168 @@ func TestUpdateOutboundAPIRejectsUnknownID(t *testing.T) {
 	router.ServeHTTP(response, req)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestOutboundSubscriptionPreviewShowsSkippedLinks(t *testing.T) {
+	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
+	payload := strings.NewReader(`{"body":"trojan://secret@example.com:443#ok\nvmess://eyJhZGQiOiJleGFtcGxlLmNvbSJ9"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/preview", payload)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"count":1`, `"skipped_count":1`, `"protocol":"vmess"`, `"reason":"vmess links are not supported yet"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("preview response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestOutboundSubscriptionPreviewShowsSkippedWhenAllLinksUnsupported(t *testing.T) {
+	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
+	payload := strings.NewReader(`{"body":"vmess://eyJhZGQiOiJleGFtcGxlLmNvbSJ9"}`)
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/preview", payload)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200 for all-skipped preview, got %d: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{`"count":0`, `"skipped_count":1`, `"protocol":"vmess"`, `"reason":"vmess links are not supported yet"`} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("preview response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+func TestRefreshOutboundSubscriptionRejectsDisabledSubscription(t *testing.T) {
+	store := openWebTestStore(t)
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: false})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10)+"/refresh", nil))
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("expected disabled refresh to fail, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "disabled") {
+		t.Fatalf("expected disabled detail, got %s", response.Body.String())
+	}
+}
+
+func TestDisabledOutboundSubscriptionNodesAreOmittedFromBuiltConfig(t *testing.T) {
+	store := openWebTestStore(t)
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: true})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: false}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	config, err := xray.BuildConfigWithOutbounds(nil, mustListOutbounds(t, store), nil)
+	if err != nil {
+		t.Fatalf("build xray config: %v", err)
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal xray config: %v", err)
+	}
+	if strings.Contains(string(raw), "sub1-a") || strings.Contains(string(raw), "example.com") {
+		t.Fatalf("disabled subscription node should not be in built config: %s", raw)
+	}
+	singboxConfig, err := singbox.BuildConfigWithOutbounds(nil, mustListOutbounds(t, store), nil)
+	if err != nil {
+		t.Fatalf("build sing-box config: %v", err)
+	}
+	singboxRaw, err := json.Marshal(singboxConfig)
+	if err != nil {
+		t.Fatalf("marshal sing-box config: %v", err)
+	}
+	if strings.Contains(string(singboxRaw), "sub1-a") || strings.Contains(string(singboxRaw), "example.com") {
+		t.Fatalf("disabled subscription node should not be in sing-box config: %s", singboxRaw)
+	}
+}
+
+func TestReEnableOutboundSubscriptionReturnsNeedsRefreshAndKeepsNodesDisabled(t *testing.T) {
+	store := openWebTestStore(t)
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: true})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: false}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	router := web.NewRouter(web.WithStore(store))
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10), strings.NewReader(`{"remark":"sub","url":"https://example.com/sub","tag_prefix":"sub1-","update_interval_seconds":600,"enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"needs_refresh":true`) {
+		t.Fatalf("expected needs_refresh=true, got %s", response.Body.String())
+	}
+	for _, outbound := range mustListOutbounds(t, store) {
+		if outbound.SubscriptionID == sub.ID && outbound.Enabled {
+			t.Fatalf("re-enable should not revive old subscription node before refresh: %+v", outbound)
+		}
+	}
+}
+
+type failingSubscriptionFetcher struct{}
+
+func (failingSubscriptionFetcher) Fetch(context.Context, string, bool) ([]byte, error) {
+	return nil, errors.New("upstream failed")
+}
+
+func TestRefreshAfterReEnableFailureRecordsErrorWithoutReEnablingOldNodes(t *testing.T) {
+	store := openWebTestStore(t)
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: true})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: false}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: true}); err != nil {
+		t.Fatalf("re-enable subscription: %v", err)
+	}
+	_, _, _, err = web.RefreshOutboundSubscription(context.Background(), store, failingSubscriptionFetcher{}, sub.ID)
+	if err == nil {
+		t.Fatal("expected refresh failure")
+	}
+	loaded, ok, err := store.GetOutboundSubscription(context.Background(), sub.ID)
+	if err != nil || !ok {
+		t.Fatalf("get subscription: ok=%v err=%v", ok, err)
+	}
+	if loaded.LastAttemptAt == "" || loaded.LastError != "upstream failed" {
+		t.Fatalf("refresh failure should record attempt and error: %+v", loaded)
+	}
+	for _, outbound := range mustListOutbounds(t, store) {
+		if outbound.SubscriptionID == sub.ID && outbound.Enabled {
+			t.Fatalf("failed refresh should not re-enable old subscription node: %+v", outbound)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -113,6 +114,26 @@ func decodeJSONBody(r *http.Request, v interface{}) error {
 func DecodeJSONBody(r *http.Request, v interface{}) error {
 	r.Body = http.MaxBytesReader(nil, r.Body, 1<<19) // 512KB
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+func decodeJSONBodyRaw(r *http.Request, v interface{}) ([]byte, error) {
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<19))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func jsonObjectHasKey(body []byte, key string) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return false
+	}
+	_, ok := raw[key]
+	return ok
 }
 
 func defaultErrorMessage(code string) string {

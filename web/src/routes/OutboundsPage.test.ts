@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { Outbound } from '../api/types';
+import type { Outbound, OutboundSubscription } from '../api/types';
 import { outboundSupportedCores, outboundSupportLevel, outboundSupportLevelLabel } from '../lib/cores';
-import { customOutboundIds, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, outboundCredentialFields, outboundFormValues, outboundMetaParts, outboundPasswordLabel, outboundRemarkLabel, outboundUsernameLabel, sanitizeOutboundValues } from './OutboundsPage';
+import { customOutboundIds, emptySubscription, formatSubscriptionPreview, isFixedDefaultOutbound, isReorderableOutbound, movedCustomOutboundIds, movedSubscriptionIds, outboundCredentialFields, outboundEnableDisabledReason, outboundFormValues, outboundMetaParts, outboundPasswordLabel, outboundRemarkLabel, outboundToggleTitle, outboundUsernameLabel, sanitizeOutboundValues, subscriptionDisplayName, subscriptionFormValues, subscriptionMetaParts, subscriptionOutboundUpdatePayload, subscriptionSourceLabel } from './OutboundsPage';
 
 describe('outbound helpers', () => {
   const outbounds: Outbound[] = [
@@ -10,6 +10,7 @@ describe('outbound helpers', () => {
     { id: 9, tag: 'proxy-a', protocol: 'socks', address: '127.0.0.1', port: 1080, enabled: true },
     { id: 10, tag: 'proxy-b', protocol: 'http', address: '127.0.0.2', port: 8080, enabled: true },
     { id: 11, tag: 'custom-direct', protocol: 'freedom', enabled: true },
+    { id: 12, tag: 'sub-a', protocol: 'trojan', enabled: true, source: 'subscription', subscription_id: 7 },
   ];
 
   it('keeps non-reorderable protocols out of reorder payloads', () => {
@@ -25,6 +26,7 @@ describe('outbound helpers', () => {
     expect(isFixedDefaultOutbound({ id: 12, tag: 'direct', protocol: 'socks', enabled: true })).toBe(false);
     expect(isFixedDefaultOutbound({ id: 13, tag: 'blocked', protocol: 'http', enabled: true })).toBe(false);
     expect(isReorderableOutbound(outbounds[4])).toBe(false);
+    expect(isReorderableOutbound(outbounds[5])).toBe(false);
   });
 
   it('localizes built-in outbound remarks only', () => {
@@ -146,6 +148,99 @@ describe('outbound helpers', () => {
       port: 1080,
       username: 'sam',
       password: 'secret',
+    });
+  });
+
+  it('builds outbound subscription defaults and reorder payloads', () => {
+    const subs: OutboundSubscription[] = [
+      { id: 1, remark: 'A', url: 'https://a.example/sub', tag_prefix: 'sub1-', update_interval_seconds: 600, enabled: true, allow_private: false, prepend: false, priority: 0 },
+      { id: 2, remark: 'B', url: 'https://b.example/sub', tag_prefix: 'sub2-', update_interval_seconds: 600, enabled: true, allow_private: false, prepend: true, priority: 1 },
+    ];
+    expect(emptySubscription(subs)).toMatchObject({ tag_prefix: 'sub3-', update_interval_seconds: 600, enabled: true, allow_private: false, prepend: false });
+    expect(movedSubscriptionIds(subs, 1, -1)).toEqual([2, 1]);
+    expect(subscriptionFormValues(subs[1])).toMatchObject({ remark: 'B', url: 'https://b.example/sub', tag_prefix: 'sub2-', prepend: true });
+  });
+
+  it('formats subscription preview with skipped entries', () => {
+    const text = (value: string) => value;
+    expect(formatSubscriptionPreview({ count: 2, skipped_count: 0, skipped: [] }, text)).toBe('成功解析 2 个，跳过 0 个');
+    expect(formatSubscriptionPreview({
+      count: 1,
+      skipped_count: 1,
+      skipped: [{ raw: 'vmess://x', protocol: 'vmess', reason: 'vmess links are not supported yet' }],
+    }, text)).toContain('vmess：vmess links are not supported yet');
+  });
+
+  it('formats subscription status timestamps and errors', () => {
+    const text = (value: string) => value;
+    expect(subscriptionMetaParts({
+      tag_prefix: 'sub1-',
+      last_fetched_at: '2026-06-20T10:00:00Z',
+      last_attempt_at: '2026-06-20T11:00:00Z',
+      last_error: 'upstream failed',
+    }, text)).toEqual([
+      'sub1-',
+      expect.stringContaining('上次成功拉取：'),
+      expect.stringContaining('上次尝试：'),
+      '最近错误：upstream failed',
+    ]);
+  });
+
+  it('resolves subscription source labels and disabled toggle reasons', () => {
+    const text = (value: string) => value;
+    const subscription: OutboundSubscription = {
+      id: 7,
+      remark: '',
+      url: 'https://sub.example.com/path/token',
+      tag_prefix: 'sub1-',
+      update_interval_seconds: 600,
+      enabled: false,
+      allow_private: false,
+      prepend: false,
+      priority: 0,
+    };
+    const item: Outbound = { id: 12, tag: 'sub-a', protocol: 'trojan', enabled: false, source: 'subscription', subscription_id: 7 };
+
+    expect(subscriptionDisplayName(subscription)).toBe('sub.example.com');
+    expect(subscriptionSourceLabel(item, subscription, text)).toBe('订阅：sub.example.com');
+    expect(subscriptionSourceLabel({ ...item, subscription_id: 99 }, undefined, text)).toBe('订阅已删除/未知');
+    expect(outboundEnableDisabledReason(item, subscription, text)).toBe('所属订阅已停用');
+    expect(outboundEnableDisabledReason({ ...item, subscription_id: 99 }, undefined, text)).toBe('订阅已删除/未知');
+    expect(outboundToggleTitle(item, subscription, text)).toBe('所属订阅已停用');
+    expect(outboundEnableDisabledReason({ ...item, enabled: true }, subscription, text)).toBe('');
+  });
+
+  it('keeps subscription outbound connection fields out of edit payload changes', () => {
+    const outbound: Outbound = {
+      id: 12,
+      tag: 'sub-a',
+      remark: 'old',
+      protocol: 'trojan',
+      address: 'example.com',
+      port: 443,
+      password: 'pw',
+      enabled: true,
+      source: 'subscription',
+      settings_json: '{"tls":true}',
+    };
+    expect(subscriptionOutboundUpdatePayload(outbound, {
+      tag: 'changed',
+      remark: 'new',
+      protocol: 'socks',
+      address: '127.0.0.1',
+      port: 1080,
+      username: 'sam',
+      password: 'secret',
+      enabled: false,
+    })).toMatchObject({
+      tag: 'sub-a',
+      remark: 'new',
+      protocol: 'trojan',
+      address: 'example.com',
+      port: 443,
+      password: 'pw',
+      enabled: false,
+      settings_json: '{"tls":true}',
     });
   });
 });
