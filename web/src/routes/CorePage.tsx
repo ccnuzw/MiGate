@@ -419,7 +419,7 @@ function CoreConfigSync({ preview, loading, error, onRefresh, text }: { preview?
         </div>
         <StatusPill tone={state.ok === false ? 'warning' : state.ok ? 'ok' : 'neutral'} label={text(state.label)} />
       </div>
-      {state.detail ? <div className="mt-2 text-xs text-panel-muted">{state.detail}</div> : null}
+      {state.detail ? <div className="mt-2 text-xs text-panel-muted">{text(state.detail)}</div> : null}
       <details className="core-details">
         <summary><span>{text('查看配置对比')}</span><ChevronDown className="h-4 w-4" /></summary>
         <div className="core-details-body core-config-compare">

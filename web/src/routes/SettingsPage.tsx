@@ -940,7 +940,7 @@ function CertificateDetails({ certificate, operations, loading, text }: { certif
                 <span className={`rounded border px-2 py-0.5 ${certificateOperationTone(operation.status)}`}>{text(operation.status)}</span>
               </div>
               <div className="mt-1 text-panel-muted">{formatDateTime(operation.created_at)}</div>
-              {operation.message || operation.detail ? <div className="mt-1 break-all text-panel-muted">{operation.message || operation.detail}</div> : null}
+              {operation.message || operation.detail ? <div className="mt-1 break-all text-panel-muted" data-no-i18n>{certificateOperationMessageLabel(operation, text)}</div> : null}
               {operation.code ? <div className="mt-1 break-all text-panel-muted">{operation.code}</div> : null}
             </div>
           ))}
@@ -982,7 +982,7 @@ function PreflightResult({ preflight, text }: { preflight: CertificatePreflight;
             <span className={`rounded border px-2 py-0.5 ${certificateStatusTone(check.status === 'failed' ? 'failed' : check.status === 'warning' ? 'expiring_soon' : 'issued')}`}>{text(check.status)}</span>
             <span className="font-medium text-panel-text">{check.code}</span>
             {check.message ? <span className="text-panel-muted">{text(check.message)}</span> : null}
-            {check.detail ? <span className="break-all text-panel-muted">{check.detail}</span> : null}
+            {check.detail ? <span className="break-all text-panel-muted" data-no-i18n>{check.detail}</span> : null}
           </div>
         ))}
       </div>
@@ -1058,7 +1058,7 @@ function SystemUpdateConsole({
       {inProgress ? (
         <div className="rounded-md border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
           <div className="flex items-center gap-2 font-semibold"><Clock3 className="h-4 w-4" /> {text('更新进行中')}</div>
-          <div className="mt-1">{text(updateStatus?.message || '正在执行更新任务，请等待状态刷新。')}</div>
+          <div className="mt-1">{updateStatusMessageLabel(updateStatus?.message || '正在执行更新任务，请等待状态刷新。', text)}</div>
         </div>
       ) : null}
 
@@ -1067,17 +1067,17 @@ function SystemUpdateConsole({
           <div className="font-semibold">{text(failed ? '最近更新失败' : '最近更新结果')}</div>
           {updateSummary ? <div className="mt-1">{text(updateSummary)}</div> : null}
           {waitingForService ? <div className="mt-1">{text('正在等待服务恢复')}</div> : null}
-          {updateStatus?.message ? <div className="mt-1">{updateStatus.message}</div> : null}
+          {updateStatus?.message ? <div className="mt-1">{updateStatusMessageLabel(updateStatus.message, text)}</div> : null}
           <div className="mt-2 grid gap-1 text-xs">
             <div>{text('回滚')}：{rollbackSummary(updateStatus, text)}</div>
-            <div>{text('健康检查')}：{updateStatus?.health_check || '-'}</div>
+            <div>{text('健康检查')}：<span data-no-i18n>{updateStatus?.health_check || '-'}</span></div>
           </div>
         </div>
       ) : null}
 
       <div className="grid gap-2 rounded-md border border-panel-line bg-panel-soft p-4 text-sm text-panel-muted md:grid-cols-2">
-        <div>{text('服务详情')}：{service?.detail || '-'}</div>
-        <div>{text('日志路径')}：{logs?.path || '/var/log/migate-update.log'}</div>
+        <div>{text('服务详情')}：<span data-no-i18n>{service?.detail ? serviceDetailLabel(service.detail, text) : '-'}</span></div>
+        <div>{text('日志路径')}：<span data-no-i18n>{logs?.path || '/var/log/migate-update.log'}</span></div>
         {updateCheck?.release_url ? <a className="inline-flex w-fit items-center gap-1 text-teal-700" href={updateCheck.release_url} target="_blank" rel="noreferrer">{text('发布说明')} <ExternalLink className="h-3 w-3" /></a> : null}
       </div>
 
@@ -1085,7 +1085,7 @@ function SystemUpdateConsole({
         <details className="core-details rounded-md border border-panel-line bg-panel-soft p-3" open>
           <summary><span>{text('更新日志')}</span><ChevronDown className="h-4 w-4" /></summary>
           <div className="core-details-body">
-            <pre className="code-block core-code-block">{formatUpdateLogs(logs, text('点击“加载日志”查看最近更新日志。'))}</pre>
+            <pre className="code-block core-code-block" data-no-i18n>{formatUpdateLogs(logs, text('点击“加载日志”查看最近更新日志。'))}</pre>
           </div>
         </details>
       ) : null}
@@ -1133,6 +1133,59 @@ function rollbackSummary(status: UpdateStatus | undefined, text: (value: string)
   }
   if (String(status.status || '').toLowerCase() === 'failed') return text('未确认回滚');
   return text('无回滚');
+}
+
+const translatableUpdateMessages = new Set([
+  'idle',
+  'update command accepted',
+  'update command accepted in test mode',
+  'update command completed; MiGate may restart if a new version was installed',
+  'dev builds cannot be checked against releases',
+  '正在执行更新任务，请等待状态刷新。',
+  '上次更新状态长时间未完成，已标记为失败；可重新发起更新',
+  '正在下载并校验升级包',
+  '升级包校验完成，正在替换二进制和服务文件',
+  '正在重启 MiGate 并执行健康检查',
+  '升级成功，服务已恢复可用',
+  '升级失败，已回滚，服务已恢复',
+  '回滚失败，需要人工处理',
+]);
+
+const translatableCertificateOperationMessages = new Set([
+  'preflight failed',
+  'certificate issue started',
+  'ACME issue failed',
+  'issued certificate validation failed',
+  'certificate issued',
+  'certificate import failed',
+  'write imported certificate failed',
+  'certificate imported',
+  'certificate apply failed',
+  'certificate applied',
+  'certificate deleted',
+  'renew skipped',
+  'renew failed',
+  'certificate renewed',
+]);
+
+function certificateOperationMessageLabel(operation: Pick<CertificateOperation, 'message' | 'detail'>, text: (value: string) => string) {
+  const message = String(operation.message || '').trim();
+  if (message) return translatableCertificateOperationMessages.has(message) ? text(message) : message;
+  return String(operation.detail || '').trim();
+}
+
+function updateStatusMessageLabel(message: string | undefined, text: (value: string) => string) {
+  const value = String(message || '').trim();
+  if (!value) return '';
+  return translatableUpdateMessages.has(value) ? text(value) : value;
+}
+
+function serviceDetailLabel(detail: string | undefined, text: (value: string) => string) {
+  const value = String(detail || '').trim();
+  if (!value) return '';
+  const match = value.match(/^启动于\s+(.+)$/);
+  if (match) return `${text('启动于')} ${match[1]}`;
+  return value;
 }
 
 export function updateStatusRefetchInterval(status?: string, watching = false) {
