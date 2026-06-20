@@ -232,8 +232,8 @@ describe('inbound payload helpers', () => {
   it('keeps socks/http as local proxy inbounds and drops unsupported transports', () => {
     const socks = sanitizeInboundFormValues(inboundFormValues(createDefaultInbound()), { protocol: 'socks' });
     expect(socks).toMatchObject({ protocol: 'socks', network: 'tcp', security: 'none' });
-    expect(supportsInboundShareLink('socks')).toBe(false);
-    expect(supportsInboundShareLink('http')).toBe(false);
+    expect(supportsInboundShareLink('socks')).toBe(true);
+    expect(supportsInboundShareLink('http')).toBe(true);
     expect(supportsInboundShareLink('vless')).toBe(true);
 
     const invalid = sanitizeInboundFormValues(inboundFormValues(createDefaultInbound()), { network: 'quic' });
@@ -420,13 +420,13 @@ describe('inbound payload helpers', () => {
     });
   });
 
-  it('hides saved-client link actions for none-capability protocols', () => {
-    expect(supportsInboundShareLink('socks')).toBe(false);
-    expect(supportsInboundShareLink('http')).toBe(false);
+  it('shows saved-client link actions for user-password proxy protocols', () => {
+    expect(supportsInboundShareLink('socks')).toBe(true);
+    expect(supportsInboundShareLink('http')).toBe(true);
     expect(supportsInboundShareLink('shadowtls')).toBe(false);
     expect(supportsInboundShareLink('vless')).toBe(true);
-    expect(savedClientLinkActions('socks')).toEqual([]);
-    expect(savedClientLinkActions('http')).toEqual([]);
+    expect(savedClientLinkActions('socks')).toEqual(['share']);
+    expect(savedClientLinkActions('http')).toEqual(['share']);
     expect(savedClientLinkActions('shadowtls')).toEqual([]);
     expect(savedClientLinkActions('vless')).toEqual(['share']);
   });

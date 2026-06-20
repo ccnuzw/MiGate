@@ -29,7 +29,7 @@ describe('topology layout strategy', () => {
     ]);
   });
 
-  it('keeps large graphs on the ELK worker path', () => {
+  it('marks large graphs as above the lightweight threshold', () => {
     const nodes = Array.from({ length: 29 }, (_, index) => node(`inbound:${index}`, 'inbound'));
     expect(shouldUseLightweightLayout(nodes, [])).toBe(false);
   });

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState } from 'react';
+import { Children, createContext, isValidElement, useCallback, useContext, useState } from 'react';
 import { CheckCircle2, Info, Loader2, X, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useI18n } from '../lib/i18n';
@@ -180,8 +180,25 @@ export function SpinnerButton({
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }) {
   return (
     <button className={className} disabled={disabled || loading} {...props}>
-      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-      {children}
+      {loading ? spinnerButtonLoadingContent(children) : children}
     </button>
   );
+}
+
+function spinnerButtonLoadingContent(children: React.ReactNode) {
+  const spinner = <Loader2 key="spinner" className="h-4 w-4 animate-spin" aria-hidden="true" />;
+  const items = Children.toArray(children);
+  const iconIndex = items.findIndex(isReplaceableButtonIcon);
+
+  if (iconIndex === -1) {
+    return [spinner, ...items];
+  }
+
+  return items.map((item, index) => (index === iconIndex ? spinner : item));
+}
+
+function isReplaceableButtonIcon(child: React.ReactNode) {
+  if (!isValidElement<{ className?: unknown }>(child) || typeof child.type === 'string') return false;
+  const className = child.props.className;
+  return typeof className === 'string' && /\bh-4\b/.test(className) && /\bw-4\b/.test(className);
 }

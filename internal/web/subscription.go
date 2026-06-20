@@ -101,6 +101,8 @@ var shareLinkGenerators = map[string]shareLinkGenerator{
 	"vmess":       vmessShareLink,
 	"trojan":      universalShareLink,
 	"shadowsocks": ssShareLink,
+	"socks":       userPasswordShareLink,
+	"http":        userPasswordShareLink,
 	"hysteria2":   hysteria2ShareLink,
 	"tuic":        tuicShareLink,
 }
@@ -279,6 +281,11 @@ func ssShareLink(host string, inbound db.Inbound, client db.Client) string {
 	userPass := method + ":" + xray.SSInboundPassword(method, inbound.UUID)
 	encoded := base64.StdEncoding.EncodeToString([]byte(userPass))
 	return "ss://" + encoded + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + url.QueryEscape(client.Email)
+}
+
+func userPasswordShareLink(host string, inbound db.Inbound, client db.Client) string {
+	credential := url.UserPassword(client.CredentialIDValue(), client.PasswordValue()).String()
+	return inbound.Protocol + "://" + credential + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + url.QueryEscape(client.Email)
 }
 
 func firstCSV(value string) string {

@@ -30,6 +30,31 @@ func TestShareLinkRejectsUnsupportedCapabilityProtocols(t *testing.T) {
 	}
 }
 
+func TestUserPasswordInboundShareLinks(t *testing.T) {
+	for _, tc := range []struct {
+		protocol string
+		want     string
+	}{
+		{protocol: "socks", want: "socks://user-1:p%40ss%3Aword@proxy.example.com:20001#phone+1"},
+		{protocol: "http", want: "http://user-1:p%40ss%3Aword@proxy.example.com:20001#phone+1"},
+	} {
+		t.Run(tc.protocol, func(t *testing.T) {
+			link, err := shareLink("proxy.example.com", db.Inbound{
+				Protocol: tc.protocol,
+				Port:     20001,
+				Network:  "tcp",
+				Security: "none",
+			}, db.Client{Email: "phone 1", CredentialID: "user-1", Password: "p@ss:word"})
+			if err != nil {
+				t.Fatalf("share link: %v", err)
+			}
+			if link != tc.want {
+				t.Fatalf("link = %q, want %q", link, tc.want)
+			}
+		})
+	}
+}
+
 func TestVMessTLSShareLinkUsesTLSSNIAsEndpointWhenCertificateAttached(t *testing.T) {
 	link, err := shareLink("103.193.149.217", db.Inbound{
 		Protocol:    "vmess",

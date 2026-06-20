@@ -29,8 +29,8 @@ func TestInboundCapabilitiesCoverSupportedProtocols(t *testing.T) {
 	if seen["hysteria2"].Core != db.CoreSingbox || seen["tuic"].Core != db.CoreSingbox || seen["shadowtls"].Core != db.CoreSingbox {
 		t.Fatalf("sing-box protocol ownership mismatch: %+v", seen)
 	}
-	if seen["socks"].Subscription != db.SubscriptionNone || seen["http"].Subscription != db.SubscriptionNone {
-		t.Fatalf("socks/http should not expose share links: %+v %+v", seen["socks"], seen["http"])
+	if seen["socks"].Subscription != db.SubscriptionFull || seen["http"].Subscription != db.SubscriptionFull {
+		t.Fatalf("socks/http should expose share links: %+v %+v", seen["socks"], seen["http"])
 	}
 }
 
@@ -40,6 +40,8 @@ func TestInboundShareLinkCapabilityMatchesExpectedProtocols(t *testing.T) {
 		"vmess":       true,
 		"trojan":      true,
 		"shadowsocks": true,
+		"socks":       true,
+		"http":        true,
 		"hysteria2":   true,
 		"tuic":        true,
 	}

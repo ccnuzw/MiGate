@@ -197,8 +197,8 @@ export const inboundCapabilities: Record<InboundProtocol, InboundCapability> = {
     autoGenerateFields: ['uuid', 'username', 'password'],
     expertFields: ['uuid'],
     credentialType: 'username_password',
-    subscription: 'none',
-    shareLink: false,
+    subscription: 'full',
+    shareLink: true,
     localProxyInbound: true,
   },
   http: {
@@ -216,8 +216,8 @@ export const inboundCapabilities: Record<InboundProtocol, InboundCapability> = {
     autoGenerateFields: ['uuid', 'username', 'password'],
     expertFields: ['uuid'],
     credentialType: 'username_password',
-    subscription: 'none',
-    shareLink: false,
+    subscription: 'full',
+    shareLink: true,
     localProxyInbound: true,
   },
   hysteria2: {

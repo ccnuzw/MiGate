@@ -10,6 +10,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  type ReactFlowInstance,
   type Edge,
   type Node,
   type NodeProps,
@@ -17,7 +18,7 @@ import {
   useNodesState,
 } from '@xyflow/react';
 import { AlertTriangle, Boxes, Network, Route, Shield, Users } from 'lucide-react';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { api } from '../api/endpoints';
 import { Card, EmptyState, LoadingBlock, StatusBadge } from '../components/ui';
@@ -32,8 +33,6 @@ const clientNodeHeight = 116;
 const lightweightLayoutNodeLimit = 28;
 const lightweightLayoutEdgeLimit = 42;
 const nodeTypes = { topologyNode: TopologyNode };
-let layoutRequestId = 0;
-let layoutWorker: Worker | undefined;
 
 export default function TopologyPage() {
   const { text } = useI18n();
@@ -45,6 +44,7 @@ export default function TopologyPage() {
     () => buildTopologyGraph(inbounds.data || [], outbounds.data || [], routingRules.data || []),
     [inbounds.data, outbounds.data, routingRules.data],
   );
+  const [reactFlow, setReactFlow] = useState<ReactFlowInstance<Node<TopologyNodeData>, Edge<TopologyEdgeData>> | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<TopologyNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge<TopologyEdgeData>>([]);
   const loading = inbounds.isLoading || outbounds.isLoading || routingRules.isLoading;
@@ -67,6 +67,14 @@ export default function TopologyPage() {
       cancelled = true;
     };
   }, [graph, setEdges, setNodes]);
+
+  useEffect(() => {
+    if (!reactFlow || nodes.length === 0) return;
+    const frame = requestAnimationFrame(() => {
+      void reactFlow.fitView({ padding: 0.2, duration: 0 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [reactFlow, nodes.length]);
 
   if (loading) return <LoadingBlock />;
 
@@ -93,6 +101,7 @@ export default function TopologyPage() {
             nodes={nodes}
             edges={styledEdges}
             nodeTypes={nodeTypes}
+            onInit={setReactFlow}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             nodesDraggable
@@ -155,27 +164,7 @@ function TopologyMetric({ icon: Icon, tone, label, value, sub }: { icon: typeof 
 
 async function layoutGraph(nodes: Array<Node<TopologyNodeData>>, edges: Array<Edge<TopologyEdgeData>>) {
   if (nodes.length === 0) return { nodes, edges };
-  if (shouldUseLightweightLayout(nodes, edges)) {
-    return { nodes: applyLightweightLayout(nodes, edges), edges };
-  }
-  const layoutNodes = nodes.map((node) => ({
-    id: node.id,
-    width: nodeWidth,
-    height: node.data.kind === 'client' ? clientNodeHeight : nodeHeight,
-  }));
-  const layoutEdges = edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-  }));
-  const positions = await layoutInWorker(layoutNodes, layoutEdges).catch((error) => {
-    console.warn('Topology layout worker failed; using initial graph positions.', error);
-    return new Map<string, { x: number; y: number }>();
-  });
-  return {
-    nodes: nodes.map((node) => ({ ...node, position: positions.get(node.id) || node.position })),
-    edges,
-  };
+  return { nodes: applyLightweightLayout(nodes, edges), edges };
 }
 
 export function shouldUseLightweightLayout(nodes: Array<Node<TopologyNodeData>>, edges: Array<Edge<TopologyEdgeData>>) {
@@ -218,41 +207,6 @@ function placeColumn(ids: string[], x: number, positioned: Map<string, { x: numb
     positioned.set(id, { x, y });
     y += (node.data.kind === 'client' ? clientNodeHeight : nodeHeight) + gap;
   }
-}
-
-type LayoutNode = { id: string; width: number; height: number };
-type LayoutEdge = { id: string; source: string; target: string };
-
-function layoutInWorker(nodes: LayoutNode[], edges: LayoutEdge[]) {
-  if (typeof Worker === 'undefined') return Promise.reject(new Error('worker_unavailable'));
-  if (!layoutWorker) {
-    layoutWorker = new Worker(new URL('./topologyLayout.worker.ts', import.meta.url), { type: 'module' });
-  }
-  const requestId = ++layoutRequestId;
-  return new Promise<Map<string, { x: number; y: number }>>((resolve, reject) => {
-    const cleanup = () => {
-      layoutWorker?.removeEventListener('message', onMessage);
-      layoutWorker?.removeEventListener('error', onError);
-    };
-    const onMessage = (event: MessageEvent<{ id: number; positions?: Record<string, { x: number; y: number }>; error?: string }>) => {
-      if (event.data.id !== requestId) return;
-      cleanup();
-      if (event.data.error) {
-        reject(new Error(event.data.error));
-        return;
-      }
-      resolve(new Map(Object.entries(event.data.positions || {})));
-    };
-    const onError = (event: ErrorEvent) => {
-      cleanup();
-      layoutWorker?.terminate();
-      layoutWorker = undefined;
-      reject(event.error || new Error(event.message));
-    };
-    layoutWorker?.addEventListener('message', onMessage);
-    layoutWorker?.addEventListener('error', onError);
-    layoutWorker?.postMessage({ id: requestId, nodes, edges });
-  });
 }
 
 function withEdgeDefaults(edge: Edge<TopologyEdgeData>): Edge<TopologyEdgeData> {
