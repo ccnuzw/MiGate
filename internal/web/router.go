@@ -25,6 +25,8 @@ func NewRouter(options ...Option) http.Handler {
 	trafficCache := newTrafficViewCache(2 * time.Second)
 	coreCache := newCoreStatusCache(3 * time.Second)
 	mux.Handle("/assets/", staticAssetsHandler())
+	mux.Handle("/favicon.svg", staticRootAssetHandler("/favicon.svg"))
+	mux.Handle("/favicon.ico", staticRootAssetHandler("/favicon.ico"))
 	mux.HandleFunc("/login", loginPageHandler(&cfg))
 	registerAPIRoutes(mux, &cfg, trafficCache, coreCache)
 	mux.HandleFunc("/sub/", subscriptionHandler(&cfg))

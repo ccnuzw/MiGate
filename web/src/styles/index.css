@@ -1278,6 +1278,89 @@ textarea:focus {
   gap: 14px;
 }
 
+.panel-config {
+  display: grid;
+  gap: 16px;
+}
+
+.panel-config-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-config-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.panel-config-summary > * {
+  min-width: 0;
+}
+
+.panel-config-summary .summary-tile-value {
+  overflow: hidden;
+  font-size: 20px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-config-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.panel-config-section {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+  background: rgb(var(--soft));
+  padding: 14px;
+}
+
+.panel-config-section-title {
+  color: rgb(var(--text));
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px 14px;
+}
+
+.settings-field-grid > label {
+  min-width: 0;
+  align-content: start;
+}
+
+.settings-field-grid > label > span:first-child {
+  min-height: 20px;
+}
+
+.settings-field-grid > label > span:last-child:not(:first-child) {
+  min-height: 20px;
+}
+
+.panel-config-storage-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.panel-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid rgb(var(--line));
+  padding-top: 14px;
+}
+
 .routing-modal-panel {
   /* Width is applied after the base modal rule via .modal-panel.routing-modal-panel. */
 }
@@ -2430,8 +2513,23 @@ textarea:focus {
   }
 
   .form-grid,
+  .panel-config-summary,
+  .settings-field-grid,
   .metric-grid {
     grid-template-columns: 1fr;
+  }
+
+  .panel-config-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .panel-config-section {
+    padding: 12px;
+  }
+
+  .panel-config-actions {
+    justify-content: flex-start;
   }
 
   .routing-modal-panel {

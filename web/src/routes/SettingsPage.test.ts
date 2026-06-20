@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/client';
-import { certificateStatusLabel, certIssuePayload, certSettingsPayload, formatUpdateLogs, isUpdateInProgress, isUpdateTerminal, parseDomains, preflightFromAPIError, settingsPayload, toggleID, updateDependencyRefetchInterval, updateStatusRefetchInterval, updateStatusSummaryKey } from './SettingsPage';
+import { certificateInventorySummary, certificateStatusLabel, certIssuePayload, certSettingsPayload, formatUpdateLogs, hasTLSCertificateBinding, inboundCertificateBindingStatus, isUpdateInProgress, isUpdateTerminal, parseDomains, preflightFromAPIError, settingsPayload, shouldClearInboundSelectionForActualCertificate, shouldClearInboundSelectionOnCertificateSelect, toggleID, updateDependencyRefetchInterval, updatePrimaryAction, updateStatusRefetchInterval, updateStatusSummaryKey } from './SettingsPage';
 
 describe('settings helpers', () => {
   it('sends an empty password to preserve the existing backend password', () => {
@@ -51,6 +51,9 @@ describe('settings helpers', () => {
     expect(updateStatusSummaryKey({ status: 'completed' })).toBe('升级成功，服务已可用');
     expect(updateStatusSummaryKey({ status: 'failed', rolled_back: true, rollback_status: 'restored' })).toBe('升级失败，已回滚，服务已恢复');
     expect(updateStatusSummaryKey({ status: 'failed', rolled_back: true, rollback_status: 'failed' })).toBe('');
+    expect(updatePrimaryAction({ update_available: false }, { status: 'idle' })).toBe('check');
+    expect(updatePrimaryAction({ update_available: true }, { status: 'idle' })).toBe('update');
+    expect(updatePrimaryAction({ update_available: false }, { status: 'installing' })).toBe('update');
   });
 
   it('formats update logs from API responses', () => {
@@ -64,6 +67,44 @@ describe('settings helpers', () => {
     expect(certificateStatusLabel('expiring_soon')).toBe('即将到期');
     expect(toggleID([1, 2], 2)).toEqual([1]);
     expect(toggleID([1], 2)).toEqual([1, 2]);
+  });
+
+  it('summarizes certificate inventory and recommended actions', () => {
+    expect(certificateInventorySummary([], []).recommendedAction).toBe('暂无证书，建议先申请 ACME 证书。');
+    expect(certificateInventorySummary([
+      { id: 1, name: 'a', source: 'acme', status: 'issued', domains: ['a.test'], cert_path: '/cert', key_path: '/key', usage_count: 2 },
+      { id: 2, name: 'b', source: 'acme', status: 'expiring_soon', domains: ['b.test'], cert_path: '/cert', key_path: '/key', usage_count: 0 },
+    ], [{ id: 9, remark: 'tls', protocol: 'vless', port: 443, network: 'tcp', security: 'tls', enabled: true, tls_cert_file: '/cert', tls_key_file: '/key' }])).toMatchObject({
+      total: 2,
+      valid: 1,
+      expiring: 1,
+      boundInbounds: 1,
+      usageCount: 2,
+      recommendedAction: '存在即将到期证书，建议运行续期检查。',
+    });
+  });
+
+  it('counts inbound TLS bindings only from tls_cert_file and tls_key_file', () => {
+    expect(hasTLSCertificateBinding({ id: 1, remark: 'old', protocol: 'vless', port: 443, network: 'tcp', security: 'tls', enabled: true, cert_path: '/legacy' })).toBe(false);
+    expect(hasTLSCertificateBinding({ id: 2, remark: 'empty', protocol: 'vless', port: 443, network: 'tcp', security: 'tls', enabled: true, tls_cert_file: '', tls_key_file: '' })).toBe(false);
+    expect(hasTLSCertificateBinding({ id: 3, remark: 'bound', protocol: 'vless', port: 443, network: 'tcp', security: 'tls', enabled: true, tls_cert_file: '/cert', tls_key_file: '/key' })).toBe(true);
+  });
+
+  it('describes inbound certificate binding state against the selected certificate', () => {
+    const certificate = { id: 1, name: 'a', source: 'acme', status: 'issued', domains: ['a.test'], cert_path: '/cert', key_path: '/key', usage_count: 1 };
+    expect(inboundCertificateBindingStatus({ id: 1, remark: 'current', protocol: 'vless', port: 443, network: 'tcp', security: 'tls', enabled: true, tls_cert_file: '/cert', tls_key_file: '/key' }, certificate)).toBe('current');
+    expect(inboundCertificateBindingStatus({ id: 2, remark: 'other', protocol: 'vless', port: 443, network: 'tcp', security: 'tls', enabled: true, tls_cert_file: '/other-cert', tls_key_file: '/other-key' }, certificate)).toBe('other');
+    expect(inboundCertificateBindingStatus({ id: 3, remark: 'none', protocol: 'vless', port: 443, network: 'tcp', security: 'tls', enabled: true, tls_cert_file: '', tls_key_file: '' }, certificate)).toBe('none');
+  });
+
+  it('clears inbound selection when switching to another certificate', () => {
+    expect(shouldClearInboundSelectionOnCertificateSelect(1, 2)).toBe(true);
+    expect(shouldClearInboundSelectionOnCertificateSelect(1, 1)).toBe(false);
+    expect(shouldClearInboundSelectionForActualCertificate(1, 2, 3)).toBe(true);
+    expect(shouldClearInboundSelectionForActualCertificate(1, 1, 3)).toBe(false);
+    expect(shouldClearInboundSelectionForActualCertificate(1, null, 3)).toBe(true);
+    expect(shouldClearInboundSelectionForActualCertificate(null, 1, 3)).toBe(true);
+    expect(shouldClearInboundSelectionForActualCertificate(1, 2, 0)).toBe(false);
   });
 
   it('extracts preflight checks from standard API error fields', () => {

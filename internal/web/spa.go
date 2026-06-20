@@ -17,6 +17,17 @@ func staticAssetsHandler() http.Handler {
 	return precompressedStaticHandler("/assets/", static.Assets())
 }
 
+func staticRootAssetHandler(assetPath string) http.Handler {
+	handler := precompressedStaticHandler("/", static.Dist())
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != assetPath {
+			http.NotFound(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
 func loginPageHandler(cfg *routerConfig) http.HandlerFunc {
 	spa := spaHandler(cfg.basePath)
 	login := loginHandler(cfg)
@@ -110,7 +121,7 @@ func precompressedStaticHandler(prefix string, filesystem fs.FS) http.Handler {
 		}
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		w.Header().Set("Vary", "Accept-Encoding")
-		if contentType := mime.TypeByExtension(path.Ext(name)); contentType != "" {
+		if contentType := staticContentType(name); contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}
 		if encoding != "" {
@@ -118,6 +129,17 @@ func precompressedStaticHandler(prefix string, filesystem fs.FS) http.Handler {
 		}
 		http.ServeContent(w, r, name, stat.ModTime(), content)
 	})
+}
+
+func staticContentType(name string) string {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".svg":
+		return "image/svg+xml"
+	case ".ico":
+		return "image/x-icon"
+	default:
+		return mime.TypeByExtension(path.Ext(name))
+	}
 }
 
 type encodingCandidate struct {
