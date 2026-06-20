@@ -84,10 +84,25 @@ type ObfsConfig struct {
 
 // TLSConfig holds TLS settings for the inbound.
 type TLSConfig struct {
-	Enabled         bool   `json:"enabled"`
-	CertificatePath string `json:"certificate_path,omitempty"`
-	KeyPath         string `json:"key_path,omitempty"`
-	ServerName      string `json:"server_name,omitempty"`
+	Enabled         bool           `json:"enabled"`
+	CertificatePath string         `json:"certificate_path,omitempty"`
+	KeyPath         string         `json:"key_path,omitempty"`
+	ServerName      string         `json:"server_name,omitempty"`
+	ALPN            []string       `json:"alpn,omitempty"`
+	UTLS            *UTLSConfig    `json:"utls,omitempty"`
+	Reality         *RealityConfig `json:"reality,omitempty"`
+	Insecure        bool           `json:"insecure,omitempty"`
+}
+
+type UTLSConfig struct {
+	Enabled     bool   `json:"enabled"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+type RealityConfig struct {
+	Enabled   bool   `json:"enabled"`
+	PublicKey string `json:"public_key,omitempty"`
+	ShortID   string `json:"short_id,omitempty"`
 }
 
 // OutboundConfig is a sing-box outbound configuration.
@@ -100,14 +115,16 @@ type OutboundConfig struct {
 	Password   string           `json:"password,omitempty"`
 	Method     string           `json:"method,omitempty"`
 	UUID       string           `json:"uuid,omitempty"`
+	Flow       string           `json:"flow,omitempty"`
 	TLS        *TLSConfig       `json:"tls,omitempty"`
 	Transport  *TransportConfig `json:"transport,omitempty"`
 }
 
 type TransportConfig struct {
-	Type string `json:"type,omitempty"`
-	Path string `json:"path,omitempty"`
-	Host string `json:"host,omitempty"`
+	Type        string            `json:"type,omitempty"`
+	Path        string            `json:"path,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	ServiceName string            `json:"service_name,omitempty"`
 }
 
 type RouteConfig struct {
@@ -554,11 +571,19 @@ func buildOutbound(outbound db.Outbound) (OutboundConfig, error) {
 	case "http", "https":
 		return OutboundConfig{Type: "http", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Username: strings.TrimSpace(outbound.Username), Password: outbound.Password}, nil
 	case "vless":
-		return OutboundConfig{Type: "vless", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, UUID: strings.TrimSpace(outbound.Username)}, nil
+		settings := db.ParseOutboundSettings(outbound.SettingsJSON)
+		cfg := OutboundConfig{Type: "vless", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, UUID: strings.TrimSpace(outbound.Username), Flow: strings.TrimSpace(settings.Flow)}
+		applyOutboundSettings(&cfg, settings)
+		return cfg, nil
 	case "trojan":
-		return OutboundConfig{Type: "trojan", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Password: firstNonEmpty(outbound.Password, outbound.Username)}, nil
+		cfg := OutboundConfig{Type: "trojan", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Password: firstNonEmpty(outbound.Password, outbound.Username)}
+		applyOutboundSettings(&cfg, db.ParseOutboundSettings(outbound.SettingsJSON))
+		return cfg, nil
 	case "shadowsocks":
-		return OutboundConfig{Type: "shadowsocks", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Method: firstNonEmpty(outbound.Username, "aes-128-gcm"), Password: outbound.Password}, nil
+		settings := db.ParseOutboundSettings(outbound.SettingsJSON)
+		cfg := OutboundConfig{Type: "shadowsocks", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Method: firstNonEmpty(outbound.Username, settings.Method, "aes-128-gcm"), Password: outbound.Password}
+		applyOutboundSettings(&cfg, settings)
+		return cfg, nil
 	case "hysteria2":
 		return OutboundConfig{Type: "hysteria2", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Password: firstNonEmpty(outbound.Password, outbound.Username)}, nil
 	case "tuic":
@@ -567,6 +592,53 @@ func buildOutbound(outbound db.Outbound) (OutboundConfig, error) {
 		return OutboundConfig{Type: "shadowtls", Tag: tag, Server: outbound.Address, ServerPort: outbound.Port, Password: firstNonEmpty(outbound.Password, outbound.Username)}, nil
 	default:
 		return OutboundConfig{}, fmt.Errorf("unsupported outbound protocol: %s", outbound.Protocol)
+	}
+}
+
+func applyOutboundSettings(cfg *OutboundConfig, settings db.OutboundSettings) {
+	security := strings.ToLower(strings.TrimSpace(settings.Security))
+	if security == "" {
+		if settings.Reality {
+			security = "reality"
+		} else if settings.TLS {
+			security = "tls"
+		}
+	}
+	if security == "tls" || security == "reality" {
+		tls := &TLSConfig{Enabled: true}
+		if settings.SNI != "" {
+			tls.ServerName = settings.SNI
+		}
+		if len(settings.ALPN) > 0 {
+			tls.ALPN = settings.ALPN
+		}
+		if settings.AllowInsecure {
+			tls.Insecure = true
+		}
+		if settings.Fingerprint != "" {
+			tls.UTLS = &UTLSConfig{Enabled: true, Fingerprint: settings.Fingerprint}
+		}
+		if security == "reality" {
+			tls.Reality = &RealityConfig{Enabled: true, PublicKey: settings.PublicKey, ShortID: settings.ShortID}
+		}
+		cfg.TLS = tls
+	}
+	switch strings.ToLower(strings.TrimSpace(settings.Network)) {
+	case "ws", "websocket":
+		transport := &TransportConfig{Type: "ws"}
+		if settings.Path != "" {
+			transport.Path = settings.Path
+		}
+		if settings.Host != "" {
+			transport.Headers = map[string]string{"Host": settings.Host}
+		}
+		cfg.Transport = transport
+	case "grpc":
+		transport := &TransportConfig{Type: "grpc"}
+		if settings.ServiceName != "" {
+			transport.ServiceName = settings.ServiceName
+		}
+		cfg.Transport = transport
 	}
 }
 

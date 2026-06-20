@@ -103,6 +103,14 @@ type Store interface {
 	UpdateOutbound(ctx context.Context, id int64, params db.UpdateOutboundParams) (db.Outbound, error)
 	DeleteOutbound(ctx context.Context, id int64) error
 	ReorderOutbounds(ctx context.Context, ids []int64) error
+	ListOutboundSubscriptions(ctx context.Context) ([]db.OutboundSubscription, error)
+	GetOutboundSubscription(ctx context.Context, id int64) (db.OutboundSubscription, bool, error)
+	CreateOutboundSubscription(ctx context.Context, params db.CreateOutboundSubscriptionParams) (db.OutboundSubscription, error)
+	UpdateOutboundSubscription(ctx context.Context, id int64, params db.UpdateOutboundSubscriptionParams) (db.OutboundSubscription, error)
+	DeleteOutboundSubscription(ctx context.Context, id int64) error
+	ReorderOutboundSubscriptions(ctx context.Context, ids []int64) error
+	MarkOutboundSubscriptionFetch(ctx context.Context, id int64, fetchedAt time.Time, lastErr string, identities []string) error
+	MaterializeSubscriptionOutbounds(ctx context.Context, subscriptionID int64, nodes []db.MaterializedSubscriptionOutbound, identities []string) ([]db.Outbound, error)
 	ListRoutingRules(ctx context.Context) ([]db.RoutingRule, error)
 	CreateRoutingRule(ctx context.Context, params db.CreateRoutingRuleParams) (db.RoutingRule, error)
 	UpdateRoutingRule(ctx context.Context, id int64, params db.UpdateRoutingRuleParams) (db.RoutingRule, error)
@@ -269,6 +277,7 @@ type routerConfig struct {
 	singboxListeners   func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
 	xrayProbe          XrayProbe
 	xrayListeners      func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
+	outboundFetcher    SubscriptionFetcher
 	sessionTouches     map[string]time.Time
 	sessionTouchGC     time.Time
 	sessionTouchMu     sync.Mutex

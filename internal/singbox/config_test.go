@@ -314,6 +314,31 @@ func TestBuildConfigWithOutboundsCompilesHTTPSOutbound(t *testing.T) {
 	}
 }
 
+func TestBuildConfigWithOutboundsAppliesSubscriptionSettings(t *testing.T) {
+	cfg, err := BuildConfigWithOutbounds(nil, []db.Outbound{
+		{
+			ID: 31, Tag: "sub-vless", Protocol: "vless", Address: "edge.example.com", Port: 443,
+			Username: "11111111-1111-4111-8111-111111111111", Enabled: true,
+			SettingsJSON: `{"security":"reality","network":"ws","sni":"www.example.com","host":"cdn.example.com","path":"/ws","flow":"xtls-rprx-vision","fp":"chrome","pbk":"PUB","sid":"01","alpn":["h2"]}`,
+		},
+		{
+			ID: 32, Tag: "sub-ss", Protocol: "shadowsocks", Address: "ss.example.com", Port: 8388,
+			Username: "aes-128-gcm", Password: "secret", Enabled: true,
+			SettingsJSON: `{"method":"aes-128-gcm"}`,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	raw, _ := json.Marshal(cfg)
+	text := string(raw)
+	for _, want := range []string{`"tag":"singbox-out-31"`, `"flow":"xtls-rprx-vision"`, `"tls"`, `"reality"`, `"public_key":"PUB"`, `"short_id":"01"`, `"transport"`, `"type":"ws"`, `"Host":"cdn.example.com"`, `"path":"/ws"`, `"method":"aes-128-gcm"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("subscription outbound config missing %q: %s", want, text)
+		}
+	}
+}
+
 func TestBuildConfigWithOutboundsSkipsXrayRoutingRulesBeforeValidatingOutbound(t *testing.T) {
 	cfg, err := BuildConfigWithOutbounds([]db.Inbound{{
 		ID: 1, Remark: "edge", Protocol: "vless", Core: db.CoreXray, Port: 443, Enabled: true,

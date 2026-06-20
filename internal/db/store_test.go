@@ -2,15 +2,27 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	_ "modernc.org/sqlite"
 )
 
 func join(parts ...string) string { return strings.Join(parts, "") }
+
+func mustListOutboundsDB(t *testing.T, store *db.Store) []db.Outbound {
+	t.Helper()
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list outbounds: %v", err)
+	}
+	return outbounds
+}
 
 func TestStoreCreatesAndListsOutboundsWithDefaults(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
@@ -58,6 +70,369 @@ func TestStoreCreatesAndListsOutboundsWithDefaults(t *testing.T) {
 	if len(outbounds) != 4 || outbounds[3].Tag != "proxy-socks" || outbounds[3].Sort != 3 {
 		t.Fatalf("created outbound not appended after defaults: %+v", outbounds)
 	}
+	if outbounds[3].LastSeenAt != created.LastSeenAt {
+		t.Fatalf("returned last_seen_at should match persisted value: created=%q listed=%q", created.LastSeenAt, outbounds[3].LastSeenAt)
+	}
+}
+
+func TestCreateOutboundRejectsSubscriptionSourceOutsideMaterialization(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "fake-sub", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Source: db.OutboundSourceSubscription, SubscriptionID: 123, SubscriptionIdentity: "fake",
+	}); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected reserved source error, got %v", err)
+	}
+	created, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{
+		Tag: "pool-socks-us", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Source: db.OutboundSourceProxyPool, SubscriptionID: 123, SubscriptionIdentity: "fake", RawLink: "trojan://fake",
+	})
+	if err != nil {
+		t.Fatalf("proxy pool source should remain allowed: %v", err)
+	}
+	if created.Source != db.OutboundSourceProxyPool {
+		t.Fatalf("expected proxy_pool source, got %+v", created)
+	}
+	if created.SubscriptionID != 0 || created.SubscriptionIdentity != "" || created.RawLink != "" {
+		t.Fatalf("non-subscription source should not keep subscription metadata: %+v", created)
+	}
+}
+
+func TestStoreMaterializesSubscriptionOutboundsAndDisablesMissing(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	nodes := []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", Position: 0},
+		{Tag: "sub1-b", Remark: "b", Protocol: "shadowsocks", Address: "example.net", Port: 8388, Username: "aes-128-gcm", Password: "pw", SubscriptionIdentity: "b", RawLink: "ss://x", Position: 1},
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, nodes, []string{"a", "b"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list outbounds: %v", err)
+	}
+	var firstID int64
+	for _, outbound := range outbounds {
+		if outbound.SubscriptionIdentity == "a" {
+			firstID = outbound.ID
+		}
+	}
+	if firstID == 0 {
+		t.Fatalf("expected materialized outbound a in %+v", outbounds)
+	}
+	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{OutboundID: firstID, Enabled: true}); err != nil {
+		t.Fatalf("create route to subscription outbound: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, nodes[1:], []string{"b"}); err != nil {
+		t.Fatalf("materialize second: %v", err)
+	}
+	outbounds, _ = store.ListOutbounds(context.Background())
+	foundDisabled := false
+	for _, outbound := range outbounds {
+		if outbound.ID == firstID {
+			foundDisabled = !outbound.Enabled
+		}
+	}
+	if !foundDisabled {
+		t.Fatalf("expected missing subscription node to be disabled, got %+v", outbounds)
+	}
+	rules, err := store.ListRoutingRules(context.Background())
+	if err != nil || len(rules) != 1 || rules[0].OutboundID != firstID {
+		t.Fatalf("routing rule should remain intact, rules=%+v err=%v", rules, err)
+	}
+}
+
+func TestUpdateOutboundSubscriptionDisabledDisablesMaterializedNodes(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: false,
+	}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list outbounds: %v", err)
+	}
+	for _, outbound := range outbounds {
+		if outbound.SubscriptionID == sub.ID && outbound.Enabled {
+			t.Fatalf("disabled subscription should disable materialized node: %+v", outbound)
+		}
+	}
+}
+
+func TestMaterializeSubscriptionOutboundsRejectsDisabledSubscription(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: false,
+	}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	_, err = store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", Position: 0},
+	}, []string{"a"})
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected disabled subscription materialize error, got %v", err)
+	}
+}
+
+func TestMarkOutboundSubscriptionFetchFailureKeepsIdentitiesAndLastFetched(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	firstFetched := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
+	if err := store.MarkOutboundSubscriptionFetch(context.Background(), sub.ID, firstFetched, "", []string{"stable-a"}); err != nil {
+		t.Fatalf("mark success: %v", err)
+	}
+	if err := store.MarkOutboundSubscriptionFetch(context.Background(), sub.ID, firstFetched.Add(time.Hour), "upstream failed", nil); err != nil {
+		t.Fatalf("mark failure: %v", err)
+	}
+	loaded, ok, err := store.GetOutboundSubscription(context.Background(), sub.ID)
+	if err != nil || !ok {
+		t.Fatalf("get subscription: ok=%v err=%v", ok, err)
+	}
+	if loaded.LinkIdentitiesJSON != `["stable-a"]` {
+		t.Fatalf("failure should keep identities, got %q", loaded.LinkIdentitiesJSON)
+	}
+	if loaded.LastFetchedAt != firstFetched.Format(time.RFC3339) {
+		t.Fatalf("failure should keep last_fetched_at, got %q", loaded.LastFetchedAt)
+	}
+	if loaded.LastAttemptAt == "" || loaded.LastError != "upstream failed" {
+		t.Fatalf("failure should record attempt and error, got %+v", loaded)
+	}
+}
+
+func TestUpdateOutboundProtectsSubscriptionConnectionFields(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", SettingsJSON: `{"tls":true}`, Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	var target db.Outbound
+	for _, outbound := range mustListOutboundsDB(t, store) {
+		if outbound.SubscriptionID == sub.ID {
+			target = outbound
+		}
+	}
+	updated, err := store.UpdateOutbound(context.Background(), target.ID, db.UpdateOutboundParams{
+		Tag: "changed", Remark: "manual remark", Protocol: "socks", Address: "127.0.0.1", Port: 1080, Username: "user", Password: "secret", Enabled: false, SettingsJSON: `{"security":"none"}`,
+	})
+	if err != nil {
+		t.Fatalf("update subscription outbound: %v", err)
+	}
+	if updated.Tag != target.Tag || updated.Protocol != target.Protocol || updated.Address != target.Address || updated.Port != target.Port || updated.Password != target.Password || updated.SettingsJSON != target.SettingsJSON {
+		t.Fatalf("subscription connection fields should be preserved, before=%+v after=%+v", target, updated)
+	}
+	if updated.Remark != "manual remark" || updated.Enabled {
+		t.Fatalf("subscription editable fields not applied: %+v", updated)
+	}
+}
+
+func TestUpdateOutboundRejectsEnablingDisabledSubscriptionNode(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	var target db.Outbound
+	for _, outbound := range mustListOutboundsDB(t, store) {
+		if outbound.SubscriptionID == sub.ID {
+			target = outbound
+		}
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: false,
+	}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	_, err = store.UpdateOutbound(context.Background(), target.ID, db.UpdateOutboundParams{
+		Tag: target.Tag, Remark: target.Remark, Protocol: target.Protocol, Address: target.Address, Port: target.Port, Password: target.Password, Enabled: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "subscription_disabled") {
+		t.Fatalf("expected subscription_disabled, got %v", err)
+	}
+	for _, outbound := range mustListOutboundsDB(t, store) {
+		if outbound.ID == target.ID && outbound.Enabled {
+			t.Fatalf("disabled subscription node should remain disabled: %+v", outbound)
+		}
+	}
+}
+
+func TestSetOutboundEnabledRejectsEnablingDisabledSubscriptionNode(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	var target db.Outbound
+	for _, outbound := range mustListOutboundsDB(t, store) {
+		if outbound.SubscriptionID == sub.ID {
+			target = outbound
+		}
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", Enabled: false,
+	}); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	_, err = store.SetOutboundEnabled(context.Background(), target.ID, true)
+	if err == nil || !strings.Contains(err.Error(), "subscription_disabled") {
+		t.Fatalf("expected subscription_disabled, got %v", err)
+	}
+	for _, outbound := range mustListOutboundsDB(t, store) {
+		if outbound.ID == target.ID && outbound.Enabled {
+			t.Fatalf("disabled subscription node should remain disabled: %+v", outbound)
+		}
+	}
+}
+
+func TestStoreSoftDeletesOutboundSubscriptionWithoutOrphaningNodes(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", RawLink: "trojan://pw@example.com:443#a", Position: 0},
+	}, []string{"a"}); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if err := store.DeleteOutboundSubscription(context.Background(), sub.ID); err != nil {
+		t.Fatalf("delete subscription: %v", err)
+	}
+	subs, err := store.ListOutboundSubscriptions(context.Background())
+	if err != nil {
+		t.Fatalf("list subscriptions: %v", err)
+	}
+	if len(subs) != 0 {
+		t.Fatalf("soft-deleted subscription should be hidden, got %+v", subs)
+	}
+	outbounds, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list outbounds: %v", err)
+	}
+	for _, outbound := range outbounds {
+		if outbound.SubscriptionIdentity == "a" {
+			if outbound.SubscriptionID != sub.ID || outbound.Source != db.OutboundSourceSubscription || outbound.Enabled {
+				t.Fatalf("subscription node should remain attributed and disabled, got %+v", outbound)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected subscription outbound to remain after soft delete, got %+v", outbounds)
+}
+
+func TestStoreRejectsWritesToSoftDeletedOutboundSubscription(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if err := store.DeleteOutboundSubscription(context.Background(), sub.ID); err != nil {
+		t.Fatalf("delete subscription: %v", err)
+	}
+	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{
+		Remark: "updated", URL: "https://example.com/next", Enabled: true,
+	}); err == nil {
+		t.Fatal("expected update of soft-deleted subscription to fail")
+	}
+	if err := store.MarkOutboundSubscriptionFetch(context.Background(), sub.ID, time.Now(), "", []string{"a"}); err == nil {
+		t.Fatal("expected fetch mark for soft-deleted subscription to fail")
+	}
+	if _, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", Position: 0},
+	}, []string{"a"}); err == nil {
+		t.Fatal("expected materialize for soft-deleted subscription to fail")
+	}
 }
 
 func TestStoreUpdatesOutboundFields(t *testing.T) {
@@ -76,15 +451,25 @@ func TestStoreUpdatesOutboundFields(t *testing.T) {
 
 	updated, err := store.UpdateOutbound(context.Background(), ob.ID, db.UpdateOutboundParams{
 		Tag: "proxy-http-v2", Remark: "HTTP代理v2", Protocol: "socks",
-		Address: "10.0.0.2", Port: 1080, Username: "newuser", Password: "newpass", Enabled: false,
+		Address: "10.0.0.2", Port: 1080, Username: "newuser", Password: "newpass", Enabled: false, SettingsJSON: `{"security":"tls"}`,
 	})
 	if err != nil {
 		t.Fatalf("update outbound: %v", err)
 	}
 	if updated.Tag != "proxy-http-v2" || updated.Remark != "HTTP代理v2" || updated.Protocol != "socks" ||
 		updated.Address != "10.0.0.2" || updated.Port != 1080 || updated.Username != "newuser" ||
-		updated.Password != "newpass" || updated.Enabled != false || updated.ID != ob.ID {
+		updated.Password != "newpass" || updated.Enabled != false || updated.ID != ob.ID || updated.SettingsJSON == "" {
 		t.Fatalf("unexpected updated outbound: %+v", updated)
+	}
+	cleared, err := store.UpdateOutbound(context.Background(), ob.ID, db.UpdateOutboundParams{
+		Tag: "proxy-http-v2", Remark: "HTTP代理v2", Protocol: "socks",
+		Address: "10.0.0.2", Port: 1080, Username: "newuser", Password: "newpass", Enabled: false, SettingsJSON: "",
+	})
+	if err != nil {
+		t.Fatalf("clear outbound settings_json: %v", err)
+	}
+	if cleared.SettingsJSON != "" {
+		t.Fatalf("expected settings_json to be cleared, got %+v", cleared)
 	}
 
 	loaded, err := store.ListOutbounds(context.Background())
@@ -529,6 +914,130 @@ func TestStoreReorderOutboundsUpdatesSortOrder(t *testing.T) {
 	}
 	if list[0].Sort != 0 || list[1].Sort != 1 || list[2].Sort != 2 || list[3].Sort != 3 || list[4].Sort != 4 {
 		t.Fatalf("expected sequential sort values: got %+v", list)
+	}
+}
+
+func TestStoreReorderOutboundsRejectsNonEditableIDs(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	o1, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "p1", Protocol: "socks", Address: "10.0.0.1", Port: 1080})
+	if err != nil {
+		t.Fatalf("create outbound 1: %v", err)
+	}
+	o2, err := store.CreateOutbound(context.Background(), db.CreateOutboundParams{Tag: "p2", Protocol: "http", Address: "10.0.0.2", Port: 3128})
+	if err != nil {
+		t.Fatalf("create outbound 2: %v", err)
+	}
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{
+		Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	materialized, err := store.MaterializeSubscriptionOutbounds(context.Background(), sub.ID, []db.MaterializedSubscriptionOutbound{
+		{Tag: "sub1-a", Remark: "a", Protocol: "trojan", Address: "example.com", Port: 443, Password: "pw", SubscriptionIdentity: "a", Position: 0},
+	}, []string{"a"})
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	var subscriptionOutboundID int64
+	for _, outbound := range materialized {
+		if outbound.SubscriptionIdentity == "a" {
+			subscriptionOutboundID = outbound.ID
+		}
+	}
+	if subscriptionOutboundID == 0 {
+		t.Fatalf("expected materialized subscription outbound, got %+v", materialized)
+	}
+
+	cases := [][]int64{
+		{subscriptionOutboundID, o1.ID},
+		{1, o1.ID},
+		{o1.ID, o1.ID},
+		{o1.ID, 999999},
+	}
+	for _, ids := range cases {
+		if err := store.ReorderOutbounds(context.Background(), ids); err == nil {
+			t.Fatalf("expected reorder to reject ids %+v", ids)
+		}
+	}
+	if err := store.ReorderOutbounds(context.Background(), []int64{o2.ID, o1.ID}); err != nil {
+		t.Fatalf("expected valid editable reorder to succeed: %v", err)
+	}
+}
+
+func TestStoreReorderOutboundsIncludesMigratedNullSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	legacy, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	_, err = legacy.ExecContext(context.Background(), `
+CREATE TABLE outbounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tag TEXT NOT NULL UNIQUE,
+  remark TEXT NOT NULL,
+  protocol TEXT NOT NULL,
+  address TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL DEFAULT 0,
+  username TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0,
+  source TEXT,
+  subscription_id INTEGER NULL,
+  subscription_identity TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+INSERT INTO outbounds (tag, remark, protocol, address, port, enabled, sort, source, created_at) VALUES
+  ('direct', '直接连接', 'freedom', '', 0, 1, 0, 'manual', '2026-01-01T00:00:00Z'),
+  ('blocked', '阻断', 'blackhole', '', 0, 1, 1, 'manual', '2026-01-01T00:00:00Z'),
+  ('dns', 'DNS', 'dns', '', 0, 1, 2, 'manual', '2026-01-01T00:00:00Z'),
+  ('legacy-1', 'legacy-1', 'socks', '10.0.0.1', 1080, 1, 3, NULL, '2026-01-01T00:00:00Z'),
+  ('legacy-2', 'legacy-2', 'http', '10.0.0.2', 3128, 1, 4, NULL, '2026-01-01T00:00:00Z');
+`)
+	if err != nil {
+		legacy.Close()
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := db.Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer store.Close()
+	list, err := store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list migrated outbounds: %v", err)
+	}
+	var firstID, secondID int64
+	for _, outbound := range list {
+		switch outbound.Tag {
+		case "legacy-1":
+			firstID = outbound.ID
+		case "legacy-2":
+			secondID = outbound.ID
+		}
+	}
+	if firstID == 0 || secondID == 0 {
+		t.Fatalf("expected legacy outbounds, got %+v", list)
+	}
+
+	if err := store.ReorderOutbounds(context.Background(), []int64{secondID, firstID}); err != nil {
+		t.Fatalf("reorder migrated null-source outbounds: %v", err)
+	}
+	list, err = store.ListOutbounds(context.Background())
+	if err != nil {
+		t.Fatalf("list after reorder: %v", err)
+	}
+	if list[3].ID != secondID || list[4].ID != firstID {
+		t.Fatalf("expected migrated null-source outbounds to reorder, got %+v", list)
 	}
 }
 

@@ -70,9 +70,10 @@ type InboundConfig struct {
 }
 
 type OutboundConfig struct {
-	Tag      string                 `json:"tag"`
-	Protocol string                 `json:"protocol"`
-	Settings map[string]interface{} `json:"settings"`
+	Tag            string                 `json:"tag"`
+	Protocol       string                 `json:"protocol"`
+	Settings       map[string]interface{} `json:"settings"`
+	StreamSettings map[string]interface{} `json:"streamSettings,omitempty"`
 }
 
 func BuildConfig(inbounds []db.Inbound) (Config, error) {
@@ -656,33 +657,120 @@ func buildOutbound(ob db.Outbound) (OutboundConfig, error) {
 			Settings: map[string]interface{}{"servers": servers},
 		}, nil
 	case "vless":
+		outboundSettings := db.ParseOutboundSettings(ob.SettingsJSON)
+		user := map[string]interface{}{
+			"id":         strings.TrimSpace(ob.Username),
+			"encryption": "none",
+		}
+		if strings.TrimSpace(outboundSettings.Flow) != "" {
+			user["flow"] = strings.TrimSpace(outboundSettings.Flow)
+		}
 		vnext := []map[string]interface{}{{
 			"address": ob.Address,
 			"port":    ob.Port,
-			"users": []map[string]interface{}{{
-				"id":         strings.TrimSpace(ob.Username),
-				"encryption": "none",
-			}},
+			"users":   []map[string]interface{}{user},
 		}}
-		return OutboundConfig{Tag: tag, Protocol: "vless", Settings: map[string]interface{}{"vnext": vnext}}, nil
+		return OutboundConfig{Tag: tag, Protocol: "vless", Settings: map[string]interface{}{"vnext": vnext}, StreamSettings: buildOutboundStreamSettings(outboundSettings)}, nil
 	case "trojan":
+		outboundSettings := db.ParseOutboundSettings(ob.SettingsJSON)
 		servers := []map[string]interface{}{{
 			"address":  ob.Address,
 			"port":     ob.Port,
 			"password": firstNonEmpty(ob.Password, ob.Username),
 		}}
-		return OutboundConfig{Tag: tag, Protocol: "trojan", Settings: map[string]interface{}{"servers": servers}}, nil
+		return OutboundConfig{Tag: tag, Protocol: "trojan", Settings: map[string]interface{}{"servers": servers}, StreamSettings: buildOutboundStreamSettings(outboundSettings)}, nil
 	case "shadowsocks":
+		outboundSettings := db.ParseOutboundSettings(ob.SettingsJSON)
 		servers := []map[string]interface{}{{
 			"address":  ob.Address,
 			"port":     ob.Port,
-			"method":   firstNonEmpty(ob.Username, "aes-128-gcm"),
+			"method":   firstNonEmpty(ob.Username, outboundSettings.Method, "aes-128-gcm"),
 			"password": ob.Password,
 		}}
-		return OutboundConfig{Tag: tag, Protocol: "shadowsocks", Settings: map[string]interface{}{"servers": servers}}, nil
+		return OutboundConfig{Tag: tag, Protocol: "shadowsocks", Settings: map[string]interface{}{"servers": servers}, StreamSettings: buildOutboundStreamSettings(outboundSettings)}, nil
 	default:
 		return OutboundConfig{}, fmt.Errorf("unsupported outbound protocol: %s", ob.Protocol)
 	}
+}
+
+func buildOutboundStreamSettings(settings db.OutboundSettings) map[string]interface{} {
+	network := strings.ToLower(strings.TrimSpace(settings.Network))
+	security := strings.ToLower(strings.TrimSpace(settings.Security))
+	if security == "" {
+		if settings.Reality {
+			security = "reality"
+		} else if settings.TLS {
+			security = "tls"
+		}
+	}
+	if network == "" && security == "" {
+		return nil
+	}
+	if network == "" {
+		network = "tcp"
+	}
+	stream := map[string]interface{}{"network": network}
+	if security != "" && security != "none" {
+		stream["security"] = security
+	}
+	switch network {
+	case "ws", "websocket":
+		wsSettings := map[string]interface{}{}
+		if settings.Path != "" {
+			wsSettings["path"] = settings.Path
+		}
+		if settings.Host != "" {
+			wsSettings["headers"] = map[string]interface{}{"Host": settings.Host}
+		}
+		if len(wsSettings) > 0 {
+			stream["wsSettings"] = wsSettings
+		}
+	case "grpc":
+		grpcSettings := map[string]interface{}{}
+		if settings.ServiceName != "" {
+			grpcSettings["serviceName"] = settings.ServiceName
+		}
+		if len(grpcSettings) > 0 {
+			stream["grpcSettings"] = grpcSettings
+		}
+	}
+	if security == "tls" {
+		tlsSettings := map[string]interface{}{}
+		if settings.SNI != "" {
+			tlsSettings["serverName"] = settings.SNI
+		}
+		if settings.Fingerprint != "" {
+			tlsSettings["fingerprint"] = settings.Fingerprint
+		}
+		if len(settings.ALPN) > 0 {
+			tlsSettings["alpn"] = settings.ALPN
+		}
+		if settings.AllowInsecure {
+			tlsSettings["allowInsecure"] = true
+		}
+		if len(tlsSettings) > 0 {
+			stream["tlsSettings"] = tlsSettings
+		}
+	}
+	if security == "reality" {
+		realitySettings := map[string]interface{}{}
+		if settings.SNI != "" {
+			realitySettings["serverName"] = settings.SNI
+		}
+		if settings.Fingerprint != "" {
+			realitySettings["fingerprint"] = settings.Fingerprint
+		}
+		if settings.PublicKey != "" {
+			realitySettings["publicKey"] = settings.PublicKey
+		}
+		if settings.ShortID != "" {
+			realitySettings["shortId"] = settings.ShortID
+		}
+		if len(realitySettings) > 0 {
+			stream["realitySettings"] = realitySettings
+		}
+	}
+	return stream
 }
 
 func firstNonEmpty(values ...string) string {

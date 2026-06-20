@@ -156,6 +156,31 @@ func TestBuildConfigWithOutboundsCompilesHTTPSToHTTPOutbound(t *testing.T) {
 	}
 }
 
+func TestBuildConfigWithSubscriptionOutboundSettings(t *testing.T) {
+	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
+		{
+			ID: 21, Tag: "sub-vless", Protocol: "vless", Address: "edge.example.com", Port: 443,
+			Username: "11111111-1111-4111-8111-111111111111", Enabled: true,
+			SettingsJSON: `{"security":"reality","network":"ws","sni":"www.example.com","host":"cdn.example.com","path":"/ws","flow":"xtls-rprx-vision","fp":"chrome","pbk":"PUB","sid":"01","alpn":["h2"]}`,
+		},
+		{
+			ID: 22, Tag: "sub-trojan", Protocol: "trojan", Address: "tls.example.com", Port: 443,
+			Password: "secret", Enabled: true,
+			SettingsJSON: `{"security":"tls","sni":"tls.example.com","fp":"firefox"}`,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	raw, _ := json.Marshal(config)
+	text := string(raw)
+	for _, want := range []string{`"streamSettings"`, `"security":"reality"`, `"wsSettings"`, `"Host":"cdn.example.com"`, `"flow":"xtls-rprx-vision"`, `"publicKey":"PUB"`, `"shortId":"01"`, `"tlsSettings"`, `"serverName":"tls.example.com"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("subscription outbound config missing %q: %s", want, text)
+		}
+	}
+}
+
 func TestBuildConfigSkipsSingboxOnlyOutboundProfiles(t *testing.T) {
 	config, err := xray.BuildConfigWithOutbounds(nil, []db.Outbound{
 		{ID: 8, Tag: "hy2-out", Protocol: "hysteria2", Address: "127.0.0.1", Port: 443, Enabled: true},

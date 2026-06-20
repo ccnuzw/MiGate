@@ -16,6 +16,11 @@ export function refreshTopologyDependencies(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['traffic-series'] });
 }
 
+export function refreshOutboundDependencies(queryClient: QueryClient) {
+  refreshTopologyDependencies(queryClient);
+  queryClient.invalidateQueries({ queryKey: ['outbound-subscriptions'] });
+}
+
 function invalidateQueryKeys(queryClient: QueryClient, keys: string[][]) {
   keys.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }));
 }

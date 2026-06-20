@@ -104,6 +104,38 @@ func (s *countingSummaryStore) ReorderOutbounds(ctx context.Context, ids []int64
 	return errors.New("not implemented")
 }
 
+func (s *countingSummaryStore) ListOutboundSubscriptions(ctx context.Context) ([]db.OutboundSubscription, error) {
+	return nil, nil
+}
+
+func (s *countingSummaryStore) GetOutboundSubscription(ctx context.Context, id int64) (db.OutboundSubscription, bool, error) {
+	return db.OutboundSubscription{}, false, nil
+}
+
+func (s *countingSummaryStore) CreateOutboundSubscription(ctx context.Context, params db.CreateOutboundSubscriptionParams) (db.OutboundSubscription, error) {
+	return db.OutboundSubscription{}, errors.New("not implemented")
+}
+
+func (s *countingSummaryStore) UpdateOutboundSubscription(ctx context.Context, id int64, params db.UpdateOutboundSubscriptionParams) (db.OutboundSubscription, error) {
+	return db.OutboundSubscription{}, errors.New("not implemented")
+}
+
+func (s *countingSummaryStore) DeleteOutboundSubscription(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *countingSummaryStore) ReorderOutboundSubscriptions(ctx context.Context, ids []int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *countingSummaryStore) MarkOutboundSubscriptionFetch(ctx context.Context, id int64, fetchedAt time.Time, lastErr string, identities []string) error {
+	return errors.New("not implemented")
+}
+
+func (s *countingSummaryStore) MaterializeSubscriptionOutbounds(ctx context.Context, subscriptionID int64, nodes []db.MaterializedSubscriptionOutbound, identities []string) ([]db.Outbound, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *countingSummaryStore) CreateRoutingRule(ctx context.Context, params db.CreateRoutingRuleParams) (db.RoutingRule, error) {
 	return db.RoutingRule{}, errors.New("not implemented")
 }

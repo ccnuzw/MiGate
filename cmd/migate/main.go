@@ -931,6 +931,10 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	// Traffic sync scheduler keeps retrying Xray StatsService because Xray may
 	// become available only after the panel starts and applies generated config.
 	trafficSched := scheduler.NewTrafficSyncSchedulerWithSingboxConfig(store, statsClient, singboxStatsClient, singboxInbounds, 1*time.Minute)
+	outboundSubSched := scheduler.NewOutboundSubscriptionScheduler(store, web.OutboundSubscriptionRefresher{
+		Store:   store,
+		Options: append(opts, web.WithStore(store)),
+	}, 1*time.Minute)
 	certService := certsvc.Service{Store: store, CertDir: paths.CertDir}
 	certRenewSched := scheduler.NewCertificateRenewScheduler(certService, scheduler.CertificateRenewSchedulerOptions{
 		Days:         30,
@@ -963,6 +967,12 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 		log.Println("certificate renew scheduler started")
 		certRenewSched.Start()
 	}()
+	schedWG.Add(1)
+	go func() {
+		defer schedWG.Done()
+		log.Println("outbound subscription scheduler started")
+		outboundSubSched.Start()
+	}()
 
 	var cleanupOnce sync.Once
 	cleanup := func() {
@@ -971,6 +981,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 			stopHTTPProxyCache()
 			stopHTTPSProxyCache()
 			trafficSched.Stop()
+			outboundSubSched.Stop()
 			certRenewSched.Stop()
 			schedWG.Wait()
 			closeStore()

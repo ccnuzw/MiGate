@@ -79,7 +79,31 @@ CREATE TABLE IF NOT EXISTS outbounds (
   password TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   sort INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'manual',
+  subscription_id INTEGER NULL REFERENCES outbound_subscriptions(id) ON DELETE SET NULL,
+  subscription_identity TEXT NOT NULL DEFAULT '',
+  raw_link TEXT NOT NULL DEFAULT '',
+  settings_json TEXT NOT NULL DEFAULT '',
+  last_seen_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS outbound_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  remark TEXT NOT NULL,
+  url TEXT NOT NULL,
+  tag_prefix TEXT NOT NULL DEFAULT '',
+  update_interval_seconds INTEGER NOT NULL DEFAULT 600,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  allow_private INTEGER NOT NULL DEFAULT 0,
+  prepend INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 0,
+  last_fetched_at TEXT NOT NULL DEFAULT '',
+  last_attempt_at TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  link_identities_json TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS routing_rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,6 +190,7 @@ CREATE TABLE IF NOT EXISTS certificate_operations (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
+CREATE INDEX IF NOT EXISTS idx_outbounds_subscription ON outbounds(subscription_id, subscription_identity);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_outbound_id ON routing_rules(outbound_id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_client_id ON routing_rules(client_id);
@@ -183,6 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_certificates_status ON certificates(status);
 CREATE INDEX IF NOT EXISTS idx_certificates_not_after ON certificates(not_after);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_cert_key ON certificates(cert_path, key_path);
 CREATE INDEX IF NOT EXISTS idx_certificate_operations_certificate_id ON certificate_operations(certificate_id, id);
+CREATE INDEX IF NOT EXISTS idx_outbound_subscriptions_priority_id ON outbound_subscriptions(priority, id);
 `)
 	if err != nil {
 		return err
@@ -194,6 +220,30 @@ CREATE INDEX IF NOT EXISTS idx_certificate_operations_certificate_id ON certific
 		return err
 	}
 	if err := s.ensureColumn(ctx, "certificates", "challenge_method", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbounds", "source", "TEXT NOT NULL DEFAULT 'manual'"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbounds", "subscription_id", "INTEGER NULL REFERENCES outbound_subscriptions(id) ON DELETE SET NULL"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbounds", "subscription_identity", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbounds", "raw_link", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbounds", "settings_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbounds", "last_seen_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbound_subscriptions", "deleted_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "outbound_subscriptions", "last_attempt_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.seedDefaultOutbounds(ctx); err != nil {
