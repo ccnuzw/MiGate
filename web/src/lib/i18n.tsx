@@ -245,6 +245,7 @@ const zhToEn: Record<string, string> = {
   连接设置: 'Connection settings',
   基本信息: 'Basic info',
   默认客户端: 'Default client',
+  首个客户端: 'First client',
   创建后立即可用: 'Ready after creation',
   保存节点时同时创建一个客户端: 'Create one client while saving the node',
   同时创建客户端: 'Create client together',
@@ -289,6 +290,7 @@ const zhToEn: Record<string, string> = {
   将同时创建: 'Will create together',
   仅创建节点: 'Create node only',
   '生成默认客户端，之后可在节点卡片复制链接或二维码。': 'Generates a default client. You can copy the link or QR code from the node card later.',
+  '生成首个客户端，之后可在节点卡片复制链接或二维码。': 'Generates the first client. You can copy the link or QR code from the node card later.',
   '之后可在节点卡片中手动新增客户端。': 'You can add clients manually from the node card later.',
   安全配置: 'Security settings',
   'REALITY 伪装': 'REALITY camouflage',
@@ -848,6 +850,7 @@ const zhToEn: Record<string, string> = {
   '暂无可绑定的 TLS 入站': 'No TLS inbounds available for binding',
   '选择左侧证书后查看路径、指纹、绑定和操作记录。': 'Select a certificate on the left to view paths, fingerprints, bindings, and operations.',
   证书详情: 'Certificate details',
+  证书信息类型: 'Certificate info type',
   最后错误: 'Last error',
   绑定的入站: 'Bound inbounds',
   暂无入站使用该证书: 'No inbounds use this certificate',
@@ -1307,35 +1310,6 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem('migate-lang') as Lang) || 'zh');
   useEffect(() => {
     document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
-    translateElement(document.body, lang);
-    if (lang !== 'en') return undefined;
-
-    let scheduled = false;
-    const pending = new Set<HTMLElement>();
-    const run = () => {
-      scheduled = false;
-      for (const node of pending) {
-        translateElement(node, lang);
-      }
-      pending.clear();
-    };
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node instanceof HTMLElement) {
-            pending.add(node);
-          } else if (node.parentElement) {
-            pending.add(node.parentElement);
-          }
-        }
-      }
-      if (pending.size === 0) return;
-      if (scheduled) return;
-      scheduled = true;
-      window.requestAnimationFrame(run);
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
   }, [lang]);
   const value = useMemo(
     () => ({

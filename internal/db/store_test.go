@@ -1499,8 +1499,8 @@ func TestStoreAutoAssignsInboundPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first auto-port inbound: %v", err)
 	}
-	if first.Port < 20000 || first.Port > 60999 {
-		t.Fatalf("expected auto-assigned high port, got %+v", first)
+	if first.Port < 20000 || first.Port > 60000 {
+		t.Fatalf("expected auto-assigned port in range 20000-60000, got %+v", first)
 	}
 
 	second, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
@@ -1511,6 +1511,26 @@ func TestStoreAutoAssignsInboundPort(t *testing.T) {
 	}
 	if second.Port == first.Port {
 		t.Fatalf("auto-assigned duplicate port: first=%+v second=%+v", first, second)
+	}
+	if second.Port < 20000 || second.Port > 60000 {
+		t.Fatalf("expected second auto-assigned port in range 20000-60000, got %+v", second)
+	}
+
+	seen := map[int]bool{first.Port: true, second.Port: true}
+	for i := 0; i < 8; i++ {
+		inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{
+			Remark: fmt.Sprintf("auto-extra-%d", i), Protocol: "trojan", Port: 0, Network: "tcp", Security: "tls",
+		})
+		if err != nil {
+			t.Fatalf("create extra auto-port inbound %d: %v", i, err)
+		}
+		if inbound.Port < 20000 || inbound.Port > 60000 {
+			t.Fatalf("expected extra auto-assigned port in range 20000-60000, got %+v", inbound)
+		}
+		if seen[inbound.Port] {
+			t.Fatalf("auto-assigned duplicate port %d after ports %+v", inbound.Port, seen)
+		}
+		seen[inbound.Port] = true
 	}
 }
 
@@ -2717,6 +2737,33 @@ func TestStoreReorderRoutingRulesUpdatesSortOrder(t *testing.T) {
 	}
 }
 
+func TestStoreListRoutingRulesUsesIDForEqualSort(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	r1, err := store.CreateRoutingRule(ctx, db.CreateRoutingRuleParams{OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:malware", Enabled: true})
+	if err != nil {
+		t.Fatalf("create first rule: %v", err)
+	}
+	r2, err := store.CreateRoutingRule(ctx, db.CreateRoutingRuleParams{OutboundID: 2, OutboundTag: "blocked", Domain: "geosite:netflix", Enabled: true})
+	if err != nil {
+		t.Fatalf("create second rule: %v", err)
+	}
+	if err := store.ExecForTest(ctx, `UPDATE routing_rules SET sort=0`); err != nil {
+		t.Fatalf("force equal sort: %v", err)
+	}
+	list, err := store.ListRoutingRules(ctx)
+	if err != nil {
+		t.Fatalf("list rules: %v", err)
+	}
+	if len(list) != 2 || list[0].ID != r1.ID || list[1].ID != r2.ID {
+		t.Fatalf("expected equal sort rules to be ordered by id [%d, %d], got %+v", r1.ID, r2.ID, list)
+	}
+}
+
 func TestStoreBlacklistAddAndCheck(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -3240,8 +3287,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples before marker: %v", err)
 	}
-	if len(samples) != 2 {
-		t.Fatalf("expected two client samples before marker, got %+v", samples)
+	if len(samples) != 1 {
+		t.Fatalf("expected one bucketed client sample before marker, got %+v", samples)
 	}
 	markerAt := t0.Add(20 * time.Second)
 	if err := store.MarkTrafficScopeStatus(ctx, []db.TrafficStatusMarker{
@@ -3279,7 +3326,7 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples after marker: %v", err)
 	}
-	if len(samples) != 2 {
+	if len(samples) != 1 {
 		t.Fatalf("status marker must not write traffic sample, got %+v", samples)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(1200, 2600), t0.Add(30*time.Second)); err != nil {
@@ -3297,8 +3344,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples after recovery: %v", err)
 	}
-	if len(samples) != 3 {
-		t.Fatalf("expected one recovered client sample after marker, got %+v", samples)
+	if len(samples) != 2 || samples[1].TotalUp != 200 || samples[1].TotalDown != 600 {
+		t.Fatalf("expected one recovered client bucket after marker, got %+v", samples)
 	}
 }
 
@@ -3358,8 +3405,8 @@ func TestApplyTrafficRawStatsBatchesClientSamplesAndTotals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 4 {
-		t.Fatalf("expected two client samples for each batch, got %+v", samples)
+	if len(samples) != 2 {
+		t.Fatalf("expected one bucketed sample per client, got %+v", samples)
 	}
 	usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientB.ID)
 	if err != nil {

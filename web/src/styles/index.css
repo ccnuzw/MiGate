@@ -72,6 +72,14 @@ textarea {
   outline: none;
 }
 
+input[type='checkbox'],
+input[type='radio'] {
+  min-height: auto;
+  width: auto;
+  padding: 0;
+  accent-color: #0f766e;
+}
+
 textarea {
   min-height: 88px;
   padding-top: 10px;
@@ -558,6 +566,23 @@ textarea:focus {
   color: rgb(var(--text));
 }
 
+.certificate-apply-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+
+.certificate-detail-panel {
+  align-self: start;
+}
+
+.certificate-detail-panel .segmented-control {
+  height: 36px;
+}
+
+.certificate-detail-panel .segmented-control button {
+  width: 30px;
+  height: 30px;
+}
+
 .inbound-card-grid {
   display: grid;
   gap: 16px;
@@ -595,6 +620,70 @@ textarea:focus {
   width: 36px;
   min-height: auto;
   accent-color: #0f766e;
+}
+
+.toggle-switch-field {
+  position: relative;
+  display: inline-flex;
+  min-height: 40px;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  color: rgb(var(--text));
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.toggle-switch-field input {
+  position: absolute;
+  width: 44px;
+  height: 24px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.toggle-switch-track {
+  position: relative;
+  display: inline-flex;
+  width: 44px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(100, 116, 139, 0.28);
+  background: rgba(100, 116, 139, 0.18);
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.toggle-switch-track span {
+  position: absolute;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.22);
+  transition: transform 160ms ease;
+}
+
+.toggle-switch-field input:checked + .toggle-switch-track {
+  border-color: rgba(15, 118, 110, 0.32);
+  background: #0f766e;
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.12);
+}
+
+.toggle-switch-field input:checked + .toggle-switch-track span {
+  transform: translateX(19px);
+}
+
+.toggle-switch-field input:focus-visible + .toggle-switch-track {
+  outline: 2px solid rgba(37, 99, 235, 0.48);
+  outline-offset: 2px;
+}
+
+.toggle-switch-field strong {
+  line-height: 1;
+  font-weight: 600;
 }
 
 .split-control {
