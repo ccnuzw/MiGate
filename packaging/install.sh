@@ -369,6 +369,24 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+sanitize_update_health_check() {
+  local max_len=2000
+  (
+    LC_ALL=C
+    export LC_ALL
+    printf '%s' "$1" |
+      tr '\r\t\n' '   ' |
+      tr -cd ' -~' |
+      sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' |
+      cut -b 1-"$max_len"
+  )
+}
+
+record_health_check() {
+  LAST_HEALTH_CHECK="$(sanitize_update_health_check "$1")"
+  [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+}
+
 generate_password() {
   if command_exists openssl; then
     openssl rand -base64 24 | tr -d '\n'
@@ -798,6 +816,7 @@ write_update_status() {
   local rolled_back="${6:-false}"
   local rollback_status="${7:-}"
   local updated_at
+  health_check="$(sanitize_update_health_check "$health_check")"
   updated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] write update status %q status=%q target=%q rollback=%q\n' "$UPDATE_STATUS_PATH" "$status" "$target_version" "$rolled_back"
@@ -893,49 +912,78 @@ check_migate_health() {
   local health=""
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[DRY-RUN] systemctl is-active migate\n'
-    printf '[DRY-RUN] curl -fsS local /api/health or /api/version when panel.json has panel_port\n'
-    LAST_HEALTH_CHECK="dry-run health check planned"
-    [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+    printf '[DRY-RUN] retry curl -fsS local /api/health or /api/version until healthy or timeout\n'
+    record_health_check "dry-run health check planned"
     return 0
   fi
-  if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
-    if systemctl is-active --quiet migate; then
-      health="systemctl is-active migate: active"
+  local timeout="${MIGATE_HEALTH_TIMEOUT:-45}"
+  local interval="${MIGATE_HEALTH_INTERVAL:-2}"
+  case "$timeout" in ''|*[!0-9]*) timeout=45 ;; esac
+  case "$interval" in ''|*[!0-9]*) interval=2 ;; esac
+  [ "$timeout" -ge 1 ] || timeout=45
+  [ "$interval" -ge 1 ] || interval=2
+
+  local deadline
+  local active_streak=0
+  local checked_http=0
+  local last_systemd=""
+  local last_http=""
+  local now
+  deadline="$(($(date +%s) + timeout))"
+  while true; do
+    if [ "$SYSTEMD_AVAILABLE" -eq 1 ]; then
+      if systemctl is-active --quiet migate; then
+        active_streak=$((active_streak + 1))
+        last_systemd="systemctl is-active migate: active"
+      else
+        active_streak=0
+        last_systemd="systemctl is-active migate: not active"
+      fi
     else
-      LAST_HEALTH_CHECK="systemctl is-active migate: not active"
-      [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
-      return 1
+      record_health_check "systemd unavailable; skipped systemctl health check"
+      return 0
     fi
-  else
-    LAST_HEALTH_CHECK="systemd unavailable; skipped systemctl health check"
-    [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
-    return 0
-  fi
-  if [ -f "$CONFIG_PATH" ] && command_exists curl; then
-    local url
-    local checked_http=0
-    for endpoint in /api/health /api/version; do
-      url="$(migate_health_url_from_config "$endpoint" || true)"
-      if [ -n "$url" ]; then
-        checked_http=1
-        if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
-          health="${health}; ${url}: ok"
-          LAST_HEALTH_CHECK="$health"
-          [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+
+    if [ "$active_streak" -gt 0 ]; then
+      health="$last_systemd"
+      if [ -f "$CONFIG_PATH" ] && command_exists curl; then
+        local url
+        local endpoint
+        checked_http=0
+        last_http=""
+        for endpoint in /api/health /api/version; do
+          url="$(migate_health_url_from_config "$endpoint" || true)"
+          if [ -n "$url" ]; then
+            checked_http=1
+            if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+              record_health_check "${health}; ${url}: ok"
+              return 0
+            fi
+            last_http="${last_http}; ${url}: failed"
+          fi
+        done
+        if [ "$checked_http" -eq 0 ] && [ "$active_streak" -ge 2 ]; then
+          record_health_check "${health}; local HTTP health check skipped: panel_port unavailable"
           return 0
         fi
-        health="${health}; ${url}: failed"
+        health="${health}${last_http}"
+      elif [ "$active_streak" -ge 2 ]; then
+        record_health_check "${health}; local HTTP health check skipped"
+        return 0
       fi
-    done
-    if [ "$checked_http" -eq 1 ]; then
-      LAST_HEALTH_CHECK="$health"
-      [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
+    fi
+
+    now="$(date +%s)"
+    if [ "$now" -ge "$deadline" ]; then
+      if [ -n "$health" ]; then
+        record_health_check "health check timed out after ${timeout}s: ${health}"
+      else
+        record_health_check "health check timed out after ${timeout}s: ${last_systemd:-unknown}"
+      fi
       return 1
     fi
-  fi
-  LAST_HEALTH_CHECK="$health"
-  [ -n "${MIGATE_HEALTH_RESULT_PATH:-}" ] && printf '%s\n' "$LAST_HEALTH_CHECK" > "$MIGATE_HEALTH_RESULT_PATH"
-  return 0
+    sleep "$interval"
+  done
 }
 
 restart_and_healthcheck_migate_service() {
@@ -1179,8 +1227,7 @@ restart_migate_service() {
     if systemctl is-active migate >/dev/null 2>&1; then
       log_ok "MiGate service: running"
     else
-      log_error "MiGate service failed to start. Run: journalctl -u migate -n 80 --no-pager"
-      return 1
+      log_warn "MiGate service: waiting for health check"
     fi
   fi
 }

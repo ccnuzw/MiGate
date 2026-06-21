@@ -317,6 +317,29 @@ func TestRouterServesViteAssets(t *testing.T) {
 	}
 }
 
+func TestRouterServesFaviconAssets(t *testing.T) {
+	router := web.NewRouter()
+	for _, tc := range []struct {
+		path        string
+		contentType string
+	}{
+		{path: "/favicon.svg", contentType: "image/svg"},
+		{path: "/favicon.ico", contentType: "image/x-icon"},
+	} {
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected %s 200, got %d: %s", tc.path, resp.Code, resp.Body.String())
+		}
+		if contentType := resp.Header().Get("Content-Type"); !strings.Contains(contentType, tc.contentType) {
+			t.Fatalf("expected %s content type %q, got %q", tc.path, tc.contentType, contentType)
+		}
+		if cache := resp.Header().Get("Cache-Control"); cache != "public, max-age=31536000, immutable" {
+			t.Fatalf("unexpected %s cache header: %q", tc.path, cache)
+		}
+	}
+}
+
 func TestRouterSPAFallbackAndAPISubIsolation(t *testing.T) {
 	router := web.NewRouter()
 	for _, path := range []string{"/inbounds", "/settings", "/login"} {
@@ -364,6 +387,11 @@ func TestRouterBasePathServesSPAAssetsAndAPI(t *testing.T) {
 	router.ServeHTTP(apiResp, httptest.NewRequest(http.MethodGet, "/panel/api/session", nil))
 	if apiResp.Code != http.StatusOK {
 		t.Fatalf("expected base-path API 200, got %d: %s", apiResp.Code, apiResp.Body.String())
+	}
+	favicon := httptest.NewRecorder()
+	router.ServeHTTP(favicon, httptest.NewRequest(http.MethodGet, "/panel/favicon.svg", nil))
+	if favicon.Code != http.StatusOK {
+		t.Fatalf("expected base-path favicon 200, got %d: %s", favicon.Code, favicon.Body.String())
 	}
 	outside := httptest.NewRecorder()
 	router.ServeHTTP(outside, httptest.NewRequest(http.MethodGet, "/api/session", nil))

@@ -178,6 +178,29 @@ func TestRouterFromPanelConfigUsesStandardXrayConfigPath(t *testing.T) {
 	}
 }
 
+func TestRouterFromPanelConfigIgnoresUnknownConfigFields(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "panel.json")
+	databasePath := filepath.Join(tmp, "migate.db")
+	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/","database_path":"` + databasePath + `","legacy_field":"kept-by-old-install"}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	router, cleanup, err := routerFromConfig(configPath)
+	if err != nil {
+		t.Fatalf("router from config with unknown fields: %v", err)
+	}
+	defer cleanup()
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected health 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestRouterFromPanelConfigXrayApplyPreservesCommandStderr(t *testing.T) {
 	tmp := t.TempDir()
 	useTempRuntimePaths(t, tmp)

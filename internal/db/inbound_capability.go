@@ -123,7 +123,7 @@ var inboundCapabilities = map[string]InboundCapability{
 		VisibleFields:      []string{"remark", "port"},
 		AutoGenerateFields: []string{"uuid", "username", "password"},
 		ExpertFields:       []string{"uuid"},
-		CredentialType:     CredentialUsernamePassword, Subscription: SubscriptionNone, ShareLink: false,
+		CredentialType:     CredentialUsernamePassword, Subscription: SubscriptionFull, ShareLink: true,
 		LocalProxyInbound:  true,
 	},
 	"http": {
@@ -138,7 +138,7 @@ var inboundCapabilities = map[string]InboundCapability{
 		VisibleFields:      []string{"remark", "port"},
 		AutoGenerateFields: []string{"uuid", "username", "password"},
 		ExpertFields:       []string{"uuid"},
-		CredentialType:     CredentialUsernamePassword, Subscription: SubscriptionNone, ShareLink: false,
+		CredentialType:     CredentialUsernamePassword, Subscription: SubscriptionFull, ShareLink: true,
 		LocalProxyInbound:  true,
 	},
 	"hysteria2": {

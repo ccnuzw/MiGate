@@ -1,6 +1,8 @@
 package web
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"testing"
 
@@ -25,6 +27,61 @@ func TestShareLinkRejectsUnsupportedCapabilityProtocols(t *testing.T) {
 		if err == nil {
 			t.Fatalf("protocol %s should be rejected by subscription share link", capability.Protocol)
 		}
+	}
+}
+
+func TestUserPasswordInboundShareLinks(t *testing.T) {
+	for _, tc := range []struct {
+		protocol string
+		want     string
+	}{
+		{protocol: "socks", want: "socks://user-1:p%40ss%3Aword@proxy.example.com:20001#phone+1"},
+		{protocol: "http", want: "http://user-1:p%40ss%3Aword@proxy.example.com:20001#phone+1"},
+	} {
+		t.Run(tc.protocol, func(t *testing.T) {
+			link, err := shareLink("proxy.example.com", db.Inbound{
+				Protocol: tc.protocol,
+				Port:     20001,
+				Network:  "tcp",
+				Security: "none",
+			}, db.Client{Email: "phone 1", CredentialID: "user-1", Password: "p@ss:word"})
+			if err != nil {
+				t.Fatalf("share link: %v", err)
+			}
+			if link != tc.want {
+				t.Fatalf("link = %q, want %q", link, tc.want)
+			}
+		})
+	}
+}
+
+func TestVMessTLSShareLinkUsesTLSSNIAsEndpointWhenCertificateAttached(t *testing.T) {
+	link, err := shareLink("103.193.149.217", db.Inbound{
+		Protocol:    "vmess",
+		Port:        20001,
+		Network:     "ws",
+		Security:    "tls",
+		WsPath:      "/ray",
+		TLSSNI:      "hkcm.example.kg",
+		TLSCertFile: "/etc/migate/certs/hkcm.example.kg/fullchain.pem",
+		TLSKeyFile:  "/etc/migate/certs/hkcm.example.kg/privkey.key",
+	}, db.Client{Email: "phone", UUID: "11111111-1111-4111-8111-111111111111"})
+	if err != nil {
+		t.Fatalf("share link: %v", err)
+	}
+	if len(link) <= len("vmess://") {
+		t.Fatalf("unexpected vmess link: %q", link)
+	}
+	payload, err := base64.StdEncoding.DecodeString(link[len("vmess://"):])
+	if err != nil {
+		t.Fatalf("decode vmess payload: %v", err)
+	}
+	var data map[string]string
+	if err := json.Unmarshal(payload, &data); err != nil {
+		t.Fatalf("unmarshal vmess payload: %v", err)
+	}
+	if data["add"] != "hkcm.example.kg" || data["sni"] != "hkcm.example.kg" {
+		t.Fatalf("vmess TLS endpoint should use SNI domain, got payload %#v", data)
 	}
 }
 

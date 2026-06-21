@@ -68,17 +68,21 @@ func TestLoadRejectsInvalidExplicitValues(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnknownFields(t *testing.T) {
+func TestLoadIgnoresUnknownFieldsForUpgradeCompatibility(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "panel.json")
 	if err := os.WriteFile(path, []byte(`{"panel_port":9999,"unknown_config_path":"/var/lib/migate"}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unknown_config_path") {
-		t.Fatalf("expected unknown field error, got %v", err)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config with unknown field: %v", err)
+	}
+	if cfg.PanelPort != 9999 {
+		t.Fatalf("expected known fields to load, got %+v", cfg)
 	}
 }
 
-func TestUpdateRejectsUnknownFieldsBeforeSaving(t *testing.T) {
+func TestUpdateDropsUnknownFieldsWhenSaving(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "panel.json")
 	if err := os.WriteFile(path, []byte(`{"panel_port":9999,"database_path":"/var/lib/migate/migate.db","unknown":true}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -86,15 +90,18 @@ func TestUpdateRejectsUnknownFieldsBeforeSaving(t *testing.T) {
 	if _, err := Update(path, func(cfg Config) (Config, error) {
 		cfg.CertDomain = "example.com"
 		return cfg, nil
-	}); err == nil || !strings.Contains(err.Error(), "unknown") {
-		t.Fatalf("expected update to reject unknown fields, got %v", err)
+	}); err != nil {
+		t.Fatalf("update config with unknown fields: %v", err)
 	}
 	updated, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	if !strings.Contains(string(updated), `"unknown":true`) {
-		t.Fatalf("failed update should not rewrite config: %s", string(updated))
+	if strings.Contains(string(updated), `"unknown"`) {
+		t.Fatalf("saved config should drop unknown fields: %s", string(updated))
+	}
+	if !strings.Contains(string(updated), `"cert_domain": "example.com"`) {
+		t.Fatalf("saved config should include updated known field: %s", string(updated))
 	}
 }
 

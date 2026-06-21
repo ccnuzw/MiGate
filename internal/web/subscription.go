@@ -101,6 +101,8 @@ var shareLinkGenerators = map[string]shareLinkGenerator{
 	"vmess":       vmessShareLink,
 	"trojan":      universalShareLink,
 	"shadowsocks": ssShareLink,
+	"socks":       userPasswordShareLink,
+	"http":        userPasswordShareLink,
 	"hysteria2":   hysteria2ShareLink,
 	"tuic":        tuicShareLink,
 }
@@ -115,7 +117,24 @@ func shareLink(host string, inbound db.Inbound, client db.Client) (string, error
 		return "", fmt.Errorf("unsupported share link protocol: %s", protocol)
 	}
 	inbound.Protocol = protocol
-	return generator(subscriptionHost(host), inbound, client), nil
+	return generator(shareEndpointHost(subscriptionHost(host), inbound), inbound, client), nil
+}
+
+func shareEndpointHost(fallback string, inbound db.Inbound) string {
+	if db.NormalizeInboundSecurity(inbound.Protocol, inbound.Security) != "tls" {
+		return fallback
+	}
+	if strings.TrimSpace(inbound.TLSCertFile) == "" || strings.TrimSpace(inbound.TLSKeyFile) == "" {
+		return fallback
+	}
+	sni := strings.TrimSpace(inbound.TLSSNI)
+	if !validSubscriptionHost(sni) {
+		return fallback
+	}
+	if ip := net.ParseIP(sni); ip != nil && strings.Contains(sni, ":") {
+		return "[" + sni + "]"
+	}
+	return sni
 }
 
 func universalShareLink(host string, inbound db.Inbound, client db.Client) string {
@@ -262,6 +281,11 @@ func ssShareLink(host string, inbound db.Inbound, client db.Client) string {
 	userPass := method + ":" + xray.SSInboundPassword(method, inbound.UUID)
 	encoded := base64.StdEncoding.EncodeToString([]byte(userPass))
 	return "ss://" + encoded + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + url.QueryEscape(client.Email)
+}
+
+func userPasswordShareLink(host string, inbound db.Inbound, client db.Client) string {
+	credential := url.UserPassword(client.CredentialIDValue(), client.PasswordValue()).String()
+	return inbound.Protocol + "://" + credential + "@" + host + ":" + strconv.Itoa(inbound.Port) + "#" + url.QueryEscape(client.Email)
 }
 
 func firstCSV(value string) string {

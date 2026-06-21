@@ -96,6 +96,8 @@ const zhToEn: Record<string, string> = {
   客户端: 'Clients',
   实时流量: 'Realtime traffic',
   当前速率: 'Current rate',
+  当前可用: 'Currently available',
+  当前不可用: 'Currently unavailable',
   统计状态: 'Stats status',
   路由规则: 'Routing rules',
   流量走势: 'Traffic trend',
@@ -108,6 +110,16 @@ const zhToEn: Record<string, string> = {
   状态加载失败: 'Failed to load status',
   生成校验失败: 'Generated config validation failed',
   未知错误: 'Unknown error',
+  等待流量摘要: 'Waiting for traffic summary',
+  查看告警: 'View alerts',
+  流量摘要加载失败: 'Failed to load traffic summary',
+  流量趋势加载失败: 'Failed to load traffic trend',
+  累计流量趋势: 'Cumulative traffic trend',
+  流量趋势加载中: 'Loading traffic trend',
+  累计: 'Cumulative',
+  生成中: 'Generating',
+  等待校验结果: 'Waiting for validation result',
+  未配置对应核心入站: 'No matching core inbound configured',
   活跃: 'Active',
   受限: 'Limited',
   内存: 'Memory',
@@ -177,18 +189,20 @@ const zhToEn: Record<string, string> = {
   统计正常: 'Stats normal',
   仅显示累计: 'Cumulative only',
   同步延迟: 'Sync delayed',
-  核心未运行: 'Core not running',
   统计接口不可用: 'Stats interface unavailable',
   统计状态过期: 'Stats status stale',
   暂不支持: 'Unsupported',
+  暂不支持分享链接: 'Share links are not supported yet',
   '当前 sing-box 二进制不支持实时统计': 'Current sing-box binary does not support realtime stats',
   '未配置对应核心节点': 'No node configured for this core',
+  '配置已应用，但端口未监听': 'Config applied, but the port is not listening',
   等待采样: 'Waiting for sample',
   等待首次采样: 'Waiting for first sample',
   部分不可用: 'Partially unavailable',
   入站已保存: 'Inbound saved',
   保存入站失败: 'Failed to save inbound',
   节点已保存: 'Node saved',
+  '节点已保存，但核心配置未生效': 'Node saved, but core config did not take effect',
   保存节点失败: 'Failed to save node',
   编辑入站: 'Edit inbound',
   新增节点: 'New node',
@@ -258,7 +272,47 @@ const zhToEn: Record<string, string> = {
   'Server Name': 'Server Name',
   高级设置: 'Advanced settings',
   自动分配: 'Auto',
+  '留空自动分配': 'Leave empty for auto assignment',
   留空保存时自动分配可用端口: 'Leave empty to assign an available port when saving.',
+  自动: 'Auto',
+  手动: 'Manual',
+  当前组合: 'Current combination',
+  选择一个可用方案: 'Choose an available profile',
+  支持节点链接: 'Node links supported',
+  不生成节点链接: 'No node link generated',
+  连接信息: 'Connection info',
+  先创建一个可用节点: 'Create a usable node first',
+  端口自动分配: 'Port auto assignment',
+  握手服务器: 'Handshake server',
+  '握手端口固定为 443': 'Handshake port is fixed to 443',
+  保存后即可连接: 'Ready to connect after saving',
+  将同时创建: 'Will create together',
+  仅创建节点: 'Create node only',
+  '生成默认客户端，之后可在节点卡片复制链接或二维码。': 'Generates a default client. You can copy the link or QR code from the node card later.',
+  '之后可在节点卡片中手动新增客户端。': 'You can add clients manually from the node card later.',
+  安全配置: 'Security settings',
+  'REALITY 伪装': 'REALITY camouflage',
+  服务名: 'Server names',
+  常用目标: 'Common targets',
+  '生成 X25519': 'Generate X25519',
+  '生成 Short ID': 'Generate short ID',
+  当前证书路径: 'Current certificate path',
+  '协议、传输、内部标识和专家项': 'Protocol, transport, internal IDs, and expert fields',
+  协议与传输: 'Protocol and transport',
+  内部标识: 'Internal ID',
+  传输路径: 'Transport path',
+  'TLS / REALITY 专家项': 'TLS / REALITY expert options',
+  协议专属项: 'Protocol-specific options',
+  客户端身份: 'Client identity',
+  已停用: 'Disabled',
+  用量与到期: 'Usage and expiry',
+  访问控制: 'Access control',
+  收起: 'Collapse',
+  展开: 'Expand',
+  展开编辑: 'Expand editor',
+  重新生成: 'Regenerate',
+  该协议使用节点级凭据: 'This protocol uses node-level credentials',
+  未生成: 'Not generated',
   '入站内部 ID': 'Inbound internal ID',
   '仅用于识别这个入站，不是客户端连接凭据；一般无需修改。': 'Used only to identify this inbound. It is not a client credential and usually does not need changes.',
   标签: 'Tag',
@@ -313,6 +367,7 @@ const zhToEn: Record<string, string> = {
   'ShadowTLS 版本': 'ShadowTLS version',
   'ShadowTLS 密码': 'ShadowTLS password',
   '客户端已保存': 'Client saved',
+  '客户端已保存，但核心配置未生效': 'Client saved, but core config did not take effect',
   保存客户端失败: 'Failed to save client',
   编辑客户端: 'Edit client',
   客户端名称: 'Client name',
@@ -339,6 +394,7 @@ const zhToEn: Record<string, string> = {
   是: 'Yes',
   否: 'No',
   不限制: 'Unlimited',
+  不指定: 'None',
   过期: 'Expiry',
   实时: 'Realtime',
   上行: 'Upload',
@@ -360,6 +416,8 @@ const zhToEn: Record<string, string> = {
   新增出站: 'New outbound',
   暂无出站: 'No outbounds',
   默认: 'Default',
+  '请输入 tag': 'Enter a tag',
+  '请输入订阅 URL': 'Enter subscription URL',
   上移: 'Move up',
   下移: 'Move down',
   启停: 'Toggle',
@@ -390,6 +448,19 @@ const zhToEn: Record<string, string> = {
   'SOCKS5 出站已导入': 'SOCKS5 outbound imported',
   代理出站已导入: 'Proxy outbound imported',
   '删除出站？': 'Delete outbound?',
+  '已保存，但核心配置未生效': 'Saved, but core config did not take effect',
+  '已删除，但核心配置未生效': 'Deleted, but core config did not take effect',
+  订阅已刷新: 'Subscription refreshed',
+  '订阅已刷新，但核心配置未生效': 'Subscription refreshed, but core config did not take effect',
+  出站订阅已刷新: 'Outbound subscription refreshed',
+  刷新订阅失败: 'Failed to refresh subscription',
+  '订阅已启用，请刷新以恢复节点': 'Subscription enabled. Refresh to restore nodes.',
+  '订阅已删除，但核心配置未生效': 'Subscription deleted, but core config did not take effect',
+  出站订阅已删除: 'Outbound subscription deleted',
+  删除订阅失败: 'Failed to delete subscription',
+  '订阅顺序已保存，但核心配置未生效': 'Subscription order saved, but core config did not take effect',
+  订阅顺序已保存: 'Subscription order saved',
+  保存订阅顺序失败: 'Failed to save subscription order',
   Ping: 'Ping',
   '按来源入站、域名或协议选择出站链路。': 'Choose outbound links by inbound source, domain, or protocol.',
   '按入站、客户端、域名、IP、规则集或协议选择出站链路。': 'Choose outbound links by inbound, client, domain, IP, rule set, or protocol.',
@@ -398,6 +469,10 @@ const zhToEn: Record<string, string> = {
   暂无路由规则: 'No routing rules',
   默认匹配: 'Default match',
   全部: 'All',
+  请选择出站: 'Select an outbound',
+  请先创建出站: 'Create an outbound first',
+  '规则已删除，但核心配置未生效': 'Rule deleted, but core config did not take effect',
+  '规则已保存，但核心配置未生效': 'Rule saved, but core config did not take effect',
   路由规则已删除: 'Routing rule deleted',
   删除路由规则失败: 'Failed to delete routing rule',
   路由规则状态已更新: 'Routing rule status updated',
@@ -421,6 +496,8 @@ const zhToEn: Record<string, string> = {
   '预留字段，当前会保存但不会写入 Xray 配置。': 'Reserved field; currently saved but not written into Xray config.',
   协议匹配: 'Protocol match',
   'geosite:netflix 或 example.com': 'geosite:netflix or example.com',
+  '按 tag、备注或协议筛选。': 'Filter by tag, remark, or protocol.',
+  '搜索出站、Tag、协议': 'Search outbound, tag, or protocol',
   '删除路由规则？': 'Delete routing rule?',
   配置: 'Config',
   'Xray 配置': 'Xray config',
@@ -430,6 +507,7 @@ const zhToEn: Record<string, string> = {
   取消托管核心: 'Remove managed service',
   删除核心: 'Delete core',
   应用: 'Apply',
+  应用配置: 'Apply config',
   安装: 'Installed',
   托管: 'Managed',
   状态: 'Status',
@@ -443,10 +521,137 @@ const zhToEn: Record<string, string> = {
   生成校验: 'Validate generated config',
   日志: 'Logs',
   加载日志: 'Load logs',
+  最近日志: 'Recent logs',
+  主操作: 'Primary actions',
+  常用: 'Common',
+  维护: 'Maintenance',
+  危险: 'Danger',
+  '升级/重装核心': 'Upgrade/reinstall core',
+  重启核心: 'Restart core',
+  停止核心: 'Stop core',
+  核心未安装: 'Core not installed',
+  '集中处理运行状态、配置同步、端口监听和核心维护。': 'Manage runtime status, config sync, port listeners, and core maintenance in one place.',
+  '该操作会重新执行安装脚本，通常用于升级或修复当前核心。': 'This reruns the install script, usually to upgrade or repair the current core.',
+  '该操作会通过 systemd 重启核心服务。': 'This restarts the core service through systemd.',
+  '该操作会停止核心服务，入站连接会中断。': 'This stops the core service and interrupts inbound connections.',
+  运行: 'Runtime',
+  同步: 'Sync',
+  不同步: 'Out of sync',
+  一致: 'In sync',
+  监听: 'Listening',
+  监听端口: 'Listening ports',
+  详情: 'Details',
+  存在未监听端口: 'Ports not listening',
+  监听正常: 'Listening normally',
+  暂无端口: 'No ports',
+  '当前没有可展示的监听端口。': 'No listening ports to display.',
+  正在监听: 'Listening',
+  未监听: 'Not listening',
+  诊断: 'Diagnostics',
+  未发现需要处理的问题: 'No issues found',
+  刷新诊断: 'Refresh diagnostics',
+  推荐操作: 'Recommended action',
+  诊断详情: 'Diagnostics details',
+  未监听端口: 'Ports not listening',
+  配置校验错误: 'Config validation error',
+  建议操作: 'Suggested actions',
+  最近日志摘要: 'Recent log summary',
+  配置状态: 'Config status',
+  '对比磁盘配置与数据库生成配置。': 'Compare disk config with database-generated config.',
+  查看配置对比: 'View config diff',
+  当前磁盘配置: 'Current disk config',
+  数据库生成配置: 'Database-generated config',
+  需要安装: 'Installation required',
+  服务异常: 'Service abnormal',
+  服务状态异常: 'Service status abnormal',
+  核心未运行: 'Core not running',
+  核心配置缺失: 'Core config missing',
+  配置缺失: 'Config missing',
+  配置文件不存在: 'Config file missing',
+  配置错误: 'Config error',
+  配置校验失败: 'Config validation failed',
+  未托管: 'Unmanaged',
+  核心未由系统托管: 'Core is not managed by the system',
+  需要应用: 'Apply required',
+  配置不同步: 'Config out of sync',
+  端口异常: 'Port issue',
+  诊断异常: 'Diagnostics issue',
+  诊断发现错误: 'Diagnostics found errors',
+  需要关注: 'Needs attention',
+  存在需要关注的问题: 'Issues need attention',
+  运行正常: 'Running normally',
+  核心运行正常: 'Core running normally',
+  '系统中没有可用核心，当前无法应用配置或监听端口。': 'No usable core is available, so config cannot be applied and ports cannot listen.',
+  '先安装核心，再应用配置。': 'Install the core first, then apply the config.',
+  '磁盘上没有找到核心配置文件。': 'Core config file was not found on disk.',
+  '点击“应用配置”重新写入配置。': 'Click "Apply config" to write the config again.',
+  '生成的配置未通过核心校验。': 'The generated config did not pass core validation.',
+  '查看诊断详情，修复配置后重新应用。': 'Review diagnostics, fix the config, then apply again.',
+  '系统服务托管状态异常，面板可能无法稳定重启或停止核心。': 'System service management is abnormal, so the panel may not reliably restart or stop the core.',
+  '确认 systemd 服务后再执行维护操作。': 'Confirm the systemd service before maintenance actions.',
+  '磁盘配置与数据库生成配置不一致。': 'Disk config differs from the database-generated config.',
+  '点击“应用配置”同步磁盘配置。': 'Click "Apply config" to sync the disk config.',
+  '核心诊断未通过。': 'Core diagnostics did not pass.',
+  '诊断仍在检查或存在非阻断问题。': 'Diagnostics are still checking or found non-blocking issues.',
+  '核心已安装、服务运行、配置同步且端口监听状态正常。': 'The core is installed, service is running, config is in sync, and port listeners are normal.',
+  '无需处理；变更节点或路由后再应用配置。': 'No action needed. Apply config again after changing nodes or routes.',
+  '按错误提示修复后重新应用配置。': 'Fix the reported errors, then apply the config again.',
+  '检查诊断详情，必要时重新应用配置。': 'Check diagnostics and apply config again if needed.',
+  无需处理: 'No action needed',
+  '无需处理。': 'No action needed.',
+  正在检查配置同步状态: 'Checking config sync status',
+  生成配置预览失败: 'Failed to generate config preview',
+  配置同步状态未知: 'Config sync status unknown',
+  磁盘配置与数据库生成配置一致: 'Disk config matches database-generated config',
+  磁盘配置与数据库生成配置不一致: 'Disk config differs from database-generated config',
+  磁盘配置不存在: 'Disk config missing',
+  数据库生成配置失败: 'Failed to generate config from database',
+  '配置 hash 不一致': 'Config hash mismatch',
+  磁盘配置解析失败: 'Failed to parse disk config',
+  未知原因: 'Unknown reason',
+  正在加载诊断: 'Loading diagnostics',
+  诊断加载失败: 'Failed to load diagnostics',
+  诊断状态未知: 'Diagnostics status unknown',
+  错误: 'Error',
+  正常: 'Normal',
+  正在检查: 'Checking',
+  加载失败: 'Load failed',
+  'systemd 托管': 'systemd managed',
+  配置校验: 'Config validation',
+  配置同步: 'Config sync',
+  端口监听: 'Port listeners',
+  通过: 'Passed',
+  提示: 'Info',
+  服务: 'Service',
+  'sing-box 未安装': 'sing-box not installed',
+  'sing-box 未被 systemd 托管': 'sing-box is not managed by systemd',
+  'sing-box 服务未运行': 'sing-box service is not running',
+  'sing-box check 失败': 'sing-box check failed',
+  服务运行但入站端口未监听: 'Service is running but inbound ports are not listening',
+  存在启用入站但没有启用客户端: 'Some enabled inbounds have no enabled clients',
+  'Hysteria2/TUIC 缺少可用客户端凭据': 'Hysteria2/TUIC lacks usable client credentials',
+  'ShadowTLS 缺少 handshake/SNI': 'ShadowTLS lacks handshake/SNI',
+  '路由规则引用不可用于 sing-box 的出站': 'Routing rule references an outbound unavailable for sing-box',
+  'sing-box 二进制不支持当前统计特性': 'sing-box binary does not support the current stats feature',
+  'sing-box 二进制特性检测失败': 'sing-box binary capability check failed',
+  '数据库生成 sing-box 配置失败': 'Failed to generate sing-box config from database',
+  'Xray 未安装': 'Xray not installed',
+  'Xray 未被 systemd 托管': 'Xray is not managed by systemd',
+  'Xray 服务未运行': 'Xray service is not running',
+  'xray run -test 失败': 'xray run -test failed',
+  '路由规则引用不可用于 Xray 的出站': 'Routing rule references an outbound unavailable for Xray',
+  '数据库生成 Xray 配置失败': 'Failed to generate Xray config from database',
+  'WS/H2 path 配置无效': 'Invalid WS/H2 path config',
+  'gRPC serviceName 将使用默认值': 'gRPC serviceName will use the default value',
+  'gRPC serviceName 配置无效': 'Invalid gRPC serviceName config',
+  'XHTTP path 配置无效': 'Invalid XHTTP path config',
+  'REALITY 配置不完整': 'REALITY config is incomplete',
+  'TLS 证书配置缺失': 'TLS certificate config missing',
+  'Shadowsocks 2022 缺少可用凭据': 'Shadowsocks 2022 lacks usable credentials',
+  '生成校验通过': 'Generated config validation passed',
   已安装: 'Installed',
   未安装: 'Not installed',
   已托管: 'Managed',
-  未托管: 'Unmanaged',
   运行中: 'Running',
   已停止: 'Stopped',
   未知: 'Unknown',
@@ -544,6 +749,18 @@ const zhToEn: Record<string, string> = {
   设置已保存端口数据库或基础路径变更需要重启服务后生效: 'Settings saved. Port, database, or base path changes require a service restart.',
   '设置已保存，端口、数据库或基础路径变更需要重启服务后生效': 'Settings saved. Port, database, or base path changes require a service restart.',
   保存设置失败: 'Failed to save settings',
+  预检查失败: 'Preflight failed',
+  证书申请已完成: 'Certificate request completed',
+  证书申请失败: 'Certificate request failed',
+  证书已导入: 'Certificate imported',
+  导入证书失败: 'Failed to import certificate',
+  续期检查完成: 'Renewal check completed',
+  个已续期: 'renewed',
+  续期检查失败: 'Renewal check failed',
+  证书已应用到入站: 'Certificate applied to inbounds',
+  应用证书失败: 'Failed to apply certificate',
+  证书已删除: 'Certificate deleted',
+  删除证书失败: 'Failed to delete certificate',
   重启命令已发送: 'Restart command sent',
   重启失败: 'Restart failed',
   证书已获取: 'Certificate issued',
@@ -552,6 +769,7 @@ const zhToEn: Record<string, string> = {
   启动更新失败: 'Failed to start update',
   加载更新日志: 'Load update logs',
   日志路径: 'Log path',
+  '点击“加载日志”查看最近更新日志。': 'Click "Load logs" to view recent update logs.',
   '点击“加载更新日志”查看最近更新日志。': 'Click "Load update logs" to view recent update logs.',
   会话已撤销: 'Session revoked',
   撤销会话失败: 'Failed to revoke session',
@@ -562,6 +780,149 @@ const zhToEn: Record<string, string> = {
   '立即更新 MiGate？': 'Update MiGate now?',
   '更新器将通过 systemd-run 在服务外执行。': 'The updater runs outside the service through systemd-run.',
   '撤销该会话？': 'Revoke this session?',
+  '管理托管证书、签发流程、导入证书以及 TLS 入站绑定。': 'Manage certificates, issuance, imports, and TLS inbound bindings.',
+  '检查并续期证书？': 'Check and renew certificates?',
+  '30 天内到期的 ACME 证书会尝试续期。': 'ACME certificates expiring within 30 days will be renewed.',
+  检查续期: 'Check renewal',
+  '申请 TLS 证书？': 'Request TLS certificate?',
+  'MiGate 将执行 HTTP-01 预检查和 ACME 签发，可能短暂占用 80 端口。': 'MiGate will run HTTP-01 preflight and ACME issuance, and may briefly use port 80.',
+  '导入 TLS 证书？': 'Import TLS certificate?',
+  '导入后证书和私钥会写入 /etc/migate/certs。': 'After import, the certificate and private key are written to /etc/migate/certs.',
+  '应用证书到入站？': 'Apply certificate to inbounds?',
+  '删除证书？': 'Delete certificate?',
+  '仍被入站使用的证书不会被删除。': 'Certificates still used by inbounds will not be deleted.',
+  '高级 / 兼容证书接口': 'Advanced / compatibility certificate API',
+  保存兼容配置: 'Save compatibility settings',
+  兼容申请: 'Compatibility request',
+  已设置密码: 'Password set',
+  未设置密码: 'Password not set',
+  面板配置: 'Panel configuration',
+  '配置管理面板访问入口、登录凭据和本地数据存储。': 'Configure panel access, login credentials, and local storage.',
+  访问前缀: 'Access prefix',
+  认证状态: 'Auth status',
+  当前用户: 'Current user',
+  本地配置库: 'Local config database',
+  访问入口: 'Access',
+  登录凭据: 'Login credentials',
+  存储: 'Storage',
+  '暂无证书，建议先申请 ACME 证书。': 'No certificates yet. Request an ACME certificate first.',
+  '存在失败或已过期证书，建议查看错误并重新申请。': 'Some certificates failed or expired. Review errors and request again.',
+  '存在即将到期证书，建议运行续期检查。': 'Some certificates are expiring soon. Run a renewal check.',
+  '已有证书，建议绑定到需要 TLS 的入站。': 'Certificates exist. Bind them to inbounds that need TLS.',
+  '证书状态正常，定期检查续期即可。': 'Certificate status is normal. Check renewal periodically.',
+  托管证书: 'Managed certificates',
+  全部资产: 'All assets',
+  '有效 / 临期': 'Valid / expiring',
+  需处理: 'Needs attention',
+  'TLS 入站绑定': 'TLS inbound bindings',
+  使用计数: 'Usage count',
+  推荐动作: 'Recommended action',
+  证书资产列表: 'Certificate assets',
+  选择证书后查看详情和绑定操作: 'Select a certificate to view details and binding actions',
+  来源: 'Source',
+  使用: 'Usage',
+  操作: 'Actions',
+  暂无托管证书: 'No managed certificates',
+  '先通过 ACME 申请，或导入现有 PEM 证书。': 'Request one through ACME or import an existing PEM certificate.',
+  证书操作: 'Certificate actions',
+  'ACME 申请、手动导入和应用到 TLS 入站分步执行。': 'Run ACME requests, manual imports, and inbound binding in separate steps.',
+  证书操作类型: 'Certificate action type',
+  'ACME 申请': 'ACME request',
+  手动导入: 'Manual import',
+  应用到入站: 'Apply to inbounds',
+  '申请域名 / SAN': 'Domains / SAN',
+  '多个域名可用逗号或空格分隔。': 'Separate multiple domains with commas or spaces.',
+  'ACME 邮箱': 'ACME email',
+  '填写域名/SAN 和邮箱': 'Enter domains/SAN and email',
+  运行预检查: 'Run preflight',
+  查看预检查结果: 'Review preflight result',
+  确认申请证书: 'Confirm certificate request',
+  导入名称: 'Import name',
+  导入证书: 'Import certificate',
+  当前证书: 'Current certificate',
+  未选择证书: 'No certificate selected',
+  '无 TLS 证书路径': 'No TLS certificate path',
+  已绑定当前证书: 'Current certificate bound',
+  已绑定其他证书: 'Another certificate bound',
+  未绑定证书: 'No certificate bound',
+  '暂无可绑定的 TLS 入站': 'No TLS inbounds available for binding',
+  '选择左侧证书后查看路径、指纹、绑定和操作记录。': 'Select a certificate on the left to view paths, fingerprints, bindings, and operations.',
+  证书详情: 'Certificate details',
+  最后错误: 'Last error',
+  绑定的入站: 'Bound inbounds',
+  暂无入站使用该证书: 'No inbounds use this certificate',
+  最近操作记录: 'Recent operations',
+  暂无操作记录: 'No operation records',
+  预检查通过: 'Preflight passed',
+  预检查存在问题: 'Preflight found issues',
+  'preflight failed': 'Preflight failed',
+  'certificate issue started': 'Certificate issue started',
+  'ACME issue failed': 'ACME issue failed',
+  'issued certificate validation failed': 'Issued certificate validation failed',
+  'certificate issued': 'Certificate issued',
+  'certificate import failed': 'Certificate import failed',
+  'write imported certificate failed': 'Write imported certificate failed',
+  'certificate imported': 'Certificate imported',
+  'certificate apply failed': 'Certificate apply failed',
+  'certificate applied': 'Certificate applied',
+  'certificate deleted': 'Certificate deleted',
+  'renew skipped': 'Renew skipped',
+  'renew failed': 'Renew failed',
+  'certificate renewed': 'Certificate renewed',
+  导入: 'Imported',
+  有效: 'Valid',
+  即将到期: 'Expiring soon',
+  已过期: 'Expired',
+  处理中: 'Processing',
+  成功: 'Success',
+  success: 'Success',
+  completed: 'Completed',
+  ok: 'OK',
+  failed: 'Failed',
+  error: 'Error',
+  warning: 'Warning',
+  pending: 'Pending',
+  系统更新控制台: 'System update console',
+  '检查版本、执行在线升级，并在失败时查看回滚与健康检查结果。': 'Check versions, run online updates, and review rollback and health check results after failures.',
+  更新中: 'Updating',
+  刷新服务状态: 'Refresh service status',
+  刷新日志: 'Refresh logs',
+  收起日志: 'Collapse logs',
+  当前版本: 'Current version',
+  本机运行版本: 'Local running version',
+  最新版本: 'Latest version',
+  等待检查: 'Waiting for check',
+  检查后更新: 'Check before update',
+  'MiGate 服务': 'MiGate service',
+  idle: 'Idle',
+  running: 'Running',
+  started: 'Started',
+  updating: 'Updating',
+  downloading: 'Downloading',
+  installing: 'Installing',
+  restarting: 'Restarting',
+  更新进行中: 'Update in progress',
+  '正在执行更新任务，请等待状态刷新。': 'Update task is running. Wait for the status to refresh.',
+  '上次更新状态长时间未完成，已标记为失败；可重新发起更新': 'The previous update did not finish for a long time and was marked failed. You can start another update.',
+  '正在下载并校验升级包': 'Downloading and verifying the update package',
+  '升级包校验完成，正在替换二进制和服务文件': 'Update package verified. Replacing binary and service files',
+  '正在重启 MiGate 并执行健康检查': 'Restarting MiGate and running health checks',
+  '升级成功，服务已恢复可用': 'Update completed; service is available',
+  '回滚失败，需要人工处理': 'Rollback failed; manual intervention required',
+  'update command accepted': 'Update command accepted',
+  'update command accepted in test mode': 'Update command accepted in test mode',
+  'update command completed; MiGate may restart if a new version was installed': 'Update command completed; MiGate may restart if a new version was installed',
+  'dev builds cannot be checked against releases': 'Dev builds cannot be checked against releases',
+  最近更新失败: 'Recent update failed',
+  最近更新结果: 'Recent update result',
+  回滚: 'Rollback',
+  启动于: 'Started at',
+  服务详情: 'Service details',
+  更新日志: 'Update logs',
+  已回滚服务已恢复: 'Rolled back and service restored',
+  '已回滚，服务已恢复': 'Rolled back and service restored',
+  未确认回滚: 'Rollback not confirmed',
+  无回滚: 'No rollback',
   面板登录: 'Panel login',
   '会话检查失败，请直接登录或刷新页面。': 'Session check failed. Sign in directly or refresh the page.',
   登录中: 'Signing in',
@@ -586,6 +947,16 @@ const zhToEn: Record<string, string> = {
   暂无链路数据: 'No topology data',
   '创建入站、出站或路由规则后，将在这里看到只读拓扑关系。': 'Create inbounds, outbounds, or routing rules to see the read-only topology here.',
   缺失: 'Missing',
+  缺少outbound_id: 'Missing outbound_id',
+  '缺少 outbound_id': 'Missing outbound_id',
+  未知入站: 'Unknown inbound',
+  未知出站: 'Unknown outbound',
+  未命名入站: 'Unnamed inbound',
+  路由引用的入站不存在: 'Referenced inbound does not exist',
+  路由引用的客户端不存在: 'Referenced client does not exist',
+  路由引用的出站不存在: 'Referenced outbound does not exist',
+  '客户端 ID': 'Client ID',
+  当前来源内核不支持: 'Current source core is not supported',
   客户端已缺失: 'Client missing',
   '入站级规则：入站 -> 出站': 'Inbound-level rule: inbound -> outbound',
   '客户端级规则：入站 / 客户端 -> 出站': 'Client-level rule: inbound / client -> outbound',
@@ -603,6 +974,9 @@ const zhToEn: Record<string, string> = {
   '范围：': 'Scope:',
   '备注：': 'Remark:',
   '协议：': 'Protocol:',
+  '内核：': 'Core:',
+  '地址：': 'Address:',
+  '国家/地区：': 'Country/Region:',
   '传输：': 'Transport:',
   '客户端：': 'Clients:',
   '实际 Tag：': 'Actual tag:',
@@ -615,6 +989,7 @@ const zhToEn: Record<string, string> = {
   继承默认出站: 'Inherited default outbound',
   附属客户端: 'Child client',
   未找到: 'Not found',
+  内核: 'Core',
   inbound: 'inbound',
   client: 'client',
   domain: 'domain',
@@ -625,7 +1000,54 @@ const zhToEn: Record<string, string> = {
 };
 
 const textReplacements: Array<[RegExp, string]> = [
+  [/系统中没有可用核心/g, 'No usable core is available'],
+  [/当前无法应用配置或监听端口/g, 'config cannot be applied and ports cannot listen'],
+  [/入站连接会中断/g, 'inbound connections will be interrupted'],
+  [/端口未监听/g, 'ports are not listening'],
+  [/未监听端口/g, 'ports not listening'],
+  [/监听端口/g, 'listening ports'],
+  [/核心配置未生效/g, 'core config did not take effect'],
+  [/核心配置/g, 'core config'],
+  [/配置文件/g, 'config file'],
+  [/磁盘配置/g, 'disk config'],
+  [/数据库生成配置/g, 'database-generated config'],
+  [/生成配置/g, 'generated config'],
+  [/配置同步/g, 'config sync'],
+  [/配置校验/g, 'config validation'],
+  [/核心未运行/g, 'core is not running'],
+  [/核心未安装/g, 'core not installed'],
+  [/核心/g, 'core'],
+  [/服务状态/g, 'service status'],
+  [/服务/g, 'service'],
+  [/入站端口/g, 'inbound ports'],
+  [/入站/g, 'inbounds'],
+  [/出站/g, 'outbounds'],
+  [/规则/g, 'rules'],
+  [/路由/g, 'routing'],
+  [/证书/g, 'certificate'],
+  [/私钥/g, 'private key'],
+  [/预检查/g, 'preflight'],
+  [/续期/g, 'renewal'],
+  [/会话/g, 'sessions'],
+  [/回滚/g, 'rollback'],
+  [/健康检查/g, 'health check'],
   [/已启用/g, 'Enabled'],
+  [/已停止/g, 'Stopped'],
+  [/已安装/g, 'Installed'],
+  [/已托管/g, 'Managed'],
+  [/已保存/g, 'Saved'],
+  [/已删除/g, 'Deleted'],
+  [/已撤销/g, 'Revoked'],
+  [/已复制/g, 'copied'],
+  [/未安装/g, 'Not installed'],
+  [/未托管/g, 'Unmanaged'],
+  [/未运行/g, 'Not running'],
+  [/未配置/g, 'Not configured'],
+  [/未选择/g, 'Not selected'],
+  [/未生成/g, 'Not generated'],
+  [/未找到/g, 'Not found'],
+  [/未发现/g, 'Not found'],
+  [/未获取/g, 'Not issued'],
   [/活跃/g, 'Active'],
   [/受限/g, 'Limited'],
   [/新增/g, 'Create'],
@@ -648,30 +1070,195 @@ const textReplacements: Array<[RegExp, string]> = [
   [/缓存/g, 'Cache'],
   [/更新/g, 'Updated'],
   [/消息/g, 'Message'],
+  [/失败/g, 'Failed'],
+  [/错误/g, 'Error'],
+  [/通过/g, 'Passed'],
+  [/正常/g, 'Normal'],
+  [/异常/g, 'Issue'],
+  [/检查/g, 'Check'],
+  [/应用/g, 'Apply'],
+  [/安装/g, 'Install'],
+  [/托管/g, 'Managed'],
+  [/重启/g, 'Restart'],
+  [/停止/g, 'Stop'],
+  [/配置/g, 'Config'],
+  [/状态/g, 'Status'],
+  [/端口/g, 'Port'],
+  [/来源/g, 'Source'],
+  [/目标/g, 'Target'],
+  [/命令/g, 'Command'],
+  [/详情/g, 'Details'],
+  [/建议/g, 'Suggestion'],
+  [/操作/g, 'Action'],
+  [/全部/g, 'All'],
+  [/默认/g, 'Default'],
+  [/当前/g, 'Current'],
+  [/最近/g, 'Recent'],
+  [/等待/g, 'Waiting'],
+  [/未知/g, 'Unknown'],
+  [/存在/g, 'Existing'],
+  [/缺失/g, 'Missing'],
+  [/不可用/g, 'unavailable'],
+  [/可用/g, 'available'],
+  [/不一致/g, 'mismatch'],
+  [/一致/g, 'in sync'],
 ];
+
+const textReplacementKeywordPattern = new RegExp(textReplacements.map(([pattern]) => pattern.source).join('|'));
 
 const originalTextNodes = new WeakMap<Text, string>();
 
+function shouldSkipI18n(node: Node) {
+  const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+  return Boolean(element?.closest('[data-no-i18n]'));
+}
+
 function compactText(value: string) {
   return value.replace(/\s+/g, '').replace(/[：?？。]/g, '');
+}
+
+function translateDynamicText(value: string): string {
+  const text = value.trim();
+  let match = text.match(/^(.+) 生成校验通过$/);
+  if (match) return `${match[1]} generated config validation passed`;
+  match = text.match(/^(.+) 生成校验失败$/);
+  if (match) return `${match[1]} generated config validation failed`;
+  match = text.match(/^(.+) 配置已应用$/);
+  if (match) return `${match[1]} config applied`;
+  match = text.match(/^(.+) 应用失败$/);
+  if (match) return `${match[1]} apply failed`;
+  match = text.match(/^(.+) 安装命令已执行$/);
+  if (match) return `${match[1]} install command executed`;
+  match = text.match(/^(.+) 安装失败$/);
+  if (match) return `${match[1]} install failed`;
+  match = text.match(/^(.+) 取消托管命令已执行$/);
+  if (match) return `${match[1]} remove managed service command executed`;
+  match = text.match(/^(.+) 取消托管失败$/);
+  if (match) return `${match[1]} remove managed service failed`;
+  match = text.match(/^(.+) 删除命令已执行$/);
+  if (match) return `${match[1]} delete command executed`;
+  match = text.match(/^(.+) 删除失败$/);
+  if (match) return `${match[1]} delete failed`;
+  match = text.match(/^(.+) 已重启$/);
+  if (match) return `${match[1]} restarted`;
+  match = text.match(/^(.+) 重启失败$/);
+  if (match) return `${match[1]} restart failed`;
+  match = text.match(/^(.+) 已停止$/);
+  if (match) return `${match[1]} stopped`;
+  match = text.match(/^(.+) 停止失败$/);
+  if (match) return `${match[1]} stop failed`;
+  match = text.match(/^(.+) 核心管理$/);
+  if (match) return `${match[1]} core management`;
+  match = text.match(/^应用 (.+) 配置？$/);
+  if (match) return `Apply ${match[1]} config?`;
+  match = text.match(/^重启 (.+) 核心？$/);
+  if (match) return `Restart ${match[1]} core?`;
+  match = text.match(/^停止 (.+) 核心？$/);
+  if (match) return `Stop ${match[1]} core?`;
+  match = text.match(/^取消托管 (.+) 核心？$/);
+  if (match) return `Remove managed ${match[1]} service?`;
+  match = text.match(/^删除 (.+) 核心？$/);
+  if (match) return `Delete ${match[1]} core?`;
+  match = text.match(/^(升级\/重装核心|安装核心) (.+)？$/);
+  if (match) return `${translateText(match[1], 'en')} ${match[2]}?`;
+  match = text.match(/^端口 (\d+)$/);
+  if (match) return `Port ${match[1]}`;
+  match = text.match(/^未监听 (\d+) 个端口$/);
+  if (match) return `${match[1]} ports not listening`;
+  match = text.match(/^缺失 (\d+) 个监听端口$/);
+  if (match) return `${match[1]} missing listening ports`;
+  match = text.match(/^缺失 (\d+) 个$/);
+  if (match) return `${match[1]} missing`;
+  match = text.match(/^有 (\d+) 个入站端口未监听。$/);
+  if (match) return `${match[1]} inbound ports are not listening.`;
+  match = text.match(/^(\d+) 个端口未监听，请优先检查服务日志和防火墙。$/);
+  if (match) return `${match[1]} ports are not listening. Check service logs and firewall first.`;
+  match = text.match(/^(\d+) 个端口监听正常。$/);
+  if (match) return `${match[1]} ports are listening normally.`;
+  match = text.match(/^入站 (\d+)$/);
+  if (match) return `Inbound ${match[1]}`;
+  match = text.match(/^命令：(.+)$/);
+  if (match) return `Command: ${match[1]}`;
+  match = text.match(/^原因：(.+)$/);
+  if (match) return `Reason: ${translateText(match[1], 'en')}`;
+  match = text.match(/^配置已应用，但端口未监听：(.+)$/);
+  if (match) return `Config applied, but ports are not listening: ${match[1]}`;
+  match = text.match(/^(.+)，但核心配置未生效：(.+)$/);
+  if (match) return `${translateText(match[1], 'en')}, but core config did not take effect: ${translateText(match[2], 'en')}`;
+  match = text.match(/^(.+)：(.+)$/);
+  if (match && /[\u4e00-\u9fff]/.test(match[1])) {
+    return `${translateText(match[1], 'en')}: ${translateText(match[2], 'en')}`;
+  }
+  match = text.match(/^(.+)，但核心配置未生效$/);
+  if (match) return `${translateText(match[1], 'en')}, but core config did not take effect`;
+  match = text.match(/^(.+)已复制$/);
+  if (match) return `${translateText(match[1], 'en')} copied`;
+  match = text.match(/^复制(.+)$/);
+  if (match) return `Copy ${translateText(match[1], 'en').toLowerCase()}`;
+  match = text.match(/^应用到选中的 (\d+) 个入站$/);
+  if (match) return `Apply to ${match[1]} selected inbounds`;
+  match = text.match(/^将把当前证书应用到选中的 (\d+) 个入站，并重新应用对应核心配置。$/);
+  if (match) return `Apply the current certificate to ${match[1]} selected inbounds and reapply the related core config.`;
+  match = text.match(/^将把当前证书应用到选中的 (.+) 个入站，并重新应用对应核心配置。$/);
+  if (match) return `Apply the current certificate to ${match[1]} selected inbounds and reapply the related core config.`;
+  match = text.match(/^应用到选中的 (.+) 个入站$/);
+  if (match) return `Apply to ${match[1]} selected inbounds`;
+  match = text.match(/^已撤销 (.+) 个其他会话$/);
+  if (match) return `Revoked ${match[1]} other sessions`;
+  match = text.match(/^(.+) 个已续期$/);
+  if (match) return `${match[1]} renewed`;
+  match = text.match(/^(.+) 个会话$/);
+  if (match) return `${match[1]} sessions`;
+  match = text.match(/^(.+) 个其他会话$/);
+  if (match) return `${match[1]} other sessions`;
+  match = text.match(/^(.+) 个端口未监听，请优先检查服务日志和防火墙。$/);
+  if (match) return `${match[1]} ports are not listening. Check service logs and firewall first.`;
+  match = text.match(/^(.+) 个端口监听正常。$/);
+  if (match) return `${match[1]} ports are listening normally.`;
+  match = text.match(/^缺失 (.+) 个监听端口$/);
+  if (match) return `${match[1]} missing listening ports`;
+  match = text.match(/^缺失 (.+) 个$/);
+  if (match) return `${match[1]} missing`;
+  match = text.match(/^未监听 (.+) 个端口$/);
+  if (match) return `${match[1]} ports not listening`;
+  match = text.match(/^有 (.+) 个入站端口未监听。$/);
+  if (match) return `${match[1]} inbound ports are not listening.`;
+  match = text.match(/^已回滚，状态 (.+)$/);
+  if (match) return `Rolled back, status ${translateText(match[1], 'en')}`;
+  match = text.match(/^路由引用的(入站|出站)不存在 · (.+)$/);
+  if (match) return `Referenced ${match[1] === '入站' ? 'inbound' : 'outbound'} does not exist - ${match[2]}`;
+  match = text.match(/^#(\d+) 客户端$/);
+  if (match) return `#${match[1]} client`;
+  match = text.match(/^#(\d+) 客户端 禁用$/);
+  if (match) return `#${match[1]} client disabled`;
+  match = text.match(/^#(\d+) 全部入站$/);
+  if (match) return `#${match[1]} all inbounds`;
+  match = text.match(/^#(\d+) 全部入站 禁用$/);
+  if (match) return `#${match[1]} all inbounds disabled`;
+  return '';
 }
 
 export function translateText(value: string, lang: Lang): string {
   if (lang !== 'en' || !value) return value;
   const exact = zhToEn[value] || zhToEn[value.trim()] || zhToEn[compactText(value)];
   if (exact) return exact;
+  const dynamic = translateDynamicText(value);
+  if (dynamic) return dynamic;
+  if (!textReplacementKeywordPattern.test(value)) return value;
   let translated = value;
   for (const [pattern, replacement] of textReplacements) {
     translated = translated.replace(pattern, replacement);
   }
-  return translated;
+  return translated.replace(/\s+/g, ' ').replace(/\s+([:：?？。])/g, '$1').trim();
 }
 
 export function translateElement(root: ParentNode, lang: Lang) {
+  if (root instanceof Element && shouldSkipI18n(root)) return;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const textNodes: Text[] = [];
   while (walker.nextNode()) {
-    textNodes.push(walker.currentNode as Text);
+    const node = walker.currentNode as Text;
+    if (!shouldSkipI18n(node)) textNodes.push(node);
   }
   for (const node of textNodes) {
     const current = node.nodeValue || '';
@@ -692,6 +1279,7 @@ export function translateElement(root: ParentNode, lang: Lang) {
   }
   const elements = root.querySelectorAll<HTMLElement>('[title], [placeholder], [aria-label]');
   for (const el of elements) {
+    if (shouldSkipI18n(el)) continue;
     for (const attr of ['title', 'placeholder', 'aria-label']) {
       const value = el.getAttribute(attr);
       if (!value) continue;

@@ -3,12 +3,14 @@
 Panel configuration lives at `/etc/migate/panel.json`, is owned by
 `internal/config.Config`, and is part of the MiGate Runtime Contract.
 
-## strict schema
+## Schema Compatibility
 
-MiGate has not shipped a stable public config API yet, so the schema is strict:
+MiGate has not shipped a stable public config API yet, so writes are typed and
+conservative, while reads stay upgrade-compatible:
 
 - `internal/config.Config` is the only field source.
-- `Load(path)` rejects unknown JSON fields.
+- `Load(path)` ignores unknown JSON fields so older or user-extended
+  `panel.json` files do not block service startup during an online upgrade.
 - `Save(path, cfg)` writes only known `Config` fields.
 - `Update(path, mutate)` loads typed `Config`, validates it, normalizes write defaults, and saves typed JSON.
 - Settings APIs must not preserve, pass through, or create unknown fields with arbitrary maps.
@@ -52,7 +54,9 @@ actionable errors instead of raw command output.
 
 ## Read Versus Write Defaults
 
-`Load(path)` normalizes existing string fields but does not inject omitted write defaults. This lets callers distinguish an old partial config from a newly saved full config.
+`Load(path)` normalizes existing string fields and ignores unknown fields, but
+does not inject omitted write defaults. This lets callers distinguish an old
+partial config from a newly saved full config.
 
 `Normalize(cfg)` and `Save(path, cfg)` apply write defaults before persisting. A saved config should not contain unknown fields and should include normalized paths and defaults.
 

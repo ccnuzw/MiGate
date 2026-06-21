@@ -141,6 +141,5 @@ unsupported protocol.
 
 - Xray inbound `quic` and `kcp` transports.
 - ShadowTLS subscription/share links.
-- SOCKS/HTTP subscription/share links.
 - Multi-user Shadowsocks inbound credentials. Shadowsocks remains an
   inbound-level password model.

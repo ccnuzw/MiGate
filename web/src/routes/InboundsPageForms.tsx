@@ -195,9 +195,8 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
     if (!canAttachSettingCert || !settingCert) return;
     form.setValue('tls_cert_file', settingCert.cert_path.trim(), { shouldDirty: true, shouldValidate: true });
     form.setValue('tls_key_file', settingCert.key_path.trim(), { shouldDirty: true, shouldValidate: true });
-    if (!form.getValues('tls_sni') && settingCert.domain) {
-      form.setValue('tls_sni', settingCert.domain, { shouldDirty: true, shouldValidate: true });
-    }
+    const domain = settingCert.domain.trim();
+    if (domain) form.setValue('tls_sni', domain, { shouldDirty: true, shouldValidate: true });
     showToast(text('已关联设置中的 TLS 证书'), 'success');
   };
   const clearTLSCert = () => {

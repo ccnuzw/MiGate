@@ -172,7 +172,7 @@ func (s Service) Status(ctx context.Context) StatusResponse {
 	if len(cert.Domains) > 0 {
 		domain = cert.Domains[0]
 	}
-	return StatusResponse{Domain: domain, Issued: cert.Status == db.CertStatusIssued || cert.Status == db.CertStatusExpiringSoon, CertPath: cert.CertPath, KeyPath: cert.KeyPath}
+	return StatusResponse{Domain: domain, Email: cert.IssueEmail, Issued: cert.Status == db.CertStatusIssued || cert.Status == db.CertStatusExpiringSoon, CertPath: cert.CertPath, KeyPath: cert.KeyPath}
 }
 
 func (s Service) Preflight(ctx context.Context, req IssueRequest) (PreflightResult, error) {
@@ -242,13 +242,23 @@ func (s Service) Issue(ctx context.Context, req IssueRequest) (db.Certificate, P
 	domains, _ := normalizeDomains(req)
 	name := domains[0]
 	certPath, keyPath := s.assetPaths(name)
-	_ = s.record(ctx, 0, "issue", "pending", "", "certificate issue started", strings.Join(domains, ","))
+	existing, hasExisting, err := s.existingAssetCertificate(ctx, certPath, keyPath)
+	if err != nil {
+		return db.Certificate{}, preflight, Error{Code: "list_certificates_failed", Detail: err.Error()}
+	}
+	certID := int64(0)
+	if hasExisting {
+		certID = existing.ID
+		certPath = existing.CertPath
+		keyPath = existing.KeyPath
+	}
+	_ = s.record(ctx, certID, "issue", "pending", "", "certificate issue started", strings.Join(domains, ","))
 	issuer := s.issuer()
 	method := challengeMethod(req.Method)
 	directoryURL := issuerDirectoryURL(issuer)
 	issued, err := issuer.Issue(ctx, IssueRequest{Domains: domains, Email: strings.TrimSpace(req.Email), Method: method}, certPath, keyPath)
 	if err != nil {
-		_ = s.record(ctx, 0, "issue", "failed", CodeACMEIssueFailed, "ACME issue failed", err.Error())
+		_ = s.record(ctx, certID, "issue", "failed", CodeACMEIssueFailed, "ACME issue failed", err.Error())
 		return db.Certificate{}, preflight, Error{Code: CodeACMEIssueFailed, Detail: err.Error()}
 	}
 	certPEM := issued.CertPEM
@@ -269,13 +279,14 @@ func (s Service) Issue(ctx context.Context, req IssueRequest) (db.Certificate, P
 	}
 	meta, err := parseCertificatePair(certPEM, keyPEM)
 	if err != nil {
-		_ = s.record(ctx, 0, "issue", "failed", errorCode(err), "issued certificate validation failed", err.Error())
+		_ = s.record(ctx, certID, "issue", "failed", errorCode(err), "issued certificate validation failed", err.Error())
 		return db.Certificate{}, preflight, err
 	}
 	if err := s.writeAssetFiles(certPath, keyPath, certPEM, keyPEM); err != nil {
 		return db.Certificate{}, preflight, Error{Code: CodeCertDirNotWritable, Detail: err.Error()}
 	}
 	cert, err := s.Store.UpsertCertificate(ctx, db.UpsertCertificateParams{
+		ID:               certID,
 		Name:             name,
 		Source:           db.CertSourceACME,
 		Status:           s.statusForMeta(meta),
@@ -311,11 +322,22 @@ func (s Service) Import(ctx context.Context, req ImportRequest) (db.Certificate,
 		name = meta.Domains[0]
 	}
 	certPath, keyPath := s.assetPaths(name)
+	existing, hasExisting, err := s.existingAssetCertificate(ctx, certPath, keyPath)
+	if err != nil {
+		return db.Certificate{}, Error{Code: "list_certificates_failed", Detail: err.Error()}
+	}
+	certID := int64(0)
+	if hasExisting {
+		certID = existing.ID
+		certPath = existing.CertPath
+		keyPath = existing.KeyPath
+	}
 	if err := s.writeAssetFiles(certPath, keyPath, []byte(req.Fullchain), []byte(req.Key)); err != nil {
-		_ = s.record(ctx, 0, "import", "failed", CodeCertDirNotWritable, "write imported certificate failed", err.Error())
+		_ = s.record(ctx, certID, "import", "failed", CodeCertDirNotWritable, "write imported certificate failed", err.Error())
 		return db.Certificate{}, Error{Code: CodeCertDirNotWritable, Detail: err.Error()}
 	}
 	cert, err := s.Store.UpsertCertificate(ctx, db.UpsertCertificateParams{
+		ID:          certID,
 		Name:        name,
 		Source:      db.CertSourceImport,
 		Status:      s.statusForMeta(meta),
@@ -517,10 +539,41 @@ func (s Service) certDir() string {
 	return paths.CertDir
 }
 
+func (s Service) existingAssetCertificate(ctx context.Context, certPath, keyPath string) (db.Certificate, bool, error) {
+	if s.Store == nil {
+		return db.Certificate{}, false, nil
+	}
+	certs, err := s.Store.ListCertificates(ctx)
+	if err != nil {
+		return db.Certificate{}, false, err
+	}
+	for _, cert := range certs {
+		if cert.CertPath == certPath && cert.KeyPath == keyPath {
+			return cert, true, nil
+		}
+	}
+	legacyKeyPath := legacyPrivateKeyPath(keyPath)
+	if legacyKeyPath != "" {
+		for _, cert := range certs {
+			if cert.CertPath == certPath && cert.KeyPath == legacyKeyPath {
+				return cert, true, nil
+			}
+		}
+	}
+	return db.Certificate{}, false, nil
+}
+
 func (s Service) assetPaths(name string) (string, string) {
 	slug := sanitizeAssetName(name)
 	dir := filepath.Join(s.certDir(), slug)
-	return filepath.Join(dir, "fullchain.pem"), filepath.Join(dir, "privkey.pem")
+	return filepath.Join(dir, "fullchain.pem"), filepath.Join(dir, "privkey.key")
+}
+
+func legacyPrivateKeyPath(keyPath string) string {
+	if filepath.Base(keyPath) != "privkey.key" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(keyPath), "privkey.pem")
 }
 
 func (s Service) ensureCertDirWritable() error {
