@@ -63,6 +63,9 @@ func TestInstallerIsProductizedReleaseInstaller(t *testing.T) {
 		"panel_username",
 		"panel_password",
 		"web_base_path",
+		"management_direct_enabled",
+		"management_direct_auto_detect",
+		"ensure-management-direct",
 		"migate-linux-${ARCH}.tar.gz",
 		"enable_systemd_service migate",
 		"systemctl restart migate",
@@ -194,6 +197,76 @@ func TestInstallerPreservesExistingConfigByDefault(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("installer config preservation contract missing %q", want)
 		}
+	}
+}
+
+func TestInstallerValidatesAutoDetectedManagementIP(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	for _, want := range []string{
+		"is_valid_public_ip()",
+		`is_valid_public_ip "$ip"`,
+		`'^([0-9]{1,3}\.){3}[0-9]{1,3}$'`,
+		`[ "$octet" -le 255 ]`,
+		`*:*) is_valid_ipv6_literal "$ip"`,
+		"is_valid_ipv6_literal()",
+		`''|*[!0-9a-fA-F:]*|*:::*) return 1 ;;`,
+		`:*) case "$ip" in ::*) ;; *) return 1 ;; esac ;;`,
+		`*:) case "$ip" in *::) ;; *) return 1 ;; esac ;;`,
+		`double_colon_count="$(printf '%s' "$ip" | awk -F'::' '{print NF-1}')"`,
+		`colon_count="$(printf '%s' "$ip" | awk -F: '{print NF-1}')"`,
+		`[ "$double_colon_count" -le 1 ] || return 1`,
+		`[ "$colon_count" -eq 7 ] || return 1`,
+		`[ "$colon_count" -ge 2 ] || return 1`,
+		`explicit_count=$((explicit_count + 1))`,
+		`[ "$explicit_count" -lt 8 ] || return 1`,
+		`[ "$count" -le 8 ] || return 1`,
+		`*) return 1 ;;`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer public IP validation missing %q", want)
+		}
+	}
+}
+
+func TestInstallerPublicIPValidationRejectsMalformedIPv6(t *testing.T) {
+	script := read(t, "packaging", "install.sh")
+	start := strings.Index(script, "is_valid_public_ip()")
+	end := strings.Index(script, "ensure_management_direct_defaults()")
+	if start < 0 || end < 0 || start >= end {
+		t.Fatal("could not extract public IP validation functions")
+	}
+	checker := script[start:end] + `
+expect_valid() {
+  is_valid_public_ip "$1" || { echo "expected valid: $1"; exit 1; }
+}
+expect_invalid() {
+  if is_valid_public_ip "$1"; then
+    echo "expected invalid: $1"
+    exit 1
+  fi
+}
+expect_valid 103.193.149.217
+expect_valid 2001:db8::1
+expect_valid 2606:4700::1111
+expect_valid 2001:db8::
+expect_valid ::1
+expect_valid 2001:0db8:0000:0000:0000:ff00:0042:8329
+expect_invalid 999.1.1.1
+expect_invalid :1
+expect_invalid 2001:db8:
+expect_invalid ::::
+expect_invalid 1::2::3
+expect_invalid 1:2:3:4:5:6:7::8
+expect_invalid 1:2:3:4:5:6:7:8::
+expect_invalid 1:2:3
+`
+	path := filepath.Join(t.TempDir(), "check-ip.sh")
+	if err := os.WriteFile(path, []byte(checker), 0o700); err != nil {
+		t.Fatalf("write checker: %v", err)
+	}
+	out, err := exec.Command("bash", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("public IP validation checker failed: %v\n%s", err, out)
 	}
 }
 
@@ -789,6 +862,8 @@ func TestInstallerSupportsNonInteractiveUpdateMode(t *testing.T) {
 		"--version)",
 		"check_update()",
 		"note_current_release_state",
+		"guard_default_latest_upgrade",
+		"compare_versions",
 		"normalize_version",
 		"install_release_flow",
 		"download_release_asset",
@@ -847,7 +922,7 @@ func TestInstallerUpdateFlowRewritesServiceBeforeRestart(t *testing.T) {
 	}
 }
 
-func TestInstallerUpdateFlowRefreshesServiceEvenWhenCurrent(t *testing.T) {
+func TestInstallerExplicitVersionUpdateFlowRefreshesServiceEvenWhenCurrent(t *testing.T) {
 	script := read(t, "packaging", "install.sh")
 	if strings.Contains(script, "if skip_update_if_current; then") {
 		t.Fatalf("update flow must not return before service and installer self-repair when already current")
@@ -876,6 +951,38 @@ func TestInstallerUpdateFlowRefreshesServiceEvenWhenCurrent(t *testing.T) {
 	}
 	if !(noteIdx < downloadIdx && downloadIdx < installIdx && installIdx < writeIdx && writeIdx < restartIdx) {
 		t.Fatalf("update flow must continue from current-version note through installer/service refresh before restart")
+	}
+}
+
+func TestInstallerDefaultLatestUpgradeRefusesNewerCurrentVersion(t *testing.T) {
+	env := newInstallerHarness(t, "newer-current")
+	result := env.runWithVersion(t, "latest")
+	if result.err == nil {
+		t.Fatalf("expected default latest upgrade to refuse newer current version\n%s", result.output)
+	}
+	if got := readFile(t, env.migateBin); !strings.Contains(got, "old migate") {
+		t.Fatalf("default latest guard must not replace newer local binary, got %q", got)
+	}
+	if !strings.Contains(result.output, "高于最新发布版本") || strings.Contains(result.output, "Run: mg update") {
+		t.Fatalf("newer-current output missing clear refusal:\n%s", result.output)
+	}
+	status := readFile(t, env.updateStatusPath)
+	if !strings.Contains(status, `"status": "failed"`) || !strings.Contains(status, "不可执行默认 latest 升级") {
+		t.Fatalf("newer-current status missing refusal: %s", status)
+	}
+}
+
+func TestInstallerDryRunDefaultLatestUpgradeRefusesNewerCurrentVersion(t *testing.T) {
+	env := newInstallerHarness(t, "newer-current")
+	result := env.runWithArgs(t, "latest", "--dry-run")
+	if result.err != nil {
+		t.Fatalf("dry-run newer-current guard should exit successfully after preview refusal: %v\n%s", result.err, result.output)
+	}
+	if !strings.Contains(result.output, "高于最新发布版本") || !strings.Contains(result.output, "不可执行默认 latest 升级") {
+		t.Fatalf("dry-run newer-current output missing clear refusal:\n%s", result.output)
+	}
+	if strings.Contains(result.output, "下载 Release 包") || strings.Contains(result.output, "[DRY-RUN] install") {
+		t.Fatalf("dry-run newer-current guard must not preview download or replacement:\n%s", result.output)
 	}
 }
 
@@ -1405,7 +1512,7 @@ func newInstallerHarness(t *testing.T, scenario string) *installerHarness {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
-	writeExecutable(t, env.migateBin, "#!/usr/bin/env bash\ncase \"$1\" in version) echo 'MiGate version: v1.0.0' ;; hash-password) echo 'hashed-password' ;; *) echo 'old migate' ;; esac\n")
+	writeExecutable(t, env.migateBin, "#!/usr/bin/env bash\ncase \"$1\" in version) if [ \"${MIGATE_TEST_SCENARIO:-}\" = \"newer-current\" ]; then echo 'MiGate version: v2.1.0'; else echo 'MiGate version: v1.0.0'; fi ;; hash-password) echo 'hashed-password' ;; ensure-management-direct) echo 'management direct defaults ensured' ;; *) echo 'old migate' ;; esac\n")
 	writeExecutable(t, env.installerBin, "#!/usr/bin/env bash\necho old installer\n")
 	writeExecutable(t, env.uninstallerBin, "#!/usr/bin/env bash\necho old uninstaller\n")
 	if err := os.WriteFile(env.servicePath, []byte("[Service]\nExecStart=old-service\n"), 0644); err != nil {
@@ -1424,10 +1531,21 @@ func newInstallerHarness(t *testing.T, scenario string) *installerHarness {
 
 func (h *installerHarness) run(t *testing.T) installerRunResult {
 	t.Helper()
-	cmd := exec.Command("bash", filepath.Join(repoRoot(t), "packaging", "install.sh"), "--upgrade", "--yes")
+	return h.runWithVersion(t, "v2.0.0")
+}
+
+func (h *installerHarness) runWithVersion(t *testing.T, version string) installerRunResult {
+	t.Helper()
+	return h.runWithArgs(t, version)
+}
+
+func (h *installerHarness) runWithArgs(t *testing.T, version string, args ...string) installerRunResult {
+	t.Helper()
+	cmdArgs := append([]string{filepath.Join(repoRoot(t), "packaging", "install.sh"), "--upgrade", "--yes"}, args...)
+	cmd := exec.Command("bash", cmdArgs...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+h.fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"MIGATE_VERSION=v2.0.0",
+		"MIGATE_VERSION="+version,
 		"MIGATE_REPO=local/MiGate",
 		"MIGATE_DATA_DIR="+h.dataDir,
 		"MIGATE_BACKUP_DIR="+h.backupDir,
