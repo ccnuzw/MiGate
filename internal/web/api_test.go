@@ -986,8 +986,8 @@ func TestOutboundSubscriptionRefresherMarksPendingWithoutApplying(t *testing.T) 
 	if err := refresher.RefreshOutboundSubscription(context.Background(), sub.ID); err != nil {
 		t.Fatalf("refresh subscription: %v", err)
 	}
-	if controller.applyCalls != 0 {
-		t.Fatalf("background refresh must not apply Xray, got %d calls", controller.applyCalls)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("background refresh must not apply Xray, got %d calls", controller.applyCalls.Load())
 	}
 	if singboxApplyCalls != 0 {
 		t.Fatalf("background refresh must not apply sing-box, got %d calls", singboxApplyCalls)
@@ -2587,8 +2587,8 @@ func TestCoreWriteApplyScopeDoesNotApplyUnrelatedCore(t *testing.T) {
 		if resp.Code != http.StatusCreated {
 			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
 		}
-		if xrayCtrl.applyCalls != 0 {
-			t.Fatalf("expected no xray apply for sing-box client write, got %d", xrayCtrl.applyCalls)
+		if xrayCtrl.applyCalls.Load() != 0 {
+			t.Fatalf("expected no xray apply for sing-box client write, got %d", xrayCtrl.applyCalls.Load())
 		}
 		if singboxCalls != 0 {
 			t.Fatalf("expected no sing-box apply during save, got %d", singboxCalls)
@@ -2619,8 +2619,8 @@ func TestCoreWriteApplyScopeDoesNotApplyUnrelatedCore(t *testing.T) {
 		if resp.Code != http.StatusCreated {
 			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
 		}
-		if xrayCtrl.applyCalls != 0 {
-			t.Fatalf("expected no xray apply during save, got %d", xrayCtrl.applyCalls)
+		if xrayCtrl.applyCalls.Load() != 0 {
+			t.Fatalf("expected no xray apply during save, got %d", xrayCtrl.applyCalls.Load())
 		}
 		if singboxCalls != 0 {
 			t.Fatalf("expected no sing-box apply for xray inbound write, got %d", singboxCalls)
@@ -2656,8 +2656,8 @@ func TestOutboundAndRoutingApplyScopeFollowsAffectedCores(t *testing.T) {
 		if resp.Code != http.StatusCreated {
 			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
 		}
-		if xrayCtrl.applyCalls != 0 || singboxCalls != 0 {
-			t.Fatalf("unexpected apply calls: xray=%d singbox=%d", xrayCtrl.applyCalls, singboxCalls)
+		if xrayCtrl.applyCalls.Load() != 0 || singboxCalls != 0 {
+			t.Fatalf("unexpected apply calls: xray=%d singbox=%d", xrayCtrl.applyCalls.Load(), singboxCalls)
 		}
 		if !strings.Contains(resp.Body.String(), `"xray":`) || strings.Contains(resp.Body.String(), `"singbox":`) {
 			t.Fatalf("unexpected core apply response: %s", resp.Body.String())
@@ -2689,8 +2689,8 @@ func TestOutboundAndRoutingApplyScopeFollowsAffectedCores(t *testing.T) {
 		if resp.Code != http.StatusCreated {
 			t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
 		}
-		if xrayCtrl.applyCalls != 0 || singboxCalls != 0 {
-			t.Fatalf("unexpected apply calls: xray=%d singbox=%d", xrayCtrl.applyCalls, singboxCalls)
+		if xrayCtrl.applyCalls.Load() != 0 || singboxCalls != 0 {
+			t.Fatalf("unexpected apply calls: xray=%d singbox=%d", xrayCtrl.applyCalls.Load(), singboxCalls)
 		}
 		if strings.Contains(resp.Body.String(), `"xray":`) || !strings.Contains(resp.Body.String(), `"singbox":`) {
 			t.Fatalf("unexpected core apply response: %s", resp.Body.String())
@@ -5121,14 +5121,14 @@ func TestUpdateClientAPIRejectsUnknownClient(t *testing.T) {
 }
 
 type fakeXrayController struct {
-	statusCalls  int
-	applyCalls   int
+	statusCalls  atomic.Int32
+	applyCalls   atomic.Int32
 	statusResult *web.XrayStatus
 	applyResult  *web.XrayApplyResult
 }
 
 func (f *fakeXrayController) Status(ctx context.Context) web.XrayStatus {
-	f.statusCalls++
+	f.statusCalls.Add(1)
 	if f.statusResult != nil {
 		return *f.statusResult
 	}
@@ -5136,7 +5136,7 @@ func (f *fakeXrayController) Status(ctx context.Context) web.XrayStatus {
 }
 
 func (f *fakeXrayController) Apply(ctx context.Context) web.XrayApplyResult {
-	f.applyCalls++
+	f.applyCalls.Add(1)
 	if f.applyResult != nil {
 		return *f.applyResult
 	}
@@ -5195,8 +5195,8 @@ func TestXrayStatusAPIIsReadOnly(t *testing.T) {
 			t.Fatalf("status response missing listening detail %q: %s", want, body)
 		}
 	}
-	if controller.statusCalls != 1 || controller.applyCalls != 0 {
-		t.Fatalf("status must be read-only, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	if controller.statusCalls.Load() != 1 || controller.applyCalls.Load() != 0 {
+		t.Fatalf("status must be read-only, calls: status=%d apply=%d", controller.statusCalls.Load(), controller.applyCalls.Load())
 	}
 }
 
@@ -5273,8 +5273,8 @@ func TestXrayStatusAPIReturnsListeningPortsWithTransportDetails(t *testing.T) {
 	if got := data.ListeningPorts[2]; got.Port != 2443 || got.Network != "xhttp" || got.Path != "/xhttp" || got.Security != "none" {
 		t.Fatalf("unexpected xhttp listener: %+v", data.ListeningPorts)
 	}
-	if len(byPort) != 3 || controller.applyCalls != 0 {
-		t.Fatalf("status should be read-only with all ports represented, ports=%+v applyCalls=%d", byPort, controller.applyCalls)
+	if len(byPort) != 3 || controller.applyCalls.Load() != 0 {
+		t.Fatalf("status should be read-only with all ports represented, ports=%+v applyCalls=%d", byPort, controller.applyCalls.Load())
 	}
 }
 
@@ -5297,8 +5297,8 @@ func TestXrayStatusAPIUsesInjectedListenerDiagnostics(t *testing.T) {
 			t.Fatalf("status response should use injected listener diagnostics, missing %q: %s", want, body)
 		}
 	}
-	if controller.applyCalls != 0 {
-		t.Fatalf("status must remain read-only, apply calls=%d", controller.applyCalls)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("status must remain read-only, apply calls=%d", controller.applyCalls.Load())
 	}
 }
 
@@ -5318,8 +5318,8 @@ func TestXrayApplyAPIRejectsWithoutDoubleConfirmation(t *testing.T) {
 	if !strings.Contains(body, `"commands_executed":[]`) {
 		t.Fatalf("rejection response missing commands_executed: %s", body)
 	}
-	if controller.applyCalls != 0 {
-		t.Fatalf("rejected apply must not call controller, calls=%d", controller.applyCalls)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("rejected apply must not call controller, calls=%d", controller.applyCalls.Load())
 	}
 }
 
@@ -5332,9 +5332,9 @@ func TestXrayApplyAPICallsControllerAfterDoubleConfirmation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, req)
 	assertAcceptedApplyResponse(t, response, "xray")
-	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls == 1 })
-	if controller.statusCalls != 0 {
-		t.Fatalf("apply should not call status, calls: status=%d apply=%d", controller.statusCalls, controller.applyCalls)
+	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls.Load() == 1 })
+	if controller.statusCalls.Load() != 0 {
+		t.Fatalf("apply should not call status, calls: status=%d apply=%d", controller.statusCalls.Load(), controller.applyCalls.Load())
 	}
 }
 
@@ -5356,7 +5356,7 @@ func TestXrayApplyAPIOmitsSingboxWhenNotNeeded(t *testing.T) {
 	router.ServeHTTP(response, req)
 
 	assertAcceptedApplyResponse(t, response, "xray")
-	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls == 1 })
+	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls.Load() == 1 })
 }
 
 func TestXrayApplyAPIReportsSingboxDecisionReadFailure(t *testing.T) {
@@ -5374,7 +5374,7 @@ func TestXrayApplyAPIReportsSingboxDecisionReadFailure(t *testing.T) {
 	router.ServeHTTP(response, req)
 
 	assertAcceptedApplyResponse(t, response, "xray")
-	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls == 1 })
+	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls.Load() == 1 })
 }
 
 func TestXrayApplyAPISkipsSingboxApplyWhenXrayFails(t *testing.T) {
@@ -5390,12 +5390,12 @@ func TestXrayApplyAPISkipsSingboxApplyWhenXrayFails(t *testing.T) {
 	controller := &fakeXrayController{applyResult: &web.XrayApplyResult{
 		Applied: false, Status: "failed: validation", Service: "xray", Error: "validation_failed", Detail: "invalid xray config", CommandsExecuted: []string{"xray run -test"},
 	}}
-	var applierCalls int
+	var applierCalls atomic.Int32
 	router := web.NewRouter(
 		web.WithStore(store),
 		web.WithXrayController(controller),
 		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
-			applierCalls++
+			applierCalls.Add(1)
 			return web.SingboxApplySummary{Applied: true}
 		}),
 	)
@@ -5405,9 +5405,9 @@ func TestXrayApplyAPISkipsSingboxApplyWhenXrayFails(t *testing.T) {
 	router.ServeHTTP(response, req)
 
 	assertAcceptedApplyResponse(t, response, "xray")
-	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls == 1 })
-	if applierCalls != 0 {
-		t.Fatalf("sing-box applier should not run when xray apply fails, got %d calls", applierCalls)
+	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls.Load() == 1 })
+	if applierCalls.Load() != 0 {
+		t.Fatalf("sing-box applier should not run when xray apply fails, got %d calls", applierCalls.Load())
 	}
 }
 
@@ -5422,12 +5422,12 @@ func TestXrayApplyAPIUsesInjectedSingboxApplier(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	controller := &fakeXrayController{}
-	var applierCalls int
+	var applierCalls atomic.Int32
 	router := web.NewRouter(
 		web.WithStore(store),
 		web.WithXrayController(controller),
 		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
-			applierCalls++
+			applierCalls.Add(1)
 			if strict {
 				t.Fatal("xray apply linked sing-box apply should stay best-effort")
 			}
@@ -5440,9 +5440,9 @@ func TestXrayApplyAPIUsesInjectedSingboxApplier(t *testing.T) {
 	router.ServeHTTP(response, req)
 
 	assertAcceptedApplyResponse(t, response, "xray")
-	waitForCondition(t, 2*time.Second, func() bool { return applierCalls == 1 })
-	if applierCalls != 1 {
-		t.Fatalf("expected injected sing-box applier once, got %d", applierCalls)
+	waitForCondition(t, 2*time.Second, func() bool { return applierCalls.Load() == 1 })
+	if applierCalls.Load() != 1 {
+		t.Fatalf("expected injected sing-box applier once, got %d", applierCalls.Load())
 	}
 	waitForCondition(t, 2*time.Second, func() bool {
 		status := httptest.NewRecorder()
@@ -5477,7 +5477,7 @@ func TestXrayApplyAPIDefaultSingboxApplierReportsNotInstalled(t *testing.T) {
 	router.ServeHTTP(response, req)
 
 	assertAcceptedApplyResponse(t, response, "xray")
-	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls == 1 })
+	waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls.Load() == 1 })
 }
 
 func TestSingboxStatusAPIReturnsManagedAndConfigPath(t *testing.T) {
@@ -6356,7 +6356,7 @@ func TestXrayApplyClearsPendingOnlyOnSuccess(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(response, req)
 		assertAcceptedApplyResponse(t, response, "xray")
-		waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls == 1 })
+		waitForCondition(t, 2*time.Second, func() bool { return controller.applyCalls.Load() == 1 })
 		state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
 		if err != nil {
 			t.Fatalf("get apply state: %v", err)
@@ -7031,8 +7031,8 @@ func TestCreateXrayInboundMarksPendingWithoutSynchronousApply(t *testing.T) {
 		}
 	}
 	assertPendingCore(t, response.Body.String(), "xray")
-	if controller.applyCalls != 0 {
-		t.Fatalf("expected no synchronous xray apply, got %d", controller.applyCalls)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("expected no synchronous xray apply, got %d", controller.applyCalls.Load())
 	}
 }
 
@@ -7058,8 +7058,8 @@ func TestCreateXrayInboundSaveDoesNotRunSemanticApplyChecks(t *testing.T) {
 		}
 	}
 	assertPendingCore(t, body, "xray")
-	if controller.applyCalls != 0 {
-		t.Fatalf("save must not apply xray, got %d calls", controller.applyCalls)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("save must not apply xray, got %d calls", controller.applyCalls.Load())
 	}
 	if strings.Contains(body, `"error":`) || strings.Contains(body, `"warnings":[`) {
 		t.Fatalf("save response must not include apply warnings/errors: %s", body)
@@ -7091,8 +7091,8 @@ func TestCreateXrayInboundApplyFailureIsDeferredToManualApply(t *testing.T) {
 		}
 	}
 	assertPendingCore(t, body, "xray")
-	if controller.applyCalls != 0 {
-		t.Fatalf("save must defer xray apply, got %d calls", controller.applyCalls)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("save must defer xray apply, got %d calls", controller.applyCalls.Load())
 	}
 }
 
@@ -7652,8 +7652,8 @@ func TestRenewedCertificateCoreApplyReloadsUsageFromStore(t *testing.T) {
 	controller := &fakeXrayController{}
 	apply := web.CertificateCoreApplyFunc(web.WithStore(store), web.WithXrayController(controller))
 	payload := apply(context.Background(), []db.Certificate{{ID: cert.ID}})
-	if controller.applyCalls != 0 {
-		t.Fatalf("certificate renewal must not apply Xray synchronously, calls=%d payload=%#v", controller.applyCalls, payload)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("certificate renewal must not apply Xray synchronously, calls=%d payload=%#v", controller.applyCalls.Load(), payload)
 	}
 	if _, ok := payload["xray"]; !ok {
 		t.Fatalf("expected xray pending payload, got %#v", payload)
@@ -7707,8 +7707,8 @@ func TestCertificateRenewDueMarksPendingWithoutApplying(t *testing.T) {
 	if issuer.calls != 1 {
 		t.Fatalf("expected issuer to renew once, got %d", issuer.calls)
 	}
-	if controller.applyCalls != 0 {
-		t.Fatalf("manual certificate renewal must not apply Xray synchronously, got %d calls", controller.applyCalls)
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("manual certificate renewal must not apply Xray synchronously, got %d calls", controller.applyCalls.Load())
 	}
 	body := response.Body.String()
 	for _, want := range []string{`"status":"checked"`, `"pending_apply":true`, `"pending_cores":["xray"]`, `"pending_reason":"certificate_renewed"`} {
@@ -7819,8 +7819,8 @@ func TestCertificateApplyAPIWritesTLSInboundAndReturnsCoreSummary(t *testing.T) 
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected apply 200, got %d: %s", resp.Code, resp.Body.String())
 	}
-	if controller.applyCalls != 0 || !strings.Contains(resp.Body.String(), `"xray"`) {
-		t.Fatalf("expected pending xray summary without apply, calls=%d body=%s", controller.applyCalls, resp.Body.String())
+	if controller.applyCalls.Load() != 0 || !strings.Contains(resp.Body.String(), `"xray"`) {
+		t.Fatalf("expected pending xray summary without apply, calls=%d body=%s", controller.applyCalls.Load(), resp.Body.String())
 	}
 	assertPendingCore(t, resp.Body.String(), "xray")
 	loaded, err := store.ListInbounds(context.Background())
