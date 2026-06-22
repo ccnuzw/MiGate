@@ -196,6 +196,14 @@ CREATE TABLE IF NOT EXISTS config_meta (
   key TEXT PRIMARY KEY,
   value INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS core_apply_state (
+  core TEXT PRIMARY KEY,
+  last_applied_hash TEXT NOT NULL DEFAULT '',
+  last_applied_at TEXT NOT NULL DEFAULT '',
+  pending_dirty INTEGER NOT NULL DEFAULT 0,
+  pending_reason TEXT NOT NULL DEFAULT '',
+  pending_updated_at TEXT NOT NULL DEFAULT ''
+);
 INSERT OR IGNORE INTO config_meta (key, value) VALUES ('validation_version', 1);
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
@@ -257,6 +265,15 @@ CREATE INDEX IF NOT EXISTS idx_outbound_subscriptions_priority_id ON outbound_su
 		return err
 	}
 	if err := s.ensureColumn(ctx, "outbound_subscriptions", "last_attempt_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "core_apply_state", "pending_dirty", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "core_apply_state", "pending_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "core_apply_state", "pending_updated_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_outbounds_subscription ON outbounds(subscription_id, subscription_identity)`); err != nil {

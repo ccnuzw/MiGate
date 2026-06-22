@@ -24,6 +24,11 @@ func NewRouter(options ...Option) http.Handler {
 	mux := http.NewServeMux()
 	trafficCache := newTrafficViewCache(2 * time.Second)
 	coreCache := newCoreStatusCache(3 * time.Second)
+	cfg.coreCache = coreCache
+	cfg.applyJobs = newCoreApplyJobManager()
+	if cfg.coreApplyTimeout <= 0 {
+		cfg.coreApplyTimeout = 2 * time.Minute
+	}
 	mux.Handle("/assets/", staticAssetsHandler())
 	mux.Handle("/favicon.svg", staticRootAssetHandler("/favicon.svg"))
 	mux.Handle("/favicon.ico", staticRootAssetHandler("/favicon.ico"))

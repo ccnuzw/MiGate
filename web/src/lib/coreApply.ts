@@ -2,6 +2,8 @@ import type { CreateClientResponse, CreateInboundResponse, SingboxApplySummary, 
 
 type CoreWriteResponse = {
   applied?: boolean;
+  pending_apply?: boolean;
+  pending_cores?: string[];
   detail?: string;
   error?: string;
   warnings?: string[];
@@ -14,6 +16,9 @@ type CoreWriteResponse = {
 export function coreApplyWarning(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown, prefix: string): string {
   if (!response || typeof response !== 'object') return '';
   const data = response as CoreWriteResponse;
+  if (data.pending_apply) {
+    return pendingApplyMessage(data, prefix);
+  }
   const failedCore = failedCoreResult(data);
   if (failedCore) {
     const detail = failedCore.detail || failedCore.error || xrayFailureOutput(failedCore) || data.detail || data.error || '未知错误';
@@ -30,7 +35,21 @@ export function coreApplyWarning(response: CreateInboundResponse | CreateClientR
 export function coreApplyWarningTone(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown): 'error' | 'info' {
   if (!response || typeof response !== 'object') return 'error';
   const data = response as CoreWriteResponse;
+  if (data.pending_apply) return 'info';
   return failedCoreResult(data) ? 'error' : 'info';
+}
+
+function pendingApplyMessage(data: CoreWriteResponse, prefix: string): string {
+  const cores = Array.isArray(data.pending_cores) ? data.pending_cores.map(coreLabel).filter(Boolean) : [];
+  const suffix = cores.length ? `：${cores.join('、')} 有更改，需点击核心页“应用配置”后生效` : '：有更改，需点击核心页“应用配置”后生效';
+  return `${prefix}${suffix}`;
+}
+
+function coreLabel(core: string): string {
+  const normalized = String(core || '').trim().toLowerCase();
+  if (normalized === 'xray') return 'Xray';
+  if (normalized === 'sing-box' || normalized === 'singbox') return 'sing-box';
+  return core;
 }
 
 function failedCoreResult(data: CoreWriteResponse): (CoreWriteResponse & { error_output?: string; status?: string }) | XrayApplySummary | SingboxApplySummary | null {

@@ -65,6 +65,15 @@ describe('core action result', () => {
     });
   });
 
+  it('treats accepted async apply results as informational success', () => {
+    expect(coreActionResult({ accepted: true, status: 'accepted', message: '已开始应用 Xray 配置', apply_job: { id: 'job-1', core: 'xray', status: 'queued' } }, 'Xray 配置已应用')).toEqual({
+      ok: true,
+      message: '已开始应用 Xray 配置',
+      tone: 'info',
+      detail: 'job:\njob-1',
+    });
+  });
+
   it('detects nested xray and sing-box failures from HTTP 200 bodies', () => {
     expect(coreActionResult({ xray: { applied: false, error: 'validation_failed', detail: 'invalid config', commands_executed: ['xray run -test'] } }, 'Xray 配置已应用')).toEqual({
       ok: false,

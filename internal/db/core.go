@@ -1,9 +1,12 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -218,6 +221,70 @@ func GeneratedOutboundTag(core string, profileID int64, fallback string) string 
 	default:
 		return fmt.Sprintf("xray-out-%d", profileID)
 	}
+}
+
+type CoreApplyState struct {
+	Core             string `json:"core"`
+	LastAppliedHash  string `json:"last_applied_hash"`
+	LastAppliedAt    string `json:"last_applied_at"`
+	PendingDirty     bool   `json:"pending_dirty"`
+	PendingReason    string `json:"pending_reason"`
+	PendingUpdatedAt string `json:"pending_updated_at"`
+}
+
+func (s *Store) GetCoreApplyState(ctx context.Context, core string) (CoreApplyState, bool, error) {
+	core = NormalizeCore(core)
+	var state CoreApplyState
+	var pendingDirty int
+	err := s.db.QueryRowContext(ctx, `
+SELECT core, last_applied_hash, last_applied_at, pending_dirty, pending_reason, pending_updated_at
+FROM core_apply_state
+WHERE core = ?
+`, core).Scan(&state.Core, &state.LastAppliedHash, &state.LastAppliedAt, &pendingDirty, &state.PendingReason, &state.PendingUpdatedAt)
+	if err == sql.ErrNoRows {
+		return CoreApplyState{Core: core}, false, nil
+	}
+	if err != nil {
+		return CoreApplyState{}, false, err
+	}
+	state.PendingDirty = pendingDirty != 0
+	return state, true, nil
+}
+
+func (s *Store) MarkCoreApplied(ctx context.Context, core string, hash string, appliedAt time.Time) error {
+	core = NormalizeCore(core)
+	hash = strings.TrimSpace(hash)
+	if appliedAt.IsZero() {
+		appliedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO core_apply_state (core, last_applied_hash, last_applied_at, pending_dirty, pending_reason, pending_updated_at)
+VALUES (?, ?, ?, 0, '', '')
+ON CONFLICT(core) DO UPDATE SET
+  last_applied_hash = excluded.last_applied_hash,
+  last_applied_at = excluded.last_applied_at,
+  pending_dirty = 0,
+  pending_reason = '',
+  pending_updated_at = ''
+`, core, hash, appliedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *Store) MarkCorePending(ctx context.Context, core string, reason string, updatedAt time.Time) error {
+	core = NormalizeCore(core)
+	reason = strings.TrimSpace(reason)
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO core_apply_state (core, last_applied_hash, last_applied_at, pending_dirty, pending_reason, pending_updated_at)
+VALUES (?, '', '', 1, ?, ?)
+ON CONFLICT(core) DO UPDATE SET
+  pending_dirty = 1,
+  pending_reason = excluded.pending_reason,
+  pending_updated_at = excluded.pending_updated_at
+`, core, reason, updatedAt.UTC().Format(time.RFC3339))
+	return err
 }
 
 func OutboundProfileIDFromGeneratedTag(core string, tag string) (int64, bool) {

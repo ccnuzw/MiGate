@@ -235,13 +235,13 @@ func TestRouterFromPanelConfigXrayApplyPreservesCommandStderr(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.AddCookie(sessionCookie)
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected structured apply response 200, got %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("expected structured apply response 202, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"error":"validation_failed"`, "xray stderr detail", `"error_output":"xray stderr detail`} {
+	for _, want := range []string{`"accepted":true`, `"status":"accepted"`, `已开始应用 Xray 配置`} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("xray apply response should preserve stderr %q, got %s", want, body)
+			t.Fatalf("xray apply accepted response missing %q, got %s", want, body)
 		}
 	}
 }

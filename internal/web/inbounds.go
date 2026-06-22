@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,58 +50,6 @@ func realityKeypairHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"private_key": privateKey, "public_key": publicKey})
-}
-
-func applyCoreAsync(ctrl XrayController, store Store) {
-	applyXrayAsync(ctrl)
-	applySingboxAsync(store)
-}
-
-func applyXrayAsync(ctrl XrayController) {
-	if ctrl == nil {
-		ctrl = defaultXrayController{}
-	}
-	go func() {
-		result := ctrl.Apply(context.Background())
-		if strings.HasPrefix(result.Status, "failed") {
-			log.Printf("xray apply failed: status=%s service=%s commands=%v error=%s", result.Status, result.Service, result.CommandsExecuted, result.ErrorOutput)
-		}
-	}()
-}
-
-func applySingboxAsync(store Store) {
-	if store == nil {
-		return
-	}
-	go func() {
-		result := tryApplySingbox(context.Background(), store)
-		if !result.Applied && result.Error != "" {
-			log.Printf("sing-box auto apply: %s: %s", result.Error, result.Detail)
-		}
-	}()
-}
-
-func strictSingboxApply(ctx context.Context, cfg *routerConfig, store Store) SingboxApplySummary {
-	return addSingboxPostApplyDiagnostics(ctx, cfg, applySingboxSummary(ctx, cfg, store, true))
-}
-
-func writeCreatedSingboxResult(w http.ResponseWriter, cfg *routerConfig, r *http.Request, store Store, payload map[string]interface{}) {
-	result := strictSingboxApply(r.Context(), cfg, store)
-	if !result.Applied {
-		payload["created"] = true
-		attachSingboxResult(payload, result)
-		writeJSON(w, http.StatusCreated, payload)
-		return
-	}
-	payload["created"] = true
-	attachSingboxResult(payload, result)
-	writeJSON(w, http.StatusCreated, payload)
-}
-
-func writeSingboxWriteResult(w http.ResponseWriter, r *http.Request, cfg *routerConfig, store Store, status int, payload map[string]interface{}) {
-	result := strictSingboxApply(r.Context(), cfg, store)
-	attachSingboxResult(payload, result)
-	writeJSON(w, status, payload)
 }
 
 func deriveRealityPublicKeys(inbounds []db.Inbound) {
@@ -309,7 +256,7 @@ func createInbound(w http.ResponseWriter, r *http.Request, store Store) (db.Inbo
 }
 
 func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
-	store, ctrl, statsClient, singboxStatsClient := cfg.store, cfg.xrayController, cfg.statsClient, cfg.singboxStatsClient
+	store, statsClient, singboxStatsClient := cfg.store, cfg.statsClient, cfg.singboxStatsClient
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/inbounds/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -327,9 +274,7 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
-				if resetClientTraffic(w, r, store, statsClient, singboxStatsClient, inboundID, clientID) {
-					applyCoreAsync(ctrl, store)
-				}
+				resetClientTraffic(w, r, store, statsClient, singboxStatsClient, inboundID, clientID)
 			} else if len(parts) != 2 || parts[1] != "clients" {
 				http.NotFound(w, r)
 				return

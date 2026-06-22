@@ -236,13 +236,37 @@ export interface CoreStatus {
   config_path?: string;
   commands_executed?: string[];
   listening_ports?: CoreListenerDiagnostic[];
+  pending_apply?: boolean;
+  pending_apply_error?: string;
+  pending_apply_detail?: string;
+  applied_config_hash?: string;
+  generated_hash?: string;
+  last_applied_at?: string;
+  pending_reason?: string;
+  pending_updated_at?: string;
+  apply_job?: CoreApplyJobStatus;
+}
+
+export interface CoreApplyJobStatus {
+  id: string;
+  core: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | string;
+  started_at?: string;
+  finished_at?: string;
+  message?: string;
+  error?: string;
+  detail?: string;
+  accepted?: boolean;
 }
 
 export interface CoreActionResponse {
   core?: string;
   status?: string;
+  accepted?: boolean;
+  message?: string;
   output?: string;
   commands_executed?: string[];
+  apply_job?: CoreApplyJobStatus;
   xray?: {
     status?: string;
     service?: string;
@@ -257,8 +281,17 @@ export interface CoreActionResponse {
     inbounds?: number;
     outbounds?: number;
     rules?: number;
+    pending_apply?: boolean;
+    pending_apply_error?: string;
+    pending_apply_detail?: string;
+    applied_config_hash?: string;
+    generated_hash?: string;
+    last_applied_at?: string;
+    pending_reason?: string;
+    pending_updated_at?: string;
   };
   singbox?: {
+    status?: string;
     applied?: boolean;
     service?: string;
     config_path?: string;
@@ -273,8 +306,20 @@ export interface CoreActionResponse {
     inbounds?: number;
     outbounds?: number;
     rules?: number;
+    pending_apply?: boolean;
+    pending_apply_error?: string;
+    pending_apply_detail?: string;
+    applied_config_hash?: string;
+    generated_hash?: string;
+    last_applied_at?: string;
+    pending_reason?: string;
+    pending_updated_at?: string;
   };
   applied?: boolean;
+  pending_apply?: boolean;
+  pending_apply_error?: string;
+  pending_apply_detail?: string;
+  pending_cores?: string[];
   reason?: string;
   error?: string;
   warnings?: string[];
@@ -314,6 +359,13 @@ export interface CoreConfigPreview {
   config_path: string;
   in_sync: boolean;
   reason?: 'disk_missing' | 'generated_build_failed' | 'hash_mismatch' | 'disk_parse_failed' | string;
+  pending_apply?: boolean;
+  error?: string;
+  detail?: string;
+  applied_config_hash?: string;
+  last_applied_at?: string;
+  pending_reason?: string;
+  pending_updated_at?: string;
   disk: {
     config_path: string;
     hash?: string;

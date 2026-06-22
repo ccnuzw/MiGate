@@ -21,7 +21,13 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
     ? { status: api.xrayStatus, version: api.xrayVersion, config: api.xrayConfig, configPreview: api.xrayConfigPreview, diagnostics: api.xrayDiagnostics, logs: api.xrayLogs, validate: api.xrayValidate, apply: api.xrayApply, install: api.xrayInstall, uninstall: api.xrayUninstall, delete: api.xrayDelete, restart: api.xrayRestart, stop: api.xrayStop }
     : { status: api.singboxStatus, version: api.singboxVersion, config: api.singboxConfig, configPreview: api.singboxConfigPreview, diagnostics: api.singboxDiagnostics, logs: api.singboxLogs, validate: api.singboxValidate, apply: api.singboxApply, install: api.singboxInstall, uninstall: api.singboxUninstall, delete: api.singboxDelete, restart: api.singboxRestart, stop: api.singboxStop };
   const [lastResult, setLastResult] = useState<{ ok: boolean; message: string; detail?: string } | null>(null);
-  const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: coreStatusRefetchInterval(visible), staleTime: 10_000 });
+  const [applyPollingUntil, setApplyPollingUntil] = useState<number>(0);
+  const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: (query) => {
+    const current = query.state.data as CoreStatus | undefined;
+    const applyRunning = current?.apply_job?.status === 'queued' || current?.apply_job?.status === 'running' || Date.now() < applyPollingUntil;
+    if (!visible) return false;
+    return applyRunning ? 1500 : coreStatusRefetchInterval(true);
+  }, staleTime: 10_000 });
   const versionQuery = useQuery({ queryKey: [core, 'version'], queryFn: endpoints.version, retry: false, staleTime: 10 * 60_000 });
   const configQuery = useQuery({ queryKey: [core, 'config'], queryFn: endpoints.config, staleTime: 60_000 });
   const configPreviewQuery = useQuery({ queryKey: [core, 'config-preview'], queryFn: endpoints.configPreview, staleTime: 60_000 });
@@ -46,6 +52,9 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       const result = coreActionResult(data, `${label} 配置已应用`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.tone || (result.ok ? 'success' : 'error'));
+      if (data.accepted || data.apply_job?.status === 'queued' || data.apply_job?.status === 'running') {
+        setApplyPollingUntil(Date.now() + 30_000);
+      }
       refreshQuery(statusQuery);
       refreshQuery(diagnosticsQuery);
       if (result.ok) {
@@ -191,11 +200,12 @@ function CoreOverview({ label, status, diagnostics, preview, fallbackVersion, he
   const serviceStatus = status?.status || diagnostics?.service_status;
   const configPath = status?.config_path || diagnostics?.config_path || preview?.config_path || '-';
   const syncState = configSyncState(preview);
+  const applyJob = status?.apply_job;
   const stats = [
     { label: '安装', value: installed ? '已安装' : '未安装', tone: installed ? 'ok' : 'error' },
     { label: '托管', value: managed ? '已托管' : '未托管', tone: managed ? 'ok' : 'warning' },
     { label: '运行', value: serviceLabel(serviceStatus), tone: serviceStatus === 'running' ? 'ok' : 'error' },
-    { label: '同步', value: syncState.ok === false ? '不同步' : syncState.ok ? '一致' : '未知', tone: syncState.ok === false ? 'warning' : syncState.ok ? 'ok' : 'neutral' },
+    { label: '生效', value: preview?.pending_apply || status?.pending_apply ? '待应用' : syncState.ok === false ? '不同步' : syncState.ok ? '一致' : '未知', tone: preview?.pending_apply || status?.pending_apply || syncState.ok === false ? 'warning' : syncState.ok ? 'ok' : 'neutral' },
   ] satisfies Array<{ label: string; value: string; tone: StatusTone }>;
   return (
     <Card className={`core-overview core-overview-${health.tone} p-5`}>
@@ -230,11 +240,20 @@ function CoreOverview({ label, status, diagnostics, preview, fallbackVersion, he
       <div className="core-overview-strip">
         {stats.map((item) => <StatusPill key={item.label} tone={item.tone} label={`${text(item.label)}：${text(item.value)}`} />)}
         {missingCount ? <StatusPill tone="warning" label={text(`未监听 ${missingCount} 个端口`)} /> : null}
+        {applyJob && (applyJob.status === 'queued' || applyJob.status === 'running') ? <StatusPill tone="warning" label={text(`应用进行中：${applyJob.status === 'queued' ? '排队中' : '执行中'}`)} /> : null}
       </div>
       <div className="core-overview-path">
         <span>{text('配置路径')}</span>
         <code>{configPath}</code>
       </div>
+      {(status?.pending_reason || status?.pending_updated_at || status?.pending_apply_error || applyJob) ? (
+        <div className="mt-4 grid gap-2 rounded-lg border border-panel-line bg-panel-soft p-3 text-sm text-panel-muted">
+          {status?.pending_reason ? <div>{text(`待应用原因：${status.pending_reason}`)}</div> : null}
+          {status?.pending_updated_at ? <div>{text(`待应用时间：${status.pending_updated_at}`)}</div> : null}
+          {status?.pending_apply_error ? <div>{text(`待应用错误：${status.pending_apply_error}`)}{status.pending_apply_detail ? ` · ${text(status.pending_apply_detail)}` : ''}</div> : null}
+          {applyJob ? <div>{text(`应用任务：${applyJob.status}`)}{applyJob.message ? ` · ${text(applyJob.message)}` : ''}{applyJob.error ? ` · ${text(applyJob.error)}` : ''}{applyJob.detail ? ` · ${text(applyJob.detail)}` : ''}</div> : null}
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -420,6 +439,11 @@ function CoreConfigSync({ preview, loading, error, onRefresh, text }: { preview?
         <StatusPill tone={state.ok === false ? 'warning' : state.ok ? 'ok' : 'neutral'} label={text(state.label)} />
       </div>
       {state.detail ? <div className="mt-2 text-xs text-panel-muted">{text(state.detail)}</div> : null}
+      {preview?.pending_apply ? (
+        <div className="mt-3 rounded border border-amber-300 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900">
+          {text('有更改尚未生效，请点击上方“应用配置”重新生成并重启核心。')}
+        </div>
+      ) : null}
       <details className="core-details">
         <summary><span>{text('查看配置对比')}</span><ChevronDown className="h-4 w-4" /></summary>
         <div className="core-details-body core-config-compare">
@@ -491,6 +515,9 @@ export function coreHealthSummary(status?: CoreStatus, diagnostics?: CoreDiagnos
   }
   if (managed === false || serviceStatus === 'not_managed') {
     return { tone: 'warning', label: '未托管', headline: '核心未由系统托管', detail: '系统服务托管状态异常，面板可能无法稳定重启或停止核心。', nextAction: '确认 systemd 服务后再执行维护操作。' };
+  }
+  if (status?.pending_apply || preview?.pending_apply) {
+    return { tone: 'warning', label: '待应用', headline: '配置有更改尚未生效', detail: '数据库配置已保存，但核心尚未重新生成并重启。', nextAction: '点击“应用配置”使最新更改生效。' };
   }
   if (sync.ok === false || diagnostics?.disk_generated_in_sync === false) {
     return { tone: 'warning', label: '需要应用', headline: '配置不同步', detail: sync.detail || '磁盘配置与数据库生成配置不一致。', nextAction: '点击“应用配置”同步磁盘配置。' };
@@ -610,6 +637,10 @@ export function configSyncState(preview?: CoreConfigPreview, loading = false, er
   if (loading) return { label: '正在检查配置同步状态' };
   if (error) return { ok: false, label: '生成配置预览失败', detail: error instanceof Error ? error.message : String(error) };
   if (!preview) return { label: '配置同步状态未知' };
+  if (preview.pending_apply) {
+    const hashes = [preview.applied_config_hash ? `applied: ${preview.applied_config_hash}` : '', preview.generated?.hash ? `generated: ${preview.generated.hash}` : ''].filter(Boolean).join(' · ');
+    return { ok: false, label: '有更改待应用', detail: hashes || '保存的更改需要应用配置后生效' };
+  }
   if (preview.in_sync) return { ok: true, label: '磁盘配置与数据库生成配置一致', detail: preview.generated?.hash || preview.disk?.hash };
   const reason = preview.reason ? `原因：${configSyncReasonLabel(preview.reason)}` : '';
   const hashDetail = [preview.disk?.hash ? `disk: ${preview.disk.hash}` : '', preview.generated?.hash ? `generated: ${preview.generated.hash}` : ''].filter(Boolean).join(' · ');
@@ -769,6 +800,14 @@ function formatLogs(data: { logs?: string; lines?: string[] } | undefined, empty
 }
 
 export function coreActionResult(data: CoreActionResponse, fallback: string): { ok: boolean; message: string; detail?: string; tone?: 'success' | 'error' | 'info' } {
+  if (data.accepted || normalizeStatus(data.status) === 'accepted') {
+    const label = data.apply_job?.core === 'sing-box' || data.apply_job?.core === 'singbox' ? 'sing-box' : 'Xray';
+    return withDetail({
+      ok: true,
+      message: data.message || `${label} 配置已开始应用`,
+      tone: 'info',
+    }, data.apply_job?.id ? `job:\n${data.apply_job.id}` : undefined);
+  }
   const status = normalizeStatus(data.status);
   const xrayStatus = normalizeStatus(data.xray?.status);
   const singboxReason = data.singbox?.reason === 'not_needed' ? '' : data.singbox?.reason;

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -133,11 +134,18 @@ type xrayGeneratedConfigPreview struct {
 }
 
 type xrayConfigSyncPreview struct {
-	ConfigPath string                     `json:"config_path"`
-	InSync     bool                       `json:"in_sync"`
-	Reason     string                     `json:"reason,omitempty"`
-	Disk       xrayDiskConfigPreview      `json:"disk"`
-	Generated  xrayGeneratedConfigPreview `json:"generated"`
+	ConfigPath        string                     `json:"config_path"`
+	InSync            bool                       `json:"in_sync"`
+	Reason            string                     `json:"reason,omitempty"`
+	PendingApply      bool                       `json:"pending_apply"`
+	Error             string                     `json:"error,omitempty"`
+	Detail            string                     `json:"detail,omitempty"`
+	AppliedConfigHash string                     `json:"applied_config_hash,omitempty"`
+	LastAppliedAt     string                     `json:"last_applied_at,omitempty"`
+	PendingReason     string                     `json:"pending_reason,omitempty"`
+	PendingUpdatedAt  string                     `json:"pending_updated_at,omitempty"`
+	Disk              xrayDiskConfigPreview      `json:"disk"`
+	Generated         xrayGeneratedConfigPreview `json:"generated"`
 }
 
 func xrayConfigPath(cfg *routerConfig) string {
@@ -152,12 +160,25 @@ func buildXrayConfigSyncPreview(ctx context.Context, cfg *routerConfig) xrayConf
 	disk := readXrayDiskConfigPreview(path)
 	generated := buildXrayGeneratedConfigPreview(ctx, cfg, path)
 	reason := xrayConfigSyncReason(disk, generated)
+	pending := corePendingApplyFromDiskHash(ctx, cfg, db.CoreXray, generated.Hash, disk.Hash)
+	if generated.Error != "" {
+		pending.Error = generated.Error
+		pending.Detail = generated.Detail
+		pending.Pending = true
+	}
 	return xrayConfigSyncPreview{
-		ConfigPath: path,
-		InSync:     reason == "",
-		Reason:     reason,
-		Disk:       disk,
-		Generated:  generated,
+		ConfigPath:        path,
+		InSync:            reason == "",
+		Reason:            reason,
+		PendingApply:      pending.Pending,
+		Error:             pending.Error,
+		Detail:            pending.Detail,
+		AppliedConfigHash: pending.AppliedHash,
+		LastAppliedAt:     pending.LastAppliedAt,
+		PendingReason:     pending.PendingReason,
+		PendingUpdatedAt:  pending.PendingUpdatedAt,
+		Disk:              disk,
+		Generated:         generated,
 	}
 }
 
@@ -948,28 +969,283 @@ func attachSingboxNestedResult(payload map[string]interface{}, summary SingboxAp
 	return payload
 }
 
-func attachXrayAndMaybeSingboxResult(ctx context.Context, cfg *routerConfig, store Store, payload map[string]interface{}, includeXray bool, includeSingbox bool) map[string]interface{} {
+type corePendingApplyState struct {
+	Core              string `json:"core"`
+	Pending           bool   `json:"pending"`
+	AppliedHash       string `json:"applied_hash,omitempty"`
+	GeneratedHash     string `json:"generated_hash,omitempty"`
+	LastAppliedAt     string `json:"last_applied_at,omitempty"`
+	PendingDirty      bool   `json:"pending_dirty,omitempty"`
+	PendingReason     string `json:"pending_reason,omitempty"`
+	PendingUpdatedAt  string `json:"pending_updated_at,omitempty"`
+	Error             string `json:"error,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	appliedStateFound bool
+}
+
+type coreApplyStateStore interface {
+	GetCoreApplyState(ctx context.Context, core string) (db.CoreApplyState, bool, error)
+	MarkCoreApplied(ctx context.Context, core string, hash string, appliedAt time.Time) error
+	MarkCorePending(ctx context.Context, core string, reason string, updatedAt time.Time) error
+}
+
+func corePendingApplyFromHash(ctx context.Context, cfg *routerConfig, core string, generatedHash string) corePendingApplyState {
+	core = db.NormalizeCore(core)
+	state := corePendingApplyState{Core: core, GeneratedHash: strings.TrimSpace(generatedHash)}
+	if cfg == nil || cfg.store == nil {
+		state.Error = "store_unavailable"
+		return state
+	}
+	applyStore, ok := cfg.store.(coreApplyStateStore)
+	if !ok {
+		state.Error = "core_apply_state_store_unavailable"
+		return state
+	}
+	applied, found, err := applyStore.GetCoreApplyState(ctx, core)
+	if err != nil {
+		state.Error = err.Error()
+		return state
+	}
+	if found {
+		state.AppliedHash = strings.TrimSpace(applied.LastAppliedHash)
+		state.LastAppliedAt = strings.TrimSpace(applied.LastAppliedAt)
+		state.PendingDirty = applied.PendingDirty
+		state.PendingReason = strings.TrimSpace(applied.PendingReason)
+		state.PendingUpdatedAt = strings.TrimSpace(applied.PendingUpdatedAt)
+	}
+	state.appliedStateFound = found
+	if state.GeneratedHash == "" {
+		state.Pending = state.PendingDirty
+		return state
+	}
+	state.Pending = state.PendingDirty || !found || state.AppliedHash == "" || state.AppliedHash != state.GeneratedHash
+	return state
+}
+
+func corePendingApplyFromDiskHash(ctx context.Context, cfg *routerConfig, core string, generatedHash string, diskHash string) corePendingApplyState {
+	state := corePendingApplyFromHash(ctx, cfg, core, generatedHash)
+	if state.Error != "" || state.PendingDirty || state.appliedStateFound || state.GeneratedHash == "" || strings.TrimSpace(diskHash) == "" || state.GeneratedHash != strings.TrimSpace(diskHash) {
+		return state
+	}
+	state.Pending = false
+	state.AppliedHash = state.GeneratedHash
+	return state
+}
+
+func xrayPendingApplyState(ctx context.Context, cfg *routerConfig) corePendingApplyState {
+	if cfg == nil || cfg.store == nil {
+		return corePendingApplyState{Core: db.CoreXray, Error: "store_unavailable"}
+	}
+	path := xrayConfigPath(cfg)
+	generated := buildXrayGeneratedConfigPreview(ctx, cfg, path)
+	disk := readXrayDiskConfigPreview(path)
+	state := corePendingApplyFromDiskHash(ctx, cfg, db.CoreXray, generated.Hash, disk.Hash)
+	if generated.Error != "" {
+		state.Error = generated.Error
+		state.Detail = generated.Detail
+		state.Pending = true
+	}
+	return state
+}
+
+func singboxPendingApplyState(ctx context.Context, cfg *routerConfig) corePendingApplyState {
+	if cfg == nil || cfg.store == nil {
+		return corePendingApplyState{Core: db.CoreSingbox, Error: "store_unavailable"}
+	}
+	generated := buildSingboxGeneratedConfigPreview(ctx, cfg)
+	disk := readSingboxDiskConfigPreview()
+	state := corePendingApplyFromDiskHash(ctx, cfg, db.CoreSingbox, generated.Hash, disk.Hash)
+	if generated.Error != "" {
+		state.Error = generated.Error
+		state.Detail = generated.Detail
+		state.Pending = true
+	}
+	return state
+}
+
+func markCoreAppliedHash(ctx context.Context, cfg *routerConfig, core string, hash string) error {
+	if strings.TrimSpace(hash) == "" {
+		return nil
+	}
+	if cfg == nil || cfg.store == nil {
+		return errors.New("store_unavailable")
+	}
+	applyStore, ok := cfg.store.(coreApplyStateStore)
+	if !ok {
+		return errors.New("core_apply_state_store_unavailable")
+	}
+	return applyStore.MarkCoreApplied(ctx, core, hash, time.Now().UTC())
+}
+
+func markCorePending(ctx context.Context, cfg *routerConfig, core string, reason string) error {
+	if cfg == nil || cfg.store == nil {
+		return errors.New("store_unavailable")
+	}
+	applyStore, ok := cfg.store.(coreApplyStateStore)
+	if !ok {
+		return errors.New("core_apply_state_store_unavailable")
+	}
+	return applyStore.MarkCorePending(ctx, core, reason, time.Now().UTC())
+}
+
+func markCoresPending(ctx context.Context, cfg *routerConfig, reason string, includeXray bool, includeSingbox bool) error {
+	var errs []string
 	if includeXray {
-		var ctrl XrayController
-		if cfg != nil {
-			ctrl = cfg.xrayController
+		if err := markCorePending(ctx, cfg, db.CoreXray, reason); err != nil {
+			errs = append(errs, db.CoreXray+": "+err.Error())
 		}
-		attachXrayResult(payload, addXraySemanticWarningsForWrite(ctx, cfg, addXrayPostApplyDiagnostics(ctx, cfg, xrayApplyForWrite(ctx, ctrl))))
 	}
 	if includeSingbox {
-		summary := strictSingboxApply(ctx, cfg, store)
-		if includeXray {
-			attachSingboxNestedResult(payload, summary)
-		} else {
-			attachSingboxResult(payload, summary)
+		if err := markCorePending(ctx, cfg, db.CoreSingbox, reason); err != nil {
+			errs = append(errs, db.CoreSingbox+": "+err.Error())
 		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func markXrayApplied(ctx context.Context, cfg *routerConfig) error {
+	path := xrayConfigPath(cfg)
+	disk := readXrayDiskConfigPreview(path)
+	if disk.Error != "" {
+		return fmt.Errorf("%s", disk.Error)
+	}
+	return markCoreAppliedHash(ctx, cfg, db.CoreXray, disk.Hash)
+}
+
+func markSingboxApplied(ctx context.Context, cfg *routerConfig) error {
+	disk := readSingboxDiskConfigPreview()
+	if disk.Error != "" {
+		return fmt.Errorf("%s", disk.Error)
+	}
+	return markCoreAppliedHash(ctx, cfg, db.CoreSingbox, disk.Hash)
+}
+
+func markXrayAppliedWithHash(ctx context.Context, cfg *routerConfig, hash string) error {
+	if strings.TrimSpace(hash) != "" {
+		return markCoreAppliedHash(ctx, cfg, db.CoreXray, hash)
+	}
+	return markXrayApplied(ctx, cfg)
+}
+
+func markSingboxAppliedWithHash(ctx context.Context, cfg *routerConfig, hash string) error {
+	if strings.TrimSpace(hash) != "" {
+		return markCoreAppliedHash(ctx, cfg, db.CoreSingbox, hash)
+	}
+	return markSingboxApplied(ctx, cfg)
+}
+
+func attachCorePendingApplyResult(ctx context.Context, cfg *routerConfig, payload map[string]interface{}, includeXray bool, includeSingbox bool) map[string]interface{} {
+	states := []corePendingApplyState{}
+	pendingCores := []string{}
+	if includeXray {
+		state := xrayPendingApplyState(ctx, cfg)
+		states = append(states, state)
+		if state.Pending {
+			pendingCores = append(pendingCores, db.CoreXray)
+		}
+		coreResult := map[string]interface{}{
+			"pending_apply":       state.Pending,
+			"status":              corePendingStatus(state.Pending),
+			"service":             "xray",
+			"commands_executed":   []string{},
+			"applied_config_hash": state.AppliedHash,
+			"generated_hash":      state.GeneratedHash,
+			"last_applied_at":     state.LastAppliedAt,
+			"pending_reason":      state.PendingReason,
+			"pending_updated_at":  state.PendingUpdatedAt,
+		}
+		if state.Error != "" {
+			coreResult["error"] = state.Error
+			coreResult["detail"] = state.Detail
+			coreResult["pending_apply_error"] = state.Error
+			coreResult["pending_apply_detail"] = state.Detail
+		}
+		payload["xray"] = coreResult
+	}
+	if includeSingbox {
+		state := singboxPendingApplyState(ctx, cfg)
+		states = append(states, state)
+		if state.Pending {
+			pendingCores = append(pendingCores, db.CoreSingbox)
+		}
+		coreResult := map[string]interface{}{
+			"pending_apply":       state.Pending,
+			"status":              corePendingStatus(state.Pending),
+			"service":             "sing-box",
+			"commands_executed":   []string{},
+			"applied_config_hash": state.AppliedHash,
+			"generated_hash":      state.GeneratedHash,
+			"last_applied_at":     state.LastAppliedAt,
+			"pending_reason":      state.PendingReason,
+			"pending_updated_at":  state.PendingUpdatedAt,
+		}
+		if state.Error != "" {
+			coreResult["error"] = state.Error
+			coreResult["detail"] = state.Detail
+			coreResult["pending_apply_error"] = state.Error
+			coreResult["pending_apply_detail"] = state.Detail
+		}
+		payload["singbox"] = coreResult
+	}
+	payload["pending_apply"] = len(pendingCores) > 0
+	payload["pending_cores"] = pendingCores
+	if len(states) > 0 {
+		payload["core_pending"] = states
 	}
 	return payload
 }
 
-func writeCoreWriteResult(w http.ResponseWriter, r *http.Request, cfg *routerConfig, store Store, status int, payload map[string]interface{}, includeXray bool, includeSingbox bool) {
-	attachXrayAndMaybeSingboxResult(r.Context(), cfg, store, payload, includeXray, includeSingbox)
+func corePendingStatus(pending bool) string {
+	if pending {
+		return "pending_apply"
+	}
+	return "in_sync"
+}
+
+func attachPendingApplyError(payload map[string]interface{}, state corePendingApplyState) {
+	if state.Error == "" {
+		return
+	}
+	payload["pending_apply_error"] = state.Error
+	if state.Detail != "" {
+		payload["pending_apply_detail"] = state.Detail
+	}
+}
+
+func includeExistingPendingCores(ctx context.Context, cfg *routerConfig, includeXray bool, includeSingbox bool) (bool, bool) {
+	if cfg == nil || cfg.store == nil {
+		return includeXray, includeSingbox
+	}
+	if !includeXray && xrayPendingApplyState(ctx, cfg).Pending {
+		includeXray = true
+	}
+	if !includeSingbox && singboxPendingApplyState(ctx, cfg).Pending {
+		includeSingbox = true
+	}
+	return includeXray, includeSingbox
+}
+
+func latestCoreApplyJob(cfg *routerConfig, core string) *CoreApplyJobStatus {
+	if cfg == nil || cfg.applyJobs == nil {
+		return nil
+	}
+	return cfg.applyJobs.latest(core)
+}
+
+func writeCoreWriteResultWithPendingScope(w http.ResponseWriter, r *http.Request, cfg *routerConfig, store Store, status int, payload map[string]interface{}, markXray bool, markSingbox bool, includeXray bool, includeSingbox bool) {
+	if err := markCoresPending(r.Context(), cfg, "config_changed", markXray, markSingbox); err != nil {
+		payload["pending_apply_error"] = "mark_core_pending_failed"
+		payload["pending_apply_detail"] = err.Error()
+	}
+	attachCorePendingApplyResult(r.Context(), cfg, payload, includeXray, includeSingbox)
 	writeJSON(w, status, payload)
+}
+
+func writeCoreWriteResult(w http.ResponseWriter, r *http.Request, cfg *routerConfig, store Store, status int, payload map[string]interface{}, includeXray bool, includeSingbox bool) {
+	writeCoreWriteResultWithPendingScope(w, r, cfg, store, status, payload, includeXray, includeSingbox, includeXray, includeSingbox)
 }
 
 func xrayAndSingboxForInboundWrite(previous db.Inbound, hadPrevious bool, current db.Inbound) (bool, bool) {
@@ -1143,6 +1419,18 @@ func xrayStatusHandler(cfg *routerConfig) http.HandlerFunc {
 		if status.ListeningPorts == nil {
 			status.ListeningPorts = []CoreListenerDiagnostic{}
 		}
+		pending := xrayPendingApplyState(r.Context(), cfg)
+		status.PendingApply = pending.Pending
+		status.AppliedConfigHash = pending.AppliedHash
+		status.GeneratedHash = pending.GeneratedHash
+		status.LastAppliedAt = pending.LastAppliedAt
+		status.PendingReason = pending.PendingReason
+		status.PendingUpdatedAt = pending.PendingUpdatedAt
+		if pending.Error != "" {
+			status.PendingApplyError = pending.Error
+			status.PendingApplyDetail = pending.Detail
+		}
+		status.ApplyJob = latestCoreApplyJob(cfg, db.CoreXray)
 		writeJSON(w, http.StatusOK, status)
 	}
 }
@@ -1231,6 +1519,76 @@ func validateXrayConfigSnapshotWithOptions(snapshot validationSnapshot, opts xra
 	return result
 }
 
+func performXrayApply(ctx context.Context, cfg *routerConfig) (bool, string, string, string) {
+	var controller XrayController = defaultXrayController{}
+	if cfg != nil && cfg.xrayController != nil {
+		controller = cfg.xrayController
+	}
+	var store Store
+	var singboxRuntime SingboxRuntime = defaultSingboxRuntime{}
+	singboxApplier := tryApplySingboxWithRuntime
+	usingDefaultSingboxApplier := true
+	if cfg != nil {
+		store = cfg.store
+		if cfg.singboxRuntime != nil {
+			singboxRuntime = cfg.singboxRuntime
+		}
+		if cfg.singboxApplier != nil {
+			singboxApplier = cfg.singboxApplier
+			usingDefaultSingboxApplier = !cfg.singboxApplierSet
+		}
+	}
+
+	xrayResult := addXraySemanticWarningsForWrite(ctx, cfg, addXrayPostApplyDiagnostics(ctx, cfg, xrayApplyForWrite(ctx, controller)))
+	details := append([]string{}, xrayResult.Warnings...)
+	details = append(details, xrayResult.PostApplyWarnings...)
+	if xrayResult.Applied {
+		if err := markXrayAppliedWithHash(ctx, cfg, xrayResult.AppliedHash); err != nil {
+			log.Printf("core apply: record xray apply state failed: %v", err)
+			xrayResult.Warnings = append(xrayResult.Warnings, "record_apply_state_failed: "+err.Error())
+			details = append(details, "record_apply_state_failed: "+err.Error())
+		}
+	}
+
+	if store != nil && xrayResult.Applied {
+		inbounds, err := store.ListInbounds(ctx)
+		if err != nil {
+			details = append(details, "sing-box decision failed: "+err.Error())
+		} else if singbox.HasEnabledSingboxInbound(inbounds) {
+			if usingDefaultSingboxApplier && !singbox.IsInstalled() {
+				details = append(details, "sing-box apply skipped: singbox_not_installed")
+			} else {
+				var applyResult SingboxApplySummary
+				if usingDefaultSingboxApplier {
+					applyResult = tryApplySingboxWithRouterConfig(ctx, cfg, store, false)
+				} else {
+					applyResult = singboxApplier(ctx, store, singboxRuntime, false)
+				}
+				if applyResult.Applied {
+					if err := markSingboxAppliedWithHash(ctx, cfg, applyResult.AppliedHash); err != nil {
+						log.Printf("core apply: record sing-box apply state failed after xray apply: %v", err)
+						details = append(details, "record_singbox_apply_state_failed: "+err.Error())
+					}
+				} else {
+					detail := strings.TrimSpace(applyResult.Detail)
+					if detail == "" {
+						detail = strings.TrimSpace(applyResult.Error)
+					}
+					if detail == "" {
+						detail = "unknown error"
+					}
+					details = append(details, "sing-box apply failed: "+detail)
+				}
+			}
+		}
+	}
+
+	if xrayResult.Applied {
+		return true, "Xray 配置已应用", "", strings.Join(details, "\n")
+	}
+	return false, "Xray 应用失败", xrayResult.Error, xrayResult.Detail
+}
+
 func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1249,87 +1607,44 @@ func xrayApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{"commands_executed": []string{}})
 			return
 		}
+		if cfg == nil || cfg.applyJobs == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "apply_jobs_unavailable")
+			return
+		}
+		if cfg.applyJobs.running(db.CoreXray) {
+			writeJSONError(w, http.StatusConflict, "apply_locked", map[string]interface{}{"detail": "apply job already running for core", "core": db.CoreXray})
+			return
+		}
 		unlock, err := lockfile.TryAcquire(paths.ApplyLock)
 		if err != nil {
 			writeJSONError(w, http.StatusConflict, "apply_locked", map[string]interface{}{"detail": err.Error(), "lock_path": paths.ApplyLock})
 			return
 		}
-		defer unlock()
-		var controller XrayController = defaultXrayController{}
-		if cfg != nil && cfg.xrayController != nil {
-			controller = cfg.xrayController
-		}
-		var store Store
-		var singboxRuntime SingboxRuntime = defaultSingboxRuntime{}
-		singboxApplier := tryApplySingboxWithRuntime
-		usingDefaultSingboxApplier := true
-		if cfg != nil {
-			store = cfg.store
-			if cfg.singboxRuntime != nil {
-				singboxRuntime = cfg.singboxRuntime
+		transferredUnlock := false
+		defer func() {
+			if !transferredUnlock {
+				unlock()
 			}
-			if cfg.singboxApplier != nil {
-				singboxApplier = cfg.singboxApplier
-				usingDefaultSingboxApplier = !cfg.singboxApplierSet
-			}
+		}()
+		applyCtx := context.WithoutCancel(r.Context())
+		job := runCoreApplyJob(applyCtx, cfg, db.CoreXray, "正在应用 Xray 配置", []string{"xray-status", "xray-version", "singbox-status", "singbox-version"}, func(ctx context.Context) (bool, string, string, string) {
+			defer unlock()
+			ok, message, errCode, detail := performXrayApply(ctx, cfg)
+			return ok, message, errCode, detail
+		})
+		if job == nil {
+			writeJSONError(w, http.StatusConflict, "apply_locked", map[string]interface{}{"detail": "apply job already running for core", "core": db.CoreXray})
+			return
 		}
-
-		// 1. Apply Xray config
-		xrayResult := addXraySemanticWarningsForWrite(r.Context(), cfg, addXrayPostApplyDiagnostics(r.Context(), cfg, xrayApplyForWrite(r.Context(), controller)))
-
-		// 2. Apply sing-box config if sing-box supported inbounds exist
-		var singboxResult map[string]interface{}
-		if store != nil && xrayResult.Applied {
-			inbounds, err := store.ListInbounds(r.Context())
-			if err != nil {
-				singboxResult = map[string]interface{}{
-					"applied": false,
-					"reason":  "list_inbounds_failed",
-					"detail":  err.Error(),
-				}
-			} else {
-				if singbox.HasEnabledSingboxInbound(inbounds) {
-					if usingDefaultSingboxApplier && !singbox.IsInstalled() {
-						singboxResult = map[string]interface{}{
-							"applied": false,
-							"reason":  "singbox_not_installed",
-						}
-					} else {
-						var applyResult SingboxApplySummary
-						if usingDefaultSingboxApplier {
-							applyResult = tryApplySingboxWithRouterConfig(r.Context(), cfg, store, false)
-						} else {
-							applyResult = singboxApplier(r.Context(), store, singboxRuntime, false)
-						}
-						if !applyResult.Applied {
-							singboxResult = map[string]interface{}{
-								"applied":           false,
-								"service":           applyResult.Service,
-								"config_path":       applyResult.ConfigPath,
-								"commands_executed": applyResult.CommandsExecuted,
-								"error":             applyResult.Error,
-								"detail":            applyResult.Detail,
-								"warnings":          applyResult.Warnings,
-							}
-						} else {
-							singboxResult = map[string]interface{}{
-								"applied":           true,
-								"service":           applyResult.Service,
-								"config_path":       applyResult.ConfigPath,
-								"commands_executed": applyResult.CommandsExecuted,
-								"warnings":          applyResult.Warnings,
-								"inbounds":          len(singbox.BuildConfigWithOptions(inbounds, singbox.BuildOptions{}).Inbounds),
-							}
-						}
-					}
-				}
-			}
+		transferredUnlock = true
+		response := map[string]interface{}{
+			"accepted": true,
+			"status":   "accepted",
+			"message":  "已开始应用 Xray 配置",
 		}
-
-		response := map[string]interface{}{"xray": xrayResult}
-		if singboxResult != nil {
-			response["singbox"] = singboxResult
+		if job != nil {
+			response["apply_job"] = job
 		}
-		writeJSON(w, http.StatusOK, response)
+		writeJSON(w, http.StatusAccepted, response)
 	}
 }
