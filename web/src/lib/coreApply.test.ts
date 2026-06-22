@@ -14,6 +14,12 @@ describe('core apply warning helpers', () => {
     expect(coreApplyWarningTone(response)).toBe('info');
   });
 
+  it('reports pending apply as an informational save result', () => {
+    const response = { pending_apply: true, pending_cores: ['xray', 'sing-box'], xray: { pending_apply: true }, singbox: { pending_apply: true } };
+    expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，但核心配置未生效：Xray、sing-box 有更改，需点击核心页“应用配置”后生效');
+    expect(coreApplyWarningTone(response)).toBe('info');
+  });
+
   it('reports xray listener warnings as info', () => {
     const showToast = vi.fn();
     const response = { xray: { applied: true, post_apply_warnings: ['配置已应用，但端口未监听：2443/tcp'] } };

@@ -25,8 +25,9 @@ func (r OutboundSubscriptionRefresher) RefreshOutboundSubscription(ctx context.C
 		option(&cfg)
 	}
 	cfg.store = r.Store
-	payload := map[string]interface{}{}
-	attachXrayAndMaybeSingboxResult(ctx, &cfg, r.Store, payload, includeXray, includeSingbox)
+	if err := markCoresPending(ctx, &cfg, "outbound_subscription_refreshed", includeXray, includeSingbox); err != nil {
+		log.Printf("outbound subscription refresh: failed to mark pending apply for id=%d: %v", id, err)
+	}
 	if result != nil {
 		log.Printf("outbound subscription refresh: id=%d count=%d skipped=%d", result.SubscriptionID, result.Count, result.SkippedCount)
 	}

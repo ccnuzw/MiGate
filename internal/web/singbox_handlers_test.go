@@ -357,11 +357,11 @@ func TestCreateSingboxInboundAppliedWithMissingListenerWarning(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "配置已应用，但端口未监听：21000/udp") {
-		t.Fatalf("expected missing listener warning in response: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), `"pending_apply":true`) || !strings.Contains(response.Body.String(), `"pending_cores":["sing-box"]`) {
+		t.Fatalf("expected pending apply marker in response: %s", response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "post_apply_warnings") {
-		t.Fatalf("expected post_apply_warnings in response: %s", response.Body.String())
+	if strings.Contains(response.Body.String(), "post_apply_warnings") || strings.Contains(response.Body.String(), "配置已应用") {
+		t.Fatalf("save response must not contain post-apply diagnostics: %s", response.Body.String())
 	}
 }
 

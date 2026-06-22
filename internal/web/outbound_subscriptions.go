@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ type OutboundSubscriptionRefreshResult struct {
 	SkippedCount   int    `json:"skipped_count"`
 	LastFetchedAt  string `json:"last_fetched_at,omitempty"`
 	Error          string `json:"error,omitempty"`
+	ConfigChanged  bool   `json:"config_changed"`
 }
 
 func outboundSubscriptionsHandler(cfg *routerConfig) http.HandlerFunc {
@@ -168,12 +171,13 @@ func outboundSubscriptionChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 }
 
 func refreshOneOutboundSubscriptionHandler(cfg *routerConfig, id int64, w http.ResponseWriter, r *http.Request) {
-	result, includeXray, includeSingbox, err := refreshOutboundSubscription(r.Context(), cfg.store, id)
+	result, markXray, markSingbox, err := refreshOutboundSubscription(r.Context(), cfg.store, id)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "refresh_outbound_subscription_failed", map[string]interface{}{"detail": err.Error()})
 		return
 	}
-	writeCoreWriteResult(w, r, cfg, cfg.store, http.StatusOK, map[string]interface{}{"result": result}, includeXray, includeSingbox)
+	includeXray, includeSingbox := includeExistingPendingCores(r.Context(), cfg, markXray, markSingbox)
+	writeCoreWriteResultWithPendingScope(w, r, cfg, cfg.store, http.StatusOK, map[string]interface{}{"result": result}, markXray, markSingbox, includeXray, includeSingbox)
 }
 
 func refreshAllOutboundSubscriptionsHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
@@ -183,8 +187,8 @@ func refreshAllOutboundSubscriptionsHandler(cfg *routerConfig, w http.ResponseWr
 		return
 	}
 	results := []map[string]interface{}{}
-	includeXray := false
-	includeSingbox := false
+	markXray := false
+	markSingbox := false
 	for _, sub := range subs {
 		if !sub.Enabled {
 			continue
@@ -195,10 +199,11 @@ func refreshAllOutboundSubscriptionsHandler(cfg *routerConfig, w http.ResponseWr
 			continue
 		}
 		results = append(results, result)
-		includeXray = includeXray || xrayChanged
-		includeSingbox = includeSingbox || singboxChanged
+		markXray = markXray || xrayChanged
+		markSingbox = markSingbox || singboxChanged
 	}
-	writeCoreWriteResult(w, r, cfg, cfg.store, http.StatusOK, map[string]interface{}{"results": results}, includeXray, includeSingbox)
+	includeXray, includeSingbox := includeExistingPendingCores(r.Context(), cfg, markXray, markSingbox)
+	writeCoreWriteResultWithPendingScope(w, r, cfg, cfg.store, http.StatusOK, map[string]interface{}{"results": results}, markXray, markSingbox, includeXray, includeSingbox)
 }
 
 func previewOutboundSubscriptionHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
@@ -264,6 +269,7 @@ func refreshOutboundSubscription(ctx context.Context, store Store, id int64) (ma
 		"count":           result.Count,
 		"skipped_count":   result.SkippedCount,
 		"last_fetched_at": result.LastFetchedAt,
+		"config_changed":  result.ConfigChanged,
 	}
 	if result.Error != "" {
 		payload["error"] = result.Error
@@ -299,16 +305,18 @@ func RefreshOutboundSubscription(ctx context.Context, store Store, fetcher Subsc
 	if err != nil {
 		return nil, false, false, err
 	}
+	beforeFingerprint := outboundCoreConfigFingerprint(existing)
 	nodes, identities := outsub.Materialize(id, parsed.Nodes, existing, sub.TagPrefix)
 	scope, err := loadCoreInboundScope(ctx, store)
 	if err != nil {
 		return nil, false, false, err
 	}
-	_, err = store.MaterializeSubscriptionOutbounds(ctx, id, nodes, identities)
+	materialized, err := store.MaterializeSubscriptionOutbounds(ctx, id, nodes, identities)
 	if err != nil {
 		_ = store.MarkOutboundSubscriptionFetch(ctx, id, time.Now(), err.Error(), nil)
 		return nil, false, false, err
 	}
+	configChanged := beforeFingerprint != outboundCoreConfigFingerprint(materialized)
 	lastFetchedAt := time.Now().UTC().Format(time.RFC3339)
 	lastErr := ""
 	if len(parsed.Skipped) > 0 {
@@ -317,9 +325,48 @@ func RefreshOutboundSubscription(ctx context.Context, store Store, fetcher Subsc
 			log.Printf("outbound subscription refresh: failed to record skipped summary for %d: %v", id, err)
 		}
 	}
-	includeXray := scope.hasCore(db.CoreXray)
-	includeSingbox := scope.hasCore(db.CoreSingbox)
-	return &OutboundSubscriptionRefreshResult{SubscriptionID: id, Count: len(nodes), SkippedCount: len(parsed.Skipped), LastFetchedAt: lastFetchedAt, Error: lastErr}, includeXray, includeSingbox, nil
+	includeXray := configChanged && scope.hasCore(db.CoreXray)
+	includeSingbox := configChanged && scope.hasCore(db.CoreSingbox)
+	return &OutboundSubscriptionRefreshResult{SubscriptionID: id, Count: len(nodes), SkippedCount: len(parsed.Skipped), LastFetchedAt: lastFetchedAt, Error: lastErr, ConfigChanged: configChanged}, includeXray, includeSingbox, nil
+}
+
+type outboundCoreConfigSnapshot struct {
+	ID           int64  `json:"id"`
+	Tag          string `json:"tag"`
+	Protocol     string `json:"protocol"`
+	Address      string `json:"address"`
+	Port         int    `json:"port"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	Enabled      bool   `json:"enabled"`
+	Sort         int    `json:"sort"`
+	SettingsJSON string `json:"settings_json"`
+}
+
+func outboundCoreConfigFingerprint(outbounds []db.Outbound) string {
+	snapshots := make([]outboundCoreConfigSnapshot, 0, len(outbounds))
+	for _, outbound := range outbounds {
+		snapshots = append(snapshots, outboundCoreConfigSnapshot{
+			ID:           outbound.ID,
+			Tag:          strings.TrimSpace(outbound.Tag),
+			Protocol:     db.NormalizeOutboundProtocol(outbound.Protocol),
+			Address:      strings.TrimSpace(outbound.Address),
+			Port:         outbound.Port,
+			Username:     strings.TrimSpace(outbound.Username),
+			Password:     outbound.Password,
+			Enabled:      outbound.Enabled,
+			Sort:         outbound.Sort,
+			SettingsJSON: strings.TrimSpace(outbound.SettingsJSON),
+		})
+	}
+	sort.Slice(snapshots, func(i, j int) bool {
+		if snapshots[i].Sort != snapshots[j].Sort {
+			return snapshots[i].Sort < snapshots[j].Sort
+		}
+		return snapshots[i].ID < snapshots[j].ID
+	})
+	data, _ := json.Marshal(snapshots)
+	return string(data)
 }
 
 func xrayAndSingboxForAllOutbounds(ctx context.Context, store Store) (bool, bool, error) {

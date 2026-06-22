@@ -205,3 +205,9 @@ func WithCoreXrayListenerDiagnostics(listeners func(context.Context) []CoreListe
 func WithXrayListenerDiagnostics(listeners func(context.Context) []CoreListenerDiagnostic) Option {
 	return WithCoreXrayListenerDiagnostics(listeners)
 }
+
+func WithCoreApplyTimeout(timeout time.Duration) Option {
+	return func(cfg *routerConfig) {
+		cfg.coreApplyTimeout = timeout
+	}
+}

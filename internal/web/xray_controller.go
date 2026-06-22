@@ -188,6 +188,11 @@ func (c *RealController) Apply(ctx context.Context) XrayApplyResult {
 	if err != nil {
 		return fail("marshal_failed", err.Error())
 	}
+	normalized, _, err := normalizedJSON(data)
+	if err != nil {
+		return fail("marshal_failed", err.Error())
+	}
+	result.AppliedHash = hashBytes(normalized)
 	if status := corefile.EnsureDir(configDir, corefile.Requirement{Readable: true, Writable: true, Executable: true}); !status.OK() {
 		return fail("create_config_dir_failed", status.Error())
 	}

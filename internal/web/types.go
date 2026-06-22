@@ -176,45 +176,63 @@ type CoreDiagnosticAction struct {
 }
 
 type CoreStatus struct {
-	Core              string                   `json:"core"`
-	Installed         bool                     `json:"installed"`
-	Managed           bool                     `json:"managed"`
-	Service           string                   `json:"service"`
-	ServiceStatus     string                   `json:"service_status"`
-	BinaryPath        string                   `json:"binary_path"`
-	BinaryVersion     string                   `json:"binary_version"`
-	ConfigPath        string                   `json:"config_path"`
-	ConfigExists      bool                     `json:"config_exists"`
-	ConfigValid       bool                     `json:"config_valid"`
-	ConfigError       string                   `json:"config_error,omitempty"`
-	Status            string                   `json:"status,omitempty"`
-	Version           string                   `json:"version,omitempty"`
-	MemoryRSSBytes    int64                    `json:"memory_rss_bytes,omitempty"`
-	Uptime            string                   `json:"uptime,omitempty"`
-	ActiveConnections int                      `json:"active_connections,omitempty"`
-	CommandsExecuted  []string                 `json:"commands_executed,omitempty"`
-	ListeningPorts    []CoreListenerDiagnostic `json:"listening_ports,omitempty"`
+	Core               string                   `json:"core"`
+	Installed          bool                     `json:"installed"`
+	Managed            bool                     `json:"managed"`
+	Service            string                   `json:"service"`
+	ServiceStatus      string                   `json:"service_status"`
+	BinaryPath         string                   `json:"binary_path"`
+	BinaryVersion      string                   `json:"binary_version"`
+	ConfigPath         string                   `json:"config_path"`
+	ConfigExists       bool                     `json:"config_exists"`
+	ConfigValid        bool                     `json:"config_valid"`
+	ConfigError        string                   `json:"config_error,omitempty"`
+	Status             string                   `json:"status,omitempty"`
+	Version            string                   `json:"version,omitempty"`
+	MemoryRSSBytes     int64                    `json:"memory_rss_bytes,omitempty"`
+	Uptime             string                   `json:"uptime,omitempty"`
+	ActiveConnections  int                      `json:"active_connections,omitempty"`
+	CommandsExecuted   []string                 `json:"commands_executed,omitempty"`
+	ListeningPorts     []CoreListenerDiagnostic `json:"listening_ports,omitempty"`
+	PendingApply       bool                     `json:"pending_apply,omitempty"`
+	PendingApplyError  string                   `json:"pending_apply_error,omitempty"`
+	PendingApplyDetail string                   `json:"pending_apply_detail,omitempty"`
+	AppliedConfigHash  string                   `json:"applied_config_hash,omitempty"`
+	GeneratedHash      string                   `json:"generated_hash,omitempty"`
+	LastAppliedAt      string                   `json:"last_applied_at,omitempty"`
+	PendingReason      string                   `json:"pending_reason,omitempty"`
+	PendingUpdatedAt   string                   `json:"pending_updated_at,omitempty"`
+	ApplyJob           *CoreApplyJobStatus      `json:"apply_job,omitempty"`
 }
 
 type XrayStatus struct {
-	Core              string                   `json:"core"`
-	Service           string                   `json:"service"`
-	Status            string                   `json:"status"`
-	ServiceStatus     string                   `json:"service_status"`
-	Managed           bool                     `json:"managed"`
-	Installed         bool                     `json:"installed"`
-	Version           string                   `json:"version"`
-	BinaryPath        string                   `json:"binary_path"`
-	BinaryVersion     string                   `json:"binary_version"`
-	ConfigExists      bool                     `json:"config_exists"`
-	ConfigValid       bool                     `json:"config_valid"`
-	ConfigError       string                   `json:"config_error,omitempty"`
-	MemoryRSSBytes    int64                    `json:"memory_rss_bytes"`
-	Uptime            string                   `json:"uptime"`
-	ActiveConnections int                      `json:"active_connections"`
-	ConfigPath        string                   `json:"config_path"`
-	CommandsExecuted  []string                 `json:"commands_executed"`
-	ListeningPorts    []CoreListenerDiagnostic `json:"listening_ports"`
+	Core               string                   `json:"core"`
+	Service            string                   `json:"service"`
+	Status             string                   `json:"status"`
+	ServiceStatus      string                   `json:"service_status"`
+	Managed            bool                     `json:"managed"`
+	Installed          bool                     `json:"installed"`
+	Version            string                   `json:"version"`
+	BinaryPath         string                   `json:"binary_path"`
+	BinaryVersion      string                   `json:"binary_version"`
+	ConfigExists       bool                     `json:"config_exists"`
+	ConfigValid        bool                     `json:"config_valid"`
+	ConfigError        string                   `json:"config_error,omitempty"`
+	MemoryRSSBytes     int64                    `json:"memory_rss_bytes"`
+	Uptime             string                   `json:"uptime"`
+	ActiveConnections  int                      `json:"active_connections"`
+	ConfigPath         string                   `json:"config_path"`
+	CommandsExecuted   []string                 `json:"commands_executed"`
+	ListeningPorts     []CoreListenerDiagnostic `json:"listening_ports"`
+	PendingApply       bool                     `json:"pending_apply,omitempty"`
+	PendingApplyError  string                   `json:"pending_apply_error,omitempty"`
+	PendingApplyDetail string                   `json:"pending_apply_detail,omitempty"`
+	AppliedConfigHash  string                   `json:"applied_config_hash,omitempty"`
+	GeneratedHash      string                   `json:"generated_hash,omitempty"`
+	LastAppliedAt      string                   `json:"last_applied_at,omitempty"`
+	PendingReason      string                   `json:"pending_reason,omitempty"`
+	PendingUpdatedAt   string                   `json:"pending_updated_at,omitempty"`
+	ApplyJob           *CoreApplyJobStatus      `json:"apply_job,omitempty"`
 }
 
 type XrayApplyResult struct {
@@ -231,6 +249,19 @@ type XrayApplyResult struct {
 	Outbounds         int      `json:"outbounds,omitempty"`
 	Rules             int      `json:"rules,omitempty"`
 	ErrorOutput       string   `json:"error_output,omitempty"`
+	AppliedHash       string   `json:"-"`
+}
+
+type CoreApplyJobStatus struct {
+	ID          string `json:"id"`
+	Core        string `json:"core"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"started_at,omitempty"`
+	FinishedAt  string `json:"finished_at,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+	Accepted    bool   `json:"accepted,omitempty"`
 }
 
 type defaultXrayController struct{}
@@ -283,6 +314,9 @@ type routerConfig struct {
 	sessionTouches     map[string]time.Time
 	sessionTouchGC     time.Time
 	sessionTouchMu     sync.Mutex
+	coreCache          *coreStatusCache
+	applyJobs          *coreApplyJobManager
+	coreApplyTimeout   time.Duration
 }
 
 type SingboxRuntime interface {

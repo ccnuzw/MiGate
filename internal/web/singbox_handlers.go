@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -34,6 +35,7 @@ type SingboxApplySummary struct {
 	Inbounds          int      `json:"inbounds,omitempty"`
 	Outbounds         int      `json:"outbounds,omitempty"`
 	Rules             int      `json:"rules,omitempty"`
+	AppliedHash       string   `json:"-"`
 }
 
 type SingboxListenerDiagnostic = CoreListenerDiagnostic
@@ -81,11 +83,18 @@ type singboxGeneratedConfigPreview struct {
 }
 
 type singboxConfigSyncPreview struct {
-	ConfigPath string                        `json:"config_path"`
-	InSync     bool                          `json:"in_sync"`
-	Reason     string                        `json:"reason,omitempty"`
-	Disk       singboxDiskConfigPreview      `json:"disk"`
-	Generated  singboxGeneratedConfigPreview `json:"generated"`
+	ConfigPath        string                        `json:"config_path"`
+	InSync            bool                          `json:"in_sync"`
+	Reason            string                        `json:"reason,omitempty"`
+	PendingApply      bool                          `json:"pending_apply"`
+	Error             string                        `json:"error,omitempty"`
+	Detail            string                        `json:"detail,omitempty"`
+	AppliedConfigHash string                        `json:"applied_config_hash,omitempty"`
+	LastAppliedAt     string                        `json:"last_applied_at,omitempty"`
+	PendingReason     string                        `json:"pending_reason,omitempty"`
+	PendingUpdatedAt  string                        `json:"pending_updated_at,omitempty"`
+	Disk              singboxDiskConfigPreview      `json:"disk"`
+	Generated         singboxGeneratedConfigPreview `json:"generated"`
 }
 
 type SingboxProbe interface {
@@ -145,20 +154,30 @@ func singboxStatusHandler(cfg ...*routerConfig) http.HandlerFunc {
 		probe := singboxProbeForConfig(cfg)
 		installed := probe.IsInstalled()
 		if !installed {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"core":              "sing-box",
-				"installed":         false,
-				"status":            "not_installed",
-				"service_status":    "not_installed",
-				"managed":           false,
-				"service":           singbox.ServiceName(),
-				"binary_path":       singbox.DefaultBinaryPath,
-				"binary_version":    "",
-				"config_path":       singbox.DefaultConfigPath,
-				"config_exists":     false,
-				"config_valid":      false,
-				"commands_executed": []string{},
-			})
+			pending := singboxPendingApplyState(r.Context(), cfg)
+			response := map[string]interface{}{
+				"core":                "sing-box",
+				"installed":           false,
+				"status":              "not_installed",
+				"service_status":      "not_installed",
+				"managed":             false,
+				"service":             singbox.ServiceName(),
+				"binary_path":         singbox.DefaultBinaryPath,
+				"binary_version":      "",
+				"config_path":         singbox.DefaultConfigPath,
+				"config_exists":       false,
+				"config_valid":        false,
+				"commands_executed":   []string{},
+				"pending_apply":       pending.Pending,
+				"applied_config_hash": pending.AppliedHash,
+				"generated_hash":      pending.GeneratedHash,
+				"last_applied_at":     pending.LastAppliedAt,
+				"pending_reason":      pending.PendingReason,
+				"pending_updated_at":  pending.PendingUpdatedAt,
+			}
+			response["apply_job"] = latestCoreApplyJob(cfg, db.CoreSingbox)
+			attachPendingApplyError(response, pending)
+			writeJSON(w, http.StatusOK, response)
 			return
 		}
 		management := probe.Management()
@@ -177,28 +196,38 @@ func singboxStatusHandler(cfg ...*routerConfig) http.HandlerFunc {
 				configValid = true
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"core":               "sing-box",
-			"installed":          true,
-			"managed":            management.Managed,
-			"service":            management.Service,
-			"status":             status,
-			"service_status":     status,
-			"raw_status":         rawStatus,
-			"normalized_status":  status,
-			"version":            strings.TrimSpace(ver),
-			"binary_path":        singbox.DefaultBinaryPath,
-			"binary_version":     strings.TrimSpace(ver),
-			"config_exists":      configExists,
-			"config_valid":       configValid,
-			"config_error":       configError,
-			"memory_rss_bytes":   probe.MemoryRSS(),
-			"uptime":             probe.Uptime(),
-			"active_connections": probe.ActiveConnections(),
-			"config_path":        singbox.DefaultConfigPath,
-			"commands_executed":  []string{},
-			"listening_ports":    ports,
-		})
+		pending := singboxPendingApplyState(r.Context(), cfg)
+		response := map[string]interface{}{
+			"core":                "sing-box",
+			"installed":           true,
+			"managed":             management.Managed,
+			"service":             management.Service,
+			"status":              status,
+			"service_status":      status,
+			"raw_status":          rawStatus,
+			"normalized_status":   status,
+			"version":             strings.TrimSpace(ver),
+			"binary_path":         singbox.DefaultBinaryPath,
+			"binary_version":      strings.TrimSpace(ver),
+			"config_exists":       configExists,
+			"config_valid":        configValid,
+			"config_error":        configError,
+			"memory_rss_bytes":    probe.MemoryRSS(),
+			"uptime":              probe.Uptime(),
+			"active_connections":  probe.ActiveConnections(),
+			"config_path":         singbox.DefaultConfigPath,
+			"commands_executed":   []string{},
+			"listening_ports":     ports,
+			"pending_apply":       pending.Pending,
+			"applied_config_hash": pending.AppliedHash,
+			"generated_hash":      pending.GeneratedHash,
+			"last_applied_at":     pending.LastAppliedAt,
+			"pending_reason":      pending.PendingReason,
+			"pending_updated_at":  pending.PendingUpdatedAt,
+		}
+		response["apply_job"] = latestCoreApplyJob(cfg, db.CoreSingbox)
+		attachPendingApplyError(response, pending)
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -311,6 +340,42 @@ func portFromAddress(address string) int {
 	return 0
 }
 
+func performSingboxApply(ctx context.Context, cfg *routerConfig) (SingboxApplySummary, bool, string, string, string) {
+	if cfg == nil || cfg.store == nil {
+		return SingboxApplySummary{}, false, "sing-box 应用失败", "store_unavailable", "store_unavailable"
+	}
+	inbounds, err := cfg.store.ListInbounds(ctx)
+	if err != nil {
+		return SingboxApplySummary{}, false, "sing-box 应用失败", "list_failed", err.Error()
+	}
+	outbounds, err := cfg.store.ListOutbounds(ctx)
+	if err != nil {
+		return SingboxApplySummary{}, false, "sing-box 应用失败", "list_outbounds_failed", err.Error()
+	}
+	rules, err := cfg.store.ListRoutingRules(ctx)
+	if err != nil {
+		return SingboxApplySummary{}, false, "sing-box 应用失败", "list_routing_rules_failed", err.Error()
+	}
+	built := buildSingboxConfigForRuntime(ctx, cfg, inbounds, outbounds, rules)
+	if built.err != nil {
+		return SingboxApplySummary{}, false, "sing-box 应用失败", "build_failed", built.err.Error()
+	}
+	if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
+		if err := singbox.GenerateSelfSignedCert(); err != nil {
+			return SingboxApplySummary{}, false, "sing-box 应用失败", "cert_failed", err.Error()
+		}
+	}
+	result := addSingboxPostApplyDiagnostics(ctx, cfg, applyBuiltSingboxConfig(built))
+	if !result.Applied {
+		return result, false, "sing-box 应用失败", result.Error, result.Detail
+	}
+	if err := markSingboxAppliedWithHash(ctx, cfg, result.AppliedHash); err != nil {
+		log.Printf("core apply: record sing-box apply state failed: %v", err)
+		result.NonFatalWarnings = append(result.NonFatalWarnings, "record_apply_state_failed: "+err.Error())
+	}
+	return result, true, "sing-box 配置已应用", "", ""
+}
+
 // singboxApplyHandler reads sing-box supported inbounds from the store, builds
 // a sing-box config, generates a self-signed cert if missing, validates a temp
 // config, atomically installs it, and restarts the sing-box service.
@@ -333,52 +398,35 @@ func singboxApplyHandler(cfg *routerConfig) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 			return
 		}
+		if cfg.applyJobs == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "apply_jobs_unavailable")
+			return
+		}
 		unlock, err := lockfile.TryAcquire(paths.ApplyLock)
 		if err != nil {
 			writeJSONError(w, http.StatusConflict, "apply_locked", map[string]interface{}{"detail": err.Error(), "lock_path": paths.ApplyLock})
 			return
 		}
-		defer unlock()
-
-		// Read sing-box inbounds
-		inbounds, err := cfg.store.ListInbounds(r.Context())
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_failed", map[string]interface{}{"detail": err.Error()})
+		applyCtx := context.WithoutCancel(r.Context())
+		job := runCoreApplyJob(applyCtx, cfg, db.CoreSingbox, "正在应用 sing-box 配置", []string{"singbox-status", "singbox-version"}, func(ctx context.Context) (bool, string, string, string) {
+			defer unlock()
+			_, ok, message, errCode, detail := performSingboxApply(ctx, cfg)
+			return ok, message, errCode, detail
+		})
+		if job == nil {
+			unlock()
+			writeJSONError(w, http.StatusConflict, "apply_locked", map[string]interface{}{"detail": "apply job already running for core", "core": db.CoreSingbox})
 			return
 		}
-
-		outbounds, err := cfg.store.ListOutbounds(r.Context())
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_outbounds_failed", map[string]interface{}{"detail": err.Error()})
-			return
+		response := map[string]interface{}{
+			"accepted": true,
+			"status":   "accepted",
+			"message":  "已开始应用 sing-box 配置",
 		}
-		rules, err := cfg.store.ListRoutingRules(r.Context())
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_routing_rules_failed", map[string]interface{}{"detail": err.Error()})
-			return
+		if job != nil {
+			response["apply_job"] = job
 		}
-
-		// Build config
-		built := buildSingboxConfigForRuntime(r.Context(), cfg, inbounds, outbounds, rules)
-		if built.err != nil {
-			writeJSONError(w, http.StatusBadRequest, "build_failed", map[string]interface{}{"detail": built.err.Error()})
-			return
-		}
-
-		// Ensure self-signed cert exists
-		if _, err := os.Stat(singbox.CertFile); os.IsNotExist(err) {
-			if err := singbox.GenerateSelfSignedCert(); err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "cert_failed", map[string]interface{}{"detail": err.Error()})
-				return
-			}
-		}
-
-		result := addSingboxPostApplyDiagnostics(r.Context(), cfg, applyBuiltSingboxConfig(built))
-		if !result.Applied {
-			writeJSON(w, http.StatusInternalServerError, result)
-			return
-		}
-		writeJSON(w, http.StatusOK, result)
+		writeJSON(w, http.StatusAccepted, response)
 	}
 }
 
@@ -729,6 +777,13 @@ func applyBuiltSingboxConfig(built builtSingboxConfig) SingboxApplySummary {
 		result.Detail = err.Error()
 		return result
 	}
+	normalized, _, err := normalizedJSON(raw)
+	if err != nil {
+		result.Error = "marshal_failed"
+		result.Detail = err.Error()
+		return result
+	}
+	result.AppliedHash = hashBytes(normalized)
 	if err := singbox.ApplyConfig(raw); err != nil {
 		result.Error = "singbox_apply_failed"
 		result.Detail = err.Error()
@@ -989,12 +1044,25 @@ func buildSingboxConfigSyncPreview(ctx context.Context, cfg *routerConfig) singb
 	disk := readSingboxDiskConfigPreview()
 	generated := buildSingboxGeneratedConfigPreview(ctx, cfg)
 	reason := singboxConfigSyncReason(disk, generated)
+	pending := corePendingApplyFromDiskHash(ctx, cfg, db.CoreSingbox, generated.Hash, disk.Hash)
+	if generated.Error != "" {
+		pending.Error = generated.Error
+		pending.Detail = generated.Detail
+		pending.Pending = true
+	}
 	return singboxConfigSyncPreview{
-		ConfigPath: singbox.DefaultConfigPath,
-		InSync:     reason == "",
-		Reason:     reason,
-		Disk:       disk,
-		Generated:  generated,
+		ConfigPath:        singbox.DefaultConfigPath,
+		InSync:            reason == "",
+		Reason:            reason,
+		PendingApply:      pending.Pending,
+		Error:             pending.Error,
+		Detail:            pending.Detail,
+		AppliedConfigHash: pending.AppliedHash,
+		LastAppliedAt:     pending.LastAppliedAt,
+		PendingReason:     pending.PendingReason,
+		PendingUpdatedAt:  pending.PendingUpdatedAt,
+		Disk:              disk,
+		Generated:         generated,
 	}
 }
 

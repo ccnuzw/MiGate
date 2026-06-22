@@ -392,7 +392,15 @@ func ApplyRenewedCertificateCores(ctx context.Context, cfg *routerConfig, store 
 	}
 	renewed = reloadCertificatesForCoreApply(ctx, store, renewed)
 	includeXray, includeSingbox := coresForCertificates(renewed)
-	return attachXrayAndMaybeSingboxResult(ctx, cfg, store, payload, includeXray, includeSingbox)
+	if err := markCoresPending(ctx, cfg, "certificate_renewed", includeXray, includeSingbox); err != nil {
+		payload["pending_apply_error"] = "mark_core_pending_failed"
+		payload["pending_apply_detail"] = err.Error()
+	}
+	attachCorePendingApplyResult(ctx, cfg, payload, includeXray, includeSingbox)
+	if includeXray || includeSingbox {
+		payload["message"] = "certificate renewed; apply core configuration to make it effective"
+	}
+	return payload
 }
 
 type certificateGetter interface {
