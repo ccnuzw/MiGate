@@ -12,6 +12,7 @@ export interface Client {
   email: string;
   uuid: string;
   credential_id?: string;
+  stats_key?: string;
   password?: string;
   subscription_token?: string;
   enabled: boolean;

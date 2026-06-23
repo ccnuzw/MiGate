@@ -310,18 +310,20 @@ function ClientPicker({ options, value, missingLabel, onChange }: { options: Cli
   const { text } = useI18n();
   const [query, setQuery] = useState('');
   const filtered = filterClientOptions(options, query);
+  const semanticHint = text('Xray 客户端匹配按入站协议区分：socks/http 使用认证用户名，vless/vmess/trojan 使用 Xray 用户标识（优先 stats_key，否则 email）。');
   return (
     <div className="choice-field routing-picker">
       <div className="choice-field-header">
         <div>
           <span className="choice-label">{text('客户端')}</span>
           <span className="choice-help">{text('选择后生成客户端级规则：入站 / 客户端 -> 出站。')}</span>
+          <span className="choice-help">{semanticHint}</span>
         </div>
         <span className="choice-count">{missingLabel || `${text('客户端')} ${Math.max(options.length - 1, 0)}`}</span>
       </div>
       <div className="choice-search">
         <Search className="h-4 w-4" />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text('搜索客户端 email')} />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text('搜索客户端、邮箱、用户名、stats_key 或 UUID')} />
       </div>
       <div className="choice-list" role="radiogroup" aria-label={text('客户端')}>
         {filtered.map((option) => (
@@ -466,6 +468,10 @@ type ChoiceMeta = {
   translateValue?: boolean;
 };
 
+function isChoiceMeta(value: ChoiceMeta | null): value is ChoiceMeta {
+  return value !== null;
+}
+
 function formatChoiceMetaValue(item: ChoiceMeta, text: (value: string) => string) {
   return item.translateValue ? text(item.value) : item.value;
 }
@@ -506,7 +512,7 @@ export function inboundSelectionOptions(inbounds: Inbound[]): InboundOption[] {
         { label: '内核：', value: coreLabel(inboundCore(item)) },
         { label: '传输：', value: `${item.network || 'tcp'} / ${item.security || 'none'}` },
         { label: '客户端：', value: String(clientCount) },
-      ].filter(Boolean) as ChoiceMeta[],
+      ].filter(isChoiceMeta),
       search: [generated, remark, item.protocol, inboundCore(item), item.port, item.network, item.security].filter(Boolean).join(' ').toLowerCase(),
     });
   });
@@ -521,6 +527,28 @@ export function inboundSelectionOptions(inbounds: Inbound[]): InboundOption[] {
 function inboundOptionMatches(option: InboundOption, inboundID: number, fallbackTag = '') {
   if (inboundID > 0) return option.id === inboundID;
   return option.value === fallbackTag || Boolean(fallbackTag && option.aliases?.includes(fallbackTag));
+}
+
+function clientCredentialIDValue(client: { credential_id?: string; uuid?: string }) {
+  const credentialID = String(client.credential_id || '').trim();
+  if (credentialID) return credentialID;
+  return String(client.uuid || '').trim();
+}
+
+function clientStatsNameValue(client: { stats_key?: string; email?: string }) {
+  const statsKey = String(client.stats_key || '').trim();
+  if (statsKey) return statsKey;
+  return String(client.email || '').trim();
+}
+
+export function clientRouteMatchIdentity(protocol: string, client: Pick<NonNullable<Inbound['clients']>[number], 'credential_id' | 'uuid' | 'stats_key' | 'email'>) {
+  switch (String(protocol || '').trim().toLowerCase()) {
+    case 'socks':
+    case 'http':
+      return clientCredentialIDValue(client);
+    default:
+      return clientStatsNameValue(client);
+  }
 }
 
 export function clientSelectionOptions(inbounds: Inbound[], inboundID: number, inboundTag = '', rule?: Pick<RoutingRule, 'client_id' | 'client_email' | 'inbound_id' | 'inbound_tag'>): ClientOption[] {
@@ -542,18 +570,25 @@ export function clientSelectionOptions(inbounds: Inbound[], inboundID: number, i
     const inboundName = inbound.remark || inboundTagValue;
     (inbound.clients || []).forEach((client) => {
       const email = String(client.email || '').trim();
+      const credentialID = clientCredentialIDValue(client);
+      const statsName = clientStatsNameValue(client);
+      const routeIdentity = clientRouteMatchIdentity(inbound.protocol, client);
+      const title = routeIdentity || email || credentialID || `client-${client.id}`;
+      const subtitle = routeIdentity && email && routeIdentity !== email ? email : undefined;
       options.push({
         id: client.id,
         email,
-        title: email || `client-${client.id}`,
+        title,
+        subtitle,
         typeLabel: '客户端级',
         inboundID: inbound.id,
         inboundTag: inboundTagValue,
         meta: [
           { label: '入站：', value: inboundName },
+          routeIdentity ? { label: '路由匹配：', value: routeIdentity } : null,
           { label: '状态：', value: client.enabled === false ? '禁用' : '启用', translateValue: true },
-        ],
-        search: [email, client.uuid, inbound.remark, inboundTagValue].filter(Boolean).join(' ').toLowerCase(),
+        ].filter(isChoiceMeta),
+        search: [routeIdentity, email, credentialID, statsName, client.uuid, inbound.remark, inboundTagValue].filter(Boolean).join(' ').toLowerCase(),
       });
     });
   });
@@ -607,7 +642,7 @@ export function outboundSelectionOptions(outbounds: Outbound[], proxyLookup = ne
         disabled ? { label: '状态：', value: '当前来源内核不支持', translateValue: true } : null,
         country && (!remark || !remark.includes(country)) ? { label: '国家/地区：', value: country } : null,
         item.enabled === false ? { label: '状态：', value: '禁用', translateValue: true } : null,
-      ].filter(Boolean) as ChoiceMeta[];
+      ].filter(isChoiceMeta);
       return {
         id: item.id,
         tag: item.tag,
@@ -670,11 +705,15 @@ function findClientById(inbounds: Inbound[], clientID: number) {
   return undefined;
 }
 
+function readableClientRouteIdentity(found: { inbound: Inbound; client: NonNullable<Inbound['clients']>[number] }) {
+  return clientRouteMatchIdentity(found.inbound.protocol, found.client);
+}
+
 function clientDisplay(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string) {
   const clientID = Number(rule.client_id || 0);
   if (!clientID) return '-';
   const found = findClientById(inbounds, clientID);
-  if (found) return found.client.email || `client-${clientID}`;
+  if (found) return readableClientRouteIdentity(found) || found.client.email || `client-${clientID}`;
   return `${rule.client_email || `client-${clientID}`} (${text('客户端已缺失')})`;
 }
 
@@ -739,7 +778,10 @@ function readableClientName(rule: RoutingRule, inbounds: Inbound[], text: (value
   const clientID = Number(rule.client_id || 0);
   if (!clientID) return '-';
   const found = findClientById(inbounds, clientID);
-  return String(found?.client.email || rule.client_email || rule.client_label || `${text('客户端')} #${clientID}`).trim();
+  if (found) {
+    return String(readableClientRouteIdentity(found) || found.client.email || `${text('客户端')} #${clientID}`).trim();
+  }
+  return String(rule.client_email || rule.client_label || `${text('客户端')} #${clientID}`).trim();
 }
 
 function readableClientInboundName(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string, fallback = '') {
