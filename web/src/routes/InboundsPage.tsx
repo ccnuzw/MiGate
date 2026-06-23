@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Columns2, Copy, Edit2, Plus, Power, QrCode, RectangleHorizontal, RotateCcw, Trash2 } from 'lucide-react';
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, Columns2, Copy, Edit2, ListCollapse, ListTree, MoreHorizontal, Plus, Power, QrCode, RectangleHorizontal, RotateCcw, Trash2 } from 'lucide-react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { CertStatus, Client, Inbound, InboundCapability as ApiInboundCapability } from '../api/types';
@@ -364,6 +364,8 @@ function isInboundAdvancedField(value: string): value is InboundAdvancedField {
 
 type SortKey = 'id' | 'port' | 'protocol' | 'clients';
 type InboundListColumns = 1 | 2;
+type StatusFilter = 'all' | 'enabled' | 'disabled' | 'attention';
+type ClientExpansionMode = 'single' | 'bulk';
 
 export default function InboundsPage() {
   const queryClient = useQueryClient();
@@ -376,8 +378,13 @@ export default function InboundsPage() {
   const [editingClient, setEditingClient] = useState<{ inbound: Inbound; client: Client } | null>(null);
   const [qrLink, setQRLink] = useState<{ title: string; value: string; dataURL: string } | null>(null);
   const [search, setSearch] = useState('');
+  const [protocolFilter, setProtocolFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [inboundColumns, setInboundColumns] = useState<InboundListColumns>(2);
   const [sort, setSort] = useState<SortKey>('id');
+  const [expandedClients, setExpandedClients] = useState<Set<number>>(() => new Set());
+  const [clientExpansionMode, setClientExpansionMode] = useState<ClientExpansionMode>('single');
+  const expandedCardRef = useRef<HTMLDivElement | null>(null);
   const [, setCapabilityVersion] = useState(0);
   const capabilities = useQuery({ queryKey: ['inbound-capabilities'], queryFn: api.inboundCapabilities, staleTime: 300_000, retry: false });
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, staleTime: 30_000 });
@@ -404,14 +411,79 @@ export default function InboundsPage() {
   const refresh = () => refreshInboundDependencies(queryClient);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const list = (inbounds.data || []).filter((item) => !q || [item.remark, item.protocol, inboundCore(item), String(item.port), item.network, item.security].join(' ').toLowerCase().includes(q));
+    const list = (inbounds.data || []).filter((item) => {
+      if (protocolFilter !== 'all' && item.protocol !== protocolFilter) return false;
+      if (statusFilter === 'enabled' && !item.enabled) return false;
+      if (statusFilter === 'disabled' && item.enabled) return false;
+      if (statusFilter === 'attention' && !inboundNeedsAttention(item)) return false;
+      if (!q) return true;
+      return inboundMatchesQuery(item, q);
+    });
     return [...list].sort((a, b) => {
       if (sort === 'port') return a.port - b.port;
       if (sort === 'protocol') return a.protocol.localeCompare(b.protocol);
       if (sort === 'clients') return (b.clients || []).length - (a.clients || []).length;
       return a.id - b.id;
     });
-  }, [inbounds.data, search, sort]);
+  }, [inbounds.data, protocolFilter, search, sort, statusFilter]);
+  const visibleProtocols = useMemo(() => Array.from(new Set((inbounds.data || []).map((item) => item.protocol).filter(Boolean))).sort(), [inbounds.data]);
+  const searchClientMatches = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return new Set<number>();
+    return new Set((inbounds.data || []).filter((item) => inboundClientMatchesQuery(item, q)).map((item) => item.id));
+  }, [inbounds.data, search]);
+  const displayedExpandedClients = useMemo(() => new Set([...expandedClients, ...searchClientMatches]), [expandedClients, searchClientMatches]);
+  const allFilteredExpanded = filtered.length > 0 && filtered.every((item) => displayedExpandedClients.has(item.id));
+  const hasVisibleSearchClientMatch = filtered.some((item) => searchClientMatches.has(item.id));
+  const clientBulkToggleDisabled = allFilteredExpanded && hasVisibleSearchClientMatch;
+
+  useEffect(() => {
+    const handleDocumentClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (closeOpenMoreActions(target)) return;
+      if (clientExpansionMode !== 'single' || expandedClients.size !== 1) return;
+      if (target?.closest('[data-client-expansion-control]')) return;
+      if (expandedCardRef.current?.contains(target)) return;
+      setExpandedClients(new Set());
+    };
+    const handleDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (closeOpenMoreActions(null, { force: true })) return;
+      if (clientExpansionMode !== 'single' || expandedClients.size !== 1) return;
+      setExpandedClients(new Set());
+    };
+    document.addEventListener('click', handleDocumentClick);
+    document.addEventListener('keydown', handleDocumentKeyDown);
+    return () => {
+      document.removeEventListener('click', handleDocumentClick);
+      document.removeEventListener('keydown', handleDocumentKeyDown);
+    };
+  }, [clientExpansionMode, expandedClients]);
+
+  const toggleClientPanel = (inboundId: number) => {
+    setExpandedClients((current) => {
+      const next = new Set<number>();
+      if (!current.has(inboundId)) next.add(inboundId);
+      return next;
+    });
+    setClientExpansionMode('single');
+  };
+  const setAllClientPanels = (expanded: boolean) => {
+    setExpandedClients((current) => {
+      const next = new Set(current);
+      for (const inbound of filtered) {
+        if (expanded) next.add(inbound.id);
+        else next.delete(inbound.id);
+      }
+      return next;
+    });
+    setClientExpansionMode('bulk');
+  };
+  const openNewClientModal = (inbound: Inbound) => {
+    setExpandedClients((current) => new Set(current).add(inbound.id));
+    setClientExpansionMode('bulk');
+    setClientInbound(inbound);
+  };
 
   const toggleInbound = useMutation({
     mutationFn: (item: Inbound) => api.toggleInbound(item.id, !item.enabled),
@@ -476,7 +548,24 @@ export default function InboundsPage() {
         }
       />
       <div className="toolbar">
-        <input className="max-w-md" placeholder={text('搜索节点、协议、端口...')} value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="inbound-search-input" placeholder={text('搜索节点、客户端、协议、端口...')} value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select className="toolbar-select" value={protocolFilter} onChange={(e) => setProtocolFilter(e.target.value)}>
+          <option value="all">{text('全部协议')}</option>
+          {visibleProtocols.map((protocol) => <option key={protocol} value={protocol}>{protocol}</option>)}
+        </select>
+        <select className="toolbar-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}>
+          <option value="all">{text('全部状态')}</option>
+          <option value="enabled">{text('启用')}</option>
+          <option value="disabled">{text('已停用')}</option>
+          <option value="attention">{text('需关注')}</option>
+        </select>
+        <select className="toolbar-select" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+          <option value="id">{text('按创建顺序')}</option>
+          <option value="port">{text('按端口')}</option>
+          <option value="protocol">{text('按协议')}</option>
+          <option value="clients">{text('按客户端数')}</option>
+        </select>
+        <div className="toolbar-spacer" />
         <div className="segmented-control" aria-label={text('节点列表布局')}>
           <button type="button" className={inboundColumns === 1 ? 'active' : ''} onClick={() => setInboundColumns(1)} aria-pressed={inboundColumns === 1} title={text('一行一张')}>
             <RectangleHorizontal className="h-4 w-4" />
@@ -485,32 +574,41 @@ export default function InboundsPage() {
             <Columns2 className="h-4 w-4" />
           </button>
         </div>
-        <select className="w-44" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
-          <option value="id">{text('按创建顺序')}</option>
-          <option value="port">{text('按端口')}</option>
-          <option value="protocol">{text('按协议')}</option>
-          <option value="clients">{text('按客户端数')}</option>
-        </select>
+        <button
+          className="btn secondary toolbar-action"
+          data-client-expansion-control
+          disabled={clientBulkToggleDisabled}
+          onClick={() => setAllClientPanels(!allFilteredExpanded)}
+          title={clientBulkToggleDisabled ? text('搜索命中的客户端已自动展开') : undefined}
+        >
+          {allFilteredExpanded ? <ListCollapse className="h-4 w-4" /> : <ListTree className="h-4 w-4" />}
+          {text(allFilteredExpanded ? '收起全部客户端' : '展开全部客户端')}
+        </button>
       </div>
       {filtered.length === 0 ? (
         <EmptyState title={text('暂无节点')} description={text('创建第一个节点后，可继续为它添加客户端并复制节点链接。')} />
       ) : (
         <div className={`inbound-card-grid ${inboundColumns === 2 ? 'inbound-card-grid-2' : ''}`}>
-          {filtered.map((inbound) => (
-            <div key={inbound.id} className="resource-card">
+          {filtered.map((inbound) => {
+            const clients = inbound.clients || [];
+            const clientsExpanded = displayedExpandedClients.has(inbound.id);
+            const clientsAutoExpanded = searchClientMatches.has(inbound.id);
+            const notice = inboundAttentionNotice(inbound, text);
+            return (
+            <div
+              key={inbound.id}
+              className="resource-card inbound-card"
+              ref={clientsExpanded && clientExpansionMode === 'single' && expandedClients.has(inbound.id) ? expandedCardRef : undefined}
+            >
               <div className="resource-header">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate text-base font-semibold">{inbound.remark || `${inbound.protocol}:${inbound.port}`}</h2>
+                <div className="inbound-title-block">
+                  <div className="inbound-title-row">
+                    <h2 className="inbound-title">{inbound.remark || `${inbound.protocol}:${inbound.port}`}</h2>
                     <ProtocolBadge protocol={inbound.protocol} />
-                    <StatusBadge enabled={inbound.enabled} />
+                    <InboundStatusBadge inbound={inbound} />
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                    <span>:{inbound.port}</span>
-                    <span>{inbound.network || 'tcp'} / {inbound.security || 'none'}</span>
-                    <span>{(inbound.clients || []).length} {text('客户端')}</span>
-                    <span>{text(supportsInboundShareLink(inbound.protocol) ? '支持节点链接' : '暂不支持分享链接')}</span>
-                  </div>
+                  <InboundMeta inbound={inbound} />
+                  {notice ? <div className="inbound-attention" title={notice}>{notice}</div> : null}
                 </div>
                 <div className="action-row">
                   <SpinnerButton className={toggleButtonClass(inbound.enabled)} loading={toggleInbound.isPending} onClick={() => toggleInbound.mutate(inbound)} title={text('启停')}>
@@ -519,27 +617,41 @@ export default function InboundsPage() {
                   <button className="icon-button" onClick={() => setEditingInbound(inbound)} title={text('编辑')}>
                     <Edit2 className="h-4 w-4" />
                   </button>
-                  <button className="icon-button danger-text" onClick={async () => (await confirm({ title: text('删除节点？'), description: text('该节点下的客户端也会被删除。'), tone: 'danger' })) && deleteInbound.mutate(inbound.id)} title={text('删除')}>
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  <MoreActions
+                    resetLabel={null}
+                    onDelete={async () => (await confirm({ title: text('删除节点？'), description: text('该节点下的客户端也会被删除。'), tone: 'danger' })) && deleteInbound.mutate(inbound.id)}
+                  />
                 </div>
               </div>
-              <div className="mt-3 grid gap-2 text-xs text-panel-muted sm:grid-cols-4">
-                <MetaItem label={text('上行')} value={formatBytes(inbound.traffic_up)} />
-                <MetaItem label={text('下行')} value={formatBytes(inbound.traffic_down)} />
-                <MetaItem label={text('合计')} value={formatBytes(inbound.traffic_total)} />
-                <MetaItem label={text('当前速率')} value={`${formatBytes(Number(inbound.rate_up || 0))}/s ↑ / ${formatBytes(Number(inbound.rate_down || 0))}/s ↓`} />
-                <MetaItem label={text('统计状态')} value={trafficStatusLabel(inbound.traffic_status, text)} />
+              <div className="inbound-metric-grid">
+                <MetricTile label={text('上行')} value={formatBytes(inbound.traffic_up)} />
+                <MetricTile label={text('下行')} value={formatBytes(inbound.traffic_down)} />
+                <MetricTile label={text('合计')} value={formatBytes(inbound.traffic_total)} />
+                <MetricTile label={text('当前速率')} value={rateLabel(inbound.rate_up, inbound.rate_down, text)} />
               </div>
-              <div className="mt-4 border-t border-panel-line pt-3">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-sm font-medium">{text('客户端')}</div>
-                  <button className="btn secondary h-8" onClick={() => setClientInbound(inbound)}>
+              <div className="client-section">
+                <div className="client-section-bar">
+                  <div className="client-section-heading">
+                    <span>{text('客户端')}</span>
+                    <span className="client-count-badge" aria-label={`${clients.length} ${text('个客户端')}`}>{clients.length}</span>
+                  </div>
+                  <button className="btn secondary compact" data-client-expansion-control onClick={() => openNewClientModal(inbound)}>
                     <Plus className="h-4 w-4" /> {text('新增客户端')}
                   </button>
+                  <button
+                    className="btn secondary compact"
+                    data-client-expansion-control
+                    onClick={() => toggleClientPanel(inbound.id)}
+                    disabled={clientsAutoExpanded}
+                    title={clientsAutoExpanded ? text('搜索命中的客户端已自动展开') : undefined}
+                  >
+                    {clientsExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    {text(clientsAutoExpanded ? '搜索命中' : clientsExpanded ? '收起' : '展开')}
+                  </button>
                 </div>
-                <div className="grid gap-2">
-                  {(inbound.clients || []).map((client) => (
+                {clientsExpanded ? (
+                <div className="client-list">
+                  {clients.map((client) => (
                     <ClientRow
                       key={client.id}
                       inbound={inbound}
@@ -553,16 +665,21 @@ export default function InboundsPage() {
                       onDelete={async () => (await confirm({ title: text('删除客户端？'), tone: 'danger' })) && deleteClient.mutate({ inboundId: inbound.id, id: client.id })}
                     />
                   ))}
-                  {(inbound.clients || []).length === 0 ? <EmptyState title={text('暂无客户端')} /> : null}
+                  {clients.length === 0 ? <div className="client-empty-row">{text('暂无客户端')}</div> : null}
                 </div>
+                ) : null}
               </div>
             </div>
-          ))}
+          );})}
         </div>
       )}
       <Suspense fallback={null}>
         {editingInbound ? <InboundModal inbound={editingInbound} onClose={() => setEditingInbound(null)} onSaved={refresh} /> : null}
-        {clientInbound ? <ClientModal inbound={clientInbound} onClose={() => setClientInbound(null)} onSaved={refresh} /> : null}
+        {clientInbound ? <ClientModal inbound={clientInbound} onClose={() => setClientInbound(null)} onSaved={() => {
+          setExpandedClients((current) => new Set(current).add(clientInbound.id));
+          setClientExpansionMode('bulk');
+          refresh();
+        }} /> : null}
         {editingClient ? <ClientModal inbound={editingClient.inbound} client={editingClient.client} onClose={() => setEditingClient(null)} onSaved={refresh} /> : null}
       </Suspense>
       {qrLink ? (
@@ -609,54 +726,97 @@ function ClientRow({
   const { text } = useI18n();
   const used = Number(client.up || 0) + Number(client.down || 0);
   const limit = Number(client.traffic_limit || 0);
+  const usage = clientUsageSummary(client, text);
   return (
     <div className="client-row">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate font-medium">{client.email}</span>
+      <div className="client-identity">
+        <div className="client-name-row">
+          <span className="client-name" title={client.email}>{client.email}</span>
           <StatusBadge enabled={client.enabled} />
         </div>
-        <div className="mt-1 break-all text-xs text-panel-muted">{client.uuid}</div>
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-          <MetaItem label={text('上行')} value={formatBytes(client.up)} />
-          <MetaItem label={text('下行')} value={formatBytes(client.down)} />
-          <MetaItem label={text('限额')} value={limit > 0 ? `${formatBytes(used)} / ${formatBytes(limit)}` : text('不限制')} />
-          <MetaItem label={text('过期')} value={client.expiry_at ? new Date(client.expiry_at * 1000).toLocaleString() : text('不限制')} />
-          <MetaItem label={text('当前速率')} value={`${formatBytes(Number(client.rate_up || 0))}/s ↑ / ${formatBytes(Number(client.rate_down || 0))}/s ↓`} />
-          <MetaItem label={text('统计状态')} value={trafficStatusLabel(client.traffic_status, text)} />
-        </div>
       </div>
-      <div className="action-row">
-        {shareSupported ? <button className="icon-button" onClick={onCopyShare} title={text('复制节点链接')}><Copy className="h-4 w-4" /></button> : <span className="client-link-status">{text('暂不支持分享链接')}</span>}
+      <div className="client-usage">
+        <div className="client-usage-text">
+          <span>{usage.label}</span>
+          {usage.percentLabel ? <span>{usage.percentLabel}</span> : null}
+        </div>
+        {limit > 0 ? <UsageBar percent={usage.percent} tone={usage.tone} /> : used > 0 ? <div className="usage-line" /> : null}
+      </div>
+      <div className="client-speed">{rateLabel(client.rate_up, client.rate_down, text)}</div>
+      <div className="action-row client-actions">
+        {shareSupported ? <button className="icon-button" onClick={onCopyShare} title={text('复制节点链接')}><Copy className="h-4 w-4" /></button> : null}
         {shareSupported ? <button className="icon-button" onClick={onShowQR} title={text('显示二维码')}><QrCode className="h-4 w-4" /></button> : null}
         <button className={toggleButtonClass(client.enabled)} onClick={onToggle} title={text('启停')}><Power className="h-4 w-4" /></button>
         <button className="icon-button" onClick={onEdit} title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
-        <button className="icon-button" onClick={onReset} title={text('重置累计用量')}><RotateCcw className="h-4 w-4" /></button>
-        <button className="icon-button danger-text" onClick={onDelete} title={text('删除')}><Trash2 className="h-4 w-4" /></button>
+        <MoreActions resetLabel={text('重置累计用量')} onReset={onReset} onDelete={onDelete} />
       </div>
     </div>
   );
 }
 
-function MetaItem({ label, value }: { label: string; value: string }) {
+function MetricTile({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex gap-1">
+    <div className="inbound-metric">
       <span>{label}</span>
-      <span>{value}</span>
-    </span>
+      <strong>{value}</strong>
+    </div>
   );
+}
+
+function InboundMeta({ inbound }: { inbound: Inbound }) {
+  const { text } = useI18n();
+  const security = String(inbound.security || 'none');
+  return (
+    <div className="inbound-meta-line" aria-label={text('节点元信息')}>
+      <span className="inbound-meta-chip">{text('端口')} {inbound.port}</span>
+      <span className="inbound-meta-chip inbound-meta-transport">{inbound.network || 'tcp'}</span>
+      <span className="inbound-meta-chip inbound-meta-security">{security === 'none' ? text('无安全层') : security}</span>
+    </div>
+  );
+}
+
+function UsageBar({ percent, tone }: { percent: number; tone: UsageTone }) {
+  return (
+    <div className="usage-bar" data-tone={tone}>
+      <span style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
+    </div>
+  );
+}
+
+function MoreActions({ resetLabel, onReset, onDelete }: { resetLabel: string | null; onReset?: () => void; onDelete: () => void }) {
+  const { text } = useI18n();
+  return (
+    <details className="more-actions" data-more-actions>
+      <summary className="icon-button" title={text('更多操作')} aria-label={text('更多操作')}>
+        <MoreHorizontal className="h-4 w-4" />
+      </summary>
+      <div className="more-actions-menu">
+        {onReset ? <button type="button" onClick={onReset}><RotateCcw className="h-4 w-4" /> {resetLabel}</button> : null}
+        <button type="button" className="danger-text" onClick={onDelete}><Trash2 className="h-4 w-4" /> {text('删除')}</button>
+      </div>
+    </details>
+  );
+}
+
+function InboundStatusBadge({ inbound }: { inbound: Inbound }) {
+  const { text } = useI18n();
+  const attention = inboundNeedsAttention(inbound);
+  if (attention) return <span className="status-badge status-error">{text('异常')}</span>;
+  return <StatusBadge enabled={inbound.enabled}>{text(inbound.enabled ? '运行中' : '已停用')}</StatusBadge>;
 }
 
 function refreshInboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
   refreshTopologyDependencies(queryClient);
 }
 
-const protocolBadgeClasses: Record<string, string> = {
+export const protocolBadgeClasses: Record<string, string> = {
   vless: 'protocol-vless',
   vmess: 'protocol-vmess',
   trojan: 'protocol-trojan',
   shadowsocks: 'protocol-shadowsocks',
   hysteria2: 'protocol-hysteria2',
+  socks: 'protocol-socks',
+  http: 'protocol-http',
   tuic: 'protocol-tuic',
   shadowtls: 'protocol-shadowtls',
 };
@@ -664,6 +824,77 @@ const protocolBadgeClasses: Record<string, string> = {
 function ProtocolBadge({ protocol }: { protocol: string }) {
   const key = String(protocol || '').toLowerCase();
   return <span className={`protocol-badge ${protocolBadgeClasses[key] || 'protocol-default'}`}>{protocol || 'unknown'}</span>;
+}
+
+type UsageTone = 'normal' | 'warning' | 'danger' | 'over';
+
+export function inboundMatchesQuery(inbound: Inbound, query: string) {
+  return [inbound.remark, inbound.protocol, inboundCore(inbound), String(inbound.port), inbound.network, inbound.security, ...(inbound.clients || []).map((client) => client.email)]
+    .join(' ')
+    .toLowerCase()
+    .includes(query);
+}
+
+export function inboundClientMatchesQuery(inbound: Inbound, query: string) {
+  return (inbound.clients || []).some((client) => String(client.email || '').toLowerCase().includes(query));
+}
+
+function inboundNeedsAttention(inbound: Inbound) {
+  return Boolean(inbound.enabled && abnormalTrafficStatus(inbound.traffic_status));
+}
+
+function inboundAttentionNotice(inbound: Inbound, text: (value: string) => string) {
+  if (!inboundNeedsAttention(inbound)) return '';
+  return attentionTrafficStatusLabel(inbound.traffic_status, text);
+}
+
+function abnormalTrafficStatus(status: string | undefined) {
+  return ['partial', 'stale', 'unavailable', 'unsupported', 'not_configured'].includes(String(status || ''));
+}
+
+function attentionTrafficStatusLabel(status: string | undefined, text: (value: string) => string) {
+  if (status === 'partial') return text('部分统计不可用');
+  if (status === 'stale') return text('统计已过期');
+  if (status === 'unavailable') return text('统计不可用');
+  if (status === 'unsupported') return text('实时统计不可用');
+  if (status === 'not_configured') return text('核心节点未配置');
+  return '';
+}
+
+export function rateLabel(rateUp: unknown, rateDown: unknown, text: (value: string) => string) {
+  const up = Number(rateUp || 0);
+  const down = Number(rateDown || 0);
+  if (!up && !down) return text('暂无速率');
+  return `${formatBytes(up)}/s ↑ / ${formatBytes(down)}/s ↓`;
+}
+
+export function clientUsageSummary(client: Pick<Client, 'up' | 'down' | 'traffic_limit'>, text: (value: string) => string): { label: string; percent: number; percentLabel: string; tone: UsageTone } {
+  const used = Number(client.up || 0) + Number(client.down || 0);
+  const limit = Number(client.traffic_limit || 0);
+  if (used <= 0) return { label: text('暂无流量'), percent: 0, percentLabel: '', tone: 'normal' };
+  if (limit <= 0) return { label: `${text('已用')} ${formatBytes(used)}`, percent: 0, percentLabel: '', tone: 'normal' };
+  const rawPercent = (used / limit) * 100;
+  const rounded = Math.round(rawPercent);
+  const over = rawPercent > 100;
+  return {
+    label: `${text('已用')} ${formatBytes(used)} / ${formatBytes(limit)}${over ? ` · ${text('已超额')}` : ''}`,
+    percent: over ? 100 : rawPercent,
+    percentLabel: over ? text('已超额') : `${rounded}%`,
+    tone: over ? 'over' : rounded >= 90 ? 'danger' : rounded >= 70 ? 'warning' : 'normal',
+  };
+}
+
+function closeOpenMoreActions(target: HTMLElement | null, options?: { force?: boolean }) {
+  if (typeof document === 'undefined') return false;
+  const openMenus = Array.from(document.querySelectorAll<HTMLDetailsElement>('details[data-more-actions][open]'));
+  if (openMenus.length === 0) return false;
+  const targetMenu = target?.closest('details[data-more-actions]');
+  const menusToClose = options?.force ? openMenus : openMenus.filter((menu) => menu !== targetMenu);
+  if (menusToClose.length === 0) return false;
+  menusToClose.forEach((menu) => {
+    menu.open = false;
+  });
+  return true;
 }
 
 export function createDefaultInbound(): Inbound {
@@ -1101,7 +1332,7 @@ export function clientFormValues(inbound: Inbound, client?: Client): ClientValue
     password = '';
   }
   return {
-    email: client?.email || defaultClientName(inbound.remark),
+    email: client?.email || nextClientName(inbound),
     uuid,
     credential_id: credentialID,
     password,
@@ -1114,6 +1345,27 @@ export function clientFormValues(inbound: Inbound, client?: Client): ClientValue
 export function defaultClientName(inboundRemark?: string) {
   const remark = String(inboundRemark || '').trim();
   return remark ? `${remark} 首个客户端` : '首个客户端';
+}
+
+export function nextClientName(inbound: Pick<Inbound, 'remark' | 'clients'>) {
+  const clients = inbound.clients || [];
+  if (clients.length === 0) return defaultClientName(inbound.remark);
+
+  const usedIndexes = new Set<number>();
+  const firstClientNames = new Set(['首个客户端']);
+  const remark = String(inbound.remark || '').trim();
+  if (remark) firstClientNames.add(`${remark} 首个客户端`);
+
+  clients.forEach((client) => {
+    const name = String(client.email || '').trim();
+    if (firstClientNames.has(name)) usedIndexes.add(1);
+    const match = /^客户端\s+(\d+)$/.exec(name);
+    if (match) usedIndexes.add(Number(match[1]));
+  });
+
+  let index = 2;
+  while (usedIndexes.has(index)) index += 1;
+  return `客户端 ${index}`;
 }
 
 export function buildClientPayload(values: ClientValues, protocol = 'vless'): { email: string; uuid: string; credential_id: string; password: string; enabled: boolean; traffic_limit: number; expiry_at: number } {
