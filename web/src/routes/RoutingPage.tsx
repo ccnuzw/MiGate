@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowRight, ArrowUp, Boxes, Check, Edit2, Plus, Power, Search, Shield, Trash2, Users } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowRight, ArrowUp, Check, ChevronDown, Edit2, Plus, Power, Search, Trash2, UserRound } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -7,7 +7,7 @@ import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import type { Inbound, Outbound, RoutingRule } from '../api/types';
 import { EmptyState, Field, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
-import { coreLabel, inboundCore, outboundSupportedCores, outboundSupportsCore } from '../lib/cores';
+import { coreLabel, inboundCore, outboundSupportedCores, type CoreName } from '../lib/cores';
 import { useI18n } from '../lib/i18n';
 import { refreshTopologyDependencies } from '../lib/queryInvalidation';
 import { generatedInboundTag } from '../lib/routing';
@@ -32,6 +32,7 @@ type InputValues = z.input<typeof schema>;
 type Values = z.output<typeof schema>;
 type ProxyPoolType = 'socks5' | 'http' | 'https';
 type ProxyCountry = { country?: string; country_code?: string };
+const ROUTING_PAGE_SIZES = [10, 20, 50];
 
 export default function RoutingPage() {
   const queryClient = useQueryClient();
@@ -39,6 +40,8 @@ export default function RoutingPage() {
   const { showToast } = useToast();
   const { text } = useI18n();
   const [editing, setEditing] = useState<RoutingRule | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(ROUTING_PAGE_SIZES[0]);
   const rules = useQuery({ queryKey: ['routing-rules'], queryFn: api.routingRules });
   const outbounds = useQuery({ queryKey: ['outbounds'], queryFn: api.outbounds });
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds });
@@ -74,45 +77,67 @@ export default function RoutingPage() {
     onError: (error) => showToast(errorMessage(error, text('保存顺序失败')), 'error'),
   });
   const items = rules.data || [];
+  const pageState = routingPageWindow(items, page, pageSize);
   const createDraft = newRoutingRuleDraft(outbounds.data || []);
   if (rules.isLoading) return <LoadingBlock />;
   return (
     <div className="page-stack">
       <PageTitle title={text('路由规则')} description={text('按入站、客户端、域名、IP、规则集或协议选择出站链路。')} action={<button className="btn primary" disabled={!createDraft} onClick={() => createDraft && setEditing(createDraft)} title={createDraft ? text('新增路由') : text('请先创建出站')}><Plus className="h-4 w-4" /> {text('新增路由')}</button>} />
       {items.length === 0 ? <EmptyState title={text('暂无路由规则')} /> : null}
-      <div className="grid gap-3">
-        {items.map((item, index) => (
-          <div key={item.id} className="resource-card">
-            <div className="resource-header">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded bg-panel-soft px-2 py-1 text-xs">#{index + 1}</span>
-                  <h2 className="truncate text-base font-semibold">{ruleTitle(item, text, inbounds.data || [], outbounds.data || [])}</h2>
-                  <StatusBadge enabled={item.enabled} />
-                  {item.client_id && !findClientById(inbounds.data || [], item.client_id) ? <StatusBadge enabled={false}>{text('客户端已缺失')}</StatusBadge> : null}
-                </div>
-                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
-                  <span>{item.client_id ? text('客户端级规则：入站 / 客户端 -> 出站') : text('入站级规则：入站 -> 出站')}</span>
-                  <span>{text('inbound')}: {readableInboundName(item, inbounds.data || [], text) || item.inbound_tag || text('全部')}</span>
-                  <span>{text('client')}: {clientDisplay(item, inbounds.data || [], text)}</span>
-                  <span>{text('domain')}: {item.domain || '-'}</span>
-                  <span>{text('ip')}: {item.ip || '-'}</span>
-                  <span>{text('rule_set')}: {item.rule_set || '-'}</span>
-                  <span>{text('protocol')}: {item.protocol || '-'}</span>
-                  <span>{text('outbound')}: {readableOutboundName(item, outbounds.data || [])}</span>
-                </div>
-              </div>
-              <div className="action-row">
-                <button className="icon-button" disabled={index === 0} onClick={() => moveRule(items, index, -1, reorder.mutate)} title={text('上移')}><ArrowUp className="h-4 w-4" /></button>
-                <button className="icon-button" disabled={index === items.length - 1} onClick={() => moveRule(items, index, 1, reorder.mutate)} title={text('下移')}><ArrowDown className="h-4 w-4" /></button>
-                <SpinnerButton className={toggleButtonClass(item.enabled)} loading={toggle.isPending} onClick={() => toggle.mutate(item)} title={text('启停')}><Power className="h-4 w-4" /></SpinnerButton>
-                <button className="icon-button" onClick={() => setEditing(item)} title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
-                <button className="icon-button danger-text" onClick={async () => (await confirm({ title: text('删除路由规则？'), tone: 'danger' })) && remove.mutate(item.id)} title={text('删除')}><Trash2 className="h-4 w-4" /></button>
-              </div>
-            </div>
-          </div>
-        ))}
+      {items.length > 0 ? (
+        <RoutingListPager
+          page={pageState.page}
+          pageSize={pageState.pageSize}
+          total={pageState.total}
+          totalPages={pageState.totalPages}
+          start={pageState.start}
+          end={pageState.end}
+          text={text}
+          onPageChange={setPage}
+          onPageSizeChange={(next) => {
+            setPageSize(next);
+            setPage(1);
+          }}
+        />
+      ) : null}
+      <div className="routing-rule-list">
+        {pageState.items.map((item, pageIndex) => {
+          const index = pageState.startIndex + pageIndex;
+          return (
+          <RoutingRuleCard
+            key={item.id}
+            item={item}
+            index={index}
+            total={items.length}
+            inbounds={inbounds.data || []}
+            outbounds={outbounds.data || []}
+            text={text}
+            toggleLoading={toggle.isPending}
+            onMove={(delta) => moveRule(items, index, delta, reorder.mutate)}
+            onToggle={() => toggle.mutate(item)}
+            onEdit={() => setEditing(item)}
+            onDelete={async () => (await confirm({ title: text('删除路由规则？'), tone: 'danger' })) && remove.mutate(item.id)}
+          />
+          );
+        })}
       </div>
+      {items.length > pageState.pageSize ? (
+        <RoutingListPager
+          page={pageState.page}
+          pageSize={pageState.pageSize}
+          total={pageState.total}
+          totalPages={pageState.totalPages}
+          start={pageState.start}
+          end={pageState.end}
+          text={text}
+          onPageChange={setPage}
+          onPageSizeChange={(next) => {
+            setPageSize(next);
+            setPage(1);
+          }}
+          compact
+        />
+      ) : null}
       <RoutingModal
         rule={editing}
         outbounds={outbounds.data || []}
@@ -154,9 +179,23 @@ function RoutingModal({ rule, outbounds, inbounds, onClose, onSaved }: { rule: R
   const watchedOutboundTag = form.watch('outbound_tag') || outboundOptions[0]?.tag || 'direct';
   const watchedOutboundID = Number(form.watch('outbound_id') || 0);
   const clientOptions = useMemo(() => clientSelectionOptions(inbounds, watchedInboundID, watchedInboundTag, rule || undefined), [inbounds, watchedInboundID, watchedInboundTag, rule]);
-  const selectedInboundOption = inboundOptions.find((option) => inboundOptionMatches(option, watchedInboundID, watchedInboundTag));
   const selectedClientOption = clientOptions.find((option) => option.id === watchedClientID);
-  const selectedOutboundOption = outboundOptions.find((option) => watchedOutboundID > 0 && option.id === watchedOutboundID);
+  const draftValues = {
+    inbound_id: watchedInboundID,
+    inbound_tag: watchedInboundTag,
+    client_id: watchedClientID,
+    client_email: form.watch('client_email') || '',
+    domain: form.watch('domain') || '',
+    ip: form.watch('ip') || '',
+    rule_set: form.watch('rule_set') || '',
+    protocol: form.watch('protocol') || '',
+    outbound_tag: watchedOutboundTag,
+    outbound_id: watchedOutboundID,
+    enabled: form.watch('enabled') ?? true,
+  };
+  const diagnostics = routingDiagnostics(draftValues, inbounds, outbounds);
+  const summaryStatus = routeSummaryStatus(draftValues, inbounds, outbounds);
+  const visibleDiagnostics = diagnostics.filter((item) => item.tone === 'error' || item.tone === 'warning');
   const save = useMutation({
     mutationFn: (values: Values) => {
       const payload = routingPayload(values);
@@ -172,14 +211,16 @@ function RoutingModal({ rule, outbounds, inbounds, onClose, onSaved }: { rule: R
     onError: (error) => showToast(errorMessage(error, text('保存路由规则失败')), 'error'),
   });
   return (
-    <Modal open={!!rule} title={text(rule?.id ? '编辑路由规则' : '新增路由规则')} onClose={onClose} panelClassName="routing-modal-panel" footer={<><button className="btn secondary" onClick={onClose}>{text('取消')}</button><SpinnerButton className="btn primary" loading={save.isPending} onClick={form.handleSubmit((v) => save.mutate(v))}>{text('保存')}</SpinnerButton></>}>
+    <Modal open={!!rule} title={text(rule?.id ? '编辑路由规则' : '新增路由规则')} onClose={onClose} panelClassName="routing-modal-panel" footer={<div className="routing-modal-footer"><div className="routing-modal-actions"><button className="btn secondary" onClick={onClose}>{text('取消')}</button><SpinnerButton className="btn primary" loading={save.isPending} onClick={form.handleSubmit((v) => save.mutate(v))}>{text('保存')}</SpinnerButton></div></div>}>
       <div className="routing-rule-builder">
         <RouteSummary
-          inbound={selectedInboundOption?.title || watchedInboundTag || text('全部入站')}
-          client={selectedClientOption?.title || text('不指定客户端')}
-          outbound={selectedOutboundOption?.tag || watchedOutboundTag}
-          clientLevel={watchedClientID > 0}
-          enabled={form.watch('enabled') ?? true}
+          rule={draftValues}
+          inbounds={inbounds}
+          outbounds={outbounds}
+          text={text}
+          status={summaryStatus}
+          core={inferRuleTargetCore(draftValues, inbounds, outbounds)}
+          enabled={draftValues.enabled}
         />
         <div className="routing-picker-grid">
           <InboundPicker
@@ -220,50 +261,151 @@ function RoutingModal({ rule, outbounds, inbounds, onClose, onSaved }: { rule: R
           <div className="routing-match-header">
             <div>
               <div className="routing-match-title">{text('匹配条件')}</div>
-              <div className="routing-match-help">{text('留空时仅按来源入站和客户端匹配。')}</div>
+              <div className="routing-match-help">{text('基础条件默认参与匹配；全部留空时匹配所选来源的全部流量。')}</div>
             </div>
             <label className="checkbox-field routing-enabled-toggle"><input type="checkbox" {...form.register('enabled')} /> {text('已启用')}</label>
           </div>
-          <div className="routing-match-grid">
-            <Field label={text('域名匹配')} help={text('支持逗号或换行分隔多个值。')}>
-              <textarea rows={3} placeholder={text('geosite:netflix 或 example.com')} {...form.register('domain')} />
-            </Field>
-            <Field label={text('IP 匹配')} help={text('支持 geoip:cn、CIDR、单 IP，逗号或换行分隔。')}>
-              <textarea rows={3} placeholder="geoip:private, 8.8.8.8/32" {...form.register('ip')} />
-            </Field>
-            <Field label={text('协议匹配')}><input placeholder="dns, bittorrent" {...form.register('protocol')} /></Field>
-            <Field label={text('规则集')} help={text('预留字段，当前会保存但不会写入 Xray 配置。')}>
-              <input placeholder="geosite-category-ads-all" {...form.register('rule_set')} />
-            </Field>
-          </div>
+          <details className="routing-match-details">
+            <summary>
+              <span className="routing-match-summary-copy">
+                <span className="routing-match-summary-title">{text('条件编辑')}</span>
+                <span className="routing-condition-tags" aria-label={text('当前条件标签')}>
+                  {conditionTags(draftValues).map((tag) => <span key={`${tag.kind}-${tag.value}`} className="routing-condition-tag"><b>{text(tag.label)}</b>{tag.translateValue ? text(tag.value) : tag.value}</span>)}
+                </span>
+              </span>
+              <ChevronDown className="h-4 w-4" />
+            </summary>
+            <div className="routing-match-grid">
+              <Field label={text('域名匹配')} help={text('支持逗号或换行分隔多个值。')}>
+                <textarea rows={3} placeholder={text('geosite:netflix 或 example.com')} {...form.register('domain')} />
+              </Field>
+              <Field label={text('IP 匹配')} help={text('支持 geoip:cn、CIDR、单 IP，逗号或换行分隔。')}>
+                <textarea rows={3} placeholder="geoip:private, 8.8.8.8/32" {...form.register('ip')} />
+              </Field>
+              <Field label={text('协议匹配')} help={text('支持按连接协议匹配。')}>
+                <input placeholder="dns, bittorrent" {...form.register('protocol')} />
+              </Field>
+              <Field label={text('规则集')} help={text('会保存到规则；部分核心配置生成暂不完整写入 rule_set，请应用前核对生成配置。')}>
+                <input placeholder="geosite-category-ads-all" {...form.register('rule_set')} />
+              </Field>
+            </div>
+          </details>
+          {visibleDiagnostics.length ? <RoutingDiagnosticsPanel items={visibleDiagnostics} text={text} /> : null}
         </section>
       </div>
     </Modal>
   );
 }
 
-function RouteSummary({ inbound, client, outbound, clientLevel, enabled }: { inbound: string; client: string; outbound: string; clientLevel: boolean; enabled: boolean }) {
-  const { text } = useI18n();
+function RoutingRuleCard({ item, index, total, inbounds, outbounds, text, toggleLoading, onMove, onToggle, onEdit, onDelete }: { item: RoutingRule; index: number; total: number; inbounds: Inbound[]; outbounds: Outbound[]; text: (value: string) => string; toggleLoading: boolean; onMove: (delta: number) => void; onToggle: () => void; onEdit: () => void; onDelete: () => void }) {
+  const tags = conditionTags(item);
+  const technical = ruleTechnicalMeta(item, inbounds, outbounds, text);
+  const missingClient = Number(item.client_id || 0) > 0 && !findClientById(inbounds, Number(item.client_id || 0));
   return (
-    <div className="routing-path-summary">
+    <article className="resource-card routing-policy-card">
+      <div className="routing-policy-main">
+        <div className="routing-policy-index">#{index + 1}</div>
+        <div className="routing-policy-content">
+          <div className="routing-policy-kicker">
+            <span>{text(ruleTypeLabel(item))}</span>
+            <StatusBadge enabled={item.enabled} />
+            {missingClient ? <StatusBadge enabled={false}>{text('客户端已缺失')}</StatusBadge> : null}
+          </div>
+          <h2 className="routing-policy-title">{ruleTitle(item, text, inbounds, outbounds)}</h2>
+          <div className="routing-condition-tags">
+            {tags.map((tag) => <span key={`${tag.kind}-${tag.value}`} className="routing-condition-tag"><b>{text(tag.label)}</b>{tag.translateValue ? text(tag.value) : tag.value}</span>)}
+          </div>
+          <details className="routing-policy-details">
+            <summary><span>{text('更多信息')}</span><ChevronDown className="h-4 w-4" /></summary>
+            <div className="routing-policy-meta">
+              {technical.map((meta) => <span key={meta.label}><b>{text(meta.label)}</b>{meta.value || '-'}</span>)}
+            </div>
+          </details>
+        </div>
+        <div className="action-row routing-policy-actions">
+          <button className="icon-button" disabled={index === 0} onClick={() => onMove(-1)} title={text('上移')}><ArrowUp className="h-4 w-4" /></button>
+          <button className="icon-button" disabled={index === total - 1} onClick={() => onMove(1)} title={text('下移')}><ArrowDown className="h-4 w-4" /></button>
+          <SpinnerButton className={toggleButtonClass(item.enabled)} loading={toggleLoading} onClick={onToggle} title={text('启停')}><Power className="h-4 w-4" /></SpinnerButton>
+          <button className="icon-button" onClick={onEdit} title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
+          <button className="icon-button danger-text" onClick={onDelete} title={text('删除')}><Trash2 className="h-4 w-4" /></button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function RoutingListPager({ page, pageSize, total, totalPages, start, end, text, onPageChange, onPageSizeChange, compact = false }: { page: number; pageSize: number; total: number; totalPages: number; start: number; end: number; text: (value: string) => string; onPageChange: (page: number) => void; onPageSizeChange: (pageSize: number) => void; compact?: boolean }) {
+  return (
+    <div className={compact ? 'routing-list-pager routing-list-pager-compact' : 'routing-list-pager'}>
+      <div className="routing-list-pager-copy">
+        <strong>{text('规则列表')}</strong>
+        <span>{text('共')} {total} {text('条')}，{text('当前')} {start}-{end}</span>
+      </div>
+      <div className="routing-list-pager-controls">
+        {!compact ? (
+          <label>
+            <span>{text('每页')}</span>
+            <select value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
+              {ROUTING_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <button className="btn secondary" type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>{text('上一页')}</button>
+        <span className="routing-list-page-index">{page} / {totalPages}</span>
+        <button className="btn secondary" type="button" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>{text('下一页')}</button>
+      </div>
+    </div>
+  );
+}
+
+function RouteSummary({ rule, inbounds, outbounds, text, status, core, enabled }: { rule: RoutingDraftValues; inbounds: Inbound[]; outbounds: Outbound[]; text: (value: string) => string; status: RouteSummaryStatus; core: string; enabled: boolean }) {
+  const inbound = readableInboundName(rule, inbounds, text) || text('全部入站');
+  const client = readableClientName(rule, inbounds, text);
+  const clientHint = clientRouteHint(rule, inbounds);
+  const outbound = readableOutboundName(rule, outbounds) || rule.outbound_tag || text('未选择出站');
+  const condition = summaryCondition(rule, text);
+  return (
+    <div className="routing-summary-bar">
       <div className="routing-path-step">
-        <Shield className="h-4 w-4" />
-        <span className="routing-path-label">{text('来源入站')}</span>
+        <ArrowRight className="h-4 w-4" />
+        <span className="routing-path-label">{text('来源')}</span>
         <strong>{inbound}</strong>
       </div>
-      <ArrowRight className="routing-path-arrow h-4 w-4" />
-      <div className={clientLevel ? 'routing-path-step' : 'routing-path-step routing-path-muted'}>
-        <Users className="h-4 w-4" />
+      <div className="routing-path-arrow">→</div>
+      <div className={Number(rule.client_id || 0) > 0 ? 'routing-path-step' : 'routing-path-step routing-path-muted'}>
+        <UserRound className="h-4 w-4" />
         <span className="routing-path-label">{text('客户端')}</span>
-        <strong>{client}</strong>
+        <strong>{Number(rule.client_id || 0) > 0 ? client : text('不指定客户端')}</strong>
+        {clientHint ? <span className="routing-path-hint">{text('匹配值')}：{clientHint}</span> : null}
       </div>
-      <ArrowRight className="routing-path-arrow h-4 w-4" />
+      <div className="routing-path-arrow">→</div>
       <div className="routing-path-step">
-        <Boxes className="h-4 w-4" />
-        <span className="routing-path-label">{text('目标出站')}</span>
+        <ArrowRight className="h-4 w-4" />
+        <span className="routing-path-label">{text('出站')}</span>
         <strong>{outbound}</strong>
       </div>
-      <StatusBadge enabled={enabled}>{text(enabled ? '启用' : '禁用')}</StatusBadge>
+      <div className="routing-summary-side">
+        <span className="routing-summary-condition">{condition}</span>
+        <div className="routing-summary-badges">
+          <span className="choice-type-badge">{text(status.ruleType)}</span>
+          <span className={`routing-save-badge routing-save-${status.tone}`}>{text(status.label)}</span>
+          <span className="choice-type-badge">{text(core)}</span>
+          <StatusBadge enabled={enabled}>{text(enabled ? '启用' : '禁用')}</StatusBadge>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoutingDiagnosticsPanel({ items, text }: { items: RouteDiagnostic[]; text: (value: string) => string }) {
+  return (
+    <div className="routing-diagnostics" aria-label={text('即时诊断')}>
+      {items.map((item) => (
+        <div key={`${item.tone}-${item.message}`} className={`routing-diagnostic routing-diagnostic-${item.tone}`}>
+          {item.tone === 'ok' ? <Check className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+          <span>{text(item.message)}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -276,16 +418,16 @@ function InboundPicker({ options, value, fallbackTag, onChange }: { options: Inb
     <div className="choice-field routing-picker">
       <div className="choice-field-header">
         <div>
-          <span className="choice-label">{text('来源入站 Tag')}</span>
+          <span className="choice-label">{text('来源入站')}</span>
           <span className="choice-help">{text('留空表示所有入站。')}</span>
         </div>
         <span className="choice-count">{text('入站')} {options.filter((item) => item.value).length}</span>
       </div>
       <div className="choice-search">
         <Search className="h-4 w-4" />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text('搜索入站、Tag、备注')} />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text('搜索入站、名称、备注')} />
       </div>
-      <div className="choice-list" role="radiogroup" aria-label={text('来源入站 Tag')}>
+      <div className="choice-list" role="radiogroup" aria-label={text('来源入站')}>
         {filtered.map((option) => (
           <button key={option.value || 'all'} type="button" className={inboundOptionMatches(option, value, fallbackTag) ? 'choice-row choice-row-active inbound-choice-row' : 'choice-row inbound-choice-row'} onClick={() => onChange(option)} role="radio" aria-checked={inboundOptionMatches(option, value, fallbackTag)}>
             <span className="choice-row-main">
@@ -310,14 +452,12 @@ function ClientPicker({ options, value, missingLabel, onChange }: { options: Cli
   const { text } = useI18n();
   const [query, setQuery] = useState('');
   const filtered = filterClientOptions(options, query);
-  const semanticHint = text('Xray 客户端匹配按入站协议区分：socks/http 使用认证用户名，vless/vmess/trojan 使用 Xray 用户标识（优先 stats_key，否则 email）。');
   return (
     <div className="choice-field routing-picker">
       <div className="choice-field-header">
         <div>
           <span className="choice-label">{text('客户端')}</span>
           <span className="choice-help">{text('选择后生成客户端级规则：入站 / 客户端 -> 出站。')}</span>
-          <span className="choice-help">{semanticHint}</span>
         </div>
         <span className="choice-count">{missingLabel || `${text('客户端')} ${Math.max(options.length - 1, 0)}`}</span>
       </div>
@@ -368,14 +508,15 @@ function OutboundPicker({ options, value, onChange }: { options: OutboundOption[
           <button key={`${option.id}-${option.tag}`} type="button" disabled={option.disabled} className={`${option.id === value ? 'choice-row choice-row-active outbound-choice-row' : 'choice-row outbound-choice-row'}${option.disabled ? ' opacity-50' : ''}`} onClick={() => onChange(option)} role="radio" aria-checked={option.id === value}>
             <span className="choice-row-main">
               <span className="choice-row-title-line">
-                <span className="choice-row-title">{option.tag}</span>
+                <span className="choice-row-title">{option.title}</span>
                 <span className={`protocol-badge choice-protocol-badge outbound-protocol-${option.protocolType || 'default'}`}>{option.protocolLabel}</span>
                 {option.cores.map((core) => <span key={core} className="choice-type-badge">{coreLabel(core)}</span>)}
               </span>
-              {option.remark ? <span className="choice-row-sub">{option.remark}</span> : null}
+              {option.subtitle ? <span className="choice-row-sub">{option.subtitle}</span> : null}
               <span className="choice-row-meta-grid">
                 {option.meta.map((item) => <ChoiceMetaItem key={`${option.tag}-${item.label}`} item={item} text={text} />)}
               </span>
+              {option.disabledReason ? <span className="choice-disabled-reason"><AlertTriangle className="h-4 w-4" /> {text(option.disabledReason)}</span> : null}
             </span>
             {option.id === value ? <Check className="h-4 w-4" /> : null}
           </button>
@@ -419,7 +560,109 @@ export function movedRoutingRuleIds(items: RoutingRule[], index: number, delta: 
   return next.map((item) => item.id);
 }
 
+export function routingPageWindow<T>(items: T[], page: number, pageSize: number) {
+  const safePageSize = ROUTING_PAGE_SIZES.includes(pageSize) ? pageSize : ROUTING_PAGE_SIZES[0];
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+  const safePage = Math.min(Math.max(1, Math.floor(Number(page) || 1)), totalPages);
+  const startIndex = total ? (safePage - 1) * safePageSize : 0;
+  const endIndex = Math.min(startIndex + safePageSize, total);
+  return {
+    items: items.slice(startIndex, endIndex),
+    page: safePage,
+    pageSize: safePageSize,
+    total,
+    totalPages,
+    startIndex,
+    start: total ? startIndex + 1 : 0,
+    end: endIndex,
+  };
+}
+
 export { generatedInboundTag };
+
+type RoutingDraftValues = Pick<RoutingRule, 'inbound_id' | 'inbound_tag' | 'client_id' | 'client_email' | 'domain' | 'ip' | 'rule_set' | 'protocol' | 'outbound_tag' | 'outbound_id' | 'enabled'>;
+type ConditionTag = { kind: 'domain' | 'ip' | 'protocol' | 'rule_set' | 'catch_all'; label: string; value: string; translateValue?: boolean };
+type RouteDiagnostic = { tone: 'ok' | 'info' | 'warning' | 'error'; message: string };
+type RouteSummaryStatus = { ruleType: string; label: string; tone: 'ok' | 'warning' | 'error' };
+
+export function conditionTags(rule: Pick<RoutingRule, 'domain' | 'ip' | 'protocol' | 'rule_set'>): ConditionTag[] {
+  const tags: ConditionTag[] = [];
+  if (hasRuleValue(rule.domain)) tags.push({ kind: 'domain', label: 'domain', value: compactRuleValue(String(rule.domain)) });
+  if (hasRuleValue(rule.ip)) tags.push({ kind: 'ip', label: 'ip', value: compactRuleValue(String(rule.ip)) });
+  if (hasRuleValue(rule.protocol)) tags.push({ kind: 'protocol', label: 'protocol', value: compactRuleValue(String(rule.protocol)) });
+  if (hasRuleValue(rule.rule_set)) tags.push({ kind: 'rule_set', label: 'rule_set', value: compactRuleValue(String(rule.rule_set)) });
+  return tags.length ? tags : [{ kind: 'catch_all', label: 'match', value: '全部流量', translateValue: true }];
+}
+
+export function routeSummaryText(rule: RoutingDraftValues, inbounds: Inbound[], outbounds: Outbound[], text: (value: string) => string) {
+  const inbound = readableInboundName(rule, inbounds, text) || text('全部入站');
+  const outbound = readableOutboundName(rule, outbounds) || rule.outbound_tag || text('未选择出站');
+  const condition = summaryCondition(rule, text);
+  if (Number(rule.client_id || 0) > 0) {
+    return `${text('来自')} ${inbound} ${text('的客户端')} ${readableClientName(rule, inbounds, text)}，${condition}，${text('走')} ${outbound}`;
+  }
+  return `${text('来自')} ${inbound} ${condition}，${text('走')} ${outbound}`;
+}
+
+export function routeSummaryStatus(rule: RoutingDraftValues, inbounds: Inbound[], outbounds: Outbound[]): RouteSummaryStatus {
+  const diagnostics = routingDiagnostics(rule, inbounds, outbounds);
+  const hasError = diagnostics.some((item) => item.tone === 'error');
+  const hasWarning = diagnostics.some((item) => item.tone === 'warning');
+  return {
+    ruleType: ruleTypeLabel(rule),
+    label: hasError ? '不完整' : hasWarning ? '有风险' : '可保存',
+    tone: hasError ? 'error' : hasWarning ? 'warning' : 'ok',
+  };
+}
+
+export function inferRuleTargetCore(rule: Pick<RoutingRule, 'inbound_id' | 'inbound_tag' | 'client_id' | 'outbound_id' | 'outbound_tag'>, inbounds: Inbound[], outbounds: Outbound[]): string {
+  const required = requiredRouteCores(inbounds, Number(rule.inbound_id || 0), rule.inbound_tag || '', Number(rule.client_id || 0));
+  if (required.length > 1) return 'mixed';
+  if (required.length === 1) return coreLabel(required[0]);
+  const outbound = findOutboundForValues(outbounds, rule);
+  const supported = outbound ? outboundSupportedCores(outbound) : [];
+  if (supported.length > 1) return 'mixed';
+  if (supported.length === 1) return coreLabel(supported[0]);
+  return 'unknown';
+}
+
+export function outboundDisabledReason(outbound: Pick<Outbound, 'protocol' | 'enabled'> | undefined, requiredCores: CoreName[]): string {
+  if (!outbound) return '';
+  if (!requiredCores.length) return '';
+  const supported = outboundSupportedCores(outbound);
+  const missing = requiredCores.filter((core) => !supported.includes(core));
+  if (!missing.length) return '';
+  const supportsOnlySingbox = supported.length === 1 && supported[0] === 'sing-box';
+  const supportsOnlyXray = supported.length === 1 && supported[0] === 'xray';
+  if (requiredCores.length > 1) return '当前来源包含多个核心，目标出站不支持全部核心';
+  if (supportsOnlySingbox) return '仅支持 sing-box，当前来源属于 Xray';
+  if (supportsOnlyXray) return '仅支持 Xray，当前来源属于 sing-box';
+  return '当前来源内核不支持';
+}
+
+function outboundSelectionWarning(outbound: Pick<Outbound, 'enabled'> | undefined): string {
+  return outbound?.enabled === false ? '出站已禁用' : '';
+}
+
+export function routingDiagnostics(rule: RoutingDraftValues, inbounds: Inbound[], outbounds: Outbound[]): RouteDiagnostic[] {
+  const diagnostics: RouteDiagnostic[] = [];
+  const outboundID = Number(rule.outbound_id || 0);
+  const outbound = findOutboundForValues(outbounds, rule);
+  if (outboundID <= 0) diagnostics.push({ tone: 'error', message: '未选择目标出站，规则不完整。' });
+  const required = requiredRouteCores(inbounds, Number(rule.inbound_id || 0), rule.inbound_tag || '', Number(rule.client_id || 0));
+  const reason = outboundDisabledReason(outbound, required);
+  if (reason) diagnostics.push({ tone: 'error', message: reason });
+  if (outboundSelectionWarning(outbound)) diagnostics.push({ tone: 'warning', message: '出站已禁用，保存后不会生成可用链路。' });
+  if (Number(rule.client_id || 0) > 0 && !findClientById(inbounds, Number(rule.client_id || 0))) {
+    diagnostics.push({ tone: 'warning', message: '客户端已缺失，核心配置生成时会跳过。' });
+  }
+  if (!hasMatchConditions(rule)) diagnostics.push({ tone: 'info', message: '未设置任何匹配条件，将匹配所选来源的全部流量。' });
+  if (!diagnostics.some((item) => item.tone === 'error' || item.tone === 'warning')) {
+    diagnostics.unshift({ tone: 'ok', message: '当前规则可保存。' });
+  }
+  return diagnostics;
+}
 
 export function inboundTagOptions(inbounds: Inbound[]): string[] {
   const values = inboundSelectionOptions(inbounds).map((item) => item.value);
@@ -453,12 +696,15 @@ type ClientOption = {
 type OutboundOption = {
   id: number;
   tag: string;
+  title: string;
+  subtitle?: string;
   protocolType: string;
   protocolLabel: string;
   remark: string;
   meta: ChoiceMeta[];
   cores: ReturnType<typeof outboundSupportedCores>;
   disabled?: boolean;
+  disabledReason?: string;
   search: string;
 };
 
@@ -573,8 +819,8 @@ export function clientSelectionOptions(inbounds: Inbound[], inboundID: number, i
       const credentialID = clientCredentialIDValue(client);
       const statsName = clientStatsNameValue(client);
       const routeIdentity = clientRouteMatchIdentity(inbound.protocol, client);
-      const title = routeIdentity || email || credentialID || `client-${client.id}`;
-      const subtitle = routeIdentity && email && routeIdentity !== email ? email : undefined;
+      const title = clientDisplayName(client, `client-${client.id}`);
+      const subtitle = routeIdentity && routeIdentity !== title ? `匹配值：${routeIdentity}` : undefined;
       options.push({
         id: client.id,
         email,
@@ -585,7 +831,6 @@ export function clientSelectionOptions(inbounds: Inbound[], inboundID: number, i
         inboundTag: inboundTagValue,
         meta: [
           { label: '入站：', value: inboundName },
-          routeIdentity ? { label: '路由匹配：', value: routeIdentity } : null,
           { label: '状态：', value: client.enabled === false ? '禁用' : '启用', translateValue: true },
         ].filter(isChoiceMeta),
         search: [routeIdentity, email, credentialID, statsName, client.uuid, inbound.remark, inboundTagValue].filter(Boolean).join(' ').toLowerCase(),
@@ -635,23 +880,27 @@ export function outboundSelectionOptions(outbounds: Outbound[], proxyLookup = ne
       const protocolType = protocolSlug(rawProtocolType);
       const cores = outboundSupportedCores(item);
       const requiredCores = requiredRouteCores(inbounds, inboundID, inboundTag, clientID);
-      const disabled = requiredCores.length > 0 && requiredCores.some((core) => !outboundSupportsCore(item, core));
+      const disabledReason = outboundDisabledReason(item, requiredCores);
+      const warningReason = outboundSelectionWarning(item);
+      const disabled = Boolean(disabledReason);
       const meta = [
         item.address ? { label: '地址：', value: `${item.address}:${item.port || ''}` } : null,
         { label: '内核：', value: cores.map(coreLabel).join(' / ') || '-' },
-        disabled ? { label: '状态：', value: '当前来源内核不支持', translateValue: true } : null,
         country && (!remark || !remark.includes(country)) ? { label: '国家/地区：', value: country } : null,
         item.enabled === false ? { label: '状态：', value: '禁用', translateValue: true } : null,
       ].filter(isChoiceMeta);
       return {
         id: item.id,
         tag: item.tag,
+        title: String(item.remark || item.tag).trim() || item.tag,
+        subtitle: item.remark && item.remark !== item.tag ? item.tag : undefined,
         protocolType,
         protocolLabel: protocolLabel(rawProtocolType),
         remark,
         meta,
         cores,
         disabled,
+        disabledReason: disabledReason || warningReason,
         search: [item.tag, item.remark, item.protocol, rawProtocolType, protocolType, protocolLabel(rawProtocolType), cores.join(' '), item.address, item.port, country].filter(Boolean).join(' ').toLowerCase(),
       };
     });
@@ -709,12 +958,12 @@ function readableClientRouteIdentity(found: { inbound: Inbound; client: NonNulla
   return clientRouteMatchIdentity(found.inbound.protocol, found.client);
 }
 
-function clientDisplay(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string) {
-  const clientID = Number(rule.client_id || 0);
-  if (!clientID) return '-';
-  const found = findClientById(inbounds, clientID);
-  if (found) return readableClientRouteIdentity(found) || found.client.email || `client-${clientID}`;
-  return `${rule.client_email || `client-${clientID}`} (${text('客户端已缺失')})`;
+function clientDisplayName(client: Pick<NonNullable<Inbound['clients']>[number], 'email' | 'credential_id' | 'uuid'>, fallback: string) {
+  const email = String(client.email || '').trim();
+  if (email) return email;
+  const credentialID = String(client.credential_id || '').trim();
+  if (credentialID) return credentialID;
+  return String(client.uuid || fallback).trim() || fallback;
 }
 
 function outboundPoolType(item: Pick<Outbound, 'tag'>): ProxyPoolType | '' {
@@ -759,7 +1008,7 @@ export function ruleTitle(rule: RoutingRule, text: (value: string) => string, in
   return `${inbound || firstRoutingMatch(rule, text)} -> ${outbound}`;
 }
 
-function firstRoutingMatch(rule: RoutingRule, text: (value: string) => string) {
+function firstRoutingMatch(rule: Pick<RoutingRule, 'domain' | 'ip' | 'rule_set' | 'protocol' | 'inbound_tag'>, text: (value: string) => string) {
   if (rule.domain) return compactRuleValue(rule.domain);
   if (rule.ip) return compactRuleValue(rule.ip);
   if (rule.rule_set) return compactRuleValue(rule.rule_set);
@@ -767,24 +1016,33 @@ function firstRoutingMatch(rule: RoutingRule, text: (value: string) => string) {
   return rule.inbound_tag ? `${text('入站')}: ${rule.inbound_tag}` : text('全部入站');
 }
 
-function readableInboundName(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string) {
+function readableInboundName(rule: Pick<RoutingRule, 'inbound_id' | 'inbound_tag'>, inbounds: Inbound[], text: (value: string) => string) {
   const inbound = findInboundForRule(inbounds, rule);
   if (inbound) return String(inbound.remark || generatedInboundTag(inbound)).trim() || text('未命名入站');
   if (!rule.inbound_tag) return '';
   return String(rule.inbound_tag).trim();
 }
 
-function readableClientName(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string) {
+function readableClientName(rule: Pick<RoutingRule, 'client_id' | 'client_email' | 'client_label'>, inbounds: Inbound[], text: (value: string) => string) {
   const clientID = Number(rule.client_id || 0);
   if (!clientID) return '-';
   const found = findClientById(inbounds, clientID);
   if (found) {
-    return String(readableClientRouteIdentity(found) || found.client.email || `${text('客户端')} #${clientID}`).trim();
+    return clientDisplayName(found.client, `${text('客户端')} #${clientID}`);
   }
   return String(rule.client_email || rule.client_label || `${text('客户端')} #${clientID}`).trim();
 }
 
-function readableClientInboundName(rule: RoutingRule, inbounds: Inbound[], text: (value: string) => string, fallback = '') {
+function clientRouteHint(rule: Pick<RoutingRule, 'client_id'>, inbounds: Inbound[]) {
+  const clientID = Number(rule.client_id || 0);
+  const found = clientID ? findClientById(inbounds, clientID) : undefined;
+  if (!found) return '';
+  const displayName = clientDisplayName(found.client, `client-${clientID}`);
+  const routeIdentity = readableClientRouteIdentity(found);
+  return routeIdentity && routeIdentity !== displayName ? routeIdentity : '';
+}
+
+function readableClientInboundName(rule: Pick<RoutingRule, 'client_id'>, inbounds: Inbound[], text: (value: string) => string, fallback = '') {
   const clientID = Number(rule.client_id || 0);
   const found = clientID ? findClientById(inbounds, clientID) : undefined;
   if (!found) return fallback || text('全部入站');
@@ -806,9 +1064,59 @@ function readableOutboundName(rule: Pick<RoutingRule, 'outbound_id' | 'outbound_
   const outboundID = Number(rule.outbound_id || 0);
   if (outboundID > 0) {
     const outbound = outbounds.find((item) => item.id === outboundID);
+    if (outbound) return String(outbound.remark || outbound.tag).trim();
+  }
+  return rule.outbound_tag;
+}
+
+function outboundTagName(rule: Pick<RoutingRule, 'outbound_id' | 'outbound_tag'>, outbounds: Outbound[]) {
+  const outboundID = Number(rule.outbound_id || 0);
+  if (outboundID > 0) {
+    const outbound = outbounds.find((item) => item.id === outboundID);
     if (outbound) return outbound.tag;
   }
   return rule.outbound_tag;
+}
+
+function findOutboundForValues(outbounds: Outbound[], rule: Pick<RoutingRule, 'outbound_id' | 'outbound_tag'>) {
+  const outboundID = Number(rule.outbound_id || 0);
+  if (outboundID > 0) {
+    const found = outbounds.find((item) => item.id === outboundID);
+    if (found) return found;
+  }
+  const tag = String(rule.outbound_tag || '').trim();
+  return tag ? outbounds.find((item) => item.tag === tag) : undefined;
+}
+
+function hasRuleValue(value: unknown) {
+  return String(value || '').trim().length > 0;
+}
+
+function hasMatchConditions(rule: Pick<RoutingRule, 'domain' | 'ip' | 'protocol' | 'rule_set'>) {
+  return hasRuleValue(rule.domain) || hasRuleValue(rule.ip) || hasRuleValue(rule.protocol) || hasRuleValue(rule.rule_set);
+}
+
+function summaryCondition(rule: Pick<RoutingRule, 'domain' | 'ip' | 'protocol' | 'rule_set'>, text: (value: string) => string) {
+  if (!hasMatchConditions(rule)) return text('所有流量');
+  const tags = conditionTags(rule).filter((tag) => tag.kind !== 'catch_all');
+  const first = tags[0];
+  if (!first) return text('所有流量');
+  return `${text('命中')} ${first.value} ${text('时')}`;
+}
+
+function ruleTypeLabel(rule: Pick<RoutingRule, 'client_id'>) {
+  return Number(rule.client_id || 0) > 0 ? '客户端级' : '入站级';
+}
+
+function ruleTechnicalMeta(rule: RoutingRule, inbounds: Inbound[], outbounds: Outbound[], text: (value: string) => string): Array<{ label: string; value: string }> {
+  return [
+    { label: 'inbound_id：', value: String(Number(rule.inbound_id || 0) || '-') },
+    { label: 'client_id：', value: String(Number(rule.client_id || 0) || '-') },
+    { label: 'outbound_id：', value: String(Number(rule.outbound_id || 0) || '-') },
+    { label: '内核：', value: inferRuleTargetCore(rule, inbounds, outbounds) },
+    { label: 'inbound_tag：', value: rule.inbound_tag || readableInboundName(rule, inbounds, text) || '-' },
+    { label: 'outbound_tag：', value: outboundTagName(rule, outbounds) || '-' },
+  ];
 }
 
 function compactRuleValue(value: string) {

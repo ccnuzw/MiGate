@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import type { Inbound, InboundCapability } from '../api/types';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createElement } from 'react';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Client, Inbound, InboundCapability } from '../api/types';
+import { ConfirmProvider, ToastProvider } from '../components/ui';
+import { I18nProvider } from '../lib/i18n';
 import {
   allowedInboundNetworks,
   allowedInboundSecurities,
@@ -11,23 +17,59 @@ import {
   buildFullInboundPayload,
   bytesToGB,
   clientFormValues,
+  clientUsageSummary,
   createDefaultInbound,
   enabledInboundAdvancedFields,
   gbToBytes,
   hasAttachableSettingCert,
+  inboundClientMatchesQuery,
+  inboundMatchesQuery,
   inboundCredentialType,
   inboundFormValues,
   inboundProtocolOptions,
   mergeInboundTraffic,
+  nextClientName,
+  protocolBadgeClasses,
+  rateLabel,
   resetInboundCapabilitiesForTest,
   sanitizeInboundFormValues,
   shouldSyncInboundWSHost,
   supportsInboundShareLink,
 } from './InboundsPage';
-import { savedClientLinkActions } from './InboundsPageForms';
+import InboundsPage from './InboundsPage';
+
+const apiMock = vi.hoisted(() => ({
+  inbounds: vi.fn<() => Promise<Inbound[]>>(async () => []),
+  inboundTraffic: vi.fn<() => Promise<Inbound[]>>(async () => []),
+  inboundCapabilities: vi.fn(async () => []),
+  toggleInbound: vi.fn(async () => ({})),
+  deleteInbound: vi.fn(async () => ({})),
+  toggleClient: vi.fn(async () => ({})),
+  deleteClient: vi.fn(async () => ({})),
+  resetClientTraffic: vi.fn(async () => ({})),
+  subscriptionLink: vi.fn(async () => 'vless://example'),
+}));
+
+vi.mock('../api/endpoints', () => ({ api: apiMock }));
+vi.mock('./InboundsPageForms', () => ({
+  savedClientLinkActions: (protocol: string) => (['shadowtls'].includes(protocol) ? [] : ['share']),
+  InboundModal: () => null,
+  ClientModal: () => null,
+}));
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
 
 afterEach(() => {
   resetInboundCapabilitiesForTest();
+  if (root) {
+    act(() => root?.unmount());
+  }
+  root = null;
+  container?.remove();
+  container = null;
+  localStorage.clear();
+  vi.clearAllMocks();
 });
 
 describe('inbounds page i18n coverage', () => {
@@ -44,6 +86,265 @@ describe('inbounds page i18n coverage', () => {
     for (const pattern of forbidden) {
       expect(source).not.toMatch(pattern);
     }
+  });
+});
+
+describe('inbound client panel behavior', () => {
+  it('keeps client lists collapsed by default and expands only the selected node', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['phone-b'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    expect(pageText()).not.toContain('phone-a');
+    expect(pageText()).not.toContain('phone-b');
+
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+
+    expect(pageText()).toContain('phone-a');
+    expect(pageText()).not.toContain('phone-b');
+  });
+
+  it('expands and collapses all visible client lists from the toolbar', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['phone-b'])]);
+    renderPage();
+
+    await waitForText('展开全部客户端');
+    clickButtonByText('展开全部客户端');
+
+    expect(pageText()).toContain('phone-a');
+    expect(pageText()).toContain('phone-b');
+    expect(pageText()).toContain('收起全部客户端');
+
+    clickButtonByText('收起全部客户端');
+    expect(pageText()).not.toContain('phone-a');
+    expect(pageText()).not.toContain('phone-b');
+  });
+
+  it('closes a single expanded client list from outside clicks and Escape', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['phone-b'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    expect(pageText()).toContain('phone-a');
+
+    act(() => document.body.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(pageText()).not.toContain('phone-a');
+
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    expect(pageText()).toContain('phone-a');
+
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(pageText()).not.toContain('phone-a');
+  });
+
+  it('switches single-node expansion without leaving the previous node open', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['phone-b'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    clickButtonByExactText('展开', cardByTitle('edge-b'));
+
+    expect(pageText()).not.toContain('phone-a');
+    expect(pageText()).toContain('phone-b');
+  });
+
+  it('does not collapse bulk-expanded clients from one outside click', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['phone-b'])]);
+    renderPage();
+
+    await waitForText('展开全部客户端');
+    clickButtonByText('展开全部客户端');
+    act(() => document.body.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(pageText()).toContain('phone-a');
+    expect(pageText()).toContain('phone-b');
+  });
+
+  it('closes more menus from outside clicks even when client panels are not singly expanded', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    const menu = moreActionsByCard('edge-a');
+    openDetails(menu);
+    expect(menu.open).toBe(true);
+
+    act(() => document.body.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(menu.open).toBe(false);
+  });
+
+  it('closes the previous more menu when another more menu is opened', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['phone-b'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    const firstMenu = moreActionsByCard('edge-a');
+    const secondMenu = moreActionsByCard('edge-b');
+    openDetails(firstMenu);
+    expect(firstMenu.open).toBe(true);
+
+    act(() => {
+      secondMenu.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(firstMenu.open).toBe(false);
+    expect(secondMenu.open).toBe(true);
+  });
+
+  it('lets Escape close an open more menu before collapsing the client list', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    expect(pageText()).toContain('phone-a');
+    const menu = moreActionsByCard('edge-a');
+    openDetails(menu);
+    menu.querySelector('button')?.focus();
+
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+
+    expect(menu.open).toBe(false);
+    expect(pageText()).toContain('phone-a');
+  });
+
+  it('keeps client action clicks from closing the expanded list', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    const clientRow = rowByClientName('phone-a');
+    const copyButton = clientRow.querySelector('button[title="复制节点链接"]');
+    if (!copyButton) throw new Error('missing client copy action');
+
+    act(() => copyButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(pageText()).toContain('phone-a');
+  });
+
+  it('auto-expands nodes whose clients match the search query', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['tablet-b'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    changeInput(pageRoot().querySelector('input[placeholder="搜索节点、客户端、协议、端口..."]') as HTMLInputElement, 'tablet');
+
+    expect(pageText()).toContain('edge-b');
+    expect(pageText()).toContain('tablet-b');
+    expect(pageText()).not.toContain('phone-a');
+    expect(buttonByText('收起全部客户端')).toBeDisabled();
+    expect(buttonByText('搜索命中')).toBeDisabled();
+  });
+
+  it('does not disable the bulk toggle for client matches hidden by filters', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['tablet-b'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    changeSelect(selectByValue('all'), 'vless');
+    changeInput(pageRoot().querySelector('input[placeholder="搜索节点、客户端、协议、端口..."]') as HTMLInputElement, 'tablet');
+
+    expect(pageText()).not.toContain('edge-b');
+    expect(buttonByText('展开全部客户端')).not.toBeDisabled();
+  });
+});
+
+describe('inbound management display helpers', () => {
+  const text = (value: string) => value;
+
+  it('matches client names in search without relying on hidden credentials', () => {
+    const inbound = sampleInbound(1, 'edge', ['phone']);
+    inbound.clients![0].uuid = '11111111-1111-4111-8111-111111111111';
+
+    expect(inboundMatchesQuery(inbound, 'phone')).toBe(true);
+    expect(inboundClientMatchesQuery(inbound, 'phone')).toBe(true);
+    expect(inboundClientMatchesQuery(inbound, '11111111')).toBe(false);
+  });
+
+  it('does not expose UUID, credential id, or normal stats copy in the default client row source', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/routes/InboundsPage.tsx'), 'utf8');
+    const clientRowSource = source.slice(source.indexOf('function ClientRow'), source.indexOf('function MetricTile'));
+
+    expect(clientRowSource).not.toContain('client.uuid');
+    expect(clientRowSource).not.toContain('credential_id');
+    expect(clientRowSource).not.toContain("text('统计状态')");
+    expect(clientRowSource).not.toContain("text('不限制')");
+  });
+
+  it('uses standardized inbound metadata and count badge copy', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a', 'phone-b'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    const card = cardByTitle('edge-a');
+    const meta = card.querySelector('.inbound-meta-line');
+    const heading = card.querySelector('.client-section-heading');
+
+    expect(meta?.textContent).toContain('端口 441');
+    expect(meta?.textContent).toContain('tcp');
+    expect(meta?.textContent).toContain('reality');
+    expect(meta?.textContent).not.toMatch(/:441\s*·/);
+    expect(meta?.textContent).not.toContain('2 个客户端');
+    expect(heading?.textContent).toBe('客户端2');
+    expect(card.querySelector('.client-count-badge')?.textContent).toBe('2');
+  });
+
+  it('keeps long client names constrained without shrinking the enabled badge', async () => {
+    const longName = 'very-long-client-name-that-should-stay-on-one-line-and-not-compress-the-status-badge@example.com';
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', [longName])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    const row = rowByClientName(longName);
+    const name = row.querySelector('.client-name') as HTMLElement | null;
+    const badge = row.querySelector('.client-name-row .status-badge') as HTMLElement | null;
+
+    expect(name).toHaveAttribute('title', longName);
+    expect(badge?.textContent).toBe('启用');
+    const css = readFileSync(resolve(process.cwd(), 'src/styles/index.css'), 'utf8');
+    expect(css).toMatch(/\.client-name\s*\{[\s\S]*min-width:\s*0;/);
+    expect(css).toMatch(/\.client-name\s*\{[\s\S]*text-overflow:\s*ellipsis;/);
+    expect(css).toMatch(/\.client-name-row \.status-badge\s*\{[\s\S]*white-space:\s*nowrap;/);
+    expect(css).toMatch(/\.status-badge\s*\{[\s\S]*flex:\s*0 0 auto;/);
+  });
+
+  it('renders limited usage progress without showing percentage for unlimited clients', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['unlimited', 'limited'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+
+    expect(rowByClientName('unlimited').textContent).not.toContain('%');
+    expect(rowByClientName('limited').textContent).toContain('95%');
+    expect(rowByClientName('limited').querySelector('.usage-bar')).not.toBeNull();
+  });
+
+  it('summarizes unlimited and limited client usage with the correct progress semantics', () => {
+    expect(clientUsageSummary({ up: 0, down: 0, traffic_limit: 0 }, text)).toMatchObject({ label: '暂无流量', percentLabel: '' });
+    expect(clientUsageSummary({ up: 1024, down: 0, traffic_limit: 0 }, text)).toMatchObject({ label: '已用 1.0 KB', percentLabel: '' });
+    expect(clientUsageSummary({ up: 70, down: 0, traffic_limit: 100 }, text)).toMatchObject({ percent: 70, percentLabel: '70%', tone: 'warning' });
+    expect(clientUsageSummary({ up: 95, down: 0, traffic_limit: 100 }, text)).toMatchObject({ percent: 95, percentLabel: '95%', tone: 'danger' });
+    expect(clientUsageSummary({ up: 120, down: 0, traffic_limit: 100 }, text)).toMatchObject({ percent: 100, percentLabel: '已超额', tone: 'over' });
+  });
+
+  it('uses concise rate fallback and complete protocol color classes', () => {
+    expect(rateLabel(0, 0, text)).toBe('暂无速率');
+    expect(rateLabel(1024, 2048, text)).toBe('1.0 KB/s ↑ / 2.0 KB/s ↓');
+    expect(protocolBadgeClasses).toMatchObject({
+      vless: 'protocol-vless',
+      vmess: 'protocol-vmess',
+      trojan: 'protocol-trojan',
+      shadowsocks: 'protocol-shadowsocks',
+      hysteria2: 'protocol-hysteria2',
+      socks: 'protocol-socks',
+      http: 'protocol-http',
+    });
   });
 });
 
@@ -464,10 +765,6 @@ describe('inbound payload helpers', () => {
     expect(supportsInboundShareLink('http')).toBe(true);
     expect(supportsInboundShareLink('shadowtls')).toBe(false);
     expect(supportsInboundShareLink('vless')).toBe(true);
-    expect(savedClientLinkActions('socks')).toEqual(['share']);
-    expect(savedClientLinkActions('http')).toEqual(['share']);
-    expect(savedClientLinkActions('shadowtls')).toEqual([]);
-    expect(savedClientLinkActions('vless')).toEqual(['share']);
   });
 
   it('normalizes missing numeric advanced fields when editing a basic inbound', () => {
@@ -530,6 +827,21 @@ describe('inbound payload helpers', () => {
 
     expect(values.email).toBe('首个客户端');
     expect(buildClientPayload(values, inbound.protocol).email).toBe('首个客户端');
+  });
+
+  it('uses numbered names when adding more clients to an existing node', () => {
+    const inbound = {
+      ...createDefaultInbound(),
+      remark: 'edge',
+      clients: [
+        { id: 1, inbound_id: 1, email: 'edge 首个客户端', uuid: 'client-1', enabled: true },
+      ],
+    };
+
+    expect(clientFormValues(inbound).email).toBe('客户端 2');
+    expect(nextClientName({ ...inbound, clients: [...inbound.clients, { id: 2, inbound_id: 1, email: '客户端 2', uuid: 'client-2', enabled: true }] })).toBe('客户端 3');
+    expect(nextClientName({ ...inbound, clients: [{ id: 2, inbound_id: 1, email: '客户端 2', uuid: 'client-2', enabled: true }] })).toBe('客户端 3');
+    expect(nextClientName({ ...inbound, clients: [{ id: 3, inbound_id: 1, email: '客户端 3', uuid: 'client-3', enabled: true }] })).toBe('客户端 2');
   });
 
   it('normalizes blank inbound ports to zero for backend auto-assignment', () => {
@@ -596,6 +908,142 @@ describe('inbound payload helpers', () => {
     expect(merged.clients?.[0]).toMatchObject({ email: 'sam@example.com', enabled: false, up: 12, down: 34, rate_up: 1, rate_down: 2, traffic_status: 'ok', traffic_limit: 2000, expiry_at: 99 });
   });
 });
+
+function renderPage() {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  act(() => {
+    root!.render(createElement(
+      I18nProvider,
+      null,
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          ToastProvider,
+          null,
+          createElement(ConfirmProvider, null, createElement(InboundsPage)),
+        ),
+      ),
+    ));
+  });
+}
+
+function sampleInbound(id: number, remark: string, clientNames: string[]): Inbound {
+  return {
+    id,
+    remark,
+    protocol: id === 2 ? 'trojan' : 'vless',
+    port: 440 + id,
+    network: 'tcp',
+    security: 'reality',
+    enabled: true,
+    uuid: `node-${id}`,
+    traffic_up: 1024,
+    traffic_down: 2048,
+    traffic_total: 3072,
+    rate_up: 0,
+    rate_down: 0,
+    traffic_status: 'ok',
+    clients: clientNames.map((name, index): Client => ({
+      id: id * 10 + index,
+      inbound_id: id,
+      email: name,
+      uuid: `uuid-${id}-${index}`,
+      credential_id: `credential-${id}-${index}`,
+      enabled: true,
+      up: index ? 95 : 0,
+      down: 0,
+      traffic_limit: index ? 100 : 0,
+      expiry_at: 0,
+    })),
+  };
+}
+
+async function waitForText(value: string) {
+  await vi.waitFor(() => {
+    expect(pageText()).toContain(value);
+  });
+}
+
+function clickButtonByText(value: string) {
+  const button = buttonByText(value);
+  act(() => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
+
+function buttonByText(value: string) {
+  const button = Array.from(pageRoot().querySelectorAll('button')).find((item) => item.textContent?.includes(value));
+  if (!button) throw new Error(`missing button text: ${value}`);
+  return button as HTMLButtonElement;
+}
+
+function clickButtonByExactText(value: string, scope: ParentNode = pageRoot()) {
+  const button = Array.from(scope.querySelectorAll('button')).find((item) => item.textContent?.trim() === value);
+  if (!button) throw new Error(`missing button text: ${value}`);
+  act(() => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
+
+function cardByTitle(title: string) {
+  const heading = Array.from(pageRoot().querySelectorAll('h2')).find((item) => item.textContent?.trim() === title);
+  const card = heading?.closest('.resource-card');
+  if (!card) throw new Error(`missing card: ${title}`);
+  return card;
+}
+
+function rowByClientName(name: string) {
+  const label = Array.from(pageRoot().querySelectorAll('.client-name')).find((item) => item.textContent?.trim() === name);
+  const row = label?.closest('.client-row');
+  if (!row) throw new Error(`missing client row: ${name}`);
+  return row;
+}
+
+function moreActionsByCard(title: string) {
+  const menu = cardByTitle(title).querySelector('details[data-more-actions]') as HTMLDetailsElement | null;
+  if (!menu) throw new Error(`missing more actions: ${title}`);
+  return menu;
+}
+
+function openDetails(details: HTMLDetailsElement) {
+  act(() => {
+    details.open = true;
+  });
+}
+
+function pageRoot() {
+  if (!container) throw new Error('missing test container');
+  return container;
+}
+
+function pageText() {
+  return pageRoot().textContent || '';
+}
+
+function changeInput(input: HTMLInputElement | null, value: string) {
+  if (!input) throw new Error('missing input');
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+function changeSelect(select: HTMLSelectElement, value: string) {
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+    setter?.call(select, value);
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+function selectByValue(value: string) {
+  const select = Array.from(pageRoot().querySelectorAll('select')).find((item) => item.value === value);
+  if (!select) throw new Error(`missing select value: ${value}`);
+  return select as HTMLSelectElement;
+}
 
 describe('client form helpers', () => {
   it('converts traffic limits between GB and bytes', () => {
