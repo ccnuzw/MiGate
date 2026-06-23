@@ -500,7 +500,7 @@ func TestBuildConfigWithClientRoutingRules(t *testing.T) {
 		Security: "none",
 		Enabled:  true,
 		Clients: []db.Client{
-			{ID: 11, UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Email: "alice@example.com", Enabled: true},
+			{ID: 11, UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", StatsKey: "vless-client-stat", Email: "alice@example.com", Enabled: true},
 			{ID: 12, UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Email: "", Enabled: true},
 			{ID: 13, UUID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Email: "disabled@example.com", Enabled: false},
 		},
@@ -526,8 +526,8 @@ func TestBuildConfigWithClientRoutingRules(t *testing.T) {
 	if got.OutboundTag != "xray-out-2" {
 		t.Fatalf("unexpected outbound tag: %+v", got)
 	}
-	if len(got.User) != 1 || got.User[0] != "alice@example.com" {
-		t.Fatalf("expected Xray user email match, got %+v", got.User)
+	if len(got.User) != 1 || got.User[0] != "vless-client-stat" {
+		t.Fatalf("expected Xray user match to preserve stats key, got %+v", got.User)
 	}
 	if len(got.InboundTag) != 1 || got.InboundTag[0] != "inbound-7-vless" {
 		t.Fatalf("expected inbound tag restriction, got %+v", got.InboundTag)
@@ -536,8 +536,349 @@ func TestBuildConfigWithClientRoutingRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
-	if !strings.Contains(string(encoded), `"user":["alice@example.com"]`) {
+	if !strings.Contains(string(encoded), `"user":["vless-client-stat"]`) {
 		t.Fatalf("generated config does not include Xray user field: %s", string(encoded))
+	}
+}
+
+func TestBuildConfigWithClientRoutingRulesMatchesSocksAuthenticatedUsername(t *testing.T) {
+	inbounds := []db.Inbound{{
+		ID:       8,
+		Remark:   "local-socks",
+		Protocol: "socks",
+		Port:     1080,
+		Network:  "tcp",
+		Security: "none",
+		Enabled:  true,
+		Clients: []db.Client{
+			{ID: 21, UUID: "sam", CredentialID: "sam", Password: "secret", StatsKey: "socks-stat", Email: "sam@example.com", Enabled: true},
+			{ID: 22, UUID: "", CredentialID: "", Password: "secret2", StatsKey: "empty-socks-stat", Email: "empty@example.com", Enabled: true},
+			{ID: 23, UUID: "disabled", CredentialID: "disabled", Password: "secret3", StatsKey: "disabled-socks-stat", Email: "disabled@example.com", Enabled: false},
+		},
+	}}
+	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+		{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true},
+		{ID: 2, Tag: "proxy", Protocol: "socks", Address: "10.0.0.1", Port: 1080, Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 1, InboundTag: "local-socks", ClientID: 21, OutboundID: 2, OutboundTag: "proxy", Enabled: true},
+		{ID: 2, InboundTag: "local-socks", ClientID: 22, OutboundID: 1, OutboundTag: "direct", Enabled: true},
+		{ID: 3, InboundTag: "local-socks", ClientID: 23, OutboundID: 1, OutboundTag: "direct", Enabled: true},
+		{ID: 4, InboundTag: "local-socks", ClientID: 999, ClientEmail: "missing@example.com", OutboundID: 1, OutboundTag: "direct", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with socks client routing rules: %v", err)
+	}
+	userRules := userRoutingRulesForTest(config.Routing.Rules)
+	if len(userRules) != 1 {
+		t.Fatalf("expected only one valid socks client routing rule, got %+v", userRules)
+	}
+	got := userRules[0]
+	if got.OutboundTag != "xray-out-2" {
+		t.Fatalf("unexpected outbound tag: %+v", got)
+	}
+	if len(got.User) != 1 || got.User[0] != "sam" {
+		t.Fatalf("expected socks route user to match authenticated username carried in Xray user/email, got %+v", got.User)
+	}
+	if len(got.InboundTag) != 1 || got.InboundTag[0] != "inbound-8-socks" {
+		t.Fatalf("expected inbound tag restriction, got %+v", got.InboundTag)
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"user":["sam"]`) {
+		t.Fatalf("generated config does not include socks username route match: %s", text)
+	}
+	if !strings.Contains(text, `"accounts":[{"pass":"secret","user":"sam"}`) {
+		t.Fatalf("generated config does not include socks account username: %s", text)
+	}
+	if strings.Contains(text, `"accounts":[{"email":`) {
+		t.Fatalf("socks accounts must not invent unsupported email field: %s", text)
+	}
+	if strings.Contains(text, `"user":["socks-stat"]`) {
+		t.Fatalf("socks route user must not reuse stats key: %s", text)
+	}
+}
+
+func TestBuildConfigWithClientRoutingRulesMatchesHTTPAuthenticatedUsername(t *testing.T) {
+	inbounds := []db.Inbound{{
+		ID:       9,
+		Remark:   "local-http",
+		Protocol: "http",
+		Port:     8080,
+		Network:  "tcp",
+		Security: "none",
+		Enabled:  true,
+		Clients: []db.Client{
+			{ID: 31, UUID: "ann", CredentialID: "ann", Password: "secret", StatsKey: "http-stat", Email: "ann@example.com", Enabled: true},
+			{ID: 32, UUID: "", CredentialID: "", Password: "secret2", StatsKey: "empty-http-stat", Email: "empty@example.com", Enabled: true},
+			{ID: 33, UUID: "disabled", CredentialID: "disabled", Password: "secret3", StatsKey: "disabled-http-stat", Email: "disabled@example.com", Enabled: false},
+		},
+	}}
+	config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+		{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true},
+		{ID: 2, Tag: "proxy", Protocol: "http", Address: "10.0.0.2", Port: 8080, Enabled: true},
+	}, []db.RoutingRule{
+		{ID: 1, InboundTag: "local-http", ClientID: 31, OutboundID: 2, OutboundTag: "proxy", Enabled: true},
+		{ID: 2, InboundTag: "local-http", ClientID: 32, OutboundID: 1, OutboundTag: "direct", Enabled: true},
+		{ID: 3, InboundTag: "local-http", ClientID: 33, OutboundID: 1, OutboundTag: "direct", Enabled: true},
+		{ID: 4, InboundTag: "local-http", ClientID: 999, ClientEmail: "missing@example.com", OutboundID: 1, OutboundTag: "direct", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("build config with http client routing rules: %v", err)
+	}
+	userRules := userRoutingRulesForTest(config.Routing.Rules)
+	if len(userRules) != 1 {
+		t.Fatalf("expected only one valid http client routing rule, got %+v", userRules)
+	}
+	got := userRules[0]
+	if got.OutboundTag != "xray-out-2" {
+		t.Fatalf("unexpected outbound tag: %+v", got)
+	}
+	if len(got.User) != 1 || got.User[0] != "ann" {
+		t.Fatalf("expected http route user to match authenticated username carried in Xray user/email, got %+v", got.User)
+	}
+	if len(got.InboundTag) != 1 || got.InboundTag[0] != "inbound-9-http" {
+		t.Fatalf("expected inbound tag restriction, got %+v", got.InboundTag)
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"user":["ann"]`) {
+		t.Fatalf("generated config does not include http username route match: %s", text)
+	}
+	if !strings.Contains(text, `"accounts":[{"pass":"secret","user":"ann"}`) {
+		t.Fatalf("generated config does not include http account username: %s", text)
+	}
+	if strings.Contains(text, `"accounts":[{"email":`) {
+		t.Fatalf("http accounts must not invent unsupported email field: %s", text)
+	}
+	if strings.Contains(text, `"user":["http-stat"]`) {
+		t.Fatalf("http route user must not reuse stats key: %s", text)
+	}
+}
+
+func TestBuildConfigWithClientRoutingRulesUsesSameUsernameForHTTPAndSocksAccountsAndRouteMatch(t *testing.T) {
+	tests := []struct {
+		name           string
+		inboundID      int64
+		protocol       string
+		port           int
+		clientID       int64
+		username       string
+		password       string
+		expectedPrefix string
+	}{
+		{name: "socks", inboundID: 81, protocol: "socks", port: 1081, clientID: 81, username: "sam", password: "secret", expectedPrefix: "inbound-81-socks"},
+		{name: "http", inboundID: 82, protocol: "http", port: 8081, clientID: 82, username: "ann", password: "secret2", expectedPrefix: "inbound-82-http"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inbounds := []db.Inbound{{
+				ID:       tt.inboundID,
+				Remark:   tt.name + "-in",
+				Protocol: tt.protocol,
+				Port:     tt.port,
+				Network:  "tcp",
+				Security: "none",
+				Enabled:  true,
+				Clients: []db.Client{{
+					ID:           tt.clientID,
+					UUID:         tt.username,
+					CredentialID: tt.username,
+					Password:     tt.password,
+					StatsKey:     tt.name + "-stat",
+					Email:        tt.name + "@example.com",
+					Enabled:      true,
+				}},
+			}}
+			config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+				{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true},
+				{ID: 2, Tag: "proxy", Protocol: "socks", Address: "10.0.0.9", Port: 1080, Enabled: true},
+			}, []db.RoutingRule{{
+				ID:          1,
+				InboundTag:  tt.name + "-in",
+				ClientID:    tt.clientID,
+				OutboundID:  2,
+				OutboundTag: "proxy",
+				Enabled:     true,
+			}})
+			if err != nil {
+				t.Fatalf("build config: %v", err)
+			}
+			userRules := userRoutingRulesForTest(config.Routing.Rules)
+			if len(userRules) != 1 {
+				t.Fatalf("expected one user rule, got %+v", userRules)
+			}
+			if len(userRules[0].User) != 1 || userRules[0].User[0] != tt.username {
+				t.Fatalf("expected route user to equal authenticated username, got %+v", userRules[0].User)
+			}
+			if len(userRules[0].InboundTag) != 1 || userRules[0].InboundTag[0] != tt.expectedPrefix {
+				t.Fatalf("expected inbound tag to stay pinned, got %+v", userRules[0].InboundTag)
+			}
+
+			userInbounds := userInboundsForTest(config.Inbounds)
+			if len(userInbounds) != 1 {
+				t.Fatalf("expected one user inbound, got %+v", userInbounds)
+			}
+			accounts, ok := userInbounds[0].Settings["accounts"].([]map[string]interface{})
+			if !ok {
+				t.Fatalf("expected typed accounts slice, got %#v", userInbounds[0].Settings["accounts"])
+			}
+			if len(accounts) != 1 {
+				t.Fatalf("expected one account, got %+v", accounts)
+			}
+			if accounts[0]["user"] != tt.username || accounts[0]["pass"] != tt.password {
+				t.Fatalf("expected account credentials to match, got %+v", accounts[0])
+			}
+			if _, hasEmail := accounts[0]["email"]; hasEmail {
+				t.Fatalf("unexpected unsupported email field in %s account: %+v", tt.protocol, accounts[0])
+			}
+		})
+	}
+}
+
+func TestBuildConfigWithClientRoutingRulesPreservesVmessAndTrojanXrayUserIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		inboundID int64
+		protocol  string
+		client    db.Client
+	}{
+		{
+			name:      "vmess",
+			inboundID: 10,
+			protocol:  "vmess",
+			client: db.Client{
+				ID: 41, UUID: "11111111-1111-4111-8111-111111111111", StatsKey: "vmess-client-stat", Email: "vmess@example.com", Enabled: true,
+			},
+		},
+		{
+			name:      "trojan",
+			inboundID: 11,
+			protocol:  "trojan",
+			client: db.Client{
+				ID: 42, UUID: "trojan-password", Password: "trojan-password", StatsKey: "trojan-client-stat", Email: "trojan@example.com", Enabled: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inbounds := []db.Inbound{{
+				ID:       tt.inboundID,
+				Remark:   tt.name + "-in",
+				Protocol: tt.protocol,
+				Port:     9000 + int(tt.inboundID),
+				Network:  "tcp",
+				Security: "none",
+				Enabled:  true,
+				Clients:  []db.Client{tt.client},
+			}}
+			config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+				{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true},
+				{ID: 2, Tag: "proxy", Protocol: "socks", Address: "10.0.0.3", Port: 1080, Enabled: true},
+			}, []db.RoutingRule{
+				{ID: 1, InboundTag: tt.name + "-in", ClientID: tt.client.ID, OutboundID: 2, OutboundTag: "proxy", Enabled: true},
+			})
+			if err != nil {
+				t.Fatalf("build config with %s client routing rules: %v", tt.name, err)
+			}
+			userRules := userRoutingRulesForTest(config.Routing.Rules)
+			if len(userRules) != 1 {
+				t.Fatalf("expected one %s client routing rule, got %+v", tt.name, userRules)
+			}
+			got := userRules[0]
+			if len(got.User) != 1 || got.User[0] != tt.client.StatsKey {
+				t.Fatalf("expected %s route user to preserve Xray user/email identity, got %+v", tt.name, got.User)
+			}
+			encoded, err := json.Marshal(config)
+			if err != nil {
+				t.Fatalf("marshal config: %v", err)
+			}
+			text := string(encoded)
+			if !strings.Contains(text, `"user":["`+tt.client.StatsKey+`"]`) {
+				t.Fatalf("generated config does not include %s stats-key route match: %s", tt.name, text)
+			}
+		})
+	}
+}
+
+func TestBuildConfigWithClientRoutingRulesAllowsStatsKeyWithoutEmailForXrayUserIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		inboundID int64
+		protocol  string
+		client    db.Client
+	}{
+		{
+			name:      "vless",
+			inboundID: 12,
+			protocol:  "vless",
+			client: db.Client{
+				ID: 51, UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", StatsKey: "vless-empty-email-stat", Email: "", Enabled: true,
+			},
+		},
+		{
+			name:      "vmess",
+			inboundID: 13,
+			protocol:  "vmess",
+			client: db.Client{
+				ID: 52, UUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", StatsKey: "vmess-empty-email-stat", Email: "", Enabled: true,
+			},
+		},
+		{
+			name:      "trojan",
+			inboundID: 14,
+			protocol:  "trojan",
+			client: db.Client{
+				ID: 53, UUID: "trojan-empty-email-password", Password: "trojan-empty-email-password", StatsKey: "trojan-empty-email-stat", Email: "", Enabled: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inbounds := []db.Inbound{{
+				ID:       tt.inboundID,
+				Remark:   tt.name + "-empty-email-in",
+				Protocol: tt.protocol,
+				Port:     9100 + int(tt.inboundID),
+				Network:  "tcp",
+				Security: "none",
+				Enabled:  true,
+				Clients:  []db.Client{tt.client},
+			}}
+			config, err := xray.BuildConfigWithOutbounds(inbounds, []db.Outbound{
+				{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true},
+				{ID: 2, Tag: "proxy", Protocol: "socks", Address: "10.0.0.4", Port: 1080, Enabled: true},
+			}, []db.RoutingRule{
+				{ID: 1, InboundTag: tt.name + "-empty-email-in", ClientID: tt.client.ID, OutboundID: 2, OutboundTag: "proxy", Enabled: true},
+			})
+			if err != nil {
+				t.Fatalf("build config with %s empty-email client routing rule: %v", tt.name, err)
+			}
+			userRules := userRoutingRulesForTest(config.Routing.Rules)
+			if len(userRules) != 1 {
+				t.Fatalf("expected one %s empty-email client routing rule, got %+v", tt.name, userRules)
+			}
+			got := userRules[0]
+			if len(got.User) != 1 || got.User[0] != tt.client.StatsKey {
+				t.Fatalf("expected %s route user to use stats key when email is empty, got %+v", tt.name, got.User)
+			}
+			encoded, err := json.Marshal(config)
+			if err != nil {
+				t.Fatalf("marshal config: %v", err)
+			}
+			text := string(encoded)
+			if !strings.Contains(text, `"user":["`+tt.client.StatsKey+`"]`) {
+				t.Fatalf("generated config does not include %s stats-key route match: %s", tt.name, text)
+			}
+		})
 	}
 }
 func TestBuildConfigRejectsUnsupportedProtocol(t *testing.T) {

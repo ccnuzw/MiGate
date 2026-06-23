@@ -152,6 +152,7 @@ func BuildConfigWithOutboundsOptions(inbounds []db.Inbound, outbounds []db.Outbo
 		inboundTagsByID := map[int64]string{}
 		inboundTagAliases := map[string]string{}
 		clientsByID := map[int64]db.Client{}
+		inboundProtocolsByClientID := map[int64]string{}
 		for _, inbound := range inbounds {
 			if !inbound.Enabled {
 				continue
@@ -166,10 +167,11 @@ func BuildConfigWithOutboundsOptions(inbounds []db.Inbound, outbounds []db.Outbo
 			}
 			inboundTagAliases[actualTag] = actualTag
 			for _, client := range inbound.Clients {
-				if !client.Enabled || strings.TrimSpace(client.Email) == "" {
+				if !client.Enabled {
 					continue
 				}
 				clientsByID[client.ID] = client
+				inboundProtocolsByClientID[client.ID] = strings.ToLower(strings.TrimSpace(inbound.Protocol))
 			}
 		}
 		r := &RoutingConfig{DomainStrategy: "AsIs", Rules: append([]RoutingRule{}, systemRules...)}
@@ -191,10 +193,15 @@ func BuildConfigWithOutboundsOptions(inbounds []db.Inbound, outbounds []db.Outbo
 			xr.OutboundTag = db.GeneratedOutboundTag(db.CoreXray, outbound.ID, rule.OutboundTag)
 			if rule.ClientID > 0 {
 				client, ok := clientsByID[rule.ClientID]
-				if !ok || strings.TrimSpace(clientStatsName(client)) == "" {
+				if !ok {
 					continue
 				}
-				xr.User = []string{clientStatsName(client)}
+				protocol := inboundProtocolsByClientID[rule.ClientID]
+				routeUser := clientRouteUser(protocol, client)
+				if strings.TrimSpace(routeUser) == "" {
+					continue
+				}
+				xr.User = []string{routeUser}
 			}
 			if rule.InboundID > 0 {
 				if actual, ok := inboundTagsByID[rule.InboundID]; ok {
@@ -394,13 +401,13 @@ func buildInbound(inbound db.Inbound) (InboundConfig, error) {
 		base.StreamSettings = nil
 		base.Settings = map[string]interface{}{
 			"auth":     "password",
-			"accounts": clientsAsUserPass(clients),
+			"accounts": clientsAsUserPass(protocol, clients),
 			"udp":      true,
 		}
 	case "http":
 		base.StreamSettings = nil
 		base.Settings = map[string]interface{}{
-			"accounts": clientsAsUserPass(clients),
+			"accounts": clientsAsUserPass(protocol, clients),
 		}
 	default:
 		return InboundConfig{}, fmt.Errorf("unsupported protocol: %s", inbound.Protocol)
@@ -485,15 +492,27 @@ func clientsAsPasswordEmail(clients []db.Client) []map[string]interface{} {
 	return result
 }
 
-func clientsAsUserPass(clients []db.Client) []map[string]interface{} {
+func clientsAsUserPass(protocol string, clients []db.Client) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(clients))
 	for _, client := range clients {
 		result = append(result, map[string]interface{}{
-			"user": client.CredentialIDValue(),
+			"user": clientRouteUser(protocol, client),
 			"pass": client.PasswordValue(),
 		})
 	}
 	return result
+}
+
+func clientRouteUser(protocol string, client db.Client) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "socks", "http":
+		// Xray routing.rules[].user reads session.Inbound.User.Email.
+		// For socks/http inbound, Xray populates that field from the authenticated username.
+		return strings.TrimSpace(client.CredentialIDValue())
+	default:
+		// For VLESS/VMess/Trojan, MiGate stores the routing identity in Xray's per-user email field.
+		return clientStatsName(client)
+	}
 }
 
 func clientStatsName(client db.Client) string {
