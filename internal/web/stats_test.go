@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ func (r fixedSingboxRuntime) Capability(ctx context.Context) singbox.Capability 
 }
 
 type countingSummaryStore struct {
+	mu                      sync.Mutex
 	inbounds                []db.Inbound
 	outbounds               []db.Outbound
 	rules                   []db.RoutingRule
@@ -232,13 +235,51 @@ func (s *countingSummaryStore) GetClientTrafficUsageForClient(ctx context.Contex
 }
 
 func (s *countingSummaryStore) ListTrafficStates(ctx context.Context) ([]db.TrafficState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.listTrafficStatesCalls++
-	return s.states, nil
+	return append([]db.TrafficState(nil), s.states...), nil
 }
 
 func (s *countingSummaryStore) ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]db.TrafficSample, error) {
 	s.listTrafficSamplesCalls++
 	return s.samples, nil
+}
+
+func (s *countingSummaryStore) setTrafficStates(states []db.TrafficState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states = append([]db.TrafficState(nil), states...)
+}
+
+func readSSEFrame(t *testing.T, reader *bufio.Reader) string {
+	t.Helper()
+	frameCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		var b strings.Builder
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if line == "\n" || line == "\r\n" {
+				frameCh <- b.String()
+				return
+			}
+			b.WriteString(line)
+		}
+	}()
+	select {
+	case frame := <-frameCh:
+		return frame
+	case err := <-errCh:
+		t.Fatalf("read SSE frame: %v", err)
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for SSE frame")
+	}
+	return ""
 }
 
 func TestTrafficViewCacheSharesInboundsAndStatesAcrossHandlers(t *testing.T) {
@@ -1197,28 +1238,22 @@ func TestTrafficV2StreamFirstFrameIsSnapshotEvent(t *testing.T) {
 		inbounds: []db.Inbound{{ID: 1, Protocol: "vless", Enabled: true}},
 		states:   []db.TrafficState{{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", TotalUp: 1, TotalDown: 2, Status: "ok", LastSeenAt: now}},
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/stream", nil).WithContext(ctx)
-	response := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		trafficV2StreamHandler(store, newTrafficViewCache(0))(response, req)
-		close(done)
-	}()
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if strings.Contains(response.Body.String(), "event: snapshot") {
-			cancel()
-			<-done
-			if !strings.Contains(response.Body.String(), `"total"`) || !strings.Contains(response.Body.String(), `"inbounds"`) || !strings.Contains(response.Body.String(), `"clients"`) {
-				t.Fatalf("snapshot frame should contain v2 shape, got %s", response.Body.String())
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	server := httptest.NewServer(trafficV2StreamHandler(store, newTrafficViewCache(0)))
+	defer server.Close()
+
+	resp, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatalf("open v2 stream: %v", err)
 	}
-	cancel()
-	<-done
-	t.Fatalf("expected first v2 SSE frame to be snapshot event, got %s", response.Body.String())
+	defer resp.Body.Close()
+
+	frame := readSSEFrame(t, bufio.NewReader(resp.Body))
+	if !strings.Contains(frame, "event: snapshot") {
+		t.Fatalf("expected first v2 SSE frame to be snapshot event, got %s", frame)
+	}
+	if !strings.Contains(frame, `"total"`) || !strings.Contains(frame, `"inbounds"`) || !strings.Contains(frame, `"clients"`) {
+		t.Fatalf("snapshot frame should contain v2 shape, got %s", frame)
+	}
 }
 
 func TestTrafficV2StreamSendsPatchAfterSnapshot(t *testing.T) {
@@ -1245,38 +1280,29 @@ func TestTrafficV2StreamSendsPatchAfterSnapshot(t *testing.T) {
 		trafficV2StreamInterval = previousInterval
 		trafficV2StreamResyncEvery = previousResyncEvery
 	}()
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/stream", nil).WithContext(ctx)
-	response := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		trafficV2StreamHandler(store, newTrafficViewCache(0))(response, req)
-		close(done)
-	}()
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if strings.Contains(response.Body.String(), "event: snapshot") {
-			store.states = []db.TrafficState{
-				{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", TotalUp: 10, TotalDown: 20, DeltaUp: 9, DeltaDown: 10, RateUp: 0.9, RateDown: 1.0, WindowSeconds: 5, Status: "ok", LastSeenAt: "2026-06-24T00:00:05Z"},
-				{Engine: "xray", ScopeType: "client", ScopeKey: "c1", TotalUp: 3, TotalDown: 4, DeltaUp: 5, DeltaDown: 6, RateUp: 0.5, RateDown: 0.6, WindowSeconds: 5, Status: "stale", LastSeenAt: "2026-06-24T00:00:05Z"},
-			}
-		}
-		if strings.Contains(response.Body.String(), "event: patch") {
-			cancel()
-			<-done
-			body := response.Body.String()
-			if !strings.Contains(body, "event: snapshot") || !strings.Contains(body, `"total"`) {
-				t.Fatalf("expected stream snapshot payload, got %s", body)
-			}
-			if !strings.Contains(body, "event: patch") || !strings.Contains(body, `"clients":[{"id":10`) || !strings.Contains(body, `"inbounds":[{"id":1`) {
-				t.Fatalf("expected patch with changed inbound/client, got %s", body)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	server := httptest.NewServer(trafficV2StreamHandler(store, newTrafficViewCache(0)))
+	defer server.Close()
+
+	resp, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatalf("open v2 stream: %v", err)
 	}
-	cancel()
-	<-done
-	t.Fatalf("expected v2 stream to emit patch event, got %s", response.Body.String())
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+
+	snapshotFrame := readSSEFrame(t, reader)
+	if !strings.Contains(snapshotFrame, "event: snapshot") || !strings.Contains(snapshotFrame, `"total"`) {
+		t.Fatalf("expected stream snapshot payload, got %s", snapshotFrame)
+	}
+	store.setTrafficStates([]db.TrafficState{
+		{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", TotalUp: 10, TotalDown: 20, DeltaUp: 9, DeltaDown: 10, RateUp: 0.9, RateDown: 1.0, WindowSeconds: 5, Status: "ok", LastSeenAt: "2026-06-24T00:00:05Z"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: "c1", TotalUp: 3, TotalDown: 4, DeltaUp: 5, DeltaDown: 6, RateUp: 0.5, RateDown: 0.6, WindowSeconds: 5, Status: "stale", LastSeenAt: "2026-06-24T00:00:05Z"},
+	})
+
+	patchFrame := readSSEFrame(t, reader)
+	if !strings.Contains(patchFrame, "event: patch") || !strings.Contains(patchFrame, `"clients":[{"id":10`) || !strings.Contains(patchFrame, `"inbounds":[{"id":1`) {
+		t.Fatalf("expected patch with changed inbound/client, got %s", patchFrame)
+	}
 }
 
 func TestTrafficV2StreamStopsWhenInitialSnapshotFails(t *testing.T) {
