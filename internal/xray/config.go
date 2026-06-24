@@ -33,11 +33,17 @@ type APIConfig struct {
 
 type PolicyConfig struct {
 	Levels map[string]PolicyLevel `json:"levels"`
+	System PolicySystem           `json:"system"`
 }
 
 type PolicyLevel struct {
 	StatsUserUplink   bool `json:"statsUserUplink"`
 	StatsUserDownlink bool `json:"statsUserDownlink"`
+}
+
+type PolicySystem struct {
+	StatsInboundUplink   bool `json:"statsInboundUplink"`
+	StatsInboundDownlink bool `json:"statsInboundDownlink"`
 }
 
 type RoutingConfig struct {
@@ -306,7 +312,7 @@ func isCIDROrIP(value string) bool {
 	return err == nil
 }
 
-// enableUserStats returns a PolicyConfig that enables per-client traffic stats.
+// enableUserStats returns a PolicyConfig that enables per-client and per-inbound traffic stats.
 func enableStatsAPI() *APIConfig {
 	return &APIConfig{Tag: "api", Services: []string{"StatsService"}}
 }
@@ -331,6 +337,10 @@ func enableUserStats() *PolicyConfig {
 				StatsUserUplink:   true,
 				StatsUserDownlink: true,
 			},
+		},
+		System: PolicySystem{
+			StatsInboundUplink:   true,
+			StatsInboundDownlink: true,
 		},
 	}
 }
