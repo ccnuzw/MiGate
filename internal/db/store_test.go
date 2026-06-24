@@ -3204,23 +3204,34 @@ func TestTrafficRawIncrementRollbackAndResetBaseline(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, raw(100, 200), t0); err != nil {
 		t.Fatalf("baseline sample: %v", err)
 	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states after baseline: %v", err)
+	}
+	state := findTrafficState(states, "xray", "client", client.StatsKey)
+	if state == nil || state.TotalUp != 0 || state.TotalDown != 0 || state.DeltaUp != 0 || state.DeltaDown != 0 || state.RateUp != 0 || state.RateDown != 0 || state.WindowSeconds != 0 {
+		t.Fatalf("first sample should establish baseline without realtime rate, got %+v", state)
+	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(160, 260), t0.Add(10*time.Second)); err != nil {
 		t.Fatalf("increment sample: %v", err)
 	}
-	states, err := store.ListTrafficStates(ctx)
+	states, err = store.ListTrafficStates(ctx)
 	if err != nil {
 		t.Fatalf("list states: %v", err)
 	}
-	state := findTrafficState(states, "xray", "client", client.StatsKey)
+	state = findTrafficState(states, "xray", "client", client.StatsKey)
 	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 || state.RateUp != 6 || state.RateDown != 6 {
 		t.Fatalf("unexpected increment state: %+v", state)
+	}
+	if state.DeltaUp != 60 || state.DeltaDown != 60 || state.WindowSeconds != 10 {
+		t.Fatalf("unexpected increment sample window: %+v", state)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(10, 20), t0.Add(20*time.Second)); err != nil {
 		t.Fatalf("rollback sample: %v", err)
 	}
 	states, _ = store.ListTrafficStates(ctx)
 	state = findTrafficState(states, "xray", "client", client.StatsKey)
-	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 {
+	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 || state.DeltaUp != 0 || state.DeltaDown != 0 || state.RateUp != 0 || state.RateDown != 0 {
 		t.Fatalf("raw rollback should not reduce totals: %+v", state)
 	}
 	if _, err := store.ResetClientTrafficBaseline(ctx, client.ID, raw(10, 20)); err != nil {
@@ -3314,8 +3325,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples before marker: %v", err)
 	}
-	if len(samples) != 1 {
-		t.Fatalf("expected one bucketed client sample before marker, got %+v", samples)
+	if len(samples) != 2 {
+		t.Fatalf("expected baseline and increment client samples before marker, got %+v", samples)
 	}
 	markerAt := t0.Add(20 * time.Second)
 	if err := store.MarkTrafficScopeStatus(ctx, []db.TrafficStatusMarker{
@@ -3353,7 +3364,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples after marker: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 100 || samples[1].TotalDown != 300 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "unsupported" {
+	markerSample := samples[len(samples)-1]
+	if len(samples) != 3 || markerSample.TotalUp != 100 || markerSample.TotalDown != 300 || markerSample.RateUp != 0 || markerSample.RateDown != 0 || markerSample.Status != "unsupported" {
 		t.Fatalf("status marker should write zero-rate sample without changing totals, got %+v", samples)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(1200, 2600), t0.Add(30*time.Second)); err != nil {
@@ -3371,7 +3383,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples after recovery: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 200 || samples[1].TotalDown != 600 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "ok" {
+	recoveredSample := samples[len(samples)-1]
+	if len(samples) != 4 || recoveredSample.TotalUp != 200 || recoveredSample.TotalDown != 600 || recoveredSample.RateUp != 0 || recoveredSample.RateDown != 0 || recoveredSample.Status != "ok" {
 		t.Fatalf("expected one recovered client bucket after marker, got %+v", samples)
 	}
 }
@@ -3442,7 +3455,8 @@ func TestTrafficScopeStatusRefreshesXrayWaitingWithoutClearingTotals(t *testing.
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 300 || samples[1].TotalDown != 600 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "waiting" {
+	markerSample := samples[len(samples)-1]
+	if len(samples) != 3 || markerSample.TotalUp != 300 || markerSample.TotalDown != 600 || markerSample.RateUp != 0 || markerSample.RateDown != 0 || markerSample.Status != "waiting" {
 		t.Fatalf("waiting marker should write zero-rate traffic sample without changing totals, got %+v", samples)
 	}
 }
@@ -3543,7 +3557,8 @@ func TestTrafficScopeStatusUnavailablePreservesTotalsAndRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 300 || samples[1].TotalDown != 600 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "unavailable" {
+	markerSample := samples[len(samples)-1]
+	if len(samples) != 3 || markerSample.TotalUp != 300 || markerSample.TotalDown != 600 || markerSample.RateUp != 0 || markerSample.RateDown != 0 || markerSample.Status != "unavailable" {
 		t.Fatalf("unavailable marker should write zero-rate sample preserving totals, got %+v", samples)
 	}
 }
@@ -3672,8 +3687,8 @@ func TestApplyTrafficRawStatsBatchesClientSamplesAndTotals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 2 {
-		t.Fatalf("expected one bucketed sample per client, got %+v", samples)
+	if len(samples) != 4 {
+		t.Fatalf("expected baseline and increment samples per client, got %+v", samples)
 	}
 	usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientB.ID)
 	if err != nil {

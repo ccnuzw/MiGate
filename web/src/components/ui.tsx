@@ -167,8 +167,8 @@ export function toggleButtonClass(enabled: boolean) {
   return clsx('icon-button toggle-button', enabled ? 'toggle-button-on' : 'toggle-button-off');
 }
 
-export function Card({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={clsx('rounded-lg border border-panel-line bg-panel-surface shadow-panel', className)}>{children}</div>;
+export function Card({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement> & { children: React.ReactNode }) {
+  return <div className={clsx('rounded-lg border border-panel-line bg-panel-surface shadow-panel', className)} {...props}>{children}</div>;
 }
 
 export function SpinnerButton({

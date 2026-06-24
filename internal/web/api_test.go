@@ -34,6 +34,7 @@ import (
 	"github.com/imzyb/MiGate/internal/paths"
 	certsvc "github.com/imzyb/MiGate/internal/service/cert"
 	"github.com/imzyb/MiGate/internal/singbox"
+	"github.com/imzyb/MiGate/internal/trafficstats"
 	"github.com/imzyb/MiGate/internal/web"
 	"github.com/imzyb/MiGate/internal/xray"
 )
@@ -3685,13 +3686,13 @@ func (c fixedStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.C
 	return c.stats, nil
 }
 
-func (c fixedStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+func (c fixedStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	if c.calls != nil {
 		(*c.calls)++
 	}
-	result := make([]xray.TrafficStat, 0, len(c.stats))
+	result := make([]trafficstats.Stat, 0, len(c.stats))
 	for _, stat := range c.stats {
-		result = append(result, xray.TrafficStat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
+		result = append(result, trafficstats.Stat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
 	}
 	return result, nil
 }
@@ -4138,19 +4139,23 @@ func TestTrafficAPIsExposeUnavailableStateAfterXrayQueryFailure(t *testing.T) {
 		t.Fatalf("refresh 200, got %d: %s", refresh.Code, refresh.Body.String())
 	}
 	type refreshClientTraffic struct {
-		Up      int64  `json:"up"`
-		Down    int64  `json:"down"`
-		Status  string `json:"status"`
-		Message string `json:"message"`
+		Up               int64                  `json:"up"`
+		Down             int64                  `json:"down"`
+		Status           string                 `json:"status"`
+		Message          string                 `json:"message"`
+		ClientCumulative map[string]interface{} `json:"client_cumulative"`
+		ClientRealtime   map[string]interface{} `json:"client_realtime"`
 	}
 	type refreshInboundTraffic struct {
-		ID             int64                          `json:"id"`
-		TrafficUp      int64                          `json:"traffic_up"`
-		TrafficDown    int64                          `json:"traffic_down"`
-		TrafficTotal   int64                          `json:"traffic_total"`
-		TrafficStatus  string                         `json:"traffic_status"`
-		TrafficMessage string                         `json:"traffic_message"`
-		ClientTraffic  map[int64]refreshClientTraffic `json:"client_traffic"`
+		ID                int64                          `json:"id"`
+		TrafficUp         int64                          `json:"traffic_up"`
+		TrafficDown       int64                          `json:"traffic_down"`
+		TrafficTotal      int64                          `json:"traffic_total"`
+		TrafficStatus     string                         `json:"traffic_status"`
+		TrafficMessage    string                         `json:"traffic_message"`
+		InboundCumulative map[string]interface{}         `json:"inbound_cumulative"`
+		InboundRealtime   map[string]interface{}         `json:"inbound_realtime"`
+		ClientTraffic     map[int64]refreshClientTraffic `json:"client_traffic"`
 	}
 	var refreshBody struct {
 		Inbounds []refreshInboundTraffic `json:"inbounds"`
@@ -4171,12 +4176,18 @@ func TestTrafficAPIsExposeUnavailableStateAfterXrayQueryFailure(t *testing.T) {
 	if refreshInbound.TrafficUp != 0 || refreshInbound.TrafficDown != 0 || refreshInbound.TrafficTotal != 0 || refreshInbound.TrafficStatus != "unavailable" || refreshInbound.TrafficMessage != "xray stats offline" {
 		t.Fatalf("unexpected refresh inbound traffic: %+v", *refreshInbound)
 	}
+	if refreshInbound.InboundCumulative["status"] != "unavailable" || refreshInbound.InboundRealtime["status"] != "unavailable" || refreshInbound.InboundRealtime["message"] != "xray stats offline" {
+		t.Fatalf("refresh response should expose inbound metric objects with status, got cumulative=%+v realtime=%+v", refreshInbound.InboundCumulative, refreshInbound.InboundRealtime)
+	}
 	refreshClient, ok := refreshInbound.ClientTraffic[client.ID]
 	if !ok {
 		t.Fatalf("refresh response missing client traffic %d: %+v", client.ID, refreshInbound.ClientTraffic)
 	}
 	if refreshClient.Up != 0 || refreshClient.Down != 0 || refreshClient.Status != "unavailable" || refreshClient.Message != "xray stats offline" {
 		t.Fatalf("unexpected refresh client traffic: %+v", refreshClient)
+	}
+	if refreshClient.ClientCumulative["status"] != "unavailable" || refreshClient.ClientRealtime["status"] != "unavailable" || refreshClient.ClientRealtime["message"] != "xray stats offline" {
+		t.Fatalf("refresh response should expose client metric objects with status, got cumulative=%+v realtime=%+v", refreshClient.ClientCumulative, refreshClient.ClientRealtime)
 	}
 
 	trafficClients := httptest.NewRecorder()
@@ -4185,13 +4196,15 @@ func TestTrafficAPIsExposeUnavailableStateAfterXrayQueryFailure(t *testing.T) {
 		t.Fatalf("traffic clients 200, got %d: %s", trafficClients.Code, trafficClients.Body.String())
 	}
 	type trafficClientPayload struct {
-		ID        int64  `json:"id"`
-		InboundID int64  `json:"inbound_id"`
-		TotalUp   int64  `json:"total_up"`
-		TotalDown int64  `json:"total_down"`
-		Total     int64  `json:"total"`
-		Status    string `json:"status"`
-		Message   string `json:"message"`
+		ID               int64                  `json:"id"`
+		InboundID        int64                  `json:"inbound_id"`
+		TotalUp          int64                  `json:"total_up"`
+		TotalDown        int64                  `json:"total_down"`
+		Total            int64                  `json:"total"`
+		Status           string                 `json:"status"`
+		Message          string                 `json:"message"`
+		ClientCumulative map[string]interface{} `json:"client_cumulative"`
+		ClientRealtime   map[string]interface{} `json:"client_realtime"`
 	}
 	var clientsBody struct {
 		Clients []trafficClientPayload `json:"clients"`
@@ -4211,6 +4224,9 @@ func TestTrafficAPIsExposeUnavailableStateAfterXrayQueryFailure(t *testing.T) {
 	}
 	if trafficClient.InboundID != inbound.ID || trafficClient.TotalUp != 0 || trafficClient.TotalDown != 0 || trafficClient.Total != 0 || trafficClient.Status != "unavailable" || trafficClient.Message != "xray stats offline" {
 		t.Fatalf("unexpected traffic client payload: %+v", *trafficClient)
+	}
+	if trafficClient.ClientCumulative["status"] != "unavailable" || trafficClient.ClientRealtime["status"] != "unavailable" || trafficClient.ClientRealtime["message"] != "xray stats offline" {
+		t.Fatalf("traffic client payload should expose client metric objects, got cumulative=%+v realtime=%+v", trafficClient.ClientCumulative, trafficClient.ClientRealtime)
 	}
 }
 

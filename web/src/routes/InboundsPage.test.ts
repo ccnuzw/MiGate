@@ -5,7 +5,7 @@ import { createElement } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Client, Inbound, InboundCapability } from '../api/types';
+import type { Client, Inbound, InboundCapability, TrafficV2Snapshot } from '../api/types';
 import { ConfirmProvider, ToastProvider } from '../components/ui';
 import { I18nProvider } from '../lib/i18n';
 import {
@@ -27,7 +27,6 @@ import {
   inboundCredentialType,
   inboundFormValues,
   inboundProtocolOptions,
-  mergeInboundTraffic,
   nextClientName,
   protocolBadgeClasses,
   rateLabel,
@@ -40,7 +39,7 @@ import InboundsPage from './InboundsPage';
 
 const apiMock = vi.hoisted(() => ({
   inbounds: vi.fn<() => Promise<Inbound[]>>(async () => []),
-  inboundTraffic: vi.fn<() => Promise<Inbound[]>>(async () => []),
+  trafficV2Snapshot: vi.fn<() => Promise<TrafficV2Snapshot>>(async () => emptyTrafficSnapshot()),
   inboundCapabilities: vi.fn(async () => []),
   toggleInbound: vi.fn(async () => ({})),
   deleteInbound: vi.fn(async () => ({})),
@@ -314,7 +313,15 @@ describe('inbound management display helpers', () => {
   });
 
   it('renders limited usage progress without showing percentage for unlimited clients', async () => {
-    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['unlimited', 'limited'])]);
+    const inbound = sampleInbound(1, 'edge-a', ['unlimited', 'limited']);
+    apiMock.inbounds.mockResolvedValueOnce([inbound]);
+    apiMock.trafficV2Snapshot.mockResolvedValueOnce({
+      ...emptyTrafficSnapshot(),
+      clients: [
+        { id: 10, inbound_id: 1, email: 'unlimited', enabled: true, traffic_limit: 0, expiry_at: 0, cumulative: v2Metric(0, 0), realtime: v2Realtime(0, 0, 'waiting') },
+        { id: 11, inbound_id: 1, email: 'limited', enabled: true, traffic_limit: 100, expiry_at: 0, cumulative: v2Metric(95, 0), realtime: v2Realtime(0, 0, 'waiting') },
+      ],
+    });
     renderPage();
 
     await waitForText('edge-a');
@@ -325,17 +332,45 @@ describe('inbound management display helpers', () => {
     expect(rowByClientName('limited').querySelector('.usage-bar')).not.toBeNull();
   });
 
-  it('summarizes unlimited and limited client usage with the correct progress semantics', () => {
-    expect(clientUsageSummary({ up: 0, down: 0, traffic_limit: 0 }, text)).toMatchObject({ label: '暂无流量', percentLabel: '' });
-    expect(clientUsageSummary({ up: 1024, down: 0, traffic_limit: 0 }, text)).toMatchObject({ label: '已用 1.0 KB', percentLabel: '' });
-    expect(clientUsageSummary({ up: 70, down: 0, traffic_limit: 100 }, text)).toMatchObject({ percent: 70, percentLabel: '70%', tone: 'warning' });
-    expect(clientUsageSummary({ up: 95, down: 0, traffic_limit: 100 }, text)).toMatchObject({ percent: 95, percentLabel: '95%', tone: 'danger' });
-    expect(clientUsageSummary({ up: 120, down: 0, traffic_limit: 100 }, text)).toMatchObject({ percent: 100, percentLabel: '已超额', tone: 'over' });
+  it('renders client usage text and progress from v2 client cumulative before legacy counters', async () => {
+    const inbound = sampleInbound(1, 'edge-a', ['limited']);
+    Object.assign(inbound.clients![0], {
+      up: 999,
+      down: 999,
+      traffic_limit: 100,
+    });
+    apiMock.inbounds.mockResolvedValueOnce([inbound]);
+    apiMock.trafficV2Snapshot.mockResolvedValueOnce({
+      ...emptyTrafficSnapshot(),
+      clients: [{ id: 10, inbound_id: 1, email: 'limited', enabled: true, traffic_limit: 100, expiry_at: 0, cumulative: v2Metric(30, 40), realtime: v2Realtime(0, 0, 'waiting') }],
+    });
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    const row = rowByClientName('limited');
+
+    expect(row.textContent).toContain('已用 70 B / 100 B');
+    expect(row.textContent).toContain('70%');
+    expect(row.querySelector('.usage-bar')).not.toBeNull();
   });
 
-  it('uses concise rate fallback and complete protocol color classes', () => {
-    expect(rateLabel(0, 0, text)).toBe('暂无速率');
+  it('summarizes unlimited and limited client usage with the correct progress semantics', () => {
+    expect(clientUsageSummary({ traffic_limit: 0, client_cumulative: v2Metric(0, 0) }, text)).toMatchObject({ label: '暂无流量', percentLabel: '' });
+    expect(clientUsageSummary({ traffic_limit: 0, client_cumulative: v2Metric(1024, 0) }, text)).toMatchObject({ label: '已用 1.0 KB', percentLabel: '' });
+    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(70, 0) }, text)).toMatchObject({ percent: 70, percentLabel: '70%', tone: 'warning' });
+    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(95, 0) }, text)).toMatchObject({ percent: 95, percentLabel: '95%', tone: 'danger' });
+    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(120, 0) }, text)).toMatchObject({ percent: 100, percentLabel: '已超额', tone: 'over' });
+    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(1, 2, 70) }, text)).toMatchObject({ label: '已用 70 B / 100 B', percent: 70, tone: 'warning' });
+  });
+
+  it('uses explicit zero realtime fallback and complete protocol color classes', () => {
+    expect(rateLabel(0, 0, text)).toBe('0 B/s');
     expect(rateLabel(1024, 2048, text)).toBe('1.0 KB/s ↑ / 2.0 KB/s ↓');
+    expect(rateLabel(1024, 2048, text, 'waiting')).toBe('等待采样');
+    expect(rateLabel(1024, 2048, text, 'stale')).toBe('统计已过期');
+    expect(rateLabel(1024, 2048, text, 'unavailable')).toBe('统计不可用');
+    expect(rateLabel(1024, 2048, text, 'unsupported')).toBe('实时统计不可用');
     expect(protocolBadgeClasses).toMatchObject({
       vless: 'protocol-vless',
       vmess: 'protocol-vmess',
@@ -344,6 +379,164 @@ describe('inbound management display helpers', () => {
       hysteria2: 'protocol-hysteria2',
       socks: 'protocol-socks',
       http: 'protocol-http',
+    });
+  });
+
+  it('uses v2 traffic objects over conflicting legacy flat fields', async () => {
+    const inbound: Inbound = {
+      id: 1,
+      remark: 'edge',
+      protocol: 'vless',
+      port: 443,
+      network: 'tcp',
+      security: 'none',
+      enabled: true,
+      traffic_up: 999,
+      traffic_down: 999,
+      traffic_total: 1998,
+      rate_up: 999,
+      rate_down: 999,
+      clients: [],
+    };
+    const client = {
+      id: 10,
+      inbound_id: 1,
+      email: 'sam@example.com',
+      uuid: 'client-uuid',
+      enabled: true,
+      up: 999,
+      down: 999,
+      rate_up: 999,
+      rate_down: 999,
+      traffic_limit: 1000,
+      expiry_at: 0,
+    } satisfies Client;
+    inbound.clients = [client];
+    apiMock.inbounds.mockResolvedValueOnce([inbound]);
+    apiMock.trafficV2Snapshot.mockResolvedValueOnce({
+      ...emptyTrafficSnapshot(),
+      inbounds: [{ id: 1, remark: 'edge', protocol: 'vless', port: 443, enabled: true, cumulative: v2Metric(10, 20), realtime: v2Realtime(4, 5) }],
+      clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', enabled: true, traffic_limit: 100, expiry_at: 0, cumulative: v2Metric(30, 40), realtime: v2Realtime(6, 7) }],
+    });
+    renderPage();
+
+    await waitForText('edge');
+    const card = cardByTitle('edge');
+    expect(card.textContent).toContain('30 B');
+    expect(card.textContent).toContain('4 B/s ↑ / 5 B/s ↓');
+    clickButtonByExactText('展开', card);
+    const row = rowByClientName('sam@example.com');
+    expect(row.textContent).toContain('已用 70 B / 100 B');
+    expect(row.textContent).toContain('6 B/s ↑ / 7 B/s ↓');
+    expect(row.textContent).not.toContain('999 B');
+  });
+
+  it('updates inbound and client traffic from stream patch events', async () => {
+    const instances: FakeEventSource[] = [];
+    class FakeEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      close = vi.fn();
+      listeners = new Map<string, Array<(event: Event) => void>>();
+      constructor(public url: string) {
+        instances.push(this);
+      }
+      addEventListener = vi.fn((type: string, listener: (event: Event) => void) => {
+        const current = this.listeners.get(type) || [];
+        current.push(listener);
+        this.listeners.set(type, current);
+      });
+      removeEventListener = vi.fn();
+      dispatchEvent = vi.fn();
+    }
+    vi.stubGlobal('EventSource', FakeEventSource);
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge', ['sam@example.com'])]);
+    apiMock.trafficV2Snapshot.mockResolvedValueOnce({
+      ...emptyTrafficSnapshot(),
+      inbounds: [{ id: 1, remark: 'edge', protocol: 'vless', port: 441, enabled: true, cumulative: v2Metric(10, 20), realtime: v2Realtime(4, 5) }],
+      clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', enabled: true, traffic_limit: 100, expiry_at: 0, cumulative: v2Metric(30, 40), realtime: v2Realtime(6, 7) }],
+    });
+    renderPage();
+
+    await waitForText('edge');
+    let card = cardByTitle('edge');
+    expect(card.textContent).toContain('4 B/s ↑ / 5 B/s ↓');
+    clickButtonByExactText('展开', card);
+    let row = rowByClientName('sam@example.com');
+    expect(row.textContent).toContain('6 B/s ↑ / 7 B/s ↓');
+
+    act(() => {
+      instances[0].listeners.get('patch')?.[0]({
+        data: JSON.stringify({
+          generated_at: '2026-06-24T00:00:05Z',
+          observed_at: '2026-06-24T00:00:05Z',
+          window_seconds: 5,
+          inbounds: [{ id: 1, remark: 'edge', protocol: 'vless', port: 441, enabled: true, cumulative: v2Metric(10, 20), realtime: v2Realtime(8, 9, 'unsupported', 'inbound') }],
+          clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', enabled: true, traffic_limit: 100, expiry_at: 0, cumulative: v2Metric(30, 40), realtime: v2Realtime(1, 2, 'waiting', 'client') }],
+          coverage: { overall: 'partial', engines: { xray: 'partial', singbox: 'not_configured' }, ok: 0, waiting: 0, stale: 0, unavailable: 0, unsupported: 0, partial: 1 },
+        }),
+      } as MessageEvent);
+    });
+
+    await vi.waitFor(() => {
+      card = cardByTitle('edge');
+      expect(card.textContent).toContain('实时统计不可用');
+      row = rowByClientName('sam@example.com');
+      expect(row.textContent).toContain('等待采样');
+      expect(row.textContent).not.toContain('1 B/s ↑ / 2 B/s ↓');
+    });
+  });
+
+  it('drops deleted client traffic overlays from stream patch merges', async () => {
+    const instances: FakeEventSource[] = [];
+    class FakeEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      close = vi.fn();
+      listeners = new Map<string, Array<(event: Event) => void>>();
+      constructor(public url: string) {
+        instances.push(this);
+      }
+      addEventListener = vi.fn((type: string, listener: (event: Event) => void) => {
+        const current = this.listeners.get(type) || [];
+        current.push(listener);
+        this.listeners.set(type, current);
+      });
+      removeEventListener = vi.fn();
+      dispatchEvent = vi.fn();
+    }
+    vi.stubGlobal('EventSource', FakeEventSource);
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge', ['sam@example.com'])]);
+    apiMock.trafficV2Snapshot.mockResolvedValueOnce({
+      ...emptyTrafficSnapshot(),
+      inbounds: [{ id: 1, remark: 'edge', protocol: 'vless', port: 441, enabled: true, cumulative: v2Metric(10, 20), realtime: v2Realtime(4, 5) }],
+      clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', enabled: true, traffic_limit: 100, expiry_at: 0, cumulative: v2Metric(30, 40), realtime: v2Realtime(6, 7) }],
+    });
+    renderPage();
+
+    await waitForText('edge');
+    clickButtonByExactText('展开', cardByTitle('edge'));
+    expect(pageText()).toContain('sam@example.com');
+    expect(pageText()).toContain('6 B/s ↑ / 7 B/s ↓');
+
+    await act(async () => {
+      instances[0].listeners.get('patch')?.[0]({
+        data: JSON.stringify({
+          generated_at: '2026-06-24T00:00:05Z',
+          observed_at: '2026-06-24T00:00:05Z',
+          window_seconds: 5,
+          removed_client_ids: [10],
+        }),
+      } as MessageEvent);
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(pageText()).toContain('sam@example.com');
+      expect(pageText()).toContain('等待采样');
+      expect(pageText()).not.toContain('6 B/s ↑ / 7 B/s ↓');
     });
   });
 });
@@ -868,45 +1061,6 @@ describe('inbound payload helpers', () => {
     expect(shouldSyncInboundWSHost('tcp', 'example.com', 'old.example.com')).toBe(false);
   });
 
-  it('merges lightweight traffic refresh without replacing full config fields', () => {
-    const current: Inbound[] = [{
-      id: 1,
-      remark: 'edge',
-      protocol: 'vless',
-      port: 443,
-      network: 'tcp',
-      security: 'reality',
-      enabled: true,
-      uuid: '11111111-1111-4111-8111-111111111111',
-      reality_private_key: 'private-key',
-      clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', uuid: 'client-uuid', enabled: true, traffic_limit: 1000, expiry_at: 0 }],
-    }];
-    const traffic: Inbound[] = [{
-      id: 1,
-      remark: 'edge',
-      protocol: 'vless',
-      port: 443,
-      network: 'tcp',
-      security: 'reality',
-      enabled: false,
-      clients: [{ id: 10, inbound_id: 1, email: 'sam@example.com', uuid: 'client-uuid', enabled: false, up: 12, down: 34, traffic_limit: 2000, expiry_at: 99 }],
-      traffic_up: 12,
-      traffic_down: 34,
-      traffic_total: 46,
-      rate_up: 1,
-      rate_down: 2,
-      traffic_status: 'ok',
-      client_traffic: { '10': { up: 12, down: 34, rate_up: 1, rate_down: 2, status: 'ok' } },
-    }];
-
-    const [merged] = mergeInboundTraffic(current, traffic);
-
-    expect(merged.enabled).toBe(false);
-    expect(merged.reality_private_key).toBe('private-key');
-    expect(merged.traffic_total).toBe(46);
-    expect(merged).toMatchObject({ rate_up: 1, rate_down: 2, traffic_status: 'ok' });
-    expect(merged.clients?.[0]).toMatchObject({ email: 'sam@example.com', enabled: false, up: 12, down: 34, rate_up: 1, rate_down: 2, traffic_status: 'ok', traffic_limit: 2000, expiry_at: 99 });
-  });
 });
 
 function renderPage() {
@@ -929,6 +1083,26 @@ function renderPage() {
       ),
     ));
   });
+}
+
+function emptyTrafficSnapshot(): TrafficV2Snapshot {
+  return {
+    generated_at: '',
+    observed_at: '',
+    window_seconds: 0,
+    total: { cumulative: v2Metric(0, 0, 0, 'waiting', 'migate'), realtime: v2Realtime(0, 0, 'waiting', 'inbound') },
+    inbounds: [],
+    clients: [],
+    coverage: { overall: 'waiting', engines: { xray: 'not_configured', singbox: 'not_configured' }, ok: 0, waiting: 0, stale: 0, unavailable: 0, unsupported: 0, partial: 0 },
+  };
+}
+
+function v2Metric(up: number, down: number, total = up + down, status = 'ok', source = 'client') {
+  return { up, down, total, status, source, message: '' };
+}
+
+function v2Realtime(rateUp: number, rateDown: number, status = 'ok', source = 'client') {
+  return { delta_up: 0, delta_down: 0, delta_total: 0, rate_up: rateUp, rate_down: rateDown, rate_total: rateUp + rateDown, observed_at: '2026-06-24T00:00:00Z', window_seconds: 5, status, source, message: '' };
 }
 
 function sampleInbound(id: number, remark: string, clientNames: string[]): Inbound {

@@ -142,8 +142,11 @@ CREATE TABLE IF NOT EXISTS traffic_states (
   total_down INTEGER NOT NULL DEFAULT 0,
   last_raw_up INTEGER NOT NULL DEFAULT 0,
   last_raw_down INTEGER NOT NULL DEFAULT 0,
+  delta_up INTEGER NOT NULL DEFAULT 0,
+  delta_down INTEGER NOT NULL DEFAULT 0,
   rate_up REAL NOT NULL DEFAULT 0,
   rate_down REAL NOT NULL DEFAULT 0,
+  window_seconds REAL NOT NULL DEFAULT 0,
   last_seen_at TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'waiting',
   message TEXT NOT NULL DEFAULT '',
@@ -157,8 +160,11 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
   scope_key TEXT NOT NULL,
   total_up INTEGER NOT NULL DEFAULT 0,
   total_down INTEGER NOT NULL DEFAULT 0,
+  delta_up INTEGER NOT NULL DEFAULT 0,
+  delta_down INTEGER NOT NULL DEFAULT 0,
   rate_up REAL NOT NULL DEFAULT 0,
   rate_down REAL NOT NULL DEFAULT 0,
+  window_seconds REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'waiting'
 );
 CREATE TABLE IF NOT EXISTS certificates (
@@ -275,6 +281,22 @@ CREATE INDEX IF NOT EXISTS idx_outbound_subscriptions_priority_id ON outbound_su
 	}
 	if err := s.ensureColumn(ctx, "core_apply_state", "pending_updated_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	for _, col := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"traffic_states", "delta_up", "INTEGER NOT NULL DEFAULT 0"},
+		{"traffic_states", "delta_down", "INTEGER NOT NULL DEFAULT 0"},
+		{"traffic_states", "window_seconds", "REAL NOT NULL DEFAULT 0"},
+		{"traffic_samples", "delta_up", "INTEGER NOT NULL DEFAULT 0"},
+		{"traffic_samples", "delta_down", "INTEGER NOT NULL DEFAULT 0"},
+		{"traffic_samples", "window_seconds", "REAL NOT NULL DEFAULT 0"},
+	} {
+		if err := s.ensureColumn(ctx, col.table, col.name, col.definition); err != nil {
+			return err
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_outbounds_subscription ON outbounds(subscription_id, subscription_identity)`); err != nil {
 		return err

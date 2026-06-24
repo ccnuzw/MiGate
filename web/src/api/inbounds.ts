@@ -11,10 +11,6 @@ export const inboundsAPI = {
     return response.capabilities || [];
   },
   generateRealityKeypair: () => post<{ private_key: string; public_key: string }>('/api/reality/keypair', {}),
-  inboundTraffic: async () => {
-    const response = await get<Inbound[] | { inbounds?: Inbound[] }>('/api/inbounds?refresh=traffic');
-    return Array.isArray(response) ? response : response.inbounds || [];
-  },
   createInbound: (body: Record<string, unknown>) => post<CreateInboundResponse>('/api/inbounds', body),
   updateInbound: (id: number, body: Record<string, unknown>) => put<(Inbound | { inbound: Inbound }) & SingboxWriteResponse>(`/api/inbounds/${id}`, body),
   deleteInbound: (id: number) => del<{ status: string } & SingboxWriteResponse>(`/api/inbounds/${id}`),

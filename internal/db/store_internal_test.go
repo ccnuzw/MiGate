@@ -259,7 +259,7 @@ func expectValidationVersionIncreased(t *testing.T, store *Store, ctx context.Co
 	return current
 }
 
-func TestTrafficSamplesAreBucketedPerMinute(t *testing.T) {
+func TestTrafficSamplesAreBucketedPerFiveSeconds(t *testing.T) {
 	store, err := Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -277,24 +277,34 @@ func TestTrafficSamplesAreBucketedPerMinute(t *testing.T) {
 	}
 	firstAt := time.Date(2026, 6, 17, 12, 30, 10, 0, time.UTC)
 	secondAt := firstAt.Add(30 * time.Second)
+	thirdAt := firstAt.Add(32 * time.Second)
+	if thirdAt.Truncate(trafficSampleBucketSize) != secondAt.Truncate(trafficSampleBucketSize) {
+		t.Fatalf("test setup expected second and third samples in the same five-second bucket: second=%s third=%s", secondAt, thirdAt)
+	}
 	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 100, RawDown: 200, Status: "ok"}}, firstAt); err != nil {
 		t.Fatalf("first sample: %v", err)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 150, RawDown: 260, Status: "ok"}}, secondAt); err != nil {
 		t.Fatalf("second sample: %v", err)
 	}
+	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 170, RawDown: 290, Status: "ok"}}, thirdAt); err != nil {
+		t.Fatalf("third sample: %v", err)
+	}
 	samples, err := store.ListTrafficSamples(ctx, "client", firstAt.Add(-time.Minute), 100)
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 1 {
-		t.Fatalf("expected samples in one minute bucket to merge, got %+v", samples)
+	if len(samples) != 2 {
+		t.Fatalf("expected samples in distinct five-second buckets, got %+v", samples)
 	}
-	if samples[0].SampledAt != firstAt.Truncate(time.Minute).Format(time.RFC3339Nano) {
-		t.Fatalf("expected minute bucket timestamp, got %+v", samples[0])
+	if samples[0].SampledAt != firstAt.Truncate(trafficSampleBucketSize).Format(time.RFC3339Nano) {
+		t.Fatalf("expected first five-second bucket timestamp, got %+v", samples[0])
 	}
-	if samples[0].TotalUp != 50 || samples[0].TotalDown != 60 {
-		t.Fatalf("expected bucket to keep latest total delta, got %+v", samples[0])
+	if samples[1].SampledAt != secondAt.Truncate(trafficSampleBucketSize).Format(time.RFC3339Nano) {
+		t.Fatalf("expected second five-second bucket timestamp, got %+v", samples[1])
+	}
+	if samples[1].TotalUp != 70 || samples[1].TotalDown != 90 || samples[1].DeltaUp != 20 || samples[1].DeltaDown != 30 {
+		t.Fatalf("expected same five-second bucket to keep latest total and delta, got %+v", samples[1])
 	}
 }
 
@@ -401,12 +411,23 @@ func TestTrafficSamplesCleanupIsThrottled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples after cleanup trigger: %v", err)
 	}
-	if len(samples) != 1 || samples[0].SampledAt != newAt.UTC().Truncate(time.Minute).Format(time.RFC3339Nano) {
+	if len(samples) != 1 || samples[0].SampledAt != newAt.UTC().Truncate(trafficSampleBucketSize).Format(time.RFC3339Nano) {
 		t.Fatalf("expected first new sample to prune old samples, got %+v", samples)
 	}
 	staleAt := newAt.Add(-8 * 24 * time.Hour)
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, 'xray', 'client', ?, 1, 1, 0, 0, 'ok')`, staleAt.UTC().Format(time.RFC3339Nano), client.StatsKey); err != nil {
 		t.Fatalf("insert manual stale sample: %v", err)
+	}
+	retainedColdAt := newAt.Add(-25 * time.Hour).UTC().Truncate(time.Hour)
+	if minute := retainedColdAt.Minute(); minute%5 != 0 || retainedColdAt.Second() != 0 {
+		t.Fatalf("test setup expected retained cold sample at a five-minute boundary, got %s", retainedColdAt)
+	}
+	prunedColdAt := retainedColdAt.Add(5 * time.Second)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, 'xray', 'client', ?, 2, 2, 0, 0, 'ok')`, retainedColdAt.Format(time.RFC3339Nano), client.StatsKey); err != nil {
+		t.Fatalf("insert retained cold sample: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, 'xray', 'client', ?, 3, 3, 0, 0, 'ok')`, prunedColdAt.Format(time.RFC3339Nano), client.StatsKey); err != nil {
+		t.Fatalf("insert pruned cold sample: %v", err)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 130, RawDown: 130, Status: "ok"}}, newAt.Add(30*time.Minute)); err != nil {
 		t.Fatalf("within throttle sample: %v", err)
@@ -424,6 +445,19 @@ func TestTrafficSamplesCleanupIsThrottled(t *testing.T) {
 	if !foundManualStale {
 		t.Fatalf("expected stale manual sample to remain until cleanup throttle expires, got %+v", samples)
 	}
+	foundRetainedCold := false
+	foundPrunedCold := false
+	for _, sample := range samples {
+		switch sample.SampledAt {
+		case retainedColdAt.Format(time.RFC3339Nano):
+			foundRetainedCold = true
+		case prunedColdAt.Format(time.RFC3339Nano):
+			foundPrunedCold = true
+		}
+	}
+	if !foundRetainedCold || !foundPrunedCold {
+		t.Fatalf("expected manual cold samples to remain until cleanup throttle expires, got %+v", samples)
+	}
 	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 140, RawDown: 140, Status: "ok"}}, newAt.Add(2*time.Hour)); err != nil {
 		t.Fatalf("post-throttle sample: %v", err)
 	}
@@ -435,6 +469,18 @@ func TestTrafficSamplesCleanupIsThrottled(t *testing.T) {
 		if sample.SampledAt == staleAt.UTC().Format(time.RFC3339Nano) {
 			t.Fatalf("expected stale manual sample to be pruned after throttle expiry, got %+v", samples)
 		}
+	}
+	foundRetainedCold = false
+	for _, sample := range samples {
+		switch sample.SampledAt {
+		case retainedColdAt.Format(time.RFC3339Nano):
+			foundRetainedCold = true
+		case prunedColdAt.Format(time.RFC3339Nano):
+			t.Fatalf("expected off-boundary cold sample to be pruned after throttle expiry, got %+v", samples)
+		}
+	}
+	if !foundRetainedCold {
+		t.Fatalf("expected five-minute boundary cold sample to survive cleanup, got %+v", samples)
 	}
 }
 

@@ -112,15 +112,21 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			freshState := trafficStateWithFreshness(inboundState, now)
 			inboundSummary.Up = inboundState.TotalUp
 			inboundSummary.Down = inboundState.TotalDown
+			inboundSummary.DeltaUp = freshState.DeltaUp
+			inboundSummary.DeltaDown = freshState.DeltaDown
 			inboundSummary.RateUp = freshState.RateUp
 			inboundSummary.RateDown = freshState.RateDown
+			inboundSummary.WindowSeconds = freshState.WindowSeconds
 			inboundSummary.Status = stateStatus(freshState)
 			inboundSummary.Message = freshState.Message
 			inboundSummary.Engine = inboundState.Engine
 			inboundSummary.LastSampledAt = inboundState.LastSeenAt
+			inboundSummary.Source = "inbound"
 		}
 		aggregatedClientState := false
 		clientAggregateStatus := ""
+		clientTotalUp := int64(0)
+		clientTotalDown := int64(0)
 		for _, client := range inbound.Clients {
 			clientSummary := clientTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 			clientKey := clientTrafficStatsKey(client)
@@ -129,12 +135,18 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 				freshState := trafficStateWithFreshness(state, now)
 				clientSummary.Up = state.TotalUp
 				clientSummary.Down = state.TotalDown
+				clientSummary.Total = state.TotalUp + state.TotalDown
+				clientSummary.DeltaUp = freshState.DeltaUp
+				clientSummary.DeltaDown = freshState.DeltaDown
 				clientSummary.RateUp = freshState.RateUp
 				clientSummary.RateDown = freshState.RateDown
+				clientSummary.RateTotal = freshState.RateUp + freshState.RateDown
+				clientSummary.WindowSeconds = freshState.WindowSeconds
 				clientSummary.Status = stateStatus(freshState)
 				clientSummary.Message = freshState.Message
 				clientSummary.Engine = state.Engine
 				clientSummary.LastSampledAt = state.LastSeenAt
+				clientSummary.Source = "client"
 				if state.Engine == "xray" {
 					clientSummary.XrayUp = state.LastRawUp
 					clientSummary.XrayDown = state.LastRawDown
@@ -142,19 +154,27 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			} else if client.Up > 0 || client.Down > 0 {
 				clientSummary.Up = client.Up
 				clientSummary.Down = client.Down
+				clientSummary.Total = client.Up + client.Down
 				clientSummary.Status = "cumulative_only"
+				clientSummary.Source = "client_legacy"
 			}
 			if client.Enabled {
 				clientAggregateStatus = combineTrafficStatuses(clientAggregateStatus, clientSummary.Status)
 			}
 			if !hasInboundState {
-				inboundSummary.Up += clientSummary.Up
-				inboundSummary.Down += clientSummary.Down
-				inboundSummary.RateUp += clientSummary.RateUp
-				inboundSummary.RateDown += clientSummary.RateDown
+				clientTotalUp += clientSummary.Up
+				clientTotalDown += clientSummary.Down
 				inboundSummary.Engine = expectedEngine
 			}
 			byClient[client.ID] = clientSummary
+		}
+		if !hasInboundState {
+			inboundSummary.Up = clientTotalUp
+			inboundSummary.Down = clientTotalDown
+			if aggregatedClientState || inboundSummary.Up > 0 || inboundSummary.Down > 0 {
+				inboundSummary.Source = "fallback_client_sum"
+				inboundSummary.Message = "inbound traffic is aggregated from client cumulative counters"
+			}
 		}
 		if clientAggregateStatus != "" && !hasInboundState {
 			inboundSummary.Status = clientAggregateStatus
@@ -162,6 +182,7 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			inboundSummary.Status = combineTrafficStatuses(inboundSummary.Status, clientAggregateStatus)
 		}
 		inboundSummary.Total = inboundSummary.Up + inboundSummary.Down
+		inboundSummary.RateTotal = inboundSummary.RateUp + inboundSummary.RateDown
 		if !hasInboundState && !aggregatedClientState && inboundSummary.Status == "waiting" && inboundSummary.Total > 0 {
 			inboundSummary.Status = "cumulative_only"
 		}
@@ -190,8 +211,11 @@ func trafficStateWithFreshness(state db.TrafficState, now time.Time) db.TrafficS
 		return state
 	}
 	state.Status = "stale"
+	state.DeltaUp = 0
+	state.DeltaDown = 0
 	state.RateUp = 0
 	state.RateDown = 0
+	state.WindowSeconds = 0
 	if strings.TrimSpace(state.Message) == "" {
 		state.Message = "traffic sample is stale"
 	}
@@ -589,21 +613,22 @@ func buildStatsResponse(ctx context.Context, store Store, statsClient xray.Stats
 		for _, c := range in.Clients {
 			clientTraffic := trafficByClient[c.ID]
 			info := map[string]interface{}{
-				"id":                   c.ID,
-				"inbound_id":           c.InboundID,
-				"protocol":             in.Protocol,
-				"email":                c.Email,
-				"enabled":              c.Enabled,
-				"up":                   clientTraffic.Up,
-				"down":                 clientTraffic.Down,
-				"xray_up":              clientTraffic.XrayUp,
-				"xray_down":            clientTraffic.XrayDown,
-				"traffic_limit":        c.TrafficLimit,
-				"expiry_at":            c.ExpiryAt,
-				"traffic_stats_source": clientTraffic.Source,
-				"rate_up":              clientTraffic.RateUp,
-				"rate_down":            clientTraffic.RateDown,
-				"traffic_status":       clientTraffic.Status,
+				"id":                    c.ID,
+				"inbound_id":            c.InboundID,
+				"protocol":              in.Protocol,
+				"email":                 c.Email,
+				"enabled":               c.Enabled,
+				"up":                    clientTraffic.Up,
+				"down":                  clientTraffic.Down,
+				"xray_up":               clientTraffic.XrayUp,
+				"xray_down":             clientTraffic.XrayDown,
+				"traffic_limit":         c.TrafficLimit,
+				"expiry_at":             c.ExpiryAt,
+				"traffic_stats_source":  "migate",
+				"realtime_stats_source": clientTraffic.Source,
+				"rate_up":               clientTraffic.RateUp,
+				"rate_down":             clientTraffic.RateDown,
+				"traffic_status":        clientTraffic.Status,
 			}
 			if clientTraffic.Note != "" {
 				info["traffic_stats_note"] = clientTraffic.Note

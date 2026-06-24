@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imzyb/MiGate/internal/xray"
+	"github.com/imzyb/MiGate/internal/trafficstats"
 )
 
 func TestGRPCStatsClientQueriesAndMarksSingboxEngine(t *testing.T) {
-	addr, closeServer := startFakeSingboxStatsService(t, []xray.TrafficStat{
+	addr, closeServer := startFakeSingboxStatsService(t, []trafficstats.Stat{
 		{ScopeType: "client", ScopeKey: "c_1", Uplink: 10, Downlink: 20},
 		{ScopeType: "inbound", ScopeKey: "hy2-inbound-1", Uplink: 30, Downlink: 40},
 	})
@@ -29,7 +29,7 @@ func TestGRPCStatsClientQueriesAndMarksSingboxEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query stats: %v", err)
 	}
-	byScope := map[string]xray.TrafficStat{}
+	byScope := map[string]trafficstats.Stat{}
 	for _, stat := range stats {
 		byScope[stat.ScopeType+"/"+stat.ScopeKey] = stat
 	}
@@ -73,7 +73,7 @@ func TestUnavailableStatsClientReturnsConstructionError(t *testing.T) {
 	}
 }
 
-func startFakeSingboxStatsService(t *testing.T, stats []xray.TrafficStat) (string, func()) {
+func startFakeSingboxStatsService(t *testing.T, stats []trafficstats.Stat) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -127,7 +127,7 @@ func encodeGRPCFrameForTest(message []byte) []byte {
 	return frame
 }
 
-func encodeQueryStatsResponseForTest(stats []xray.TrafficStat) []byte {
+func encodeQueryStatsResponseForTest(stats []trafficstats.Stat) []byte {
 	var out []byte
 	for _, stat := range stats {
 		if stat.Uplink != 0 {

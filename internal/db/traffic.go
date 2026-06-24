@@ -124,15 +124,18 @@ func (s *Store) ApplyTrafficRawStats(ctx context.Context, stats []TrafficRawStat
 	seenAt := observedAt.UTC().Format(time.RFC3339Nano)
 	sampleBucketAt := trafficSampleBucket(observedAt).UTC().Format(time.RFC3339Nano)
 	upsertState, err := tx.PrepareContext(ctx, `
-INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, delta_up, delta_down, rate_up, rate_down, window_seconds, last_seen_at, status, message)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
   total_up=excluded.total_up,
   total_down=excluded.total_down,
   last_raw_up=excluded.last_raw_up,
   last_raw_down=excluded.last_raw_down,
+  delta_up=excluded.delta_up,
+  delta_down=excluded.delta_down,
   rate_up=excluded.rate_up,
   rate_down=excluded.rate_down,
+  window_seconds=excluded.window_seconds,
   last_seen_at=excluded.last_seen_at,
   status=excluded.status,
   message=excluded.message
@@ -142,13 +145,16 @@ ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
 	}
 	defer upsertState.Close()
 	insertSample, err := tx.PrepareContext(ctx, `
-INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, delta_up, delta_down, rate_up, rate_down, window_seconds, status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
   total_up=excluded.total_up,
   total_down=excluded.total_down,
+  delta_up=excluded.delta_up,
+  delta_down=excluded.delta_down,
   rate_up=excluded.rate_up,
   rate_down=excluded.rate_down,
+  window_seconds=excluded.window_seconds,
   status=excluded.status
 `)
 	if err != nil {
@@ -196,10 +202,11 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
 			rateUp = float64(deltaUp) / elapsed
 			rateDown = float64(deltaDown) / elapsed
 		}
-		if _, err := upsertState.ExecContext(ctx, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, rateUp, rateDown, seenAt, raw.Status, strings.TrimSpace(raw.Message)); err != nil {
+		windowSeconds := elapsed
+		if _, err := upsertState.ExecContext(ctx, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, deltaUp, deltaDown, rateUp, rateDown, windowSeconds, seenAt, raw.Status, strings.TrimSpace(raw.Message)); err != nil {
 			return err
 		}
-		if _, err := insertSample.ExecContext(ctx, sampleBucketAt, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, rateUp, rateDown, raw.Status); err != nil {
+		if _, err := insertSample.ExecContext(ctx, sampleBucketAt, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, deltaUp, deltaDown, rateUp, rateDown, windowSeconds, raw.Status); err != nil {
 			return err
 		}
 		current.Engine = raw.Engine
@@ -209,8 +216,11 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
 		current.TotalDown = totalDown
 		current.LastRawUp = raw.RawUp
 		current.LastRawDown = raw.RawDown
+		current.DeltaUp = deltaUp
+		current.DeltaDown = deltaDown
 		current.RateUp = rateUp
 		current.RateDown = rateDown
+		current.WindowSeconds = windowSeconds
 		current.LastSeenAt = seenAt
 		current.Status = raw.Status
 		current.Message = strings.TrimSpace(raw.Message)
@@ -287,7 +297,7 @@ func prefetchTrafficStates(ctx context.Context, tx *sql.Tx, stats []TrafficRawSt
 			args = append(args, parts[0], parts[1], parts[2])
 		}
 		rows, err := tx.QueryContext(ctx, `
-SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message
+SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, delta_up, delta_down, rate_up, rate_down, window_seconds, last_seen_at, status, message
 FROM traffic_states
 WHERE `+strings.Join(conditions, " OR "), args...)
 		if err != nil {
@@ -295,7 +305,7 @@ WHERE `+strings.Join(conditions, " OR "), args...)
 		}
 		for rows.Next() {
 			var state TrafficState
-			if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.RateUp, &state.RateDown, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
+			if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.DeltaUp, &state.DeltaDown, &state.RateUp, &state.RateDown, &state.WindowSeconds, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -368,7 +378,7 @@ WHERE c.stats_key IN (`+placeholders+`)`, args...)
 }
 
 const (
-	trafficSampleBucketSize       = time.Minute
+	trafficSampleBucketSize       = 5 * time.Second
 	trafficSamplesHotRetention    = 24 * time.Hour
 	trafficSamplesRetention       = 7 * 24 * time.Hour
 	trafficSamplesCleanupInterval = time.Hour
@@ -396,7 +406,10 @@ func (s *Store) cleanupTrafficSamples(ctx context.Context, tx *sql.Tx, observedA
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM traffic_samples
 WHERE sampled_at < ?
-   OR (sampled_at < ? AND CAST(strftime('%M', sampled_at) AS INTEGER) % 5 <> 0)
+   OR (sampled_at < ? AND (
+     CAST(strftime('%M', sampled_at) AS INTEGER) % 5 <> 0
+     OR CAST(strftime('%S', sampled_at) AS INTEGER) <> 0
+   ))
 `, cutoff, hotCutoff); err != nil {
 		s.trafficCleanupMu.Lock()
 		if s.nextTrafficSamplesCleanup.Equal(nextCleanup) {
@@ -442,7 +455,7 @@ func (s *Store) MarkTrafficUnavailable(ctx context.Context, engine, status, mess
 	if observedAt.IsZero() {
 		observedAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE traffic_states SET rate_up=0, rate_down=0, status=?, message=?, last_seen_at=? WHERE engine=?`,
+	_, err := s.db.ExecContext(ctx, `UPDATE traffic_states SET delta_up=0, delta_down=0, rate_up=0, rate_down=0, window_seconds=0, status=?, message=?, last_seen_at=? WHERE engine=?`,
 		status, strings.TrimSpace(message), observedAt.UTC().Format(time.RFC3339Nano), engine)
 	return err
 }
@@ -467,13 +480,16 @@ func (s *Store) MarkTrafficScopeStatus(ctx context.Context, stats []TrafficStatu
 	seenAt := observedAt.UTC().Format(time.RFC3339Nano)
 	sampleBucketAt := trafficSampleBucket(observedAt).UTC().Format(time.RFC3339Nano)
 	insertSample, err := tx.PrepareContext(ctx, `
-INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status)
-VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)
+INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, delta_up, delta_down, rate_up, rate_down, window_seconds, status)
+VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, ?)
 ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
   total_up=excluded.total_up,
   total_down=excluded.total_down,
+  delta_up=0,
+  delta_down=0,
   rate_up=0,
   rate_down=0,
+  window_seconds=0,
   status=excluded.status
 `)
 	if err != nil {
@@ -483,11 +499,14 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
 	for _, marker := range normalizedStats {
 		current := currentStates[trafficStateKey(marker.Engine, marker.ScopeType, marker.ScopeKey)]
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
-VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?, ?)
+INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, delta_up, delta_down, rate_up, rate_down, window_seconds, last_seen_at, status, message)
+VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?, ?)
 ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
+  delta_up=0,
+  delta_down=0,
   rate_up=0,
   rate_down=0,
+  window_seconds=0,
   last_seen_at=excluded.last_seen_at,
   status=excluded.status,
   message=excluded.message
@@ -592,15 +611,18 @@ func (s *Store) ResetClientTrafficBaseline(ctx context.Context, id int64, baseli
 			message = "waiting for first sample"
 		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message)
-VALUES (?, 'client', ?, 0, 0, ?, ?, 0, 0, ?, ?, ?)
+INSERT INTO traffic_states (engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, delta_up, delta_down, rate_up, rate_down, window_seconds, last_seen_at, status, message)
+VALUES (?, 'client', ?, 0, 0, ?, ?, 0, 0, 0, 0, 0, ?, ?, ?)
 ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
   total_up=0,
   total_down=0,
   last_raw_up=excluded.last_raw_up,
   last_raw_down=excluded.last_raw_down,
+  delta_up=0,
+  delta_down=0,
   rate_up=0,
   rate_down=0,
+  window_seconds=0,
   last_seen_at=excluded.last_seen_at,
   status=excluded.status,
   message=excluded.message
@@ -620,7 +642,7 @@ ON CONFLICT(engine, scope_type, scope_key) DO UPDATE SET
 }
 
 func (s *Store) ListTrafficStates(ctx context.Context) ([]TrafficState, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message FROM traffic_states ORDER BY engine, scope_type, scope_key`)
+	rows, err := s.db.QueryContext(ctx, `SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, delta_up, delta_down, rate_up, rate_down, window_seconds, last_seen_at, status, message FROM traffic_states ORDER BY engine, scope_type, scope_key`)
 	if err != nil {
 		return nil, err
 	}
@@ -628,7 +650,7 @@ func (s *Store) ListTrafficStates(ctx context.Context) ([]TrafficState, error) {
 	states := []TrafficState{}
 	for rows.Next() {
 		var state TrafficState
-		if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.RateUp, &state.RateDown, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
+		if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.DeltaUp, &state.DeltaDown, &state.RateUp, &state.RateDown, &state.WindowSeconds, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
 			return nil, err
 		}
 		states = append(states, state)
@@ -646,7 +668,7 @@ func (s *Store) ListTrafficSamples(ctx context.Context, scopeType string, since 
 	}
 	sinceText := since.UTC().Format(time.RFC3339Nano)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status
+SELECT sampled_at, engine, scope_type, scope_key, total_up, total_down, delta_up, delta_down, rate_up, rate_down, window_seconds, status
 FROM traffic_samples
 WHERE scope_type = ? AND sampled_at >= ?
 ORDER BY sampled_at ASC, engine ASC, scope_key ASC
@@ -658,7 +680,7 @@ LIMIT ?`, scopeType, sinceText, limit)
 	samples := []TrafficSample{}
 	for rows.Next() {
 		var sample TrafficSample
-		if err := rows.Scan(&sample.SampledAt, &sample.Engine, &sample.ScopeType, &sample.ScopeKey, &sample.TotalUp, &sample.TotalDown, &sample.RateUp, &sample.RateDown, &sample.Status); err != nil {
+		if err := rows.Scan(&sample.SampledAt, &sample.Engine, &sample.ScopeType, &sample.ScopeKey, &sample.TotalUp, &sample.TotalDown, &sample.DeltaUp, &sample.DeltaDown, &sample.RateUp, &sample.RateDown, &sample.WindowSeconds, &sample.Status); err != nil {
 			return nil, err
 		}
 		samples = append(samples, sample)
@@ -715,7 +737,7 @@ func (s *Store) getClientTrafficUsageFromRow(ctx context.Context, row *sql.Row) 
 
 func (s *Store) trafficStatesForClient(ctx context.Context, statsKey string) ([]TrafficState, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, rate_up, rate_down, last_seen_at, status, message
+SELECT engine, scope_type, scope_key, total_up, total_down, last_raw_up, last_raw_down, delta_up, delta_down, rate_up, rate_down, window_seconds, last_seen_at, status, message
 FROM traffic_states
 WHERE scope_type='client' AND scope_key=?
 ORDER BY engine ASC`, statsKey)
@@ -726,7 +748,7 @@ ORDER BY engine ASC`, statsKey)
 	states := []TrafficState{}
 	for rows.Next() {
 		var state TrafficState
-		if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.RateUp, &state.RateDown, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
+		if err := rows.Scan(&state.Engine, &state.ScopeType, &state.ScopeKey, &state.TotalUp, &state.TotalDown, &state.LastRawUp, &state.LastRawDown, &state.DeltaUp, &state.DeltaDown, &state.RateUp, &state.RateDown, &state.WindowSeconds, &state.LastSeenAt, &state.Status, &state.Message); err != nil {
 			return nil, err
 		}
 		states = append(states, state)

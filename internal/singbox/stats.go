@@ -4,11 +4,12 @@ import (
 	"context"
 	"strings"
 
+	"github.com/imzyb/MiGate/internal/trafficstats"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
 type StatsClient interface {
-	QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error)
+	QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error)
 	Close() error
 }
 
@@ -50,13 +51,13 @@ func NewGRPCStatsClient(ctx context.Context, server string) (*GRPCStatsClient, e
 	return &GRPCStatsClient{client: client}, nil
 }
 
-func (c *StubStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
-	return []xray.TrafficStat{}, nil
+func (c *StubStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
+	return []trafficstats.Stat{}, nil
 }
 
 func (c *StubStatsClient) Close() error { return nil }
 
-func (c *UnavailableStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+func (c *UnavailableStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	if c.Err != nil {
 		return nil, c.Err
 	}
@@ -65,13 +66,13 @@ func (c *UnavailableStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.
 
 func (c *UnavailableStatsClient) Close() error { return nil }
 
-func (c *DisabledStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
-	return []xray.TrafficStat{}, nil
+func (c *DisabledStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
+	return []trafficstats.Stat{}, nil
 }
 
 func (c *DisabledStatsClient) Close() error { return nil }
 
-func (c *GRPCStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+func (c *GRPCStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	stats, err := c.client.QueryTrafficStats(ctx)
 	if err != nil {
 		return nil, err

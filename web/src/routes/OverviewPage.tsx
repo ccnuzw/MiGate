@@ -1,21 +1,22 @@
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
-import { useMemo } from 'react';
-import { getAPIErrorMessage } from '../api/client';
+import { useEffect, useMemo, useRef } from 'react';
+import { appPath, getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
-import type { DashboardSummary, TrafficSeriesPoint } from '../api/types';
+import { trafficV2StreamPath } from '../api/traffic';
+import type { DashboardSummary, TrafficV2Metric, TrafficV2Patch, TrafficV2Realtime, TrafficV2SeriesPoint, TrafficV2Snapshot } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
 import { formatBytes, formatDuration, formatPercent, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
-import { refreshQueries } from '../lib/queryInvalidation';
+import { invalidateTrafficV2Snapshot, refreshQueries } from '../lib/queryInvalidation';
 import { usePageVisible } from '../lib/visibility';
 
 export default function OverviewPage() {
   const visible = usePageVisible();
   const { text } = useI18n();
   const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
-  const trafficSummary = useQuery({ queryKey: ['traffic-summary'], queryFn: api.trafficSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
-  const trafficSeriesQuery = useQuery({ queryKey: ['traffic-series', 'client'], queryFn: () => api.trafficSeries({ scope_type: 'client' }), refetchInterval: visible ? 30000 : false, retry: false, staleTime: 20_000 });
+  const trafficSnapshot = useQuery({ queryKey: ['traffic-v2-snapshot'], queryFn: api.trafficV2Snapshot, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
+  const trafficSeriesQuery = useQuery({ queryKey: ['traffic-v2-series'], queryFn: () => api.trafficV2Series(), refetchInterval: visible ? 30000 : false, retry: false, staleTime: 20_000 });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false, staleTime: 5_000 });
   const [xray, singbox] = useQueries({
     queries: [
@@ -26,12 +27,15 @@ export default function OverviewPage() {
 
   const data = summary.data;
   const counts = data?.counts || emptyCounts;
-  const traffic = trafficSummary.data || emptyTraffic;
-  const trafficStatus = traffic.status;
+  const traffic = trafficSnapshot.data || emptyTrafficV2;
+  const totalCumulative = traffic.total.cumulative;
+  const totalRealtime = traffic.total.realtime;
+  useTrafficStream(visible);
+  const trafficStatus = traffic.coverage;
   const protocols = Object.entries(data?.protocols || {}).map(([name, value]) => ({ name, value }));
   const trafficSeries = trafficSeriesQuery.data?.series || [];
-  const trafficLoading = trafficSummary.isLoading && !trafficSummary.data;
-  const trafficUnavailable = trafficSummary.isError && !trafficSummary.data;
+  const trafficLoading = trafficSnapshot.isLoading && !trafficSnapshot.data;
+  const trafficUnavailable = trafficSnapshot.isError && !trafficSnapshot.data;
   const trafficHidden = trafficLoading || trafficUnavailable;
   const trafficPlaceholder = trafficLoading ? text('加载中') : text('不可用');
   const trafficPlaceholderSub = trafficLoading ? text('等待流量摘要') : text('查看告警');
@@ -44,12 +48,12 @@ export default function OverviewPage() {
       <PageTitle
         title={text('运行概览')}
         description={text('VPS 面板、核心服务和业务累计用量的摘要。')}
-        action={<button className="btn secondary" onClick={() => refreshOverview([summary, trafficSummary, trafficSeriesQuery, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
+        action={<button className="btn secondary" onClick={() => refreshOverview([summary, trafficSnapshot, trafficSeriesQuery, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
       />
       <OverviewAlerts
         errors={[
           summary.error ? `${text('概览摘要加载失败')}：${errorText(summary.error)}` : '',
-          trafficSummary.error ? `${text('流量摘要加载失败')}：${errorText(trafficSummary.error)}` : '',
+          trafficSnapshot.error ? `${text('流量摘要加载失败')}：${errorText(trafficSnapshot.error)}` : '',
           trafficSeriesQuery.error ? `${text('流量趋势加载失败')}：${errorText(trafficSeriesQuery.error)}` : '',
           resources.error ? `${text('资源加载失败')}：${errorText(resources.error)}` : '',
           xray.error ? `Xray ${text('状态加载失败')}：${errorText(xray.error)}` : '',
@@ -59,15 +63,16 @@ export default function OverviewPage() {
         ].filter(Boolean)}
       />
       <div className="metric-grid">
-        <Metric icon={Network} tone="teal" label={text('总流量')} value={trafficHidden ? trafficPlaceholder : formatBytes(traffic.total)} sub={trafficHidden ? trafficPlaceholderSub : `${formatBytes(traffic.total_up)} ↑ / ${formatBytes(traffic.total_down)} ↓`} />
+        <Metric icon={Network} tone="teal" label={text('总流量')} value={trafficHidden ? trafficPlaceholder : formatBytes(totalCumulative.total)} sub={trafficHidden ? trafficPlaceholderSub : `${formatBytes(totalCumulative.up)} ↑ / ${formatBytes(totalCumulative.down)} ↓`} title={trafficHint(traffic.observed_at, totalRealtime.window_seconds, totalCumulative.source, totalCumulative.status, totalCumulative.message, text)} />
         <Metric icon={Users} tone="blue" label={text('客户端')} value={String(counts.clients)} sub={`${counts.clients_active} ${text('活跃')} · ${counts.clients_expired} ${text('过期')} · ${counts.clients_limited} ${text('受限')}`} />
         <Metric icon={Shield} tone="emerald" label={text('入站')} value={String(counts.inbounds)} sub={`${counts.inbounds_enabled} ${text('已启用')}`} />
         <Metric
           icon={Activity}
           tone={trafficLoading ? 'slate' : trafficUnavailable ? 'rose' : trafficStatusTone(trafficStatus?.overall)}
-          label={text('当前速率')}
-          value={trafficHidden ? trafficPlaceholder : `${formatBytes(traffic.rate_total)}/s`}
-          sub={trafficHidden ? trafficPlaceholderSub : trafficRateSummary(traffic.rate_up, traffic.rate_down, trafficStatus?.overall, trafficStatus?.engines, text)}
+          label={text('总实时流量')}
+          value={trafficHidden ? trafficPlaceholder : realtimeTotalLabel(totalRealtime.rate_total, totalRealtime.status, text)}
+          sub={trafficHidden ? trafficPlaceholderSub : trafficRateSummary(totalRealtime.rate_up, totalRealtime.rate_down, totalRealtime.status || trafficStatus?.overall, trafficStatus?.engines, text)}
+          title={trafficHint(totalRealtime.observed_at || traffic.observed_at, totalRealtime.window_seconds, totalRealtime.source, totalRealtime.status, totalRealtime.message, text)}
         />
         <Metric icon={Network} tone="amber" label={text('出站')} value={String(counts.outbounds)} sub={`${counts.outbounds_enabled} ${text('已启用')}`} />
         <Metric icon={Activity} tone="slate" label={text('路由规则')} value={String(counts.routing_rules)} sub={`${counts.routing_enabled} ${text('已启用')}`} />
@@ -87,10 +92,10 @@ export default function OverviewPage() {
             <h2 className="section-title">{text('累计流量趋势')}</h2>
             <div className="flex gap-2 text-xs text-panel-muted">
               <span className="inline-flex items-center gap-1">
-                <ArrowUp className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(traffic.total_up)}
+                <ArrowUp className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(totalCumulative.up)}
               </span>
               <span className="inline-flex items-center gap-1">
-                <ArrowDown className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(traffic.total_down)}
+                <ArrowDown className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(totalCumulative.down)}
               </span>
             </div>
           </div>
@@ -131,16 +136,123 @@ const emptyCounts: DashboardSummary['counts'] = {
   routing_enabled: 0,
 };
 
-const emptyTraffic = {
-  total_up: 0,
-  total_down: 0,
+const emptyTrafficMetric: TrafficV2Metric = {
+  up: 0,
+  down: 0,
   total: 0,
+  status: 'waiting',
+  source: 'migate',
+  message: '',
+};
+
+const emptyTrafficRealtime: TrafficV2Realtime = {
+  delta_up: 0,
+  delta_down: 0,
+  delta_total: 0,
   rate_up: 0,
   rate_down: 0,
   rate_total: 0,
-  status: { overall: 'waiting', engines: { xray: 'not_configured', singbox: 'not_configured' } },
-  generated_at: '',
+  observed_at: '',
+  window_seconds: 0,
+  status: 'waiting',
+  source: 'inbound',
+  message: '',
 };
+
+const emptyTrafficV2: TrafficV2Snapshot = {
+  generated_at: '',
+  observed_at: '',
+  window_seconds: 0,
+  total: { cumulative: emptyTrafficMetric, realtime: emptyTrafficRealtime },
+  inbounds: [],
+  clients: [],
+  coverage: { overall: 'waiting', engines: { xray: 'not_configured', singbox: 'not_configured' }, ok: 0, waiting: 0, stale: 0, unavailable: 0, unsupported: 0, partial: 0 },
+};
+
+export function useTrafficStream(enabled: boolean) {
+  const queryClient = useQueryClient();
+  const lastErrorInvalidateAt = useRef(0);
+  useEffect(() => {
+    if (!enabled || typeof EventSource === 'undefined') return;
+    const source = new EventSource(appPath(trafficV2StreamPath));
+    const handleSnapshot = (event: Event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent).data || '{}') as TrafficV2Snapshot;
+        if (payload.total && Array.isArray(payload.inbounds) && Array.isArray(payload.clients)) {
+          queryClient.setQueryData(['traffic-v2-snapshot'], payload);
+        }
+      } catch {
+        // REST polling remains the fallback if a streaming frame is malformed.
+      }
+    };
+    const handlePatch = (event: Event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent).data || '{}') as TrafficV2Patch;
+        queryClient.setQueryData(['traffic-v2-snapshot'], (current: TrafficV2Snapshot | undefined) => mergeTrafficV2Snapshot(current, payload));
+      } catch {
+        // REST polling remains the fallback if a streaming frame is malformed.
+      }
+    };
+    const handleStreamError = () => {
+      if (queryClient.isFetching({ queryKey: ['traffic-v2-snapshot'] }) > 0) return;
+      const now = Date.now();
+      if (now-lastErrorInvalidateAt.current < 5000) return;
+      lastErrorInvalidateAt.current = now;
+      invalidateTrafficV2Snapshot(queryClient);
+    };
+    const handleError = () => {
+      if (queryClient.isFetching({ queryKey: ['traffic-v2-snapshot'] }) > 0) return;
+      const now = Date.now();
+      if (now-lastErrorInvalidateAt.current < 5000) return;
+      lastErrorInvalidateAt.current = now;
+      invalidateTrafficV2Snapshot(queryClient);
+    };
+    source.addEventListener('snapshot', handleSnapshot);
+    source.addEventListener('patch', handlePatch);
+    source.addEventListener('delta', handlePatch);
+    source.addEventListener('stream-error', handleStreamError);
+    source.addEventListener('error', handleError);
+    return () => {
+      source.removeEventListener('snapshot', handleSnapshot);
+      source.removeEventListener('patch', handlePatch);
+      source.removeEventListener('delta', handlePatch);
+      source.removeEventListener('stream-error', handleStreamError);
+      source.removeEventListener('error', handleError);
+      source.close();
+    };
+  }, [enabled, queryClient]);
+}
+
+export function mergeTrafficV2Snapshot(current: TrafficV2Snapshot | undefined, patch: TrafficV2Patch): TrafficV2Snapshot {
+  const base = current || emptyTrafficV2;
+  return {
+    generated_at: patch.generated_at ?? base.generated_at,
+    observed_at: patch.observed_at ?? base.observed_at,
+    window_seconds: patch.window_seconds ?? base.window_seconds,
+    total: patch.total || base.total,
+    inbounds: mergeTrafficV2ById(base.inbounds, patch.inbounds, patch.removed_inbound_ids),
+    clients: mergeTrafficV2ById(base.clients, patch.clients, patch.removed_client_ids),
+    coverage: patch.coverage || base.coverage,
+  };
+}
+
+function mergeTrafficV2ById<T extends { id: number }>(current: T[], updates?: T[], removedIDs?: number[]) {
+  if ((!updates || updates.length === 0) && (!removedIDs || removedIDs.length === 0)) return current;
+  const nextUpdates = updates || [];
+  const removed = new Set(removedIDs || []);
+  const byID = new Map(current.filter((item) => !removed.has(item.id)).map((item) => [item.id, item]));
+  for (const update of nextUpdates) {
+    byID.set(update.id, update);
+  }
+  const merged = current.filter((item) => !removed.has(item.id)).map((item) => byID.get(item.id) || item);
+  const seen = new Set(merged.map((item) => item.id));
+  for (const update of nextUpdates) {
+    if (!seen.has(update.id)) {
+      merged.push(update);
+    }
+  }
+  return merged;
+}
 
 function OverviewAlerts({ errors }: { errors: string[] }) {
   if (errors.length === 0) return null;
@@ -156,7 +268,7 @@ function OverviewAlerts({ errors }: { errors: string[] }) {
   );
 }
 
-function TrafficChart({ data, loading }: { data: TrafficSeriesPoint[]; loading?: boolean }) {
+function TrafficChart({ data, loading }: { data: TrafficV2SeriesPoint[]; loading?: boolean }) {
   const { text } = useI18n();
   const chart = useMemo(() => buildChart(data), [data]);
   if (loading) {
@@ -197,7 +309,7 @@ function TrafficChart({ data, loading }: { data: TrafficSeriesPoint[]; loading?:
   );
 }
 
-function buildChart(data: TrafficSeriesPoint[]) {
+function buildChart(data: TrafficV2SeriesPoint[]) {
   const width = 640;
   const bottom = 205;
   if (data.length === 0) {
@@ -207,8 +319,8 @@ function buildChart(data: TrafficSeriesPoint[]) {
   const xFor = (index: number) => data.length === 1 ? width / 2 : (index / (data.length - 1)) * width;
   const yFor = (value: number) => bottom - (Number(value || 0) / max) * 180;
   const points = data.map((item, index) => ({
-    name: item.name,
-    time: item.time || item.name,
+    name: item.time,
+    time: item.time,
     up: Number(item.up || 0),
     down: Number(item.down || 0),
     x: xFor(index),
@@ -292,12 +404,30 @@ export function engineStatusSummary(engines: Record<string, string> | undefined,
 }
 
 export function trafficRateSummary(rateUp: number, rateDown: number, status: string | undefined, engines: Record<string, string> | undefined, text: (value: string) => string) {
-  const rate = `${formatBytes(rateUp)}/s ↑ / ${formatBytes(rateDown)}/s ↓`;
   const statusLabel = trafficStatusLabel(status, text);
   if (!status || status === 'ok') {
-    return `${rate} · ${statusLabel}`;
+    return `${realtimeRateLabel(rateUp, rateDown)} · ${statusLabel}`;
   }
-  return `${rate} · ${statusLabel} · ${engineStatusSummary(engines, text)}`;
+  return `${statusLabel} · ${engineStatusSummary(engines, text)}`;
+}
+
+export function realtimeRateLabel(rateUp: unknown, rateDown: unknown) {
+  return `${formatBytes(Number(rateUp || 0))}/s ↑ / ${formatBytes(Number(rateDown || 0))}/s ↓`;
+}
+
+export function realtimeTotalLabel(rateTotal: unknown, status: string | undefined, text: (value: string) => string) {
+  if (!status || status === 'ok') return `${formatBytes(Number(rateTotal || 0))}/s`;
+  return trafficStatusLabel(status, text);
+}
+
+export function trafficHint(sampledAt: string | undefined, windowSeconds: number | undefined, source: string | undefined, status: string | undefined, message: string | undefined, text: (value: string) => string) {
+  const parts = [];
+  if (sampledAt) parts.push(`${text('采样时间')}: ${sampledAt}`);
+  if (windowSeconds) parts.push(`${text('采样窗口')}: ${Number(windowSeconds).toFixed(1)}s`);
+  if (source) parts.push(`${text('统计源')}: ${source}`);
+  if (status) parts.push(`${text('状态')}: ${trafficStatusLabel(status, text)}`);
+  if (message) parts.push(`${text('说明')}: ${message}`);
+  return parts.join(' · ') || undefined;
 }
 
 function refreshOverview(queries: Array<{ refetch: () => unknown }>) {
@@ -318,9 +448,9 @@ export function PageTitle({ title, description, action }: { title: string; descr
 
 type MetricTone = 'teal' | 'blue' | 'emerald' | 'violet' | 'amber' | 'rose' | 'slate';
 
-function Metric({ icon: Icon, tone, label, value, sub }: { icon: React.ElementType; tone: MetricTone; label: string; value: string; sub?: string }) {
+function Metric({ icon: Icon, tone, label, value, sub, title }: { icon: React.ElementType; tone: MetricTone; label: string; value: string; sub?: string; title?: string }) {
   return (
-    <Card className={`metric-card metric-${tone}`}>
+    <Card className={`metric-card metric-${tone}`} title={title}>
       <div className="metric-icon">
         <Icon className="h-5 w-5" />
       </div>

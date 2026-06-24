@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  invalidateTrafficV2Series,
+  invalidateTrafficV2Snapshot,
   refreshQueries,
   refreshQuery,
   refreshCertificateOperationDependencies,
@@ -17,14 +19,11 @@ describe('query invalidation helpers', () => {
     refreshTopologyDependencies(queryClient as never);
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['inbounds'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['inbounds', 'traffic'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['outbounds'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['routing-rules'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['dashboard-summary'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-summary'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-inbounds'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-clients'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-series'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
   });
 
   it('centralizes explicit query refresh calls', () => {
@@ -36,6 +35,16 @@ describe('query invalidation helpers', () => {
 
     expect(first.refetch).toHaveBeenCalledTimes(2);
     expect(second.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('centralizes traffic v2 cache invalidation helpers', () => {
+    const queryClient = { invalidateQueries: vi.fn() };
+
+    invalidateTrafficV2Snapshot(queryClient as never);
+    invalidateTrafficV2Series(queryClient as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
   });
 
   it('centralizes settings page invalidation groups', () => {

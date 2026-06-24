@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 )
+
+const trafficStreamInterval = 5 * time.Second
 
 func trafficSummaryHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -24,31 +27,7 @@ func trafficSummaryHandler(store Store, cache *trafficViewCache) http.HandlerFun
 			writeTrafficViewError(w, err)
 			return
 		}
-		var totalUp int64
-		var totalDown int64
-		var rateUp float64
-		var rateDown float64
-		for _, inbound := range view.inbounds {
-			traffic := view.trafficByInbound[inbound.ID]
-			totalUp += traffic.Up
-			totalDown += traffic.Down
-			rateUp += traffic.RateUp
-			rateDown += traffic.RateDown
-		}
-		generatedAt := time.Now().UTC().Format(time.RFC3339)
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"total_up":        totalUp,
-			"total_down":      totalDown,
-			"total":           totalUp + totalDown,
-			"rate_up":         rateUp,
-			"rate_down":       rateDown,
-			"rate_total":      rateUp + rateDown,
-			"status":          buildTrafficCoverage(view.trafficByInbound),
-			"engine":          trafficViewEngine(view.trafficByInbound),
-			"source":          "migate",
-			"last_sampled_at": lastTrafficSampledAt(view.trafficByInbound, view.trafficByClient),
-			"generated_at":    generatedAt,
-		})
+		writeJSON(w, http.StatusOK, buildTrafficSummaryPayload(view))
 	}
 }
 
@@ -63,27 +42,7 @@ func trafficInboundsHandler(store Store, cache *trafficViewCache) http.HandlerFu
 			writeTrafficViewError(w, err)
 			return
 		}
-		items := make([]map[string]interface{}, 0, len(view.inbounds))
-		for _, inbound := range view.inbounds {
-			traffic := view.trafficByInbound[inbound.ID]
-			items = append(items, map[string]interface{}{
-				"id":              inbound.ID,
-				"remark":          inbound.Remark,
-				"protocol":        inbound.Protocol,
-				"port":            inbound.Port,
-				"total_up":        traffic.Up,
-				"total_down":      traffic.Down,
-				"total":           traffic.Total,
-				"rate_up":         traffic.RateUp,
-				"rate_down":       traffic.RateDown,
-				"status":          traffic.Status,
-				"message":         traffic.Message,
-				"engine":          traffic.Engine,
-				"source":          traffic.Source,
-				"last_sampled_at": traffic.LastSampledAt,
-			})
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": items})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": buildTrafficInboundPayloads(view)})
 	}
 }
 
@@ -98,32 +57,152 @@ func trafficClientsHandler(store Store, cache *trafficViewCache) http.HandlerFun
 			writeTrafficViewError(w, err)
 			return
 		}
-		items := []map[string]interface{}{}
-		for _, inbound := range view.inbounds {
-			for _, client := range inbound.Clients {
-				traffic := view.trafficByClient[client.ID]
-				items = append(items, map[string]interface{}{
-					"id":              client.ID,
-					"inbound_id":      inbound.ID,
-					"email":           client.Email,
-					"protocol":        inbound.Protocol,
-					"total_up":        traffic.Up,
-					"total_down":      traffic.Down,
-					"total":           traffic.Up + traffic.Down,
-					"rate_up":         traffic.RateUp,
-					"rate_down":       traffic.RateDown,
-					"traffic_limit":   client.TrafficLimit,
-					"expiry_at":       client.ExpiryAt,
-					"status":          traffic.Status,
-					"message":         traffic.Message,
-					"engine":          traffic.Engine,
-					"source":          traffic.Source,
-					"last_sampled_at": traffic.LastSampledAt,
-				})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"clients": buildTrafficClientPayloads(view)})
+	}
+}
+
+func trafficStreamHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeJSONError(w, http.StatusInternalServerError, "streaming_unsupported")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		send := func() bool {
+			payload, err := buildTrafficSnapshot(r.Context(), store, cache)
+			if err != nil {
+				encoded, _ := json.Marshal(map[string]interface{}{"error": err.Error()})
+				_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", encoded)
+				flusher.Flush()
+				return true
+			}
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				return false
+			}
+			_, _ = fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", encoded)
+			flusher.Flush()
+			return true
+		}
+		if !send() {
+			return
+		}
+		ticker := time.NewTicker(trafficStreamInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if !send() {
+					return
+				}
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"clients": items})
 	}
+}
+
+func buildTrafficSnapshot(ctx context.Context, store Store, cache *trafficViewCache) (map[string]interface{}, error) {
+	view, err := cache.get(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	summary := buildTrafficSummaryPayload(view)
+	inbounds := buildTrafficInboundPayloads(view)
+	clients := buildTrafficClientPayloads(view)
+	return map[string]interface{}{
+		"summary":      summary,
+		"inbounds":     inbounds,
+		"clients":      clients,
+		"generated_at": summary["generated_at"],
+	}, nil
+}
+
+func buildTrafficSummaryPayload(view trafficView) map[string]interface{} {
+	metrics := buildTrafficMetricSet(view)
+	lastSampledAt := metrics.TotalRealtime.ObservedAt
+	generatedAt := time.Now().UTC().Format(time.RFC3339)
+	coverage := buildTrafficCoverage(view.trafficByInbound)
+	totalCumulative := cumulativeMetricPayload(metrics.TotalCumulative)
+	totalRealtime := withTrafficCoverage(metrics.TotalRealtime, coverage)
+	return map[string]interface{}{
+		"total_up": metrics.TotalCumulative.Up, "total_down": metrics.TotalCumulative.Down, "total": metrics.TotalCumulative.Total,
+		"rate_up": metrics.TotalRealtime.RateUp, "rate_down": metrics.TotalRealtime.RateDown, "rate_total": metrics.TotalRealtime.RateTotal,
+		"delta_up": metrics.TotalRealtime.DeltaUp, "delta_down": metrics.TotalRealtime.DeltaDown, "delta_total": metrics.TotalRealtime.DeltaTotal,
+		"window_seconds": metrics.TotalRealtime.WindowSeconds, "observed_at": lastSampledAt,
+		"total_traffic":          totalCumulative,
+		"realtime_traffic":       totalRealtime,
+		"total_cumulative":       totalCumulative,
+		"total_realtime":         metrics.TotalRealtime.RateTotal,
+		"total_realtime_traffic": totalRealtime,
+		"total_realtime_up":      metrics.TotalRealtime.RateUp, "total_realtime_down": metrics.TotalRealtime.RateDown, "total_realtime_rate": metrics.TotalRealtime.RateTotal,
+		"status": coverage,
+		"engine": trafficViewEngine(view.trafficByInbound),
+		"source": "migate", "last_sampled_at": lastSampledAt, "generated_at": generatedAt,
+	}
+}
+
+func buildTrafficInboundPayloads(view trafficView) []map[string]interface{} {
+	metrics := buildTrafficMetricSet(view)
+	items := make([]map[string]interface{}, 0, len(view.inbounds))
+	for _, inbound := range view.inbounds {
+		traffic := view.trafficByInbound[inbound.ID]
+		cumulative := cumulativeMetricPayload(metrics.InboundCumulative[inbound.ID])
+		realtime := realtimeMetricPayload(metrics.InboundRealtime[inbound.ID])
+		items = append(items, map[string]interface{}{
+			"id": inbound.ID, "remark": inbound.Remark, "protocol": inbound.Protocol, "port": inbound.Port,
+			"total_up": traffic.Up, "total_down": traffic.Down, "total": traffic.Total,
+			"rate_up": traffic.RateUp, "rate_down": traffic.RateDown, "rate_total": traffic.RateTotal,
+			"delta_up": traffic.DeltaUp, "delta_down": traffic.DeltaDown, "delta_total": traffic.DeltaUp + traffic.DeltaDown,
+			"window_seconds": traffic.WindowSeconds, "observed_at": traffic.LastSampledAt,
+			"cumulative":         cumulative,
+			"realtime":           realtime,
+			"inbound_cumulative": cumulative,
+			"inbound_realtime":   realtime,
+			"status":             traffic.Status, "message": traffic.Message, "engine": traffic.Engine, "source": traffic.Source, "last_sampled_at": traffic.LastSampledAt,
+		})
+	}
+	return items
+}
+
+func buildTrafficClientPayloads(view trafficView) []map[string]interface{} {
+	metrics := buildTrafficMetricSet(view)
+	items := []map[string]interface{}{}
+	for _, inbound := range view.inbounds {
+		for _, client := range inbound.Clients {
+			traffic := view.trafficByClient[client.ID]
+			cumulative := cumulativeMetricPayload(metrics.ClientCumulative[client.ID])
+			realtime := realtimeMetricPayload(metrics.ClientRealtime[client.ID])
+			items = append(items, map[string]interface{}{
+				"id": client.ID, "inbound_id": inbound.ID, "email": client.Email, "protocol": inbound.Protocol,
+				"total_up": traffic.Up, "total_down": traffic.Down, "total": traffic.Up + traffic.Down,
+				"rate_up": traffic.RateUp, "rate_down": traffic.RateDown, "rate_total": traffic.RateTotal,
+				"delta_up": traffic.DeltaUp, "delta_down": traffic.DeltaDown, "delta_total": traffic.DeltaUp + traffic.DeltaDown,
+				"window_seconds": traffic.WindowSeconds, "observed_at": traffic.LastSampledAt,
+				"cumulative":        cumulative,
+				"realtime":          realtime,
+				"client_cumulative": cumulative,
+				"client_realtime":   realtime,
+				"traffic_limit":     client.TrafficLimit, "expiry_at": client.ExpiryAt,
+				"status": traffic.Status, "message": traffic.Message, "engine": traffic.Engine, "source": traffic.Source, "last_sampled_at": traffic.LastSampledAt,
+			})
+		}
+	}
+	return items
+}
+
+func withTrafficCoverage(realtime TrafficRealtimeMetric, coverage map[string]interface{}) map[string]interface{} {
+	payload := realtimeMetricPayload(realtime)
+	payload["coverage"] = coverage
+	return payload
 }
 
 func trafficViewEngine(byInbound map[int64]inboundTrafficSummary) string {

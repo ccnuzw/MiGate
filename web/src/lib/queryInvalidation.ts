@@ -6,14 +6,11 @@ type RefreshableQuery = {
 
 export function refreshTopologyDependencies(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['inbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['inbounds', 'traffic'] });
   queryClient.invalidateQueries({ queryKey: ['outbounds'] });
   queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
   queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
-  queryClient.invalidateQueries({ queryKey: ['traffic-summary'] });
-  queryClient.invalidateQueries({ queryKey: ['traffic-inbounds'] });
-  queryClient.invalidateQueries({ queryKey: ['traffic-clients'] });
-  queryClient.invalidateQueries({ queryKey: ['traffic-series'] });
+  invalidateTrafficV2Snapshot(queryClient);
+  invalidateTrafficV2Series(queryClient);
 }
 
 export function refreshOutboundDependencies(queryClient: QueryClient) {
@@ -47,6 +44,14 @@ export function refreshSessionDependencies(queryClient: QueryClient) {
 
 export function refreshSessionState(queryClient: QueryClient) {
   invalidateQueryKeys(queryClient, [['session']]);
+}
+
+export function invalidateTrafficV2Snapshot(queryClient: QueryClient) {
+  queryClient.invalidateQueries({ queryKey: ['traffic-v2-snapshot'] });
+}
+
+export function invalidateTrafficV2Series(queryClient: QueryClient) {
+  queryClient.invalidateQueries({ queryKey: ['traffic-v2-series'] });
 }
 
 export function refetchTopologyDependencies(queryClient: QueryClient) {

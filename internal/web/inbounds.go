@@ -10,6 +10,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/singbox"
+	"github.com/imzyb/MiGate/internal/trafficstats"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -160,33 +161,48 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 		inbounds = loaded
 	}
 	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), store, inbounds)
+	trafficView := trafficView{inbounds: inbounds, trafficByInbound: trafficByInbound, trafficByClient: trafficByClient}
+	trafficMetrics := buildTrafficMetricSet(trafficView)
 	if refreshTraffic {
 		views := make([]inboundTrafficView, 0, len(inbounds))
 		for _, inbound := range inbounds {
 			summary := trafficByInbound[inbound.ID]
+			cumulative := cumulativeMetricPayload(trafficMetrics.InboundCumulative[inbound.ID])
+			realtime := realtimeMetricPayload(trafficMetrics.InboundRealtime[inbound.ID])
 			view := inboundTrafficView{
-				ID:             inbound.ID,
-				UUID:           inbound.UUID,
-				Remark:         inbound.Remark,
-				Protocol:       inbound.Protocol,
-				Port:           inbound.Port,
-				Network:        inbound.Network,
-				Security:       inbound.Security,
-				Enabled:        inbound.Enabled,
-				Clients:        inbound.Clients,
-				TrafficUp:      summary.Up,
-				TrafficDown:    summary.Down,
-				TrafficTotal:   summary.Total,
-				RateUp:         summary.RateUp,
-				RateDown:       summary.RateDown,
-				TrafficStatus:  summary.Status,
-				TrafficMessage: summary.Message,
-				TrafficSource:  summary.Source,
-				ClientTraffic:  map[int64]clientTrafficSummary{},
+				ID:                inbound.ID,
+				UUID:              inbound.UUID,
+				Remark:            inbound.Remark,
+				Protocol:          inbound.Protocol,
+				Port:              inbound.Port,
+				Network:           inbound.Network,
+				Security:          inbound.Security,
+				Enabled:           inbound.Enabled,
+				Clients:           inbound.Clients,
+				TrafficUp:         summary.Up,
+				TrafficDown:       summary.Down,
+				TrafficTotal:      summary.Total,
+				RateUp:            summary.RateUp,
+				RateDown:          summary.RateDown,
+				RateTotal:         summary.RateTotal,
+				DeltaUp:           summary.DeltaUp,
+				DeltaDown:         summary.DeltaDown,
+				DeltaTotal:        summary.DeltaUp + summary.DeltaDown,
+				WindowSeconds:     summary.WindowSeconds,
+				ObservedAt:        summary.LastSampledAt,
+				TrafficStatus:     summary.Status,
+				TrafficMessage:    summary.Message,
+				TrafficSource:     "migate",
+				RealtimeSource:    summary.Source,
+				ClientTraffic:     map[int64]clientTrafficSummary{},
+				Cumulative:        cumulative,
+				Realtime:          realtime,
+				InboundCumulative: cumulative,
+				InboundRealtime:   realtime,
 			}
 			for _, client := range inbound.Clients {
 				if clientTraffic, ok := trafficByClient[client.ID]; ok {
-					view.ClientTraffic[client.ID] = clientTraffic
+					view.ClientTraffic[client.ID] = enrichClientTrafficSummary(clientTraffic, trafficMetrics.ClientCumulative[client.ID], trafficMetrics.ClientRealtime[client.ID])
 				}
 			}
 			views = append(views, view)
@@ -197,26 +213,50 @@ func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClie
 	views := make([]inboundView, 0, len(inbounds))
 	for _, inbound := range inbounds {
 		summary := trafficByInbound[inbound.ID]
+		cumulative := cumulativeMetricPayload(trafficMetrics.InboundCumulative[inbound.ID])
+		realtime := realtimeMetricPayload(trafficMetrics.InboundRealtime[inbound.ID])
 		view := inboundView{
-			Inbound:        inbound,
-			TrafficUp:      summary.Up,
-			TrafficDown:    summary.Down,
-			TrafficTotal:   summary.Total,
-			RateUp:         summary.RateUp,
-			RateDown:       summary.RateDown,
-			TrafficStatus:  summary.Status,
-			TrafficMessage: summary.Message,
-			TrafficSource:  summary.Source,
-			ClientTraffic:  map[int64]clientTrafficSummary{},
+			Inbound:           inbound,
+			TrafficUp:         summary.Up,
+			TrafficDown:       summary.Down,
+			TrafficTotal:      summary.Total,
+			RateUp:            summary.RateUp,
+			RateDown:          summary.RateDown,
+			RateTotal:         summary.RateTotal,
+			DeltaUp:           summary.DeltaUp,
+			DeltaDown:         summary.DeltaDown,
+			DeltaTotal:        summary.DeltaUp + summary.DeltaDown,
+			WindowSeconds:     summary.WindowSeconds,
+			ObservedAt:        summary.LastSampledAt,
+			TrafficStatus:     summary.Status,
+			TrafficMessage:    summary.Message,
+			TrafficSource:     "migate",
+			RealtimeSource:    summary.Source,
+			ClientTraffic:     map[int64]clientTrafficSummary{},
+			Cumulative:        cumulative,
+			Realtime:          realtime,
+			InboundCumulative: cumulative,
+			InboundRealtime:   realtime,
 		}
 		for _, client := range inbound.Clients {
 			if clientTraffic, ok := trafficByClient[client.ID]; ok {
-				view.ClientTraffic[client.ID] = clientTraffic
+				view.ClientTraffic[client.ID] = enrichClientTrafficSummary(clientTraffic, trafficMetrics.ClientCumulative[client.ID], trafficMetrics.ClientRealtime[client.ID])
 			}
 		}
 		views = append(views, view)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": views})
+}
+
+func enrichClientTrafficSummary(summary clientTrafficSummary, cumulativeMetric TrafficCumulativeMetric, realtimeMetric TrafficRealtimeMetric) clientTrafficSummary {
+	summary.ObservedAt = summary.LastSampledAt
+	cumulative := cumulativeMetricPayload(cumulativeMetric)
+	realtime := realtimeMetricPayload(realtimeMetric)
+	summary.Cumulative = cumulative
+	summary.Realtime = realtime
+	summary.ClientCumulative = cumulative
+	summary.ClientRealtime = realtime
+	return summary
 }
 
 func createInbound(w http.ResponseWriter, r *http.Request, store Store) (db.Inbound, bool) {
@@ -631,7 +671,7 @@ func clientBelongsToInbound(ctx context.Context, store Store, inboundID, clientI
 
 func collectTrafficBaselines(ctx context.Context, store Store, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient) []db.TrafficRawStat {
 	baselines := []db.TrafficRawStat{}
-	appendStats := func(stats []xray.TrafficStat) {
+	appendStats := func(stats []trafficstats.Stat) {
 		for _, stat := range stats {
 			baselines = append(baselines, db.TrafficRawStat{
 				Engine: stat.Engine, ScopeType: stat.ScopeType, ScopeKey: stat.ScopeKey,

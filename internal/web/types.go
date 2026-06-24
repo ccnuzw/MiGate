@@ -18,26 +18,40 @@ type XrayStatusStore interface {
 }
 
 type clientTrafficSummary struct {
-	Up            int64   `json:"up"`
-	Down          int64   `json:"down"`
-	RateUp        float64 `json:"rate_up"`
-	RateDown      float64 `json:"rate_down"`
-	Status        string  `json:"status"`
-	Message       string  `json:"message,omitempty"`
-	Engine        string  `json:"engine,omitempty"`
-	XrayUp        int64   `json:"xray_up,omitempty"`
-	XrayDown      int64   `json:"xray_down,omitempty"`
-	LastSampledAt string  `json:"last_sampled_at,omitempty"`
-	Source        string  `json:"source,omitempty"`
-	Note          string  `json:"note,omitempty"`
+	Up               int64                  `json:"up"`
+	Down             int64                  `json:"down"`
+	Total            int64                  `json:"total"`
+	DeltaUp          int64                  `json:"delta_up"`
+	DeltaDown        int64                  `json:"delta_down"`
+	RateUp           float64                `json:"rate_up"`
+	RateDown         float64                `json:"rate_down"`
+	RateTotal        float64                `json:"rate_total"`
+	WindowSeconds    float64                `json:"window_seconds"`
+	Status           string                 `json:"status"`
+	Message          string                 `json:"message,omitempty"`
+	Engine           string                 `json:"engine,omitempty"`
+	XrayUp           int64                  `json:"xray_up,omitempty"`
+	XrayDown         int64                  `json:"xray_down,omitempty"`
+	LastSampledAt    string                 `json:"last_sampled_at,omitempty"`
+	ObservedAt       string                 `json:"observed_at,omitempty"`
+	Source           string                 `json:"source,omitempty"`
+	Note             string                 `json:"note,omitempty"`
+	Cumulative       map[string]interface{} `json:"cumulative,omitempty"`
+	Realtime         map[string]interface{} `json:"realtime,omitempty"`
+	ClientCumulative map[string]interface{} `json:"client_cumulative,omitempty"`
+	ClientRealtime   map[string]interface{} `json:"client_realtime,omitempty"`
 }
 
 type inboundTrafficSummary struct {
 	Up            int64   `json:"up"`
 	Down          int64   `json:"down"`
 	Total         int64   `json:"total"`
+	DeltaUp       int64   `json:"delta_up"`
+	DeltaDown     int64   `json:"delta_down"`
 	RateUp        float64 `json:"rate_up"`
 	RateDown      float64 `json:"rate_down"`
+	RateTotal     float64 `json:"rate_total"`
+	WindowSeconds float64 `json:"window_seconds"`
 	Status        string  `json:"status"`
 	Message       string  `json:"message,omitempty"`
 	Engine        string  `json:"engine,omitempty"`
@@ -56,38 +70,58 @@ type trafficSeriesPoint struct {
 
 type inboundView struct {
 	db.Inbound
-	TrafficUp      int64                          `json:"traffic_up"`
-	TrafficDown    int64                          `json:"traffic_down"`
-	TrafficTotal   int64                          `json:"traffic_total"`
-	RateUp         float64                        `json:"rate_up"`
-	RateDown       float64                        `json:"rate_down"`
-	TrafficStatus  string                         `json:"traffic_status"`
-	TrafficMessage string                         `json:"traffic_message,omitempty"`
-	TrafficSource  string                         `json:"traffic_stats_source"`
-	RealtimeSource string                         `json:"realtime_stats_source,omitempty"`
-	ClientTraffic  map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
+	TrafficUp         int64                          `json:"traffic_up"`
+	TrafficDown       int64                          `json:"traffic_down"`
+	TrafficTotal      int64                          `json:"traffic_total"`
+	RateUp            float64                        `json:"rate_up"`
+	RateDown          float64                        `json:"rate_down"`
+	RateTotal         float64                        `json:"rate_total"`
+	DeltaUp           int64                          `json:"delta_up"`
+	DeltaDown         int64                          `json:"delta_down"`
+	DeltaTotal        int64                          `json:"delta_total"`
+	WindowSeconds     float64                        `json:"window_seconds"`
+	ObservedAt        string                         `json:"observed_at,omitempty"`
+	TrafficStatus     string                         `json:"traffic_status"`
+	TrafficMessage    string                         `json:"traffic_message,omitempty"`
+	TrafficSource     string                         `json:"traffic_stats_source"`
+	RealtimeSource    string                         `json:"realtime_stats_source,omitempty"`
+	ClientTraffic     map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
+	Cumulative        map[string]interface{}         `json:"cumulative,omitempty"`
+	Realtime          map[string]interface{}         `json:"realtime,omitempty"`
+	InboundCumulative map[string]interface{}         `json:"inbound_cumulative,omitempty"`
+	InboundRealtime   map[string]interface{}         `json:"inbound_realtime,omitempty"`
 }
 
 type inboundTrafficView struct {
-	ID             int64                          `json:"id"`
-	UUID           string                         `json:"uuid"`
-	Remark         string                         `json:"remark"`
-	Protocol       string                         `json:"protocol"`
-	Port           int                            `json:"port"`
-	Network        string                         `json:"network"`
-	Security       string                         `json:"security"`
-	Enabled        bool                           `json:"enabled"`
-	Clients        []db.Client                    `json:"clients"`
-	TrafficUp      int64                          `json:"traffic_up"`
-	TrafficDown    int64                          `json:"traffic_down"`
-	TrafficTotal   int64                          `json:"traffic_total"`
-	RateUp         float64                        `json:"rate_up"`
-	RateDown       float64                        `json:"rate_down"`
-	TrafficStatus  string                         `json:"traffic_status"`
-	TrafficMessage string                         `json:"traffic_message,omitempty"`
-	TrafficSource  string                         `json:"traffic_stats_source"`
-	RealtimeSource string                         `json:"realtime_stats_source,omitempty"`
-	ClientTraffic  map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
+	ID                int64                          `json:"id"`
+	UUID              string                         `json:"uuid"`
+	Remark            string                         `json:"remark"`
+	Protocol          string                         `json:"protocol"`
+	Port              int                            `json:"port"`
+	Network           string                         `json:"network"`
+	Security          string                         `json:"security"`
+	Enabled           bool                           `json:"enabled"`
+	Clients           []db.Client                    `json:"clients"`
+	TrafficUp         int64                          `json:"traffic_up"`
+	TrafficDown       int64                          `json:"traffic_down"`
+	TrafficTotal      int64                          `json:"traffic_total"`
+	RateUp            float64                        `json:"rate_up"`
+	RateDown          float64                        `json:"rate_down"`
+	RateTotal         float64                        `json:"rate_total"`
+	DeltaUp           int64                          `json:"delta_up"`
+	DeltaDown         int64                          `json:"delta_down"`
+	DeltaTotal        int64                          `json:"delta_total"`
+	WindowSeconds     float64                        `json:"window_seconds"`
+	ObservedAt        string                         `json:"observed_at,omitempty"`
+	TrafficStatus     string                         `json:"traffic_status"`
+	TrafficMessage    string                         `json:"traffic_message,omitempty"`
+	TrafficSource     string                         `json:"traffic_stats_source"`
+	RealtimeSource    string                         `json:"realtime_stats_source,omitempty"`
+	ClientTraffic     map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
+	Cumulative        map[string]interface{}         `json:"cumulative,omitempty"`
+	Realtime          map[string]interface{}         `json:"realtime,omitempty"`
+	InboundCumulative map[string]interface{}         `json:"inbound_cumulative,omitempty"`
+	InboundRealtime   map[string]interface{}         `json:"inbound_realtime,omitempty"`
 }
 
 type Store interface {
@@ -253,15 +287,15 @@ type XrayApplyResult struct {
 }
 
 type CoreApplyJobStatus struct {
-	ID          string `json:"id"`
-	Core        string `json:"core"`
-	Status      string `json:"status"`
-	StartedAt   string `json:"started_at,omitempty"`
-	FinishedAt  string `json:"finished_at,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Detail      string `json:"detail,omitempty"`
-	Accepted    bool   `json:"accepted,omitempty"`
+	ID         string `json:"id"`
+	Core       string `json:"core"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"started_at,omitempty"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	Accepted   bool   `json:"accepted,omitempty"`
 }
 
 type defaultXrayController struct{}

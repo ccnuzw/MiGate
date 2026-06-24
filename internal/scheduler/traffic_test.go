@@ -9,6 +9,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/singbox"
+	"github.com/imzyb/MiGate/internal/trafficstats"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -61,7 +62,7 @@ func (m *mockStore) ListInbounds(ctx context.Context) ([]db.Inbound, error) {
 
 type mockStatsClient struct {
 	stats map[string]*xray.ClientStats
-	raw   []xray.TrafficStat
+	raw   []trafficstats.Stat
 	err   error
 	calls int
 }
@@ -73,7 +74,7 @@ func (m *mockStatsClient) QueryAllStats(ctx context.Context) (map[string]*xray.C
 	return m.stats, nil
 }
 
-func (m *mockStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.TrafficStat, error) {
+func (m *mockStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -81,9 +82,9 @@ func (m *mockStatsClient) QueryTrafficStats(ctx context.Context) ([]xray.Traffic
 	if m.raw != nil {
 		return m.raw, nil
 	}
-	result := make([]xray.TrafficStat, 0, len(m.stats))
+	result := make([]trafficstats.Stat, 0, len(m.stats))
 	for _, stat := range m.stats {
-		result = append(result, xray.TrafficStat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
+		result = append(result, trafficstats.Stat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
 	}
 	return result, nil
 }
@@ -155,7 +156,7 @@ func TestTrafficSyncSchedulerMarksMissingXrayClientsWaitingWhenStatsAreEmpty(t *
 			Clients: []db.Client{{ID: 20, StatsKey: "c_hy2", Email: "hy2@example.com", Enabled: true}},
 		},
 	}}
-	client := &mockStatsClient{raw: []xray.TrafficStat{}}
+	client := &mockStatsClient{raw: []trafficstats.Stat{}}
 
 	scheduler := NewTrafficSyncScheduler(store, client, 1*time.Minute)
 	scheduler.sync()
@@ -198,7 +199,7 @@ func TestTrafficSyncSchedulerMarksOnlyMissingXrayClientsWaitingWhenRawStatsArePa
 			{ID: 12, StatsKey: "c_disabled", Enabled: false},
 		},
 	}}}
-	client := &mockStatsClient{raw: []xray.TrafficStat{
+	client := &mockStatsClient{raw: []trafficstats.Stat{
 		{Engine: "xray", ScopeType: "client", ScopeKey: "c_seen", Uplink: 100, Downlink: 200},
 	}}
 
@@ -292,7 +293,7 @@ func TestTrafficSyncSchedulerDoesNotMarkXrayWaitingWhenAllRawStatsExist(t *testi
 		ID: 1, Protocol: "vless", Enabled: true,
 		Clients: []db.Client{{ID: 10, StatsKey: "c_xray", Enabled: true}},
 	}}}
-	client := &mockStatsClient{raw: []xray.TrafficStat{
+	client := &mockStatsClient{raw: []trafficstats.Stat{
 		{Engine: "xray", ScopeType: "client", ScopeKey: "c_xray", Uplink: 100, Downlink: 200},
 	}}
 
@@ -312,7 +313,7 @@ func TestTrafficSyncSchedulerKeepsXrayWhenSingboxUnavailable(t *testing.T) {
 		ID: 1, Protocol: "hysteria2", Enabled: true,
 		Clients: []db.Client{{ID: 2, StatsKey: "c_hy2", Enabled: true}},
 	}}}
-	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{
+	xrayClient := &mockStatsClient{raw: []trafficstats.Stat{
 		{Engine: "xray", ScopeType: "client", ScopeKey: "client1@test.com", Uplink: 1024, Downlink: 2048},
 	}}
 	singboxClient := &mockStatsClient{err: errors.New("connect 127.0.0.1:10086: connection refused")}
@@ -354,8 +355,8 @@ func TestTrafficSyncSchedulerKeepsXrayWhenSingboxUnavailable(t *testing.T) {
 
 func TestTrafficSyncSchedulerWritesSingboxEngineStats(t *testing.T) {
 	store := &mockStore{}
-	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
-	singboxClient := &mockStatsClient{raw: []xray.TrafficStat{
+	xrayClient := &mockStatsClient{raw: []trafficstats.Stat{}}
+	singboxClient := &mockStatsClient{raw: []trafficstats.Stat{
 		{Engine: "singbox", ScopeType: "client", ScopeKey: "c_singbox", Uplink: 10, Downlink: 20},
 		{Engine: "singbox", ScopeType: "inbound", ScopeKey: "hy2-inbound-1", Uplink: 30, Downlink: 40},
 	}}
@@ -375,7 +376,7 @@ func TestTrafficSyncSchedulerWritesSingboxEngineStats(t *testing.T) {
 
 func TestTrafficSyncSchedulerSkipsSingboxQueryWhenNotConfigured(t *testing.T) {
 	store := &mockStore{}
-	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{
+	xrayClient := &mockStatsClient{raw: []trafficstats.Stat{
 		{Engine: "xray", ScopeType: "client", ScopeKey: "xray-client", Uplink: 100, Downlink: 200},
 	}}
 	disabled := singbox.NewDisabledStatsClient("not_configured", "")
@@ -403,7 +404,7 @@ func TestTrafficSyncSchedulerMarksUnsupportedSingboxInboundsWithoutQuery(t *test
 		},
 	}}
 	store := &mockStore{inbounds: inbounds}
-	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{
+	xrayClient := &mockStatsClient{raw: []trafficstats.Stat{
 		{Engine: "xray", ScopeType: "client", ScopeKey: "xray-client", Uplink: 100, Downlink: 200},
 	}}
 	disabled := singbox.NewDisabledStatsClient("unsupported", singbox.StatsUnsupportedMessage)
@@ -440,8 +441,8 @@ func TestTrafficSyncSchedulerMarksUnsupportedSingboxInboundsWithoutQuery(t *test
 
 func TestTrafficSyncSchedulerRefreshesSingboxClientAfterInboundAppears(t *testing.T) {
 	store := &mockStore{}
-	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
-	singboxClient := &mockStatsClient{raw: []xray.TrafficStat{
+	xrayClient := &mockStatsClient{raw: []trafficstats.Stat{}}
+	singboxClient := &mockStatsClient{raw: []trafficstats.Stat{
 		{Engine: "singbox", ScopeType: "client", ScopeKey: "c_hy2", Uplink: 10, Downlink: 20},
 	}}
 	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, singbox.NewDisabledStatsClient("not_configured", ""), nil, time.Minute)
@@ -483,7 +484,7 @@ func TestTrafficSyncSchedulerDoesNotWriteStaleMarkersWhenInboundRefreshFails(t *
 		Clients: []db.Client{{ID: 2, StatsKey: "c_old", Enabled: true}},
 	}}
 	store := &mockStore{listInboundsErr: errors.New("database busy")}
-	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
+	xrayClient := &mockStatsClient{raw: []trafficstats.Stat{}}
 	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, singbox.NewDisabledStatsClient("unsupported", singbox.StatsUnsupportedMessage), staleInbounds, time.Minute)
 
 	scheduler.sync()
@@ -498,7 +499,7 @@ func TestTrafficSyncSchedulerDoesNotWriteStaleMarkersWhenInboundRefreshFails(t *
 
 func TestTrafficSyncSchedulerDoesNotRefreshCapabilityWithoutSingboxInbound(t *testing.T) {
 	store := &mockStore{}
-	xrayClient := &mockStatsClient{raw: []xray.TrafficStat{}}
+	xrayClient := &mockStatsClient{raw: []trafficstats.Stat{}}
 	scheduler := NewTrafficSyncSchedulerWithSingboxConfig(store, xrayClient, singbox.NewDisabledStatsClient("not_configured", ""), nil, time.Minute)
 	capabilityCalls := 0
 	scheduler.singboxCapability = func(ctx context.Context) singbox.Capability {
