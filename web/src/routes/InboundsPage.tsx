@@ -724,6 +724,9 @@ function ClientRow({
   const limit = Number(client.traffic_limit || 0);
   const usage = clientUsageSummary(client.traffic_limit, cumulative, text);
   const liveRealtime = clientRealtime(traffic);
+  const realtimeLabel = rateLabel(liveRealtime.rate_up, liveRealtime.rate_down, text, liveRealtime.status);
+  const realtimeHint = trafficHint(liveRealtime.observed_at, liveRealtime.window_seconds, liveRealtime.source, liveRealtime.status, liveRealtime.message, text);
+  const usageTitle = realtimeHint ? `${text('客户端实时流量')}: ${realtimeLabel}\n${realtimeHint}` : `${text('客户端实时流量')}: ${realtimeLabel}`;
   return (
     <div className="client-row">
       <div className="client-identity">
@@ -737,18 +740,13 @@ function ClientRow({
           <span>{usage.label}</span>
           {usage.percentLabel ? <span>{usage.percentLabel}</span> : null}
         </div>
-        {limit > 0 ? <UsageBar percent={usage.percent} tone={usage.tone} /> : used > 0 ? <div className="usage-line" /> : null}
-      </div>
-      <div className="client-speed" title={trafficHint(liveRealtime.observed_at, liveRealtime.window_seconds, liveRealtime.source, liveRealtime.status, liveRealtime.message, text)}>
-        <span>{text('客户端实时流量')}</span>
-        <strong>{rateLabel(liveRealtime.rate_up, liveRealtime.rate_down, text, liveRealtime.status)}</strong>
+        {limit > 0 ? <UsageBar percent={usage.percent} tone={usage.tone} title={usageTitle} /> : used > 0 ? <div className="usage-line" title={usageTitle} /> : null}
       </div>
       <div className="action-row client-actions">
         {shareSupported ? <button className="icon-button" onClick={onCopyShare} title={text('复制节点链接')}><Copy className="h-4 w-4" /></button> : null}
         {shareSupported ? <button className="icon-button" onClick={onShowQR} title={text('显示二维码')}><QrCode className="h-4 w-4" /></button> : null}
         <button className={toggleButtonClass(client.enabled)} onClick={onToggle} title={text('启停')}><Power className="h-4 w-4" /></button>
-        <button className="icon-button" onClick={onEdit} title={text('编辑')}><Edit2 className="h-4 w-4" /></button>
-        <MoreActions resetLabel={text('重置累计用量')} onReset={onReset} onDelete={onDelete} />
+        <MoreActions resetLabel={text('重置累计用量')} onEdit={onEdit} onReset={onReset} onDelete={onDelete} />
       </div>
     </div>
   );
@@ -798,15 +796,15 @@ function InboundMeta({ inbound }: { inbound: Inbound }) {
   );
 }
 
-function UsageBar({ percent, tone }: { percent: number; tone: UsageTone }) {
+function UsageBar({ percent, tone, title }: { percent: number; tone: UsageTone; title?: string }) {
   return (
-    <div className="usage-bar" data-tone={tone}>
+    <div className="usage-bar" data-tone={tone} title={title}>
       <span style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
     </div>
   );
 }
 
-function MoreActions({ resetLabel, onReset, onDelete }: { resetLabel: string | null; onReset?: () => void; onDelete: () => void }) {
+function MoreActions({ resetLabel, onEdit, onReset, onDelete }: { resetLabel: string | null; onEdit?: () => void; onReset?: () => void; onDelete: () => void }) {
   const { text } = useI18n();
   return (
     <details className="more-actions" data-more-actions>
@@ -814,6 +812,7 @@ function MoreActions({ resetLabel, onReset, onDelete }: { resetLabel: string | n
         <MoreHorizontal className="h-4 w-4" />
       </summary>
       <div className="more-actions-menu">
+        {onEdit ? <button type="button" onClick={onEdit}><Edit2 className="h-4 w-4" /> {text('编辑')}</button> : null}
         {onReset ? <button type="button" onClick={onReset}><RotateCcw className="h-4 w-4" /> {resetLabel}</button> : null}
         <button type="button" className="danger-text" onClick={onDelete}><Trash2 className="h-4 w-4" /> {text('删除')}</button>
       </div>

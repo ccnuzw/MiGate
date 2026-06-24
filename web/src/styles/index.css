@@ -127,7 +127,10 @@ textarea:focus {
 .icon-button {
   display: inline-grid;
   width: 36px;
+  min-width: 36px;
   height: 36px;
+  min-height: 36px;
+  flex: 0 0 36px;
   place-items: center;
   border-radius: 8px;
   border: 1px solid rgb(var(--line));
@@ -781,7 +784,7 @@ textarea:focus {
 
 .client-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(180px, 1.35fr) minmax(126px, 0.75fr) 184px;
+  grid-template-columns: minmax(0, 1.45fr) minmax(180px, 1fr) 168px;
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -881,32 +884,8 @@ textarea:focus {
   background: linear-gradient(90deg, rgba(14, 116, 144, 0.45), rgba(14, 116, 144, 0.08));
 }
 
-.client-speed {
-  min-width: 0;
-  overflow: hidden;
-  color: rgb(var(--muted));
-  font-size: 12px;
-  text-align: right;
-}
-
-.client-speed span,
-.client-speed strong {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.client-speed strong {
-  margin-top: 3px;
-  color: rgb(var(--text));
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .client-actions {
-  width: 184px;
+  width: 168px;
   justify-content: flex-end;
   flex-wrap: nowrap;
 }
@@ -1879,6 +1858,65 @@ textarea:focus {
   gap: 8px;
   border-top: 1px solid rgb(var(--line));
   padding-top: 14px;
+}
+
+.session-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.session-stack,
+.session-list {
+  display: grid;
+  gap: 8px;
+}
+
+.session-list {
+  gap: 0;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+  background: rgb(var(--soft) / 0.62);
+}
+
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.session-row + .session-row {
+  border-top: 1px solid rgb(var(--line));
+}
+
+.session-details {
+  min-width: 0;
+}
+
+.session-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+}
+
+.session-action-button {
+  min-height: 32px;
+  width: fit-content;
+  justify-self: end;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .routing-modal-panel {
@@ -3348,19 +3386,13 @@ textarea:focus {
   }
 
   .client-row {
-    grid-template-columns: minmax(0, 1fr) minmax(190px, 1.2fr) 184px;
-  }
-
-  .client-speed {
-    grid-column: 2;
-    grid-row: 2;
-    text-align: left;
+    grid-template-columns: minmax(0, 1.4fr) minmax(180px, 1fr);
   }
 
   .client-actions {
-    grid-column: 3;
-    grid-row: 1 / span 2;
-    width: 184px;
+    grid-column: 1 / -1;
+    width: auto;
+    justify-content: flex-end;
   }
 }
 
@@ -3530,17 +3562,29 @@ textarea:focus {
     gap: 8px;
   }
 
-  .client-speed {
-    grid-column: auto;
-    grid-row: auto;
-    text-align: left;
-  }
-
   .client-actions {
     grid-column: auto;
     grid-row: auto;
     width: auto;
     justify-content: flex-start;
+  }
+
+  .session-card-header,
+  .session-row {
+    align-items: stretch;
+  }
+
+  .session-card-header {
+    flex-direction: column;
+  }
+
+  .session-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .session-action-button {
+    justify-self: start;
   }
 
   .more-actions-menu {
