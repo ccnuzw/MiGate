@@ -142,121 +142,16 @@ func ensureRealityShortID(value *string) error {
 
 func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClient xray.StatsClient) {
 	inbounds := []db.Inbound{}
-	refreshTraffic := r.URL.Query().Get("refresh") == "traffic"
 	if store != nil {
-		var loaded []db.Inbound
-		var err error
-		if refreshTraffic {
-			loaded, err = store.ListInboundTraffic(r.Context())
-		} else {
-			loaded, err = store.ListInbounds(r.Context())
-			if err == nil {
-				deriveRealityPublicKeys(loaded)
-			}
-		}
+		loaded, err := store.ListInbounds(r.Context())
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 			return
 		}
+		deriveRealityPublicKeys(loaded)
 		inbounds = loaded
 	}
-	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), store, inbounds)
-	trafficView := trafficView{inbounds: inbounds, trafficByInbound: trafficByInbound, trafficByClient: trafficByClient}
-	trafficMetrics := buildTrafficMetricSet(trafficView)
-	if refreshTraffic {
-		views := make([]inboundTrafficView, 0, len(inbounds))
-		for _, inbound := range inbounds {
-			summary := trafficByInbound[inbound.ID]
-			cumulative := cumulativeMetricPayload(trafficMetrics.InboundCumulative[inbound.ID])
-			realtime := realtimeMetricPayload(trafficMetrics.InboundRealtime[inbound.ID])
-			view := inboundTrafficView{
-				ID:                inbound.ID,
-				UUID:              inbound.UUID,
-				Remark:            inbound.Remark,
-				Protocol:          inbound.Protocol,
-				Port:              inbound.Port,
-				Network:           inbound.Network,
-				Security:          inbound.Security,
-				Enabled:           inbound.Enabled,
-				Clients:           inbound.Clients,
-				TrafficUp:         summary.Up,
-				TrafficDown:       summary.Down,
-				TrafficTotal:      summary.Total,
-				RateUp:            summary.RateUp,
-				RateDown:          summary.RateDown,
-				RateTotal:         summary.RateTotal,
-				DeltaUp:           summary.DeltaUp,
-				DeltaDown:         summary.DeltaDown,
-				DeltaTotal:        summary.DeltaUp + summary.DeltaDown,
-				WindowSeconds:     summary.WindowSeconds,
-				ObservedAt:        summary.LastSampledAt,
-				TrafficStatus:     summary.Status,
-				TrafficMessage:    summary.Message,
-				TrafficSource:     "migate",
-				RealtimeSource:    summary.Source,
-				ClientTraffic:     map[int64]clientTrafficSummary{},
-				Cumulative:        cumulative,
-				Realtime:          realtime,
-				InboundCumulative: cumulative,
-				InboundRealtime:   realtime,
-			}
-			for _, client := range inbound.Clients {
-				if clientTraffic, ok := trafficByClient[client.ID]; ok {
-					view.ClientTraffic[client.ID] = enrichClientTrafficSummary(clientTraffic, trafficMetrics.ClientCumulative[client.ID], trafficMetrics.ClientRealtime[client.ID])
-				}
-			}
-			views = append(views, view)
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": views})
-		return
-	}
-	views := make([]inboundView, 0, len(inbounds))
-	for _, inbound := range inbounds {
-		summary := trafficByInbound[inbound.ID]
-		cumulative := cumulativeMetricPayload(trafficMetrics.InboundCumulative[inbound.ID])
-		realtime := realtimeMetricPayload(trafficMetrics.InboundRealtime[inbound.ID])
-		view := inboundView{
-			Inbound:           inbound,
-			TrafficUp:         summary.Up,
-			TrafficDown:       summary.Down,
-			TrafficTotal:      summary.Total,
-			RateUp:            summary.RateUp,
-			RateDown:          summary.RateDown,
-			RateTotal:         summary.RateTotal,
-			DeltaUp:           summary.DeltaUp,
-			DeltaDown:         summary.DeltaDown,
-			DeltaTotal:        summary.DeltaUp + summary.DeltaDown,
-			WindowSeconds:     summary.WindowSeconds,
-			ObservedAt:        summary.LastSampledAt,
-			TrafficStatus:     summary.Status,
-			TrafficMessage:    summary.Message,
-			TrafficSource:     "migate",
-			RealtimeSource:    summary.Source,
-			ClientTraffic:     map[int64]clientTrafficSummary{},
-			Cumulative:        cumulative,
-			Realtime:          realtime,
-			InboundCumulative: cumulative,
-			InboundRealtime:   realtime,
-		}
-		for _, client := range inbound.Clients {
-			if clientTraffic, ok := trafficByClient[client.ID]; ok {
-				view.ClientTraffic[client.ID] = enrichClientTrafficSummary(clientTraffic, trafficMetrics.ClientCumulative[client.ID], trafficMetrics.ClientRealtime[client.ID])
-			}
-		}
-		views = append(views, view)
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": views})
-}
-
-func enrichClientTrafficSummary(summary clientTrafficSummary, cumulativeMetric TrafficCumulativeMetric, realtimeMetric TrafficRealtimeMetric) clientTrafficSummary {
-	summary.ObservedAt = summary.LastSampledAt
-	cumulative := cumulativeMetricPayload(cumulativeMetric)
-	realtime := realtimeMetricPayload(realtimeMetric)
-	summary.Cumulative = cumulative
-	summary.Realtime = realtime
-	summary.ClientCumulative = cumulative
-	summary.ClientRealtime = realtime
-	return summary
+	writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": inbounds})
 }
 
 func createInbound(w http.ResponseWriter, r *http.Request, store Store) (db.Inbound, bool) {

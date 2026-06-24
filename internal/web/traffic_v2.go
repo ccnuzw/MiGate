@@ -190,6 +190,14 @@ func trafficV2SeriesHandler(store Store) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 			return
 		}
+		scopeType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope_type")))
+		if scopeType == "" {
+			scopeType = "inbound"
+		}
+		if scopeType != "client" && scopeType != "inbound" && scopeType != "outbound" && scopeType != "core" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_scope_type")
+			return
+		}
 		since := time.Now().UTC().Add(-24 * time.Hour)
 		if rawSince := strings.TrimSpace(r.URL.Query().Get("since")); rawSince != "" {
 			parsed, err := time.Parse(time.RFC3339, rawSince)
@@ -208,7 +216,7 @@ func trafficV2SeriesHandler(store Store) http.HandlerFunc {
 			}
 			limit = parsed
 		}
-		samples, err := store.ListTrafficSamples(r.Context(), "inbound", since, limit)
+		samples, err := store.ListTrafficSamples(r.Context(), scopeType, since, limit)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "traffic_samples_failed")
 			return
@@ -219,7 +227,7 @@ func trafficV2SeriesHandler(store Store) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"series": trafficV2SeriesFromSamples(samples, inbounds),
+			"series": trafficV2SeriesFromSamples(samples, scopeType, inbounds),
 		})
 	}
 }
@@ -267,17 +275,19 @@ func buildTrafficV2Snapshot(view trafficView) TrafficV2Snapshot {
 	}
 }
 
-func trafficV2SeriesFromSamples(samples []db.TrafficSample, inbounds []db.Inbound) []TrafficV2SeriesPoint {
-	allowed := selectedTrafficSeriesEngines(samples, "inbound", inbounds)
+func trafficV2SeriesFromSamples(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound) []TrafficV2SeriesPoint {
+	allowed := selectedTrafficSeriesEngines(samples, scopeType, inbounds)
 	byTime := map[string]*TrafficV2SeriesPoint{}
 	order := []string{}
 	for _, sample := range samples {
-		engines, ok := allowed[sample.ScopeKey]
-		if !ok {
-			continue
-		}
-		if _, ok := engines[normalizeTrafficEngine(sample.Engine)]; !ok {
-			continue
+		if scopeType == "client" || scopeType == "inbound" {
+			engines, ok := allowed[sample.ScopeKey]
+			if !ok {
+				continue
+			}
+			if _, ok := engines[normalizeTrafficEngine(sample.Engine)]; !ok {
+				continue
+			}
 		}
 		point := byTime[sample.SampledAt]
 		if point == nil {

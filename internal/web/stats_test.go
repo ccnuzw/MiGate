@@ -268,7 +268,7 @@ func TestTrafficViewCacheSharesInboundsAndStatesAcrossHandlers(t *testing.T) {
 	if store.listInboundTrafficCalls != 1 || store.listInboundsCalls != 0 || store.listTrafficStatesCalls != 1 {
 		t.Fatalf("expected cache hit to avoid repeated scans, traffic_inbounds=%d inbounds=%d states=%d", store.listInboundTrafficCalls, store.listInboundsCalls, store.listTrafficStatesCalls)
 	}
-	if first.trafficByInbound[1].Up != 10 || second.trafficByClient[10].Down != 20 {
+	if first.trafficByInbound[1].Up != 0 || second.trafficByClient[10].Down != 20 {
 		t.Fatalf("unexpected cached traffic view: first=%+v second=%+v", first, second)
 	}
 
@@ -366,7 +366,7 @@ func TestBuildStatsResponseLoadsTrafficStatesOnceForDetails(t *testing.T) {
 	}
 }
 
-func TestBuildDashboardSummaryDoesNotLoadTrafficStates(t *testing.T) {
+func TestBuildDashboardSummaryLoadsTrafficStatesForBusinessUsage(t *testing.T) {
 	store := &countingSummaryStore{
 		inbounds: []db.Inbound{{
 			ID:       1,
@@ -384,8 +384,8 @@ func TestBuildDashboardSummaryDoesNotLoadTrafficStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build dashboard summary: %v", err)
 	}
-	if store.listTrafficStatesCalls != 0 {
-		t.Fatalf("dashboard summary should not load traffic states, got %d calls", store.listTrafficStatesCalls)
+	if store.listTrafficStatesCalls != 1 {
+		t.Fatalf("dashboard summary should load traffic states once, got %d calls", store.listTrafficStatesCalls)
 	}
 	if _, ok := summary["outbound_traffic"]; ok {
 		t.Fatalf("dashboard summary should not include outbound_traffic: %+v", summary)
@@ -547,8 +547,6 @@ func TestDashboardValidationCacheKeyIgnoresClientRuntimeTraffic(t *testing.T) {
 				StatsKey:     "client-stats",
 				Email:        "client@example.com",
 				Enabled:      true,
-				Up:           100,
-				Down:         200,
 				TrafficLimit: 1024,
 				ExpiryAt:     1893456000,
 			}},
@@ -556,14 +554,8 @@ func TestDashboardValidationCacheKeyIgnoresClientRuntimeTraffic(t *testing.T) {
 		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
 		rules:     []db.RoutingRule{{ID: 1, InboundTag: "edge", OutboundID: 1, OutboundTag: "direct", Enabled: true}},
 	}
-	changed := snapshot
-	changed.inbounds = append([]db.Inbound(nil), snapshot.inbounds...)
-	changed.inbounds[0].Clients = append([]db.Client(nil), snapshot.inbounds[0].Clients...)
-	changed.inbounds[0].Clients[0].Up = 999
-	changed.inbounds[0].Clients[0].Down = 888
-
-	if snapshot.cacheKey() != changed.cacheKey() {
-		t.Fatal("client runtime up/down changes should not invalidate dashboard validation cache key")
+	if snapshot.cacheKey() == "" {
+		t.Fatal("validation snapshot cache key should remain stable without runtime traffic fields")
 	}
 }
 
@@ -577,9 +569,10 @@ func TestDashboardSummaryValidationCacheReusesWhenOnlyRuntimeTrafficChanges(t *t
 			Network:  "udp",
 			Security: "tls",
 			Enabled:  true,
-			Clients:  []db.Client{{ID: 10, InboundID: 1, UUID: "client-uuid", Password: "secret", StatsKey: "c_state", Email: "a@example.com", Enabled: true, Up: 10, Down: 20}},
+			Clients:  []db.Client{{ID: 10, InboundID: 1, UUID: "client-uuid", Password: "secret", StatsKey: "c_state", Email: "a@example.com", Enabled: true}},
 		}},
 		outbounds: []db.Outbound{{ID: 1, Tag: "direct", Protocol: "freedom", Enabled: true}},
+		states:    []db.TrafficState{{Engine: "singbox", ScopeType: "client", ScopeKey: "c_state", TotalUp: 10, TotalDown: 20, Status: "ok", LastSeenAt: "2026-06-24T00:00:00Z"}},
 	}
 	cache := newDashboardSummaryCache(2*time.Second, 30*time.Second)
 	cfg := &routerConfig{store: store, singboxRuntime: fixedSingboxRuntime{capability: singbox.Capability{V2RayAPIStats: true, Checked: true}}}
@@ -592,8 +585,8 @@ func TestDashboardSummaryValidationCacheReusesWhenOnlyRuntimeTrafficChanges(t *t
 	}
 	_ = first
 	firstValidationExpiresAt := cache.validationExpiresAt
-	store.inbounds[0].Clients[0].Up = 12345
-	store.inbounds[0].Clients[0].Down = 67890
+	store.states[0].TotalUp = 12345
+	store.states[0].TotalDown = 67890
 	now = now.Add(3 * time.Second)
 
 	if _, err := cache.get(context.Background(), cfg); err != nil {
@@ -717,8 +710,6 @@ func TestDashboardValidationCacheKeyChangesForConfigFields(t *testing.T) {
 				StatsKey:     "client-stats",
 				Email:        "client@example.com",
 				Enabled:      true,
-				Up:           10,
-				Down:         20,
 			}},
 		}},
 		outbounds: []db.Outbound{{
@@ -916,7 +907,7 @@ func TestSummarizeTrafficKeepsExpectedEngineEvenWhenUnavailable(t *testing.T) {
 	}
 }
 
-func TestSummarizeTrafficFallsBackWhenExpectedEngineMissing(t *testing.T) {
+func TestSummarizeTrafficDoesNotFallbackWhenExpectedEngineMissing(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	store := &countingSummaryStore{
 		states: []db.TrafficState{
@@ -926,8 +917,8 @@ func TestSummarizeTrafficFallsBackWhenExpectedEngineMissing(t *testing.T) {
 	inbounds := []db.Inbound{{ID: 1, Protocol: "hysteria2", Enabled: true, Clients: []db.Client{{ID: 10, StatsKey: "c_state", Email: "user@example.com", Enabled: true}}}}
 	_, trafficByClient := summarizeTraffic(context.Background(), store, inbounds)
 	client := trafficByClient[10]
-	if client.Status != "ok" || client.Up != 30 || client.Down != 40 || client.Engine != "xray" {
-		t.Fatalf("expected deterministic fallback when singbox state is missing, got %+v", client)
+	if client.Status != "waiting" || client.Up != 0 || client.Down != 0 || client.Engine != "singbox" {
+		t.Fatalf("expected waiting client state when singbox state is missing, got %+v", client)
 	}
 }
 
@@ -944,8 +935,8 @@ func TestSummarizeTrafficMarksStaleSamples(t *testing.T) {
 	if client.Status != "stale" || client.RateUp != 0 || client.RateDown != 0 || client.DeltaUp != 0 || client.DeltaDown != 0 || client.WindowSeconds != 0 || client.LastSampledAt == "" {
 		t.Fatalf("expected stale client state with zero rates, got %+v", client)
 	}
-	if trafficByInbound[1].Status != "stale" || trafficByInbound[1].RateUp != 0 || trafficByInbound[1].RateDown != 0 || trafficByInbound[1].DeltaUp != 0 || trafficByInbound[1].DeltaDown != 0 || trafficByInbound[1].WindowSeconds != 0 {
-		t.Fatalf("expected inbound aggregate to inherit stale status and zero rates, got %+v", trafficByInbound[1])
+	if trafficByInbound[1].Status != "waiting" || trafficByInbound[1].RateUp != 0 || trafficByInbound[1].RateDown != 0 || trafficByInbound[1].DeltaUp != 0 || trafficByInbound[1].DeltaDown != 0 || trafficByInbound[1].WindowSeconds != 0 {
+		t.Fatalf("expected inbound without inbound state to remain waiting, got %+v", trafficByInbound[1])
 	}
 }
 
@@ -963,64 +954,19 @@ func TestSummarizeTrafficAggregatesClientTotalsWhenOnlyClientStateExists(t *test
 		t.Fatalf("expected ok client totals to be preserved, got %+v", client)
 	}
 	inbound := trafficByInbound[1]
-	if inbound.Status != "ok" || inbound.Up != 30 || inbound.Down != 40 || inbound.Total != 70 || inbound.RateUp != 0 || inbound.RateDown != 0 || inbound.Source != "fallback_client_sum" {
-		t.Fatalf("expected inbound to aggregate client-only cumulative totals without client-derived realtime, got %+v", inbound)
+	if inbound.Status != "waiting" || inbound.Up != 0 || inbound.Down != 0 || inbound.Total != 0 || inbound.RateUp != 0 || inbound.RateDown != 0 || inbound.Source != "migate" {
+		t.Fatalf("expected inbound without inbound state to remain waiting/zero, got %+v", inbound)
 	}
 	view := trafficView{inbounds: inbounds, trafficByInbound: trafficByInbound, trafficByClient: trafficByClient}
 	metrics := buildTrafficMetricSet(view)
-	if metrics.InboundCumulative[1].Status != "ok" || metrics.InboundCumulative[1].Source != "fallback_client_sum" {
-		t.Fatalf("expected inbound cumulative fallback metadata, got %+v", metrics.InboundCumulative[1])
+	if metrics.InboundCumulative[1].Status != "waiting" || metrics.InboundCumulative[1].Source != "migate" {
+		t.Fatalf("expected inbound cumulative to stay waiting without inbound state, got %+v", metrics.InboundCumulative[1])
 	}
-	if metrics.InboundRealtime[1].Status != "waiting" || metrics.InboundRealtime[1].Source != "inbound" || metrics.InboundRealtime[1].RateTotal != 0 || metrics.TotalRealtime.Status != "waiting" {
+	if metrics.InboundRealtime[1].Status != "waiting" || metrics.InboundRealtime[1].Source != "migate" || metrics.InboundRealtime[1].RateTotal != 0 || metrics.TotalRealtime.Status != "waiting" {
 		t.Fatalf("expected inbound realtime to wait for real inbound sample, got inbound=%+v total=%+v", metrics.InboundRealtime[1], metrics.TotalRealtime)
 	}
-	if metrics.TotalCumulative.Source != "fallback_client_sum" || metrics.TotalCumulative.Message == "" {
-		t.Fatalf("expected total cumulative source to reflect client fallback, got %+v", metrics.TotalCumulative)
-	}
-}
-
-func TestTrafficSummaryRealtimeUsesInboundRatesNotClientRates(t *testing.T) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	store := &countingSummaryStore{
-		inbounds: []db.Inbound{{
-			ID:       1,
-			Protocol: "vless",
-			Enabled:  true,
-			Clients:  []db.Client{{ID: 10, StatsKey: "c_fast", Email: "fast@example.com", Enabled: true}},
-		}},
-		states: []db.TrafficState{
-			{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", TotalUp: 100, TotalDown: 200, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, WindowSeconds: 10, Status: "ok", LastSeenAt: now},
-			{Engine: "xray", ScopeType: "client", ScopeKey: "c_fast", TotalUp: 100, TotalDown: 200, DeltaUp: 900, DeltaDown: 900, RateUp: 90, RateDown: 90, WindowSeconds: 10, Status: "ok", LastSeenAt: now},
-		},
-	}
-	response := httptest.NewRecorder()
-	trafficSummaryHandler(store, newTrafficViewCache(0))(response, httptest.NewRequest(http.MethodGet, "/api/traffic/summary", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected traffic summary 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var payload map[string]interface{}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if payload["rate_up"] != float64(1) || payload["rate_down"] != float64(2) || payload["delta_up"] != float64(10) || payload["delta_down"] != float64(20) {
-		t.Fatalf("summary realtime should come from inbound state, got %+v", payload)
-	}
-	totalCumulative, ok := payload["total_cumulative"].(map[string]interface{})
-	if !ok || totalCumulative["up"] != float64(100) || totalCumulative["down"] != float64(200) || totalCumulative["total"] != float64(300) {
-		t.Fatalf("summary should expose total cumulative object, got %+v", payload["total_cumulative"])
-	}
-	totalRealtime, ok := payload["total_realtime_traffic"].(map[string]interface{})
-	if !ok || totalRealtime["rate_up"] != float64(1) || totalRealtime["rate_down"] != float64(2) || totalRealtime["delta_up"] != float64(10) || totalRealtime["delta_down"] != float64(20) || totalRealtime["status"] != "ok" || totalRealtime["source"] != "inbound" {
-		t.Fatalf("summary should expose total realtime object from inbound rates, got %+v", payload["total_realtime_traffic"])
-	}
-	if payload["total_realtime"] != float64(3) {
-		t.Fatalf("summary should keep total_realtime as the legacy numeric rate, got %+v", payload["total_realtime"])
-	}
-	if payload["total_realtime_rate"] != float64(3) {
-		t.Fatalf("summary should keep numeric realtime compatibility under total_realtime_rate, got %+v", payload["total_realtime_rate"])
-	}
-	if _, ok := totalRealtime["coverage"].(map[string]interface{}); !ok {
-		t.Fatalf("total realtime object should include coverage, got %+v", totalRealtime)
+	if metrics.TotalCumulative.Source != "migate" || metrics.TotalCumulative.Total != 0 {
+		t.Fatalf("expected total cumulative to aggregate inbound source only, got %+v", metrics.TotalCumulative)
 	}
 }
 
@@ -1059,59 +1005,13 @@ func TestTrafficMetricSetMarksMixedTotalCumulativeSource(t *testing.T) {
 		},
 		trafficByInbound: map[int64]inboundTrafficSummary{
 			1: {Up: 10, Down: 20, Total: 30, Status: "ok", Source: "inbound", Engine: "xray"},
-			2: {Up: 30, Down: 40, Total: 70, Status: "ok", Source: "fallback_client_sum", Message: "inbound traffic is aggregated from client cumulative counters", Engine: "xray"},
+			2: {Up: 30, Down: 40, Total: 70, Status: "ok", Source: "client", Engine: "xray"},
 		},
 		trafficByClient: map[int64]clientTrafficSummary{},
 	}
 	metrics := buildTrafficMetricSet(view)
-	if metrics.TotalCumulative.Total != 100 || metrics.TotalCumulative.Source != "mixed" || metrics.TotalCumulative.Message == "" {
+	if metrics.TotalCumulative.Total != 100 || metrics.TotalCumulative.Source != "mixed" || metrics.TotalCumulative.Message != "" {
 		t.Fatalf("expected mixed total cumulative source, got %+v", metrics.TotalCumulative)
-	}
-}
-
-func TestTrafficAPIExposesInboundAndClientMetricObjects(t *testing.T) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	store := &countingSummaryStore{
-		inbounds: []db.Inbound{{
-			ID:       1,
-			Remark:   "edge",
-			Protocol: "vless",
-			Port:     443,
-			Enabled:  true,
-			Clients:  []db.Client{{ID: 10, StatsKey: "c_edge", Email: "edge@example.com", Enabled: true, TrafficLimit: 1024}},
-		}},
-		states: []db.TrafficState{
-			{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", TotalUp: 100, TotalDown: 200, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, WindowSeconds: 10, Status: "ok", LastSeenAt: now},
-			{Engine: "xray", ScopeType: "client", ScopeKey: "c_edge", TotalUp: 30, TotalDown: 40, DeltaUp: 3, DeltaDown: 4, RateUp: 0.3, RateDown: 0.4, WindowSeconds: 10, Status: "ok", LastSeenAt: now},
-		},
-	}
-	view, err := buildTrafficView(context.Background(), store)
-	if err != nil {
-		t.Fatalf("build traffic view: %v", err)
-	}
-	inbounds := buildTrafficInboundPayloads(view)
-	if len(inbounds) != 1 {
-		t.Fatalf("expected one inbound payload, got %+v", inbounds)
-	}
-	inboundCumulative, ok := inbounds[0]["inbound_cumulative"].(map[string]interface{})
-	if !ok || inboundCumulative["up"] != int64(100) || inboundCumulative["down"] != int64(200) || inboundCumulative["status"] != "ok" || inboundCumulative["source"] != "inbound" {
-		t.Fatalf("unexpected inbound cumulative object: %+v", inbounds[0]["inbound_cumulative"])
-	}
-	inboundRealtime, ok := inbounds[0]["inbound_realtime"].(map[string]interface{})
-	if !ok || inboundRealtime["rate_up"] != float64(1) || inboundRealtime["rate_down"] != float64(2) || inboundRealtime["delta_up"] != int64(10) || inboundRealtime["status"] != "ok" || inboundRealtime["source"] != "inbound" {
-		t.Fatalf("unexpected inbound realtime object: %+v", inbounds[0]["inbound_realtime"])
-	}
-	clients := buildTrafficClientPayloads(view)
-	if len(clients) != 1 {
-		t.Fatalf("expected one client payload, got %+v", clients)
-	}
-	clientCumulative, ok := clients[0]["client_cumulative"].(map[string]interface{})
-	if !ok || clientCumulative["up"] != int64(30) || clientCumulative["down"] != int64(40) || clientCumulative["status"] != "ok" || clientCumulative["source"] != "client" {
-		t.Fatalf("unexpected client cumulative object: %+v", clients[0]["client_cumulative"])
-	}
-	clientRealtime, ok := clients[0]["client_realtime"].(map[string]interface{})
-	if !ok || clientRealtime["rate_up"] != float64(0.3) || clientRealtime["rate_down"] != float64(0.4) || clientRealtime["delta_up"] != int64(3) || clientRealtime["status"] != "ok" || clientRealtime["source"] != "client" {
-		t.Fatalf("unexpected client realtime object: %+v", clients[0]["client_realtime"])
 	}
 }
 
@@ -1185,10 +1085,10 @@ func TestTrafficV2SnapshotFallbackDoesNotForgeInboundRealtime(t *testing.T) {
 		t.Fatalf("build traffic view: %v", err)
 	}
 	payload := buildTrafficV2Snapshot(view)
-	if payload.Inbounds[0].Cumulative.Source != "fallback_client_sum" || payload.Inbounds[0].Cumulative.Status != "ok" || payload.Inbounds[0].Cumulative.Message == "" {
-		t.Fatalf("expected inbound cumulative fallback metadata, got %+v", payload.Inbounds[0].Cumulative)
+	if payload.Inbounds[0].Cumulative.Source != "migate" || payload.Inbounds[0].Cumulative.Status != "waiting" || payload.Inbounds[0].Cumulative.Total != 0 {
+		t.Fatalf("expected inbound cumulative to remain waiting without inbound state, got %+v", payload.Inbounds[0].Cumulative)
 	}
-	if payload.Inbounds[0].Realtime.Status != "waiting" || payload.Inbounds[0].Realtime.Source != "inbound" || payload.Inbounds[0].Realtime.RateTotal != 0 {
+	if payload.Inbounds[0].Realtime.Status != "waiting" || payload.Inbounds[0].Realtime.Source != "migate" || payload.Inbounds[0].Realtime.RateTotal != 0 {
 		t.Fatalf("client realtime must not be forged as inbound realtime, got %+v", payload.Inbounds[0].Realtime)
 	}
 	if payload.Total.Realtime.Status != "waiting" || payload.Total.Realtime.RateTotal != 0 {
@@ -1484,8 +1384,8 @@ func TestSummarizeTrafficUsesClientEmailWhenStatsKeyIsEmpty(t *testing.T) {
 		t.Fatalf("expected email-keyed client state to be selected, got %+v", client)
 	}
 	inbound := trafficByInbound[1]
-	if inbound.Status != "waiting" || inbound.Up != 12 || inbound.Down != 34 || inbound.Total != 46 {
-		t.Fatalf("expected inbound to aggregate email-keyed client state, got %+v", inbound)
+	if inbound.Status != "waiting" || inbound.Up != 0 || inbound.Down != 0 || inbound.Total != 0 {
+		t.Fatalf("expected inbound without inbound state to remain waiting/zero, got %+v", inbound)
 	}
 }
 
@@ -1502,17 +1402,17 @@ func TestTrafficSummaryKeepsClientTotalsWhenOnlyClientStateExists(t *testing.T) 
 			{Engine: "xray", ScopeType: "client", ScopeKey: "c_only", TotalUp: 30, TotalDown: 40, Status: "waiting", LastSeenAt: now},
 		},
 	}
-	response := httptest.NewRecorder()
-	trafficSummaryHandler(store, newTrafficViewCache(0))(response, httptest.NewRequest(http.MethodGet, "/api/traffic/summary", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected traffic summary status 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var payload map[string]interface{}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode summary response: %v", err)
-	}
-	if payload["total"] != float64(70) || payload["total_up"] != float64(30) || payload["total_down"] != float64(40) {
-		t.Fatalf("expected traffic summary to retain client totals, got %+v", payload)
+	snapshot := buildTrafficV2Snapshot(trafficView{
+		inbounds: store.inbounds,
+		trafficByInbound: map[int64]inboundTrafficSummary{
+			1: {Status: "waiting", Source: "migate"},
+		},
+		trafficByClient: map[int64]clientTrafficSummary{
+			10: {Up: 30, Down: 40, Total: 70, Status: "waiting", Source: "client"},
+		},
+	})
+	if snapshot.Total.Cumulative.Total != 0 || snapshot.Total.Cumulative.Up != 0 || snapshot.Total.Cumulative.Down != 0 {
+		t.Fatalf("expected v2 snapshot to aggregate inbound totals only, got %+v", snapshot.Total.Cumulative)
 	}
 }
 
@@ -1555,13 +1455,13 @@ func TestSummarizeTrafficAggregatesClientUnavailableWhenNoInboundStateExists(t *
 		t.Fatalf("expected unavailable client state with totals, got %+v", client)
 	}
 	inbound := trafficByInbound[1]
-	if inbound.Status != "unavailable" || inbound.Up != 30 || inbound.Down != 40 || inbound.Total != 70 || inbound.RateUp != 0 || inbound.RateDown != 0 {
-		t.Fatalf("expected inbound to aggregate unavailable client state without zeroing totals, got %+v", inbound)
+	if inbound.Status != "waiting" || inbound.Up != 0 || inbound.Down != 0 || inbound.Total != 0 || inbound.RateUp != 0 || inbound.RateDown != 0 {
+		t.Fatalf("expected inbound without inbound state to remain waiting/zero, got %+v", inbound)
 	}
 	coverage := buildTrafficCoverage(trafficByInbound)
 	engines := coverage["engines"].(map[string]string)
-	if coverage["overall"] != "unavailable" || engines["xray"] != "unavailable" {
-		t.Fatalf("dashboard coverage should surface unavailable xray status, got %+v", coverage)
+	if coverage["overall"] != "waiting" || engines["xray"] != "waiting" {
+		t.Fatalf("dashboard coverage should reflect missing inbound state, got %+v", coverage)
 	}
 }
 
@@ -1732,7 +1632,7 @@ func TestTrafficSamplesToSeriesDropsUnknownKeysAndSortsByTime(t *testing.T) {
 	}
 }
 
-func TestTrafficSamplesToSeriesFallsBackWhenExpectedEngineMissing(t *testing.T) {
+func TestTrafficSamplesToSeriesDropsUnexpectedEngineWhenExpectedEngineMissing(t *testing.T) {
 	inbounds := []db.Inbound{{
 		ID: 1, Protocol: "hysteria2",
 		Clients: []db.Client{{ID: 10, StatsKey: "c_hy2"}},
@@ -1742,11 +1642,8 @@ func TestTrafficSamplesToSeriesFallsBackWhenExpectedEngineMissing(t *testing.T) 
 		{SampledAt: "2026-06-16T00:02:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "c_hy2", TotalUp: 20, TotalDown: 30},
 	}
 	points := trafficSamplesToSeries(samples, "client", inbounds)
-	if len(points) != 2 {
-		t.Fatalf("expected fallback xray points, got %+v", points)
-	}
-	if points[0].Up != 10 || points[0].Down != 15 || points[1].Up != 20 || points[1].Down != 30 {
-		t.Fatalf("unexpected fallback points: %+v", points)
+	if len(points) != 0 {
+		t.Fatalf("expected no points when expected engine sample is missing, got %+v", points)
 	}
 }
 

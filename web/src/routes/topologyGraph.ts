@@ -1,5 +1,5 @@
 import type { Edge, Node } from '@xyflow/react';
-import type { Client, Inbound, Outbound, RoutingRule } from '../api/types';
+import type { Client, Inbound, Outbound, RoutingRule, TrafficV2Snapshot } from '../api/types';
 import { coreLabel, inboundCore, outboundSupportedCores, outboundSupportsCore } from '../lib/cores';
 import { formatBytes } from '../lib/format';
 import { generatedInboundTag } from '../lib/routing';
@@ -46,6 +46,7 @@ type TopologyLookup = {
   outboundById: Map<number, Outbound>;
   clientsByInboundId: Map<number, Map<number, Client>>;
   clientInboundById: Map<number, Inbound>;
+  trafficByClientID: Map<number, { up: number; down: number }>;
 };
 
 const inboundX = 0;
@@ -56,13 +57,13 @@ const clientGap = 96;
 const outboundGap = 132;
 const systemDirectOutboundTag = 'migate-system-direct';
 
-export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], routingRules: RoutingRule[]): TopologyGraph {
+export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], routingRules: RoutingRule[], trafficSnapshot?: TrafficV2Snapshot): TopologyGraph {
   const systemDirectOutboundIds = new Set(outbounds.filter((outbound) => isSystemDirectOutbound(outbound)).map((outbound) => outbound.id));
   const visibleOutbounds = outbounds.filter((outbound) => !isSystemDirectOutbound(outbound));
   const visibleRoutingRules = routingRules.filter((rule) => !isSystemDirectRoutingRule(rule, systemDirectOutboundIds));
   const nodes: Array<Node<TopologyNodeData>> = [];
   const edges: Array<Edge<TopologyEdgeData>> = [];
-  const lookup = buildTopologyLookup(inbounds, visibleOutbounds);
+  const lookup = buildTopologyLookup(inbounds, visibleOutbounds, trafficSnapshot);
   const missingInboundTargets = new Map<string, { title: string; subtitle?: string }>();
   const missingClientRules: Array<{ rule: RoutingRule; source: RoutingSource }> = [];
   const missingOutboundTargets = new Map<string, { subtitle?: string }>();
@@ -78,7 +79,7 @@ export function buildTopologyGraph(inbounds: Inbound[], outbounds: Outbound[], r
 
     clients.forEach((client, index) => {
       const clientY = y + 18 + index * clientGap;
-      nodes.push(buildClientNode(client, inbound, clientY));
+      nodes.push(buildClientNode(client, inbound, clientY, lookup.trafficByClientID.get(client.id)));
       edges.push(buildClientEdge(inbound, client));
     });
 
@@ -182,7 +183,7 @@ export function buildInboundTagLookup(inbounds: Inbound[]): Map<string, Inbound>
   return lookup;
 }
 
-function buildTopologyLookup(inbounds: Inbound[], outbounds: Outbound[]): TopologyLookup {
+function buildTopologyLookup(inbounds: Inbound[], outbounds: Outbound[], trafficSnapshot?: TrafficV2Snapshot): TopologyLookup {
   const inboundById = new Map<number, Inbound>();
   const clientsByInboundId = new Map<number, Map<number, Client>>();
   const clientInboundById = new Map<number, Inbound>();
@@ -201,6 +202,12 @@ function buildTopologyLookup(inbounds: Inbound[], outbounds: Outbound[]): Topolo
     outboundById: buildOutboundIdLookup(outbounds),
     clientsByInboundId,
     clientInboundById,
+    trafficByClientID: new Map(
+      (trafficSnapshot?.clients || []).map((client) => [
+        client.id,
+        { up: client.cumulative.up, down: client.cumulative.down },
+      ]),
+    ),
   };
 }
 
@@ -354,7 +361,12 @@ function buildInboundNode(inbound: Inbound, y: number): Node<TopologyNodeData> {
   };
 }
 
-function buildClientNode(client: Client, inbound: Inbound, y: number): Node<TopologyNodeData> {
+function buildClientNode(
+  client: Client,
+  inbound: Inbound,
+  y: number,
+  traffic?: { up: number; down: number },
+): Node<TopologyNodeData> {
   return {
     id: clientNodeId(client),
     type: 'topologyNode',
@@ -365,8 +377,8 @@ function buildClientNode(client: Client, inbound: Inbound, y: number): Node<Topo
       subtitle: inbound.remark || generatedInboundTag(inbound),
       enabled: client.enabled !== false,
       meta: [
-        { label: '上行', value: formatBytes(client.xray_up ?? client.up ?? 0) },
-        { label: '下行', value: formatBytes(client.xray_down ?? client.down ?? 0) },
+        { label: '上行', value: formatBytes(traffic?.up ?? 0) },
+        { label: '下行', value: formatBytes(traffic?.down ?? 0) },
         { label: '限额', value: client.traffic_limit ? formatBytes(client.traffic_limit) : '不限制' },
       ],
     },

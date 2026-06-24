@@ -136,38 +136,20 @@ func totalCumulativeMetadata(inbounds map[int64]TrafficCumulativeMetric) (string
 		return "migate", ""
 	}
 	sources := map[string]struct{}{}
-	hasFallback := false
 	for _, metric := range inbounds {
 		source := normalizedMetricSource(metric.Source)
 		sources[source] = struct{}{}
-		if source == "fallback_client_sum" {
-			hasFallback = true
-		}
 	}
 	if len(sources) == 1 {
 		for source := range sources {
-			if hasFallback {
-				return source, "total cumulative includes inbound totals aggregated from client cumulative counters"
-			}
 			return source, ""
 		}
-	}
-	if hasFallback {
-		return "mixed", "total cumulative mixes inbound counters and client fallback totals"
 	}
 	return "mixed", ""
 }
 
 func newInboundRealtimeMetric(traffic inboundTrafficSummary) TrafficRealtimeMetric {
-	status := traffic.Status
-	source := traffic.Source
-	message := traffic.Message
-	if traffic.Source == "fallback_client_sum" && status == "ok" {
-		status = "waiting"
-		source = "inbound"
-		message = "waiting for inbound realtime sample"
-	}
-	return newTrafficRealtimeMetric(traffic.DeltaUp, traffic.DeltaDown, traffic.RateUp, traffic.RateDown, traffic.WindowSeconds, traffic.LastSampledAt, status, source, message)
+	return newTrafficRealtimeMetric(traffic.DeltaUp, traffic.DeltaDown, traffic.RateUp, traffic.RateDown, traffic.WindowSeconds, traffic.LastSampledAt, traffic.Status, traffic.Source, traffic.Message)
 }
 
 func normalizedMetricStatus(status string) string {

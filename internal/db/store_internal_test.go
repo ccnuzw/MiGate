@@ -220,7 +220,7 @@ func TestValidationConfigVersionTracksConfigFieldsOnly(t *testing.T) {
 		t.Fatalf("update client credential fields: %v", err)
 	}
 	version = expectValidationVersionIncreased(t, store, ctx, version, "update client credential fields")
-	if err := store.UpdateClientTraffic(ctx, client.Email, 1024, 2048); err != nil {
+	if err := store.UpdateClientTraffic(ctx, client.StatsKey, 1024, 2048); err != nil {
 		t.Fatalf("update runtime traffic: %v", err)
 	}
 	afterTraffic, err := store.ValidationConfigVersion(ctx)
@@ -311,11 +311,12 @@ func TestTrafficSamplesAreBucketedPerFiveSeconds(t *testing.T) {
 func TestTrafficSamplesBucketMigrationRunsOnlyWhenIndexMissing(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "traffic-migrate.db")
-	raw, err := sql.Open("sqlite", sqliteDSN(path))
-	if err != nil {
-		t.Fatalf("open raw sqlite: %v", err)
-	}
-	if _, err := raw.ExecContext(ctx, `
+	{
+		raw, err := sql.Open("sqlite", sqliteDSN(path))
+		if err != nil {
+			t.Fatalf("open raw sqlite: %v", err)
+		}
+		if _, err := raw.ExecContext(ctx, `
 CREATE TABLE traffic_samples (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sampled_at TEXT NOT NULL,
@@ -333,30 +334,205 @@ INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up
   ('2026-06-17T12:30:00Z', 'xray', 'client', 'a', 2, 2, 0, 0, 'ok'),
   ('2026-06-17T12:31:00Z', 'xray', 'client', 'a', 3, 3, 0, 0, 'ok');
 `); err != nil {
-		raw.Close()
-		t.Fatalf("seed legacy duplicates: %v", err)
+			if cerr := raw.Close(); cerr != nil {
+				t.Fatalf("close raw sqlite after failed traffic seed: %v (seed err: %v)", cerr, err)
+			}
+			t.Fatalf("seed legacy duplicates: %v", err)
+		}
+		if err := raw.Close(); err != nil {
+			t.Fatalf("close raw sqlite after seeding traffic samples: %v", err)
+		}
 	}
-	raw.Close()
+
+	{
+		store, err := Open(ctx, path)
+		if err != nil {
+			t.Fatalf("open migrated store: %v", err)
+		}
+		assertTrafficSampleCountForTest(t, store, 2)
+		if !indexExistsForTest(t, store, "idx_traffic_samples_bucket") {
+			if cerr := store.Close(); cerr != nil {
+				t.Fatalf("close migrated store after missing bucket index: %v", cerr)
+			}
+			t.Fatal("expected traffic sample bucket index to exist after migration")
+		}
+		if err := store.Close(); err != nil {
+			t.Fatalf("close migrated store: %v", err)
+		}
+	}
+
+	{
+		store, err := Open(ctx, path)
+		if err != nil {
+			t.Fatalf("reopen migrated store: %v", err)
+		}
+		defer store.Close()
+		assertTrafficSampleCountForTest(t, store, 2)
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES ('2026-06-17T12:31:00Z', 'xray', 'client', 'a', 4, 4, 0, 0, 'ok')`); err == nil {
+			t.Fatal("expected unique bucket index to reject duplicate sample after second open")
+		}
+	}
+}
+
+func TestClientTrafficMirrorColumnsAreDroppedDuringMigration(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "clients-traffic-mirror-migrate.db")
+	raw, err := sql.Open("sqlite", sqliteDSN(path))
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `
+CREATE TABLE inbounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid TEXT NOT NULL UNIQUE,
+  remark TEXT NOT NULL,
+  protocol TEXT NOT NULL,
+  core TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL,
+  network TEXT NOT NULL,
+  security TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  ws_path TEXT NOT NULL DEFAULT '',
+  ws_host TEXT NOT NULL DEFAULT '',
+  grpc_service_name TEXT NOT NULL DEFAULT '',
+  reality_dest TEXT NOT NULL DEFAULT '',
+  reality_server_names TEXT NOT NULL DEFAULT '',
+  reality_short_id TEXT NOT NULL DEFAULT '',
+  reality_private_key TEXT NOT NULL DEFAULT '',
+  reality_public_key TEXT NOT NULL DEFAULT '',
+  ss_method TEXT NOT NULL DEFAULT '2022-blake3-aes-128-gcm',
+  tls_cert_file TEXT NOT NULL DEFAULT '',
+  tls_key_file TEXT NOT NULL DEFAULT '',
+  tls_sni TEXT NOT NULL DEFAULT '',
+  tls_fingerprint TEXT NOT NULL DEFAULT '',
+  tls_alpn TEXT NOT NULL DEFAULT '',
+  xhttp_path TEXT NOT NULL DEFAULT '',
+  xhttp_mode TEXT NOT NULL DEFAULT '',
+  hy2_up_mbps INTEGER NOT NULL DEFAULT 0,
+  hy2_down_mbps INTEGER NOT NULL DEFAULT 0,
+  hy2_obfs TEXT NOT NULL DEFAULT '',
+  hy2_obfs_password TEXT NOT NULL DEFAULT '',
+  hy2_mport TEXT NOT NULL DEFAULT '',
+  tuic_congestion_control TEXT NOT NULL DEFAULT 'bbr',
+  tuic_zero_rtt INTEGER NOT NULL DEFAULT 0,
+  wg_private_key TEXT NOT NULL DEFAULT '',
+  wg_address TEXT NOT NULL DEFAULT '',
+  wg_peer_public_key TEXT NOT NULL DEFAULT '',
+  wg_allowed_ips TEXT NOT NULL DEFAULT '0.0.0.0/0, ::/0',
+  wg_endpoint TEXT NOT NULL DEFAULT '',
+  wg_preshared_key TEXT NOT NULL DEFAULT '',
+  wg_mtu INTEGER NOT NULL DEFAULT 0,
+  shadowtls_version INTEGER NOT NULL DEFAULT 3,
+  shadowtls_password TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE clients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  inbound_id INTEGER NOT NULL REFERENCES inbounds(id) ON DELETE CASCADE,
+  uuid TEXT NOT NULL UNIQUE,
+  credential_id TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
+  subscription_token TEXT NOT NULL DEFAULT '',
+  stats_key TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  up INTEGER NOT NULL DEFAULT 0,
+  down INTEGER NOT NULL DEFAULT 0,
+  traffic_limit INTEGER NOT NULL DEFAULT 0,
+  expiry_at INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO inbounds (id, uuid, remark, protocol, core, port, network, security, enabled, created_at)
+VALUES (1, 'ib-1', 'legacy', 'vless', '', 28099, 'tcp', 'none', 1, '2026-06-24T00:00:00Z');
+		INSERT INTO clients (id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at, up, down, traffic_limit, expiry_at)
+		VALUES (1, 1, 'client-1', '', '', '', 'legacy-stats', 'legacy@example.com', 1, '2026-06-24T00:00:00Z', 12, 34, 1024, 5678);
+		`); err != nil {
+		if cerr := raw.Close(); cerr != nil {
+			t.Fatalf("close raw sqlite after failed clients seed: %v (seed err: %v)", cerr, err)
+		}
+		t.Fatalf("seed legacy clients schema: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite after seed: %v", err)
+	}
 
 	store, err := Open(ctx, path)
 	if err != nil {
 		t.Fatalf("open migrated store: %v", err)
 	}
 	defer store.Close()
-	assertTrafficSampleCountForTest(t, store, 2)
-	if !indexExistsForTest(t, store, "idx_traffic_samples_bucket") {
-		t.Fatal("expected traffic sample bucket index to exist after migration")
-	}
-	store.Close()
 
-	store, err = Open(ctx, path)
-	if err != nil {
-		t.Fatalf("reopen migrated store: %v", err)
+	if columnExistsForTest(t, store, "clients", "up") || columnExistsForTest(t, store, "clients", "down") {
+		t.Fatal("expected migrated clients table to drop runtime traffic mirror columns")
 	}
-	defer store.Close()
-	assertTrafficSampleCountForTest(t, store, 2)
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES ('2026-06-17T12:31:00Z', 'xray', 'client', 'a', 4, 4, 0, 0, 'ok')`); err == nil {
-		t.Fatal("expected unique bucket index to reject duplicate sample after second open")
+	inbounds, err := store.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("list migrated inbounds: %v", err)
+	}
+	if len(inbounds) != 1 || len(inbounds[0].Clients) != 1 {
+		t.Fatalf("expected migrated client row to survive table rebuild, got %+v", inbounds)
+	}
+	client := inbounds[0].Clients[0]
+	if client.StatsKey != "legacy-stats" || client.Email != "legacy@example.com" || client.TrafficLimit != 1024 || client.ExpiryAt != 5678 {
+		t.Fatalf("expected migrated client payload to survive table rebuild, got %+v", client)
+	}
+	if !indexIsUnique(t, store, "clients", "idx_clients_credential_id") {
+		t.Fatal("expected migrated clients table to preserve credential_id unique index")
+	}
+	if !routingRuleForeignKeys(t, store)["client_id->clients.id"] {
+		t.Fatalf("expected migrated schema to preserve routing_rules client foreign key, got %#v", routingRuleForeignKeys(t, store))
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO clients (inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at)
+VALUES (?, ?, ?, '', '', ?, ?, 1, ?, 0, 0)
+`, inbounds[0].ID, client.UUID, "uuid-conflict-credential", "dup-stats", "dup@example.com", "2026-06-24T00:00:01Z"); err == nil {
+		t.Fatal("expected migrated clients table to preserve uuid uniqueness")
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO clients (inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at)
+VALUES (?, ?, ?, '', '', ?, ?, 1, ?, 0, 0)
+`, inbounds[0].ID, "client-2", "dup-credential", "dup-stats-2", "dup2@example.com", "2026-06-24T00:00:02Z"); err != nil {
+		t.Fatalf("seed first duplicate credential client: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO clients (inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at)
+VALUES (?, ?, ?, '', '', ?, ?, 1, ?, 0, 0)
+`, inbounds[0].ID, "client-3", "dup-credential", "dup-stats-3", "dup3@example.com", "2026-06-24T00:00:03Z"); err == nil {
+		t.Fatal("expected migrated clients table to preserve credential_id uniqueness")
+	}
+	created, err := store.CreateClient(ctx, CreateClientParams{InboundID: inbounds[0].ID, Email: "created-after-migration@example.com"})
+	if err != nil {
+		t.Fatalf("create client after migration: %v", err)
+	}
+	if created.StatsKey == "" || created.StatsKey == client.StatsKey || created.StatsKey == created.Email {
+		t.Fatalf("expected migrated clients table to keep public create path usable with generated stats_key, got %+v", created)
+	}
+	if err := store.UpdateClientTraffic(ctx, created.StatsKey, 100, 150); err != nil {
+		t.Fatalf("update created client traffic after migration: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, created.StatsKey, 130, 190); err != nil {
+		t.Fatalf("increment created client traffic after migration: %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("read created client usage after migration: %v", err)
+	}
+	if !found || usage.StatsKey != created.StatsKey || usage.TotalUp != 30 || usage.TotalDown != 40 {
+		t.Fatalf("expected created client stats_key to remain usable after migration, got %+v", usage)
+	}
+	version, err := store.ValidationConfigVersion(ctx)
+	if err != nil {
+		t.Fatalf("validation version after migration: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE clients SET password=? WHERE id=?`, "changed-after-migration", client.ID); err != nil {
+		t.Fatalf("update migrated client: %v", err)
+	}
+	after, err := store.ValidationConfigVersion(ctx)
+	if err != nil {
+		t.Fatalf("validation version after migrated client update: %v", err)
+	}
+	if after <= version {
+		t.Fatalf("expected migrated clients trigger to bump validation version, before=%d after=%d", version, after)
 	}
 }
 
@@ -376,6 +552,15 @@ func indexExistsForTest(t *testing.T, store *Store, name string) bool {
 	exists, err := store.indexExists(context.Background(), name)
 	if err != nil {
 		t.Fatalf("index exists %s: %v", name, err)
+	}
+	return exists
+}
+
+func columnExistsForTest(t *testing.T, store *Store, table, column string) bool {
+	t.Helper()
+	exists, err := store.columnExists(context.Background(), table, column)
+	if err != nil {
+		t.Fatalf("column exists %s.%s: %v", table, column, err)
 	}
 	return exists
 }

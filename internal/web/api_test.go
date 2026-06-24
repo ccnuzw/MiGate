@@ -2178,6 +2178,24 @@ func TestInboundsAPIListsStoredInboundsWithClients(t *testing.T) {
 			t.Fatalf("response missing %q: %s", want, body)
 		}
 	}
+	for _, forbidden := range []string{
+		`"traffic_up"`,
+		`"traffic_down"`,
+		`"traffic_total"`,
+		`"traffic_status"`,
+		`"traffic_stats_source"`,
+		`"client_traffic"`,
+		`"xray_up"`,
+		`"xray_down"`,
+		`"cumulative"`,
+		`"realtime"`,
+		`"inbound_cumulative"`,
+		`"inbound_realtime"`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("inbounds api should stay config-only, found %q in %s", forbidden, body)
+		}
+	}
 	if strings.Contains(body, "panel_password") || strings.Contains(body, "super-secret-password") {
 		t.Fatalf("inbounds api leaked panel secrets: %s", body)
 	}
@@ -3737,7 +3755,7 @@ func TestStatsAPIUsesRealtimeTrafficAsCurrentWhenAvailable(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":1234`, `"traffic_down":5678`, `"traffic_total":6912`, `"xray_up":1334`, `"xray_down":5778`, `"traffic_stats_source":"migate"`, `"traffic_status":"ok"`, `"rate_up":123.4`, `"rate_down":567.8`} {
+	for _, want := range []string{`"up":1234`, `"down":5678`, `"xray_up":1334`, `"xray_down":5778`, `"traffic_stats_source":"migate"`, `"traffic_status":"ok"`, `"rate_up":123.4`, `"rate_down":567.8`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stats response missing %q: %s", want, body)
 		}
@@ -3769,7 +3787,7 @@ func TestStatsAPIDefaultIsSummaryOnlyAndCached(t *testing.T) {
 			t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 		}
 		body := response.Body.String()
-		for _, want := range []string{`"clients":1`, `"traffic_up":12`, `"traffic_down":34`, `"traffic_total":46`} {
+		for _, want := range []string{`"clients":1`, `"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("summary stats response missing %q: %s", want, body)
 			}
@@ -3928,9 +3946,6 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 	}
 	statsBody := statsResponse.Body.String()
 	for _, want := range []string{
-		`"traffic_up":100`,
-		`"traffic_down":50`,
-		`"traffic_total":150`,
 		`"up":100`,
 		`"down":50`,
 		`"xray_up":200`,
@@ -3949,40 +3964,17 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 		t.Fatalf("expected inbounds 200, got %d: %s", inboundsResponse.Code, inboundsResponse.Body.String())
 	}
 	inboundsBody := inboundsResponse.Body.String()
-	for _, want := range []string{
-		`"traffic_up":100`,
-		`"traffic_down":50`,
-		`"traffic_total":150`,
-		`"traffic_stats_source":"migate"`,
-		`"traffic_status":"ok"`,
-		fmt.Sprintf(`"%d":{"up":100,"down":50`, client.ID),
-		`"status":"ok"`,
-	} {
-		if !strings.Contains(inboundsBody, want) {
-			t.Fatalf("inbounds response missing %q: %s", want, inboundsBody)
-		}
-	}
-
-	trafficRefresh := httptest.NewRecorder()
-	router.ServeHTTP(trafficRefresh, httptest.NewRequest(http.MethodGet, "/api/inbounds?refresh=traffic", nil))
-	if trafficRefresh.Code != http.StatusOK {
-		t.Fatalf("expected traffic refresh 200, got %d: %s", trafficRefresh.Code, trafficRefresh.Body.String())
-	}
-	refreshBody := trafficRefresh.Body.String()
-	for _, want := range []string{
-		`"traffic_up":100`,
-		`"traffic_down":50`,
-		`"traffic_total":150`,
-		`"clients":[`,
+	for _, forbidden := range []string{
+		`"traffic_up"`,
+		`"traffic_down"`,
+		`"traffic_total"`,
+		`"traffic_stats_source"`,
+		`"traffic_status"`,
+		`"client_traffic"`,
 		fmt.Sprintf(`"%d":{"up":100,"down":50`, client.ID),
 	} {
-		if !strings.Contains(refreshBody, want) {
-			t.Fatalf("traffic refresh response missing %q: %s", want, refreshBody)
-		}
-	}
-	for _, forbidden := range []string{`"reality_private_key"`, `"tls_cert_file"`, `"hy2_obfs_password"`} {
-		if strings.Contains(refreshBody, forbidden) {
-			t.Fatalf("traffic refresh response should omit full config field %q: %s", forbidden, refreshBody)
+		if strings.Contains(inboundsBody, forbidden) {
+			t.Fatalf("inbounds response should not expose traffic field %q: %s", forbidden, inboundsBody)
 		}
 	}
 }
@@ -4028,56 +4020,8 @@ func TestTrafficAPIsExposeConsistentPartialWaitingState(t *testing.T) {
 	router := web.NewRouter(web.WithStore(store))
 	summary := httptest.NewRecorder()
 	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/traffic/summary", nil))
-	if summary.Code != http.StatusOK {
-		t.Fatalf("summary 200, got %d: %s", summary.Code, summary.Body.String())
-	}
-	var summaryBody struct {
-		TotalUp   int64 `json:"total_up"`
-		TotalDown int64 `json:"total_down"`
-		Status    struct {
-			Overall string            `json:"overall"`
-			Engines map[string]string `json:"engines"`
-		} `json:"status"`
-	}
-	if err := json.NewDecoder(summary.Body).Decode(&summaryBody); err != nil {
-		t.Fatalf("decode summary: %v", err)
-	}
-	if summaryBody.TotalUp != 180 || summaryBody.TotalDown != 180 || summaryBody.Status.Overall != "partial" || summaryBody.Status.Engines["xray"] != "partial" {
-		t.Fatalf("unexpected summary payload: %+v", summaryBody)
-	}
-
-	refresh := httptest.NewRecorder()
-	router.ServeHTTP(refresh, httptest.NewRequest(http.MethodGet, "/api/inbounds?refresh=traffic", nil))
-	if refresh.Code != http.StatusOK {
-		t.Fatalf("refresh 200, got %d: %s", refresh.Code, refresh.Body.String())
-	}
-	refreshBody := refresh.Body.String()
-	for _, want := range []string{`"traffic_up":180`, `"traffic_down":180`, `"traffic_total":360`, `"traffic_status":"partial"`, fmt.Sprintf(`"%d":{"up":60,"down":60`, okClient.ID), `"status":"ok"`, fmt.Sprintf(`"%d":{"up":120,"down":120`, waitingClient.ID), `"status":"waiting"`} {
-		if !strings.Contains(refreshBody, want) {
-			t.Fatalf("refresh response missing %q: %s", want, refreshBody)
-		}
-	}
-
-	trafficInbounds := httptest.NewRecorder()
-	router.ServeHTTP(trafficInbounds, httptest.NewRequest(http.MethodGet, "/api/traffic/inbounds", nil))
-	if trafficInbounds.Code != http.StatusOK {
-		t.Fatalf("traffic inbounds 200, got %d: %s", trafficInbounds.Code, trafficInbounds.Body.String())
-	}
-	for _, want := range []string{`"total_up":180`, `"total_down":180`, `"total":360`, `"status":"partial"`} {
-		if !strings.Contains(trafficInbounds.Body.String(), want) {
-			t.Fatalf("traffic inbounds response missing %q: %s", want, trafficInbounds.Body.String())
-		}
-	}
-
-	trafficClients := httptest.NewRecorder()
-	router.ServeHTTP(trafficClients, httptest.NewRequest(http.MethodGet, "/api/traffic/clients", nil))
-	if trafficClients.Code != http.StatusOK {
-		t.Fatalf("traffic clients 200, got %d: %s", trafficClients.Code, trafficClients.Body.String())
-	}
-	for _, want := range []string{`"total_up":60`, `"total_down":60`, `"status":"ok"`, `"total_up":120`, `"total_down":120`, `"status":"waiting"`} {
-		if !strings.Contains(trafficClients.Body.String(), want) {
-			t.Fatalf("traffic clients response missing %q: %s", want, trafficClients.Body.String())
-		}
+	if summary.Code != http.StatusNotFound {
+		t.Fatalf("legacy traffic summary should be removed, got %d: %s", summary.Code, summary.Body.String())
 	}
 
 	stats := httptest.NewRecorder()
@@ -4085,7 +4029,7 @@ func TestTrafficAPIsExposeConsistentPartialWaitingState(t *testing.T) {
 	if stats.Code != http.StatusOK {
 		t.Fatalf("stats detail 200, got %d: %s", stats.Code, stats.Body.String())
 	}
-	for _, want := range []string{`"traffic_up":180`, `"traffic_down":180`, `"traffic_total":360`, `"traffic_status":"ok"`, `"traffic_status":"waiting"`} {
+	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"traffic_status":"ok"`, `"traffic_status":"waiting"`} {
 		if !strings.Contains(stats.Body.String(), want) {
 			t.Fatalf("stats detail response missing %q: %s", want, stats.Body.String())
 		}
@@ -4117,116 +4061,8 @@ func TestTrafficAPIsExposeUnavailableStateAfterXrayQueryFailure(t *testing.T) {
 	router := web.NewRouter(web.WithStore(store))
 	summary := httptest.NewRecorder()
 	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/traffic/summary", nil))
-	if summary.Code != http.StatusOK {
-		t.Fatalf("summary 200, got %d: %s", summary.Code, summary.Body.String())
-	}
-	var summaryBody struct {
-		Status struct {
-			Overall string            `json:"overall"`
-			Engines map[string]string `json:"engines"`
-		} `json:"status"`
-	}
-	if err := json.NewDecoder(summary.Body).Decode(&summaryBody); err != nil {
-		t.Fatalf("decode summary: %v", err)
-	}
-	if summaryBody.Status.Overall != "unavailable" || summaryBody.Status.Engines["xray"] != "unavailable" || summaryBody.Status.Engines["singbox"] != "not_configured" {
-		t.Fatalf("unexpected summary unavailable coverage: %+v", summaryBody.Status)
-	}
-
-	refresh := httptest.NewRecorder()
-	router.ServeHTTP(refresh, httptest.NewRequest(http.MethodGet, "/api/inbounds?refresh=traffic", nil))
-	if refresh.Code != http.StatusOK {
-		t.Fatalf("refresh 200, got %d: %s", refresh.Code, refresh.Body.String())
-	}
-	type refreshClientTraffic struct {
-		Up               int64                  `json:"up"`
-		Down             int64                  `json:"down"`
-		Status           string                 `json:"status"`
-		Message          string                 `json:"message"`
-		ClientCumulative map[string]interface{} `json:"client_cumulative"`
-		ClientRealtime   map[string]interface{} `json:"client_realtime"`
-	}
-	type refreshInboundTraffic struct {
-		ID                int64                          `json:"id"`
-		TrafficUp         int64                          `json:"traffic_up"`
-		TrafficDown       int64                          `json:"traffic_down"`
-		TrafficTotal      int64                          `json:"traffic_total"`
-		TrafficStatus     string                         `json:"traffic_status"`
-		TrafficMessage    string                         `json:"traffic_message"`
-		InboundCumulative map[string]interface{}         `json:"inbound_cumulative"`
-		InboundRealtime   map[string]interface{}         `json:"inbound_realtime"`
-		ClientTraffic     map[int64]refreshClientTraffic `json:"client_traffic"`
-	}
-	var refreshBody struct {
-		Inbounds []refreshInboundTraffic `json:"inbounds"`
-	}
-	if err := json.NewDecoder(refresh.Body).Decode(&refreshBody); err != nil {
-		t.Fatalf("decode refresh response: %v", err)
-	}
-	var refreshInbound *refreshInboundTraffic
-	for i := range refreshBody.Inbounds {
-		if refreshBody.Inbounds[i].ID == inbound.ID {
-			refreshInbound = &refreshBody.Inbounds[i]
-			break
-		}
-	}
-	if refreshInbound == nil {
-		t.Fatalf("refresh response missing inbound %d: %+v", inbound.ID, refreshBody.Inbounds)
-	}
-	if refreshInbound.TrafficUp != 0 || refreshInbound.TrafficDown != 0 || refreshInbound.TrafficTotal != 0 || refreshInbound.TrafficStatus != "unavailable" || refreshInbound.TrafficMessage != "xray stats offline" {
-		t.Fatalf("unexpected refresh inbound traffic: %+v", *refreshInbound)
-	}
-	if refreshInbound.InboundCumulative["status"] != "unavailable" || refreshInbound.InboundRealtime["status"] != "unavailable" || refreshInbound.InboundRealtime["message"] != "xray stats offline" {
-		t.Fatalf("refresh response should expose inbound metric objects with status, got cumulative=%+v realtime=%+v", refreshInbound.InboundCumulative, refreshInbound.InboundRealtime)
-	}
-	refreshClient, ok := refreshInbound.ClientTraffic[client.ID]
-	if !ok {
-		t.Fatalf("refresh response missing client traffic %d: %+v", client.ID, refreshInbound.ClientTraffic)
-	}
-	if refreshClient.Up != 0 || refreshClient.Down != 0 || refreshClient.Status != "unavailable" || refreshClient.Message != "xray stats offline" {
-		t.Fatalf("unexpected refresh client traffic: %+v", refreshClient)
-	}
-	if refreshClient.ClientCumulative["status"] != "unavailable" || refreshClient.ClientRealtime["status"] != "unavailable" || refreshClient.ClientRealtime["message"] != "xray stats offline" {
-		t.Fatalf("refresh response should expose client metric objects with status, got cumulative=%+v realtime=%+v", refreshClient.ClientCumulative, refreshClient.ClientRealtime)
-	}
-
-	trafficClients := httptest.NewRecorder()
-	router.ServeHTTP(trafficClients, httptest.NewRequest(http.MethodGet, "/api/traffic/clients", nil))
-	if trafficClients.Code != http.StatusOK {
-		t.Fatalf("traffic clients 200, got %d: %s", trafficClients.Code, trafficClients.Body.String())
-	}
-	type trafficClientPayload struct {
-		ID               int64                  `json:"id"`
-		InboundID        int64                  `json:"inbound_id"`
-		TotalUp          int64                  `json:"total_up"`
-		TotalDown        int64                  `json:"total_down"`
-		Total            int64                  `json:"total"`
-		Status           string                 `json:"status"`
-		Message          string                 `json:"message"`
-		ClientCumulative map[string]interface{} `json:"client_cumulative"`
-		ClientRealtime   map[string]interface{} `json:"client_realtime"`
-	}
-	var clientsBody struct {
-		Clients []trafficClientPayload `json:"clients"`
-	}
-	if err := json.NewDecoder(trafficClients.Body).Decode(&clientsBody); err != nil {
-		t.Fatalf("decode traffic clients response: %v", err)
-	}
-	var trafficClient *trafficClientPayload
-	for i := range clientsBody.Clients {
-		if clientsBody.Clients[i].ID == client.ID {
-			trafficClient = &clientsBody.Clients[i]
-			break
-		}
-	}
-	if trafficClient == nil {
-		t.Fatalf("traffic clients response missing client %d: %+v", client.ID, clientsBody.Clients)
-	}
-	if trafficClient.InboundID != inbound.ID || trafficClient.TotalUp != 0 || trafficClient.TotalDown != 0 || trafficClient.Total != 0 || trafficClient.Status != "unavailable" || trafficClient.Message != "xray stats offline" {
-		t.Fatalf("unexpected traffic client payload: %+v", *trafficClient)
-	}
-	if trafficClient.ClientCumulative["status"] != "unavailable" || trafficClient.ClientRealtime["status"] != "unavailable" || trafficClient.ClientRealtime["message"] != "xray stats offline" {
-		t.Fatalf("traffic client payload should expose client metric objects, got cumulative=%+v realtime=%+v", trafficClient.ClientCumulative, trafficClient.ClientRealtime)
+	if summary.Code != http.StatusNotFound {
+		t.Fatalf("legacy traffic summary should be removed, got %d: %s", summary.Code, summary.Body.String())
 	}
 }
 
@@ -4256,7 +4092,7 @@ func TestTrafficSeriesAPIUsesTrafficSamples(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
@@ -4313,7 +4149,7 @@ func TestTrafficSeriesAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing.T)
 	}
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=20", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=20", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
@@ -4370,7 +4206,7 @@ func TestTrafficSeriesAPIUsesExpectedEngineFilter(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	series := httptest.NewRecorder()
-	router.ServeHTTP(series, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=240", nil))
+	router.ServeHTTP(series, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=240", nil))
 	if series.Code != http.StatusOK {
 		t.Fatalf("expected series 200, got %d: %s", series.Code, series.Body.String())
 	}
@@ -4416,7 +4252,7 @@ func TestTrafficSeriesLimitUpperBoundIsExplicit(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	ok := httptest.NewRecorder()
-	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=2000", nil))
+	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=2000", nil))
 	if ok.Code != http.StatusOK {
 		t.Fatalf("expected legal upper limit 2000 to pass, got %d: %s", ok.Code, ok.Body.String())
 	}
@@ -4424,13 +4260,35 @@ func TestTrafficSeriesLimitUpperBoundIsExplicit(t *testing.T) {
 		t.Fatalf("expected legal upper limit response to include series point, got %s", ok.Body.String())
 	}
 	tooHigh := httptest.NewRecorder()
-	router.ServeHTTP(tooHigh, httptest.NewRequest(http.MethodGet, "/api/traffic/series?scope_type=client&limit=2001", nil))
+	router.ServeHTTP(tooHigh, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=2001", nil))
 	if tooHigh.Code != http.StatusBadRequest || !strings.Contains(tooHigh.Body.String(), "invalid_limit") {
 		t.Fatalf("expected over-limit request to fail clearly, got %d: %s", tooHigh.Code, tooHigh.Body.String())
 	}
 }
 
-func TestInboundsAPIAnnotatesLiveTrafficPerInboundAndClient(t *testing.T) {
+func TestLegacyTrafficRoutesAreRemoved(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	router := web.NewRouter(web.WithStore(store))
+	for _, path := range []string{
+		"/api/traffic/summary",
+		"/api/traffic/inbounds",
+		"/api/traffic/clients",
+		"/api/traffic/series",
+		"/api/traffic/stream",
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s should be removed, got %d: %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestInboundsAPIDoesNotExposeTrafficFieldsWhenTrafficExists(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -4453,9 +4311,19 @@ func TestInboundsAPIAnnotatesLiveTrafficPerInboundAndClient(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"traffic_up":222`, `"traffic_down":333`, `"traffic_total":555`, `"traffic_stats_source":"migate"`, `"traffic_status":"ok"`, fmt.Sprintf(`"%d":{"up":222,"down":333`, client.ID), `"status":"ok"`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("inbounds response missing %q: %s", want, body)
+	for _, forbidden := range []string{
+		`"traffic_up"`,
+		`"traffic_down"`,
+		`"traffic_total"`,
+		`"traffic_stats_source"`,
+		`"traffic_status"`,
+		`"client_traffic"`,
+		`"cumulative"`,
+		`"realtime"`,
+		fmt.Sprintf(`"%d":{"up":222,"down":333`, client.ID),
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("inbounds response should not expose traffic field %q: %s", forbidden, body)
 		}
 	}
 }
@@ -7341,7 +7209,7 @@ func TestSubscriptionLimitUsesUnifiedTrafficStateAndResetReopens(t *testing.T) {
 	}
 }
 
-func TestSubscriptionLimitUsesLegacyClientTotalsWhenNoTrafficState(t *testing.T) {
+func TestSubscriptionLimitWaitsForTrafficStateWhenNoTrafficState(t *testing.T) {
 	path := t.TempDir() + "/legacy-subscription.db"
 	store, err := db.Open(context.Background(), path)
 	if err != nil {
@@ -7374,8 +7242,8 @@ func TestSubscriptionLimitUsesLegacyClientTotalsWhenNoTrafficState(t *testing.T)
 	router := web.NewRouter(web.WithStore(store))
 	blocked := httptest.NewRecorder()
 	router.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/sub/"+over.SubscriptionToken, nil))
-	if blocked.Code != http.StatusNotFound {
-		t.Fatalf("expected legacy over-limit subscription to be blocked, got %d: %s", blocked.Code, blocked.Body.String())
+	if blocked.Code != http.StatusOK {
+		t.Fatalf("expected subscription without traffic state to remain available, got %d: %s", blocked.Code, blocked.Body.String())
 	}
 	allowed := httptest.NewRecorder()
 	router.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/sub/"+under.SubscriptionToken, nil))

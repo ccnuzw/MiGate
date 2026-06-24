@@ -62,8 +62,6 @@ CREATE TABLE IF NOT EXISTS clients (
   email TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
-  up INTEGER NOT NULL DEFAULT 0,
-  down INTEGER NOT NULL DEFAULT 0,
   traffic_limit INTEGER NOT NULL DEFAULT 0,
   expiry_at INTEGER NOT NULL DEFAULT 0
 );
@@ -237,6 +235,9 @@ CREATE INDEX IF NOT EXISTS idx_outbound_subscriptions_priority_id ON outbound_su
 	if err := s.ensureTrafficSamplesBucketIndex(ctx); err != nil {
 		return err
 	}
+	if err := s.dropClientTrafficMirrorColumns(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureConfigVersionTriggers(ctx); err != nil {
 		return err
 	}
@@ -328,6 +329,102 @@ WHERE id NOT IN (
 	return err
 }
 
+func (s *Store) dropClientTrafficMirrorColumns(ctx context.Context) error {
+	hasUp, err := s.columnExists(ctx, "clients", "up")
+	if err != nil {
+		return err
+	}
+	hasDown, err := s.columnExists(ctx, "clients", "down")
+	if err != nil {
+		return err
+	}
+	if !hasUp && !hasDown {
+		return nil
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	var foreignKeys int
+	if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE clients_without_traffic_mirror (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  inbound_id INTEGER NOT NULL REFERENCES inbounds(id) ON DELETE CASCADE,
+  uuid TEXT NOT NULL UNIQUE,
+  credential_id TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
+  subscription_token TEXT NOT NULL DEFAULT '',
+  stats_key TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  traffic_limit INTEGER NOT NULL DEFAULT 0,
+  expiry_at INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO clients_without_traffic_mirror (
+  id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at
+)
+SELECT
+  id, inbound_id, uuid, credential_id, password, subscription_token, stats_key, email, enabled, created_at, traffic_limit, expiry_at
+FROM clients;
+DROP TABLE clients;
+ALTER TABLE clients_without_traffic_mirror RENAME TO clients;
+CREATE INDEX IF NOT EXISTS idx_clients_inbound_id ON clients(inbound_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_credential_id ON clients(credential_id) WHERE credential_id <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_subscription_token ON clients(subscription_token) WHERE subscription_token <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_stats_key ON clients(stats_key) WHERE stats_key <> '';
+CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
+CREATE INDEX IF NOT EXISTS idx_clients_inbound_email ON clients(inbound_id, email);
+`); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if foreignKeys != 0 {
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+			return err
+		}
+		rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		if rows.Next() {
+			var table string
+			var rowID int64
+			var parent string
+			var fkID int64
+			if err := rows.Scan(&table, &rowID, &parent, &fkID); err != nil {
+				return err
+			}
+			return sql.ErrTxDone
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) indexExists(ctx context.Context, name string) (bool, error) {
 	var found int
 	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM sqlite_master WHERE type='index' AND name=? LIMIT 1`, name).Scan(&found)
@@ -338,6 +435,31 @@ func (s *Store) indexExists(ctx context.Context, name string) (bool, error) {
 		return false, err
 	}
 	return found == 1, nil
+}
+
+func (s *Store) columnExists(ctx context.Context, table, column string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (s *Store) ensureConfigVersionTriggers(ctx context.Context) error {

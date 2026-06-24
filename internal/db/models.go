@@ -276,8 +276,6 @@ type Client struct {
 	StatsKey          string `json:"stats_key,omitempty"`
 	Email             string `json:"email"`
 	Enabled           bool   `json:"enabled"`
-	Up                int64  `json:"up"`
-	Down              int64  `json:"down"`
 	TrafficLimit      int64  `json:"traffic_limit"`
 	ExpiryAt          int64  `json:"expiry_at"`
 }

@@ -43,7 +43,7 @@ describe('inbound and client modal credential behavior', () => {
     openCredentialSection();
     const initial = inputByLabel('UUID').value;
 
-    const refreshedInbound = { ...inbound, traffic_total: 2048, clients: [{ ...client, up: 128 }] };
+    const refreshedInbound = { ...inbound, clients: [{ ...client }] };
     renderModal(<ClientModal inbound={refreshedInbound} client={refreshedInbound.clients![0]} onClose={() => undefined} onSaved={() => undefined} />);
 
     expect(inputByLabel('UUID').value).toBe(initial);

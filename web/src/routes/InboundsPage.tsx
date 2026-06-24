@@ -648,7 +648,8 @@ export default function InboundsPage() {
                   {clients.map((client) => (
                     <ClientRow
                       key={client.id}
-                      client={withClientTrafficV2(client, trafficIndex.clients.get(client.id))}
+                      client={client}
+                      traffic={trafficIndex.clients.get(client.id)}
                       onCopyShare={() => copyNodeLink(client, showToast, text)}
                       onShowQR={() => showClientQRCode(client, showToast, setQRLink, text)}
                       shareSupported={supportsInboundShareLink(inbound.protocol)}
@@ -698,6 +699,7 @@ export default function InboundsPage() {
 
 function ClientRow({
   client,
+  traffic,
   onCopyShare,
   onShowQR,
   onToggle,
@@ -707,6 +709,7 @@ function ClientRow({
   shareSupported,
 }: {
   client: Client;
+  traffic?: TrafficV2Client;
   onCopyShare: () => void;
   onShowQR: () => void;
   onToggle: () => void;
@@ -716,11 +719,11 @@ function ClientRow({
   shareSupported: boolean;
 }) {
   const { text } = useI18n();
-  const cumulative = clientCumulative(client);
+  const cumulative = clientCumulative(traffic);
   const used = Number(cumulative.total || 0);
   const limit = Number(client.traffic_limit || 0);
-  const usage = clientUsageSummary(client, text);
-  const liveRealtime = clientRealtime(client);
+  const usage = clientUsageSummary(client.traffic_limit, cumulative, text);
+  const liveRealtime = clientRealtime(traffic);
   return (
     <div className="client-row">
       <div className="client-identity">
@@ -901,10 +904,9 @@ function trafficStatusInline(status: string | undefined, text: (value: string) =
   return attentionTrafficStatusLabel(status, text) || text('等待采样');
 }
 
-export function clientUsageSummary(client: Pick<Client, 'traffic_limit' | 'client_cumulative'>, text: (value: string) => string): { label: string; percent: number; percentLabel: string; tone: UsageTone } {
-  const cumulative = clientCumulative(client);
+export function clientUsageSummary(limitValue: number | undefined, cumulative: TrafficV2Metric, text: (value: string) => string): { label: string; percent: number; percentLabel: string; tone: UsageTone } {
   const used = Number(cumulative.total || 0);
-  const limit = Number(client.traffic_limit || 0);
+  const limit = Number(limitValue || 0);
   if (used <= 0) return { label: text('暂无流量'), percent: 0, percentLabel: '', tone: 'normal' };
   if (limit <= 0) return { label: `${text('已用')} ${formatBytes(used)}`, percent: 0, percentLabel: '', tone: 'normal' };
   const rawPercent = (used / limit) * 100;
@@ -975,12 +977,6 @@ export function buildFullInboundPayload(inbound: Inbound | null, values: Inbound
   const payload: Record<string, unknown> = inbound ? { ...inbound } : {};
   delete payload.id;
   delete payload.clients;
-  delete payload.traffic_up;
-  delete payload.traffic_down;
-  delete payload.traffic_total;
-  delete payload.traffic_stats_source;
-  delete payload.realtime_stats_source;
-  delete payload.client_traffic;
   const normalized = normalizeInboundCombination(values);
   Object.assign(payload, normalized);
   payload.port = Number(normalized.port || 0);
@@ -1291,32 +1287,20 @@ export function trafficV2Index(snapshot: TrafficV2Snapshot | undefined) {
   };
 }
 
-function withClientTrafficV2(client: Client, traffic: TrafficV2Client | undefined): Client {
-  if (!traffic) return client;
-  return {
-    ...client,
-    enabled: traffic.enabled,
-    traffic_limit: traffic.traffic_limit,
-    expiry_at: traffic.expiry_at,
-    client_cumulative: traffic.cumulative,
-    client_realtime: traffic.realtime,
-  };
-}
-
 export function inboundCumulative(inbound: Pick<TrafficV2Inbound, 'cumulative'> | undefined): TrafficV2Metric {
   return inbound?.cumulative || emptyV2Metric('waiting', 'inbound');
 }
 
-export function clientCumulative(client: Pick<Client, 'client_cumulative'>): TrafficV2Metric {
-  return client.client_cumulative as TrafficV2Metric || emptyV2Metric('waiting', 'client');
+export function clientCumulative(client: Pick<TrafficV2Client, 'cumulative'> | undefined): TrafficV2Metric {
+  return client?.cumulative || emptyV2Metric('waiting', 'client');
 }
 
 export function inboundRealtime(inbound: Pick<TrafficV2Inbound, 'realtime'> | undefined): TrafficV2Realtime {
   return inbound?.realtime || emptyV2Realtime('waiting', 'inbound');
 }
 
-export function clientRealtime(client: Pick<Client, 'client_realtime'>): TrafficV2Realtime {
-  return client.client_realtime as TrafficV2Realtime || emptyV2Realtime('waiting', 'client');
+export function clientRealtime(client: Pick<TrafficV2Client, 'realtime'> | undefined): TrafficV2Realtime {
+  return client?.realtime || emptyV2Realtime('waiting', 'client');
 }
 
 function emptyV2Metric(status: string, source: string): TrafficV2Metric {

@@ -356,12 +356,12 @@ describe('inbound management display helpers', () => {
   });
 
   it('summarizes unlimited and limited client usage with the correct progress semantics', () => {
-    expect(clientUsageSummary({ traffic_limit: 0, client_cumulative: v2Metric(0, 0) }, text)).toMatchObject({ label: '暂无流量', percentLabel: '' });
-    expect(clientUsageSummary({ traffic_limit: 0, client_cumulative: v2Metric(1024, 0) }, text)).toMatchObject({ label: '已用 1.0 KB', percentLabel: '' });
-    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(70, 0) }, text)).toMatchObject({ percent: 70, percentLabel: '70%', tone: 'warning' });
-    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(95, 0) }, text)).toMatchObject({ percent: 95, percentLabel: '95%', tone: 'danger' });
-    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(120, 0) }, text)).toMatchObject({ percent: 100, percentLabel: '已超额', tone: 'over' });
-    expect(clientUsageSummary({ traffic_limit: 100, client_cumulative: v2Metric(1, 2, 70) }, text)).toMatchObject({ label: '已用 70 B / 100 B', percent: 70, tone: 'warning' });
+    expect(clientUsageSummary(0, v2Metric(0, 0), text)).toMatchObject({ label: '暂无流量', percentLabel: '' });
+    expect(clientUsageSummary(0, v2Metric(1024, 0), text)).toMatchObject({ label: '已用 1.0 KB', percentLabel: '' });
+    expect(clientUsageSummary(100, v2Metric(70, 0), text)).toMatchObject({ percent: 70, percentLabel: '70%', tone: 'warning' });
+    expect(clientUsageSummary(100, v2Metric(95, 0), text)).toMatchObject({ percent: 95, percentLabel: '95%', tone: 'danger' });
+    expect(clientUsageSummary(100, v2Metric(120, 0), text)).toMatchObject({ percent: 100, percentLabel: '已超额', tone: 'over' });
+    expect(clientUsageSummary(100, v2Metric(1, 2, 70), text)).toMatchObject({ label: '已用 70 B / 100 B', percent: 70, tone: 'warning' });
   });
 
   it('uses explicit zero realtime fallback and complete protocol color classes', () => {
@@ -391,11 +391,6 @@ describe('inbound management display helpers', () => {
       network: 'tcp',
       security: 'none',
       enabled: true,
-      traffic_up: 999,
-      traffic_down: 999,
-      traffic_total: 1998,
-      rate_up: 999,
-      rate_down: 999,
       clients: [],
     };
     const client = {
@@ -404,10 +399,6 @@ describe('inbound management display helpers', () => {
       email: 'sam@example.com',
       uuid: 'client-uuid',
       enabled: true,
-      up: 999,
-      down: 999,
-      rate_up: 999,
-      rate_down: 999,
       traffic_limit: 1000,
       expiry_at: 0,
     } satisfies Client;
@@ -426,7 +417,7 @@ describe('inbound management display helpers', () => {
     expect(card.textContent).toContain('4 B/s ↑ / 5 B/s ↓');
     clickButtonByExactText('展开', card);
     const row = rowByClientName('sam@example.com');
-    expect(row.textContent).toContain('已用 70 B / 100 B');
+    expect(row.textContent).toContain('已用 70 B / 1000 B');
     expect(row.textContent).toContain('6 B/s ↑ / 7 B/s ↓');
     expect(row.textContent).not.toContain('999 B');
   });
@@ -552,13 +543,6 @@ describe('inbound payload helpers', () => {
     enabled: true,
     uuid: '11111111-1111-4111-8111-111111111111',
     clients: [],
-    traffic_up: 100,
-    traffic_down: 200,
-    traffic_total: 300,
-    rate_up: 1,
-    rate_down: 2,
-    traffic_status: 'ok',
-    client_traffic: {},
     ws_path: '/ws',
     ws_host: 'cdn.example.com',
     grpc_service_name: 'grpc-edge',
@@ -1115,12 +1099,6 @@ function sampleInbound(id: number, remark: string, clientNames: string[]): Inbou
     security: 'reality',
     enabled: true,
     uuid: `node-${id}`,
-    traffic_up: 1024,
-    traffic_down: 2048,
-    traffic_total: 3072,
-    rate_up: 0,
-    rate_down: 0,
-    traffic_status: 'ok',
     clients: clientNames.map((name, index): Client => ({
       id: id * 10 + index,
       inbound_id: id,
@@ -1128,8 +1106,6 @@ function sampleInbound(id: number, remark: string, clientNames: string[]): Inbou
       uuid: `uuid-${id}-${index}`,
       credential_id: `credential-${id}-${index}`,
       enabled: true,
-      up: index ? 95 : 0,
-      down: 0,
       traffic_limit: index ? 100 : 0,
       expiry_at: 0,
     })),

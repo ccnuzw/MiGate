@@ -68,62 +68,6 @@ type trafficSeriesPoint struct {
 	RateDown float64 `json:"rate_down,omitempty"`
 }
 
-type inboundView struct {
-	db.Inbound
-	TrafficUp         int64                          `json:"traffic_up"`
-	TrafficDown       int64                          `json:"traffic_down"`
-	TrafficTotal      int64                          `json:"traffic_total"`
-	RateUp            float64                        `json:"rate_up"`
-	RateDown          float64                        `json:"rate_down"`
-	RateTotal         float64                        `json:"rate_total"`
-	DeltaUp           int64                          `json:"delta_up"`
-	DeltaDown         int64                          `json:"delta_down"`
-	DeltaTotal        int64                          `json:"delta_total"`
-	WindowSeconds     float64                        `json:"window_seconds"`
-	ObservedAt        string                         `json:"observed_at,omitempty"`
-	TrafficStatus     string                         `json:"traffic_status"`
-	TrafficMessage    string                         `json:"traffic_message,omitempty"`
-	TrafficSource     string                         `json:"traffic_stats_source"`
-	RealtimeSource    string                         `json:"realtime_stats_source,omitempty"`
-	ClientTraffic     map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
-	Cumulative        map[string]interface{}         `json:"cumulative,omitempty"`
-	Realtime          map[string]interface{}         `json:"realtime,omitempty"`
-	InboundCumulative map[string]interface{}         `json:"inbound_cumulative,omitempty"`
-	InboundRealtime   map[string]interface{}         `json:"inbound_realtime,omitempty"`
-}
-
-type inboundTrafficView struct {
-	ID                int64                          `json:"id"`
-	UUID              string                         `json:"uuid"`
-	Remark            string                         `json:"remark"`
-	Protocol          string                         `json:"protocol"`
-	Port              int                            `json:"port"`
-	Network           string                         `json:"network"`
-	Security          string                         `json:"security"`
-	Enabled           bool                           `json:"enabled"`
-	Clients           []db.Client                    `json:"clients"`
-	TrafficUp         int64                          `json:"traffic_up"`
-	TrafficDown       int64                          `json:"traffic_down"`
-	TrafficTotal      int64                          `json:"traffic_total"`
-	RateUp            float64                        `json:"rate_up"`
-	RateDown          float64                        `json:"rate_down"`
-	RateTotal         float64                        `json:"rate_total"`
-	DeltaUp           int64                          `json:"delta_up"`
-	DeltaDown         int64                          `json:"delta_down"`
-	DeltaTotal        int64                          `json:"delta_total"`
-	WindowSeconds     float64                        `json:"window_seconds"`
-	ObservedAt        string                         `json:"observed_at,omitempty"`
-	TrafficStatus     string                         `json:"traffic_status"`
-	TrafficMessage    string                         `json:"traffic_message,omitempty"`
-	TrafficSource     string                         `json:"traffic_stats_source"`
-	RealtimeSource    string                         `json:"realtime_stats_source,omitempty"`
-	ClientTraffic     map[int64]clientTrafficSummary `json:"client_traffic,omitempty"`
-	Cumulative        map[string]interface{}         `json:"cumulative,omitempty"`
-	Realtime          map[string]interface{}         `json:"realtime,omitempty"`
-	InboundCumulative map[string]interface{}         `json:"inbound_cumulative,omitempty"`
-	InboundRealtime   map[string]interface{}         `json:"inbound_realtime,omitempty"`
-}
-
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
 	ListInboundTraffic(ctx context.Context) ([]db.Inbound, error)

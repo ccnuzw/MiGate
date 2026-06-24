@@ -16,29 +16,8 @@ export interface Client {
   password?: string;
   subscription_token?: string;
   enabled: boolean;
-  up?: number;
-  down?: number;
   traffic_limit?: number;
   expiry_at?: number;
-  xray_up?: number;
-  xray_down?: number;
-  rate_up?: number;
-  rate_down?: number;
-  rate_total?: number;
-  delta_up?: number;
-  delta_down?: number;
-  delta_total?: number;
-  window_seconds?: number;
-  observed_at?: string;
-  cumulative?: TrafficCumulative;
-  realtime?: TrafficRealtime;
-  client_cumulative?: TrafficCumulative;
-  client_realtime?: TrafficRealtime;
-  traffic_status?: string;
-  traffic_message?: string;
-  traffic_stats_source?: string;
-  realtime_stats_source?: string;
-  traffic_stats_note?: string;
 }
 
 export interface Inbound {
@@ -52,26 +31,6 @@ export interface Inbound {
   enabled: boolean;
   uuid?: string;
   clients?: Client[];
-  traffic_up?: number;
-  traffic_down?: number;
-  traffic_total?: number;
-  rate_up?: number;
-  rate_down?: number;
-  rate_total?: number;
-  delta_up?: number;
-  delta_down?: number;
-  delta_total?: number;
-  window_seconds?: number;
-  observed_at?: string;
-  cumulative?: TrafficCumulative;
-  realtime?: TrafficRealtime;
-  inbound_cumulative?: TrafficCumulative;
-  inbound_realtime?: TrafficRealtime;
-  traffic_status?: string;
-  traffic_message?: string;
-  traffic_stats_source?: string;
-  realtime_stats_source?: string;
-  client_traffic?: Record<string, { up: number; down: number; total?: number; delta_up?: number; delta_down?: number; delta_total?: number; rate_up?: number; rate_down?: number; rate_total?: number; window_seconds?: number; observed_at?: string; cumulative?: TrafficCumulative; realtime?: TrafficRealtime; client_cumulative?: TrafficCumulative; client_realtime?: TrafficRealtime; xray_up?: number; xray_down?: number; status?: string; message?: string; source?: string; realtime_source?: string; note?: string }>;
   [key: string]: unknown;
 }
 
@@ -589,98 +548,6 @@ export interface TrafficV2Patch {
   clients?: TrafficV2Client[];
   removed_client_ids?: number[];
   coverage?: TrafficV2Coverage;
-}
-
-export interface TrafficSummary {
-  total_up: number;
-  total_down: number;
-  total: number;
-  rate_up: number;
-  rate_down: number;
-  rate_total: number;
-  delta_up?: number;
-  delta_down?: number;
-  delta_total?: number;
-  window_seconds?: number;
-  observed_at?: string;
-  total_traffic?: TrafficCumulative;
-  realtime_traffic?: TrafficRealtime;
-  total_cumulative?: TrafficCumulative;
-  total_realtime?: number;
-  total_realtime_traffic?: TrafficRealtime;
-  total_realtime_up?: number;
-  total_realtime_down?: number;
-  total_realtime_rate?: number;
-  status: TrafficCoverage;
-  engine?: string;
-  source?: string;
-  last_sampled_at?: string;
-  generated_at: string;
-}
-
-export interface TrafficInbound {
-  id: number;
-  remark: string;
-  protocol: string;
-  port: number;
-  total_up: number;
-  total_down: number;
-  total: number;
-  rate_up: number;
-  rate_down: number;
-  rate_total?: number;
-  delta_up?: number;
-  delta_down?: number;
-  delta_total?: number;
-  window_seconds?: number;
-  observed_at?: string;
-  cumulative?: TrafficCumulative;
-  realtime?: TrafficRealtime;
-  inbound_cumulative?: TrafficCumulative;
-  inbound_realtime?: TrafficRealtime;
-  status: string;
-  message?: string;
-  engine?: string;
-  source?: string;
-  last_sampled_at?: string;
-}
-
-export interface TrafficClient {
-  id: number;
-  inbound_id: number;
-  email: string;
-  protocol: string;
-  total_up: number;
-  total_down: number;
-  total: number;
-  rate_up: number;
-  rate_down: number;
-  rate_total?: number;
-  delta_up?: number;
-  delta_down?: number;
-  delta_total?: number;
-  window_seconds?: number;
-  observed_at?: string;
-  cumulative?: TrafficCumulative;
-  realtime?: TrafficRealtime;
-  client_cumulative?: TrafficCumulative;
-  client_realtime?: TrafficRealtime;
-  traffic_limit: number;
-  expiry_at: number;
-  status: string;
-  message?: string;
-  engine?: string;
-  source?: string;
-  last_sampled_at?: string;
-}
-
-export interface TrafficSeriesPoint {
-  name: string;
-  time?: string;
-  up: number;
-  down: number;
-  rate_up?: number;
-  rate_down?: number;
 }
 
 export interface TrafficV2SeriesPoint {

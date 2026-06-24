@@ -38,26 +38,8 @@ func selectTrafficState(byEngine map[string]db.TrafficState, expectedEngine stri
 		return db.TrafficState{}, false
 	}
 	expectedEngine = normalizeTrafficEngine(expectedEngine)
-	if state, ok := byEngine[expectedEngine]; ok {
-		return state, true
-	}
-	for _, engine := range fallbackTrafficEngines(expectedEngine) {
-		if state, ok := byEngine[engine]; ok {
-			return state, true
-		}
-	}
-	return db.TrafficState{}, false
-}
-
-func fallbackTrafficEngines(expectedEngine string) []string {
-	switch normalizeTrafficEngine(expectedEngine) {
-	case "singbox":
-		return []string{"xray", "migate"}
-	case "xray":
-		return []string{"singbox", "migate"}
-	default:
-		return []string{"xray", "singbox", "migate"}
-	}
+	state, ok := byEngine[expectedEngine]
+	return state, ok
 }
 
 func loadTrafficStates(ctx context.Context, store Store) []db.TrafficState {
@@ -76,6 +58,23 @@ func summarizeTraffic(ctx context.Context, store Store, inbounds []db.Inbound) (
 }
 
 const trafficStateStaleAfter = 3 * time.Minute
+
+func businessTrafficUsage(usage db.ClientTrafficUsage) (int64, bool) {
+	switch strings.ToLower(strings.TrimSpace(usage.Status)) {
+	case "", "waiting", "not_configured":
+		return 0, false
+	default:
+		return usage.TotalUp + usage.TotalDown, true
+	}
+}
+
+func businessTrafficUsageFromSummary(summary clientTrafficSummary) (int64, bool) {
+	return businessTrafficUsage(db.ClientTrafficUsage{
+		TotalUp:   summary.Up,
+		TotalDown: summary.Down,
+		Status:    summary.Status,
+	})
+}
 
 func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound) (map[int64]inboundTrafficSummary, map[int64]clientTrafficSummary) {
 	now := time.Now().UTC()
@@ -123,15 +122,11 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			inboundSummary.LastSampledAt = inboundState.LastSeenAt
 			inboundSummary.Source = "inbound"
 		}
-		aggregatedClientState := false
 		clientAggregateStatus := ""
-		clientTotalUp := int64(0)
-		clientTotalDown := int64(0)
 		for _, client := range inbound.Clients {
 			clientSummary := clientTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 			clientKey := clientTrafficStatsKey(client)
 			if state, ok := selectTrafficState(stateByScope["client\x00"+clientKey], expectedEngine); ok {
-				aggregatedClientState = true
 				freshState := trafficStateWithFreshness(state, now)
 				clientSummary.Up = state.TotalUp
 				clientSummary.Down = state.TotalDown
@@ -151,41 +146,17 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 					clientSummary.XrayUp = state.LastRawUp
 					clientSummary.XrayDown = state.LastRawDown
 				}
-			} else if client.Up > 0 || client.Down > 0 {
-				clientSummary.Up = client.Up
-				clientSummary.Down = client.Down
-				clientSummary.Total = client.Up + client.Down
-				clientSummary.Status = "cumulative_only"
-				clientSummary.Source = "client_legacy"
 			}
 			if client.Enabled {
 				clientAggregateStatus = combineTrafficStatuses(clientAggregateStatus, clientSummary.Status)
 			}
-			if !hasInboundState {
-				clientTotalUp += clientSummary.Up
-				clientTotalDown += clientSummary.Down
-				inboundSummary.Engine = expectedEngine
-			}
 			byClient[client.ID] = clientSummary
 		}
-		if !hasInboundState {
-			inboundSummary.Up = clientTotalUp
-			inboundSummary.Down = clientTotalDown
-			if aggregatedClientState || inboundSummary.Up > 0 || inboundSummary.Down > 0 {
-				inboundSummary.Source = "fallback_client_sum"
-				inboundSummary.Message = "inbound traffic is aggregated from client cumulative counters"
-			}
-		}
-		if clientAggregateStatus != "" && !hasInboundState {
-			inboundSummary.Status = clientAggregateStatus
-		} else if clientAggregateStatus != "" {
+		if clientAggregateStatus != "" && hasInboundState {
 			inboundSummary.Status = combineTrafficStatuses(inboundSummary.Status, clientAggregateStatus)
 		}
 		inboundSummary.Total = inboundSummary.Up + inboundSummary.Down
 		inboundSummary.RateTotal = inboundSummary.RateUp + inboundSummary.RateDown
-		if !hasInboundState && !aggregatedClientState && inboundSummary.Status == "waiting" && inboundSummary.Total > 0 {
-			inboundSummary.Status = "cumulative_only"
-		}
 		byInbound[inbound.ID] = inboundSummary
 	}
 	return byInbound, byClient
@@ -786,6 +757,7 @@ func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[stri
 	if err != nil {
 		return nil, dashboardSummaryBase{}, fmt.Errorf("list_inbounds_failed")
 	}
+	_, trafficByClient := summarizeTrafficFromStates(loadTrafficStates(ctx, store), inbounds)
 	outbounds, err := store.ListOutbounds(ctx)
 	if err != nil {
 		return nil, dashboardSummaryBase{}, fmt.Errorf("list_outbounds_failed")
@@ -810,9 +782,9 @@ func buildDashboardSummaryBase(ctx context.Context, cfg *routerConfig) (map[stri
 		}
 		for _, client := range inbound.Clients {
 			clientCount++
-			used := client.Up + client.Down
 			expired := client.ExpiryAt > 0 && client.ExpiryAt <= now
-			limited := client.TrafficLimit > 0 && used >= client.TrafficLimit
+			used, hasUsage := businessTrafficUsageFromSummary(trafficByClient[client.ID])
+			limited := client.TrafficLimit > 0 && hasUsage && used >= client.TrafficLimit
 			if expired {
 				expiredClients++
 			}
