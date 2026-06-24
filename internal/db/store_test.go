@@ -3024,31 +3024,115 @@ func TestStoreUpdateClientTrafficBatch(t *testing.T) {
 	}
 
 	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
+		"   ":            {Up: 1, Down: 2},
+		clientA.StatsKey: {Up: 11, Down: 22},
+		clientB.StatsKey: {Up: 33, Down: 44},
+	})
+	if err == nil || !strings.Contains(err.Error(), "client stats_key is required") {
+		t.Fatalf("batch update should reject empty stats_key input, got %v", err)
+	}
+	for _, clientID := range []int64{clientA.ID, clientB.ID} {
+		usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientID)
+		if err != nil {
+			t.Fatalf("usage after empty-key batch: %v", err)
+		}
+		if !found || usage.TotalUp != 0 || usage.TotalDown != 0 || usage.Status != "waiting" {
+			t.Fatalf("empty-key batch should not partially write traffic: %+v", usage)
+		}
+	}
+	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
 		clientA.StatsKey:      {Up: 11, Down: 22},
 		clientB.StatsKey:      {Up: 33, Down: 44},
 		"missing@example.com": {Up: 55, Down: 66},
 	})
-	if err != nil {
-		t.Fatalf("batch update traffic: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "client stats_key not found") {
+		t.Fatalf("batch update should reject non-stats_key input, got %v", err)
+	}
+	for _, clientID := range []int64{clientA.ID, clientB.ID} {
+		usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientID)
+		if err != nil {
+			t.Fatalf("usage after rejected batch: %v", err)
+		}
+		if !found || usage.TotalUp != 0 || usage.TotalDown != 0 || usage.Status != "waiting" {
+			t.Fatalf("rejected batch should not partially write traffic: %+v", usage)
+		}
 	}
 	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
 		clientA.StatsKey: {Up: 21, Down: 42},
 		clientB.StatsKey: {Up: 63, Down: 84},
 	})
 	if err != nil {
-		t.Fatalf("second batch update traffic: %v", err)
+		t.Fatalf("baseline batch update traffic: %v", err)
+	}
+	err = store.UpdateClientTrafficBatch(ctx, map[string]db.ClientTrafficUpdate{
+		clientA.StatsKey: {Up: 31, Down: 62},
+		clientB.StatsKey: {Up: 93, Down: 124},
+	})
+	if err != nil {
+		t.Fatalf("increment batch update traffic: %v", err)
 	}
 
-	inbounds, err := store.ListInbounds(ctx)
-	if err != nil {
-		t.Fatalf("list inbounds: %v", err)
-	}
 	traffic := map[string][2]int64{}
-	for _, client := range inbounds[0].Clients {
-		traffic[client.Email] = [2]int64{client.Up, client.Down}
+	for _, item := range []struct {
+		email    string
+		clientID int64
+	}{
+		{email: "a@example.com", clientID: clientA.ID},
+		{email: "b@example.com", clientID: clientB.ID},
+	} {
+		usage, found, err := store.GetClientTrafficUsageForClient(ctx, item.clientID)
+		if err != nil {
+			t.Fatalf("usage after batch update: %v", err)
+		}
+		if !found {
+			t.Fatalf("expected client usage for %s", item.email)
+		}
+		traffic[item.email] = [2]int64{usage.TotalUp, usage.TotalDown}
 	}
 	if traffic["a@example.com"] != [2]int64{10, 20} || traffic["b@example.com"] != [2]int64{30, 40} {
 		t.Fatalf("unexpected traffic after batch update: %+v", traffic)
+	}
+}
+
+func TestStoreUpdateClientTrafficBatchRejectsMissingStatsKeyWithoutPartialWrite(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "batch-order", Protocol: "vless", Port: 28081, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	clientA, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "a@example.com"})
+	if err != nil {
+		t.Fatalf("create client a: %v", err)
+	}
+	clientB, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "b@example.com"})
+	if err != nil {
+		t.Fatalf("create client b: %v", err)
+	}
+
+	payload := map[string]db.ClientTrafficUpdate{
+		clientA.StatsKey:      {Up: 11, Down: 22},
+		clientB.StatsKey:      {Up: 33, Down: 44},
+		"missing@example.com": {Up: 55, Down: 66},
+	}
+
+	if err := store.UpdateClientTrafficBatch(ctx, payload); err == nil || !strings.Contains(err.Error(), "client stats_key not found") {
+		t.Fatalf("batch update should reject missing stats_key input, got %v", err)
+	}
+
+	for _, clientID := range []int64{clientA.ID, clientB.ID} {
+		usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientID)
+		if err != nil {
+			t.Fatalf("usage after rejected batch: %v", err)
+		}
+		if !found || usage.TotalUp != 0 || usage.TotalDown != 0 || usage.Status != "waiting" {
+			t.Fatalf("rejected batch should not partially write traffic after valid keys: %+v", usage)
+		}
 	}
 }
 
@@ -3155,22 +3239,24 @@ func TestStoreUpdateClientTrafficByStatsKeyDoesNotPolluteDuplicateEmailsAcrossIn
 	if err := store.UpdateClientTraffic(ctx, firstClient.StatsKey, 7, 9); err != nil {
 		t.Fatalf("update duplicate email traffic: %v", err)
 	}
-	inbounds, err := store.ListInbounds(ctx)
-	if err != nil {
-		t.Fatalf("list inbounds: %v", err)
-	}
 	var matched int
-	for _, inbound := range inbounds {
-		for _, client := range inbound.Clients {
-			if client.Email == "shared@example.com" {
-				matched++
-				if client.ID == firstClient.ID && (client.Up != 0 || client.Down != 0) {
-					t.Fatalf("first sample should establish baseline without usage delta: %+v", client)
-				}
-				if client.ID == secondClient.ID && (client.Up != 0 || client.Down != 0) {
-					t.Fatalf("duplicate email client should not be updated by another stats key: %+v", client)
-				}
-			}
+	for _, item := range []struct {
+		id    int64
+		email string
+	}{
+		{id: firstClient.ID, email: "shared@example.com"},
+		{id: secondClient.ID, email: "shared@example.com"},
+	} {
+		usage, found, err := store.GetClientTrafficUsageForClient(ctx, item.id)
+		if err != nil {
+			t.Fatalf("usage for duplicate-email client: %v", err)
+		}
+		if !found {
+			t.Fatalf("expected usage for client %d", item.id)
+		}
+		matched++
+		if usage.TotalUp != 0 || usage.TotalDown != 0 {
+			t.Fatalf("duplicate email client should not gain usage from another stats key: %+v", usage)
 		}
 	}
 	if matched != 2 {
@@ -3204,23 +3290,34 @@ func TestTrafficRawIncrementRollbackAndResetBaseline(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, raw(100, 200), t0); err != nil {
 		t.Fatalf("baseline sample: %v", err)
 	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states after baseline: %v", err)
+	}
+	state := findTrafficState(states, "xray", "client", client.StatsKey)
+	if state == nil || state.TotalUp != 0 || state.TotalDown != 0 || state.DeltaUp != 0 || state.DeltaDown != 0 || state.RateUp != 0 || state.RateDown != 0 || state.WindowSeconds != 0 {
+		t.Fatalf("first sample should establish baseline without realtime rate, got %+v", state)
+	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(160, 260), t0.Add(10*time.Second)); err != nil {
 		t.Fatalf("increment sample: %v", err)
 	}
-	states, err := store.ListTrafficStates(ctx)
+	states, err = store.ListTrafficStates(ctx)
 	if err != nil {
 		t.Fatalf("list states: %v", err)
 	}
-	state := findTrafficState(states, "xray", "client", client.StatsKey)
+	state = findTrafficState(states, "xray", "client", client.StatsKey)
 	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 || state.RateUp != 6 || state.RateDown != 6 {
 		t.Fatalf("unexpected increment state: %+v", state)
+	}
+	if state.DeltaUp != 60 || state.DeltaDown != 60 || state.WindowSeconds != 10 {
+		t.Fatalf("unexpected increment sample window: %+v", state)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(10, 20), t0.Add(20*time.Second)); err != nil {
 		t.Fatalf("rollback sample: %v", err)
 	}
 	states, _ = store.ListTrafficStates(ctx)
 	state = findTrafficState(states, "xray", "client", client.StatsKey)
-	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 {
+	if state == nil || state.TotalUp != 60 || state.TotalDown != 60 || state.DeltaUp != 0 || state.DeltaDown != 0 || state.RateUp != 0 || state.RateDown != 0 {
 		t.Fatalf("raw rollback should not reduce totals: %+v", state)
 	}
 	if _, err := store.ResetClientTrafficBaseline(ctx, client.ID, raw(10, 20)); err != nil {
@@ -3229,13 +3326,12 @@ func TestTrafficRawIncrementRollbackAndResetBaseline(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, raw(10, 20), t0.Add(30*time.Second)); err != nil {
 		t.Fatalf("same raw after reset: %v", err)
 	}
-	inbounds, err := store.ListInbounds(ctx)
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
 	if err != nil {
-		t.Fatalf("list inbounds: %v", err)
+		t.Fatalf("usage after reset baseline: %v", err)
 	}
-	got := inbounds[0].Clients[0]
-	if got.Up != 0 || got.Down != 0 {
-		t.Fatalf("reset should not rebound on same raw baseline: %+v", got)
+	if !found || usage.TotalUp != 0 || usage.TotalDown != 0 {
+		t.Fatalf("reset should not rebound on same raw baseline: %+v", usage)
 	}
 }
 
@@ -3314,8 +3410,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples before marker: %v", err)
 	}
-	if len(samples) != 1 {
-		t.Fatalf("expected one bucketed client sample before marker, got %+v", samples)
+	if len(samples) != 2 {
+		t.Fatalf("expected baseline and increment client samples before marker, got %+v", samples)
 	}
 	markerAt := t0.Add(20 * time.Second)
 	if err := store.MarkTrafficScopeStatus(ctx, []db.TrafficStatusMarker{
@@ -3353,7 +3449,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples after marker: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 100 || samples[1].TotalDown != 300 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "unsupported" {
+	markerSample := samples[len(samples)-1]
+	if len(samples) != 3 || markerSample.TotalUp != 100 || markerSample.TotalDown != 300 || markerSample.RateUp != 0 || markerSample.RateDown != 0 || markerSample.Status != "unsupported" {
 		t.Fatalf("status marker should write zero-rate sample without changing totals, got %+v", samples)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(1200, 2600), t0.Add(30*time.Second)); err != nil {
@@ -3371,7 +3468,8 @@ func TestTrafficScopeStatusDoesNotPolluteRawBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples after recovery: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 200 || samples[1].TotalDown != 600 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "ok" {
+	recoveredSample := samples[len(samples)-1]
+	if len(samples) != 4 || recoveredSample.TotalUp != 200 || recoveredSample.TotalDown != 600 || recoveredSample.RateUp != 0 || recoveredSample.RateDown != 0 || recoveredSample.Status != "ok" {
 		t.Fatalf("expected one recovered client bucket after marker, got %+v", samples)
 	}
 }
@@ -3442,7 +3540,8 @@ func TestTrafficScopeStatusRefreshesXrayWaitingWithoutClearingTotals(t *testing.
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 300 || samples[1].TotalDown != 600 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "waiting" {
+	markerSample := samples[len(samples)-1]
+	if len(samples) != 3 || markerSample.TotalUp != 300 || markerSample.TotalDown != 600 || markerSample.RateUp != 0 || markerSample.RateDown != 0 || markerSample.Status != "waiting" {
 		t.Fatalf("waiting marker should write zero-rate traffic sample without changing totals, got %+v", samples)
 	}
 }
@@ -3543,7 +3642,8 @@ func TestTrafficScopeStatusUnavailablePreservesTotalsAndRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 2 || samples[1].TotalUp != 300 || samples[1].TotalDown != 600 || samples[1].RateUp != 0 || samples[1].RateDown != 0 || samples[1].Status != "unavailable" {
+	markerSample := samples[len(samples)-1]
+	if len(samples) != 3 || markerSample.TotalUp != 300 || markerSample.TotalDown != 600 || markerSample.RateUp != 0 || markerSample.RateDown != 0 || markerSample.Status != "unavailable" {
 		t.Fatalf("unavailable marker should write zero-rate sample preserving totals, got %+v", samples)
 	}
 }
@@ -3672,8 +3772,8 @@ func TestApplyTrafficRawStatsBatchesClientSamplesAndTotals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list samples: %v", err)
 	}
-	if len(samples) != 2 {
-		t.Fatalf("expected one bucketed sample per client, got %+v", samples)
+	if len(samples) != 4 {
+		t.Fatalf("expected baseline and increment samples per client, got %+v", samples)
 	}
 	usage, found, err := store.GetClientTrafficUsageForClient(ctx, clientB.ID)
 	if err != nil {
@@ -3742,7 +3842,7 @@ func TestResetWithoutRawBaselineClearsExistingEngineAndUsesNextRawAsBaseline(t *
 	}
 }
 
-func TestFirstTrafficSamplePreservesLegacyClientTotals(t *testing.T) {
+func TestFirstTrafficSampleStartsFromTrafficStateBaselineOnly(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -3763,28 +3863,20 @@ func TestFirstTrafficSamplePreservesLegacyClientTotals(t *testing.T) {
 	if err := store.UpdateClientTraffic(ctx, client.StatsKey, 150, 170); err != nil {
 		t.Fatalf("increment key sample: %v", err)
 	}
-	loaded, err := store.ListInbounds(ctx)
-	if err != nil {
-		t.Fatalf("list inbounds: %v", err)
-	}
-	if loaded[0].Clients[0].Up != 50 || loaded[0].Clients[0].Down != 70 {
-		t.Fatalf("expected prepared legacy totals, got %+v", loaded[0].Clients[0])
-	}
-	legacyClient := loaded[0].Clients[0]
-	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "singbox", ScopeType: "client", ScopeKey: legacyClient.StatsKey, RawUp: 5, RawDown: 6, Status: "ok"}}, time.Unix(200, 0)); err != nil {
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "singbox", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 5, RawDown: 6, Status: "ok"}}, time.Unix(200, 0)); err != nil {
 		t.Fatalf("first new engine sample: %v", err)
 	}
 	states, err := store.ListTrafficStates(ctx)
 	if err != nil {
 		t.Fatalf("list states: %v", err)
 	}
-	state := findTrafficState(states, "singbox", "client", legacyClient.StatsKey)
-	if state == nil || state.TotalUp != 50 || state.TotalDown != 70 {
-		t.Fatalf("first new state should preserve legacy totals: %+v", state)
+	state := findTrafficState(states, "singbox", "client", client.StatsKey)
+	if state == nil || state.TotalUp != 0 || state.TotalDown != 0 || state.DeltaUp != 0 || state.DeltaDown != 0 {
+		t.Fatalf("first new state should start from traffic state baseline only: %+v", state)
 	}
 }
 
-func TestLegacyEmailTrafficFallbackOnlyForUniqueEmail(t *testing.T) {
+func TestUpdateClientTrafficRequiresStatsKeyInput(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -3809,32 +3901,28 @@ func TestLegacyEmailTrafficFallbackOnlyForUniqueEmail(t *testing.T) {
 	if _, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: secondInbound.ID, Email: "shared@example.com"}); err != nil {
 		t.Fatalf("create second shared client: %v", err)
 	}
-	if err := store.UpdateClientTraffic(ctx, "unique@example.com", 10, 20); err != nil {
-		t.Fatalf("legacy unique baseline: %v", err)
+	if err := store.UpdateClientTraffic(ctx, unique.StatsKey, 10, 20); err != nil {
+		t.Fatalf("stats_key baseline: %v", err)
 	}
-	if err := store.UpdateClientTraffic(ctx, "unique@example.com", 15, 30); err != nil {
-		t.Fatalf("legacy unique increment: %v", err)
+	if err := store.UpdateClientTraffic(ctx, unique.StatsKey, 15, 30); err != nil {
+		t.Fatalf("stats_key increment: %v", err)
 	}
-	if err := store.UpdateClientTraffic(ctx, "shared@example.com", 100, 200); err != nil {
-		t.Fatalf("legacy duplicate should be ignored without error: %v", err)
+	if err := store.UpdateClientTraffic(ctx, "shared@example.com", 100, 200); err == nil || !strings.Contains(err.Error(), "client stats_key not found") {
+		t.Fatalf("non-stats_key input should fail explicitly, got %v", err)
 	}
-	inbounds, err := store.ListInbounds(ctx)
+	if err := store.UpdateClientTraffic(ctx, "   ", 1, 2); err == nil || !strings.Contains(err.Error(), "client stats_key is required") {
+		t.Fatalf("empty stats_key input should fail explicitly, got %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, unique.ID)
 	if err != nil {
-		t.Fatalf("list inbounds: %v", err)
+		t.Fatalf("usage for unique client: %v", err)
 	}
-	for _, inbound := range inbounds {
-		for _, client := range inbound.Clients {
-			if client.ID == unique.ID && (client.Up != 5 || client.Down != 10) {
-				t.Fatalf("unique legacy email should map to stats_key: %+v", client)
-			}
-			if client.Email == "shared@example.com" && (client.Up != 0 || client.Down != 0) {
-				t.Fatalf("duplicate legacy email should not be polluted: %+v", client)
-			}
-		}
+	if !found || usage.TotalUp != 5 || usage.TotalDown != 10 {
+		t.Fatalf("stats_key input should update unique client totals: %+v", usage)
 	}
 }
 
-func TestClientTrafficWritebackUsesCurrentEngineOnly(t *testing.T) {
+func TestClientTrafficUsageUsesExpectedEngineOnly(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -3864,13 +3952,43 @@ func TestClientTrafficWritebackUsesCurrentEngineOnly(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, singboxRaw(1, 2), time.Unix(120, 0)); err != nil {
 		t.Fatalf("singbox baseline: %v", err)
 	}
-	inbounds, err := store.ListInbounds(ctx)
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
 	if err != nil {
-		t.Fatalf("list inbounds: %v", err)
+		t.Fatalf("usage: %v", err)
 	}
-	got := inbounds[0].Clients[0]
-	if got.Up != 50 || got.Down != 60 {
-		t.Fatalf("singbox baseline must not overwrite xray client totals, got %+v", got)
+	if !found || usage.Engine != "xray" || usage.TotalUp != 50 || usage.TotalDown != 60 {
+		t.Fatalf("singbox baseline must not overwrite xray business totals, got %+v", usage)
+	}
+}
+
+func TestUpdateClientTrafficUsesExpectedEngineForSingboxClients(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28123, Network: "udp", Security: "tls"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "hy2@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, client.StatsKey, 100, 200); err != nil {
+		t.Fatalf("baseline update: %v", err)
+	}
+	if err := store.UpdateClientTraffic(ctx, client.StatsKey, 130, 240); err != nil {
+		t.Fatalf("increment update: %v", err)
+	}
+	usage, found, err := store.GetClientTrafficUsageForClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !found || usage.Engine != "singbox" || usage.TotalUp != 30 || usage.TotalDown != 40 || usage.Status != "ok" {
+		t.Fatalf("expected singbox client traffic to round-trip through expected engine, got %+v", usage)
 	}
 }
 
@@ -3929,7 +4047,7 @@ func TestGetClientTrafficUsageSelectsExpectedEngineWithoutDoubleCounting(t *test
 	}
 }
 
-func TestGetClientTrafficUsageUsesLegacyTotalsWhenNoTrafficState(t *testing.T) {
+func TestGetClientTrafficUsageWaitsWhenNoTrafficState(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -3957,8 +4075,8 @@ func TestGetClientTrafficUsageUsesLegacyTotalsWhenNoTrafficState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
-	if !found || usage.Engine != "migate" || usage.Status != "cumulative_only" || usage.TotalUp != 12 || usage.TotalDown != 34 {
-		t.Fatalf("expected legacy cumulative usage, got found=%v usage=%+v", found, usage)
+	if !found || usage.Engine != "xray" || usage.Status != "waiting" || usage.TotalUp != 0 || usage.TotalDown != 0 {
+		t.Fatalf("expected expected-engine waiting usage, got found=%v usage=%+v", found, usage)
 	}
 }
 
@@ -4001,7 +4119,7 @@ func TestGetClientTrafficUsageKeepsExpectedUnavailableOverFallbackOK(t *testing.
 	}
 }
 
-func TestGetClientTrafficUsageFallsBackWhenExpectedEngineMissing(t *testing.T) {
+func TestGetClientTrafficUsageDoesNotFallbackWhenExpectedEngineMissing(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -4026,8 +4144,8 @@ func TestGetClientTrafficUsageFallsBackWhenExpectedEngineMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
-	if !found || usage.Engine != "xray" || usage.Status != "ok" || usage.TotalUp != 30 || usage.TotalDown != 40 {
-		t.Fatalf("expected xray fallback usage, got found=%v usage=%+v", found, usage)
+	if !found || usage.Engine != "singbox" || usage.Status != "waiting" || usage.TotalUp != 0 || usage.TotalDown != 0 {
+		t.Fatalf("expected singbox waiting usage, got found=%v usage=%+v", found, usage)
 	}
 }
 

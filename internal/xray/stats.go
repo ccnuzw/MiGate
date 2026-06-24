@@ -16,6 +16,7 @@ import (
 	"time"
 
 	runtimecmd "github.com/imzyb/MiGate/internal/runtime/command"
+	"github.com/imzyb/MiGate/internal/trafficstats"
 )
 
 // StatsClient provides access to Xray's traffic statistics.
@@ -33,7 +34,7 @@ type StatsClient interface {
 	// Xray stat name format: "user>>{email}>>traffic>>{uplink|downlink}"
 	QueryAllStats(ctx context.Context) (map[string]*ClientStats, error)
 	// QueryTrafficStats returns raw core counters for all supported scopes.
-	QueryTrafficStats(ctx context.Context) ([]TrafficStat, error)
+	QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error)
 	// Close releases any resources held by the client.
 	Close() error
 }
@@ -51,14 +52,6 @@ type ClientStats struct {
 	Email    string
 	Uplink   int64 // bytes uploaded
 	Downlink int64 // bytes downloaded
-}
-
-type TrafficStat struct {
-	Engine    string
-	ScopeType string
-	ScopeKey  string
-	Uplink    int64
-	Downlink  int64
 }
 
 // StubStatsClient is the default implementation that returns empty data.
@@ -115,8 +108,8 @@ func (c *StubStatsClient) QueryAllStats(ctx context.Context) (map[string]*Client
 	return make(map[string]*ClientStats), nil
 }
 
-func (c *StubStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
-	return []TrafficStat{}, nil
+func (c *StubStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
+	return []trafficstats.Stat{}, nil
 }
 
 // Close is a no-op for the stub client.
@@ -132,7 +125,7 @@ func (c *CommandStatsClient) QueryAllStats(ctx context.Context) (map[string]*Cli
 	return ParseStatsQueryOutput(out)
 }
 
-func (c *CommandStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+func (c *CommandStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	out, err := runtimecmd.NewRealCommandRunner(8*time.Second).RunOutput(ctx, c.BinaryPath, "api", "statsquery", "--server", c.Server, "-pattern", ">>>traffic>>>")
 	if err != nil {
 		return nil, fmt.Errorf("xray statsquery: %w", err)
@@ -168,7 +161,7 @@ func (c *ResilientStatsClient) QueryAllStats(ctx context.Context) (map[string]*C
 	return c.fallback.QueryAllStats(ctx)
 }
 
-func (c *ResilientStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+func (c *ResilientStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -231,7 +224,7 @@ func ParseStatsQueryOutput(raw []byte) (map[string]*ClientStats, error) {
 	return result, nil
 }
 
-func ParseTrafficStatsQueryOutput(engine string, raw []byte) ([]TrafficStat, error) {
+func ParseTrafficStatsQueryOutput(engine string, raw []byte) ([]trafficstats.Stat, error) {
 	var payload struct {
 		Stat []struct {
 			Name  string `json:"name"`
@@ -241,7 +234,7 @@ func ParseTrafficStatsQueryOutput(engine string, raw []byte) ([]TrafficStat, err
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
-	byScope := map[string]*TrafficStat{}
+	byScope := map[string]*trafficstats.Stat{}
 	for _, st := range payload.Stat {
 		parts := strings.Split(st.Name, ">>>")
 		if len(parts) != 4 || parts[2] != "traffic" {
@@ -254,7 +247,7 @@ func ParseTrafficStatsQueryOutput(engine string, raw []byte) ([]TrafficStat, err
 		key := engine + "\x00" + scopeType + "\x00" + parts[1]
 		current := byScope[key]
 		if current == nil {
-			current = &TrafficStat{Engine: engine, ScopeType: scopeType, ScopeKey: parts[1]}
+			current = &trafficstats.Stat{Engine: engine, ScopeType: scopeType, ScopeKey: parts[1]}
 			byScope[key] = current
 		}
 		switch parts[3] {
@@ -264,7 +257,7 @@ func ParseTrafficStatsQueryOutput(engine string, raw []byte) ([]TrafficStat, err
 			current.Downlink = st.Value
 		}
 	}
-	result := make([]TrafficStat, 0, len(byScope))
+	result := make([]trafficstats.Stat, 0, len(byScope))
 	for _, stat := range byScope {
 		result = append(result, *stat)
 	}
@@ -344,7 +337,7 @@ func (c *GRPCStatsClient) QueryAllStats(ctx context.Context) (map[string]*Client
 	return result, nil
 }
 
-func (c *GRPCStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+func (c *GRPCStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	stats, err := c.queryStats(ctx, ">>>traffic>>>", false)
 	if err != nil {
 		return nil, err
@@ -488,7 +481,7 @@ func encodeQueryStatsRequest(pattern string, reset bool) []byte {
 	return out
 }
 
-func encodeQueryStatsResponse(stats []TrafficStat) []byte {
+func encodeQueryStatsResponse(stats []trafficstats.Stat) []byte {
 	var out []byte
 	for _, st := range stats {
 		if st.Uplink != 0 {

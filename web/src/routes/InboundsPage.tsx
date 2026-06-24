@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, Columns2, Copy, Edit2, ListCollapse, ListTree, 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
-import type { CertStatus, Client, Inbound, InboundCapability as ApiInboundCapability } from '../api/types';
+import type { CertStatus, Client, Inbound, InboundCapability as ApiInboundCapability, TrafficV2Client, TrafficV2Inbound, TrafficV2Metric, TrafficV2Realtime, TrafficV2Snapshot } from '../api/types';
 import { EmptyState, LoadingBlock, Modal, SpinnerButton, StatusBadge, toggleButtonClass, useConfirm, useToast } from '../components/ui';
 import { copyToClipboard } from '../lib/clipboard';
 import { inboundCore } from '../lib/cores';
@@ -12,7 +12,7 @@ import { useI18n } from '../lib/i18n';
 import { showCoreApplyWarning } from '../lib/coreApply';
 import { refreshTopologyDependencies } from '../lib/queryInvalidation';
 import { usePageVisible } from '../lib/visibility';
-import { PageTitle } from './OverviewPage';
+import { PageTitle, trafficHint, useTrafficStream } from './OverviewPage';
 import type { ClientValues, InboundValues } from './InboundsPageForms';
 import QRCode from 'qrcode';
 
@@ -388,17 +388,15 @@ export default function InboundsPage() {
   const [, setCapabilityVersion] = useState(0);
   const capabilities = useQuery({ queryKey: ['inbound-capabilities'], queryFn: api.inboundCapabilities, staleTime: 300_000, retry: false });
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, staleTime: 30_000 });
-  const inboundTraffic = useQuery({
-    queryKey: ['inbounds', 'traffic'],
-    queryFn: api.inboundTraffic,
+  const trafficSnapshot = useQuery({
+    queryKey: ['traffic-v2-snapshot'],
+    queryFn: api.trafficV2Snapshot,
     enabled: visible && Boolean(inbounds.data),
     refetchInterval: visible ? 10_000 : false,
     staleTime: 5_000,
   });
-  useEffect(() => {
-    if (!inboundTraffic.data) return;
-    queryClient.setQueryData<Inbound[]>(['inbounds'], (current) => mergeInboundTraffic(current || [], inboundTraffic.data || []));
-  }, [inboundTraffic.data, queryClient]);
+  useTrafficStream(visible);
+  const trafficIndex = useMemo(() => trafficV2Index(trafficSnapshot.data), [trafficSnapshot.data]);
   useEffect(() => {
     if (capabilities.data) {
       applyInboundCapabilitiesFromAPI(capabilities.data);
@@ -408,14 +406,14 @@ export default function InboundsPage() {
       setCapabilityVersion((version) => version + 1);
     }
   }, [capabilities.data, capabilities.isError]);
-  const refresh = () => refreshInboundDependencies(queryClient);
+  const refresh = () => refreshTopologyDependencies(queryClient);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = (inbounds.data || []).filter((item) => {
       if (protocolFilter !== 'all' && item.protocol !== protocolFilter) return false;
       if (statusFilter === 'enabled' && !item.enabled) return false;
       if (statusFilter === 'disabled' && item.enabled) return false;
-      if (statusFilter === 'attention' && !inboundNeedsAttention(item)) return false;
+      if (statusFilter === 'attention' && !inboundNeedsAttention(item, trafficIndex.inbounds.get(item.id))) return false;
       if (!q) return true;
       return inboundMatchesQuery(item, q);
     });
@@ -425,7 +423,7 @@ export default function InboundsPage() {
       if (sort === 'clients') return (b.clients || []).length - (a.clients || []).length;
       return a.id - b.id;
     });
-  }, [inbounds.data, protocolFilter, search, sort, statusFilter]);
+  }, [inbounds.data, protocolFilter, search, sort, statusFilter, trafficIndex]);
   const visibleProtocols = useMemo(() => Array.from(new Set((inbounds.data || []).map((item) => item.protocol).filter(Boolean))).sort(), [inbounds.data]);
   const searchClientMatches = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -593,7 +591,8 @@ export default function InboundsPage() {
             const clients = inbound.clients || [];
             const clientsExpanded = displayedExpandedClients.has(inbound.id);
             const clientsAutoExpanded = searchClientMatches.has(inbound.id);
-            const notice = inboundAttentionNotice(inbound, text);
+            const inboundTraffic = trafficIndex.inbounds.get(inbound.id);
+            const notice = inboundAttentionNotice(inbound, inboundTraffic, text);
             return (
             <div
               key={inbound.id}
@@ -605,7 +604,7 @@ export default function InboundsPage() {
                   <div className="inbound-title-row">
                     <h2 className="inbound-title">{inbound.remark || `${inbound.protocol}:${inbound.port}`}</h2>
                     <ProtocolBadge protocol={inbound.protocol} />
-                    <InboundStatusBadge inbound={inbound} />
+                    <InboundStatusBadge inbound={inbound} traffic={inboundTraffic} />
                   </div>
                   <InboundMeta inbound={inbound} />
                   {notice ? <div className="inbound-attention" title={notice}>{notice}</div> : null}
@@ -623,12 +622,7 @@ export default function InboundsPage() {
                   />
                 </div>
               </div>
-              <div className="inbound-metric-grid">
-                <MetricTile label={text('上行')} value={formatBytes(inbound.traffic_up)} />
-                <MetricTile label={text('下行')} value={formatBytes(inbound.traffic_down)} />
-                <MetricTile label={text('合计')} value={formatBytes(inbound.traffic_total)} />
-                <MetricTile label={text('当前速率')} value={rateLabel(inbound.rate_up, inbound.rate_down, text)} />
-              </div>
+              <InboundTrafficMetrics traffic={trafficIndex.inbounds.get(inbound.id)} />
               <div className="client-section">
                 <div className="client-section-bar">
                   <div className="client-section-heading">
@@ -654,8 +648,8 @@ export default function InboundsPage() {
                   {clients.map((client) => (
                     <ClientRow
                       key={client.id}
-                      inbound={inbound}
-                      client={mergeClientTraffic(inbound, client)}
+                      client={client}
+                      traffic={trafficIndex.clients.get(client.id)}
                       onCopyShare={() => copyNodeLink(client, showToast, text)}
                       onShowQR={() => showClientQRCode(client, showToast, setQRLink, text)}
                       shareSupported={supportsInboundShareLink(inbound.protocol)}
@@ -705,6 +699,7 @@ export default function InboundsPage() {
 
 function ClientRow({
   client,
+  traffic,
   onCopyShare,
   onShowQR,
   onToggle,
@@ -713,8 +708,8 @@ function ClientRow({
   onDelete,
   shareSupported,
 }: {
-  inbound: Inbound;
   client: Client;
+  traffic?: TrafficV2Client;
   onCopyShare: () => void;
   onShowQR: () => void;
   onToggle: () => void;
@@ -724,9 +719,11 @@ function ClientRow({
   shareSupported: boolean;
 }) {
   const { text } = useI18n();
-  const used = Number(client.up || 0) + Number(client.down || 0);
+  const cumulative = clientCumulative(traffic);
+  const used = Number(cumulative.total || 0);
   const limit = Number(client.traffic_limit || 0);
-  const usage = clientUsageSummary(client, text);
+  const usage = clientUsageSummary(client.traffic_limit, cumulative, text);
+  const liveRealtime = clientRealtime(traffic);
   return (
     <div className="client-row">
       <div className="client-identity">
@@ -742,7 +739,10 @@ function ClientRow({
         </div>
         {limit > 0 ? <UsageBar percent={usage.percent} tone={usage.tone} /> : used > 0 ? <div className="usage-line" /> : null}
       </div>
-      <div className="client-speed">{rateLabel(client.rate_up, client.rate_down, text)}</div>
+      <div className="client-speed" title={trafficHint(liveRealtime.observed_at, liveRealtime.window_seconds, liveRealtime.source, liveRealtime.status, liveRealtime.message, text)}>
+        <span>{text('客户端实时流量')}</span>
+        <strong>{rateLabel(liveRealtime.rate_up, liveRealtime.rate_down, text, liveRealtime.status)}</strong>
+      </div>
       <div className="action-row client-actions">
         {shareSupported ? <button className="icon-button" onClick={onCopyShare} title={text('复制节点链接')}><Copy className="h-4 w-4" /></button> : null}
         {shareSupported ? <button className="icon-button" onClick={onShowQR} title={text('显示二维码')}><QrCode className="h-4 w-4" /></button> : null}
@@ -754,11 +754,34 @@ function ClientRow({
   );
 }
 
-function MetricTile({ label, value }: { label: string; value: string }) {
+function InboundTrafficMetrics({ traffic }: { traffic?: TrafficV2Inbound }) {
+  const { text } = useI18n();
+  const cumulative = inboundCumulative(traffic);
+  const realtime = inboundRealtime(traffic);
   return (
-    <div className="inbound-metric">
+    <div className="inbound-metric-grid">
+      <MetricTile
+        label={text('入站累计流量')}
+        value={formatBytes(cumulative.total)}
+        sub={`${formatBytes(cumulative.up)} ↑ / ${formatBytes(cumulative.down)} ↓`}
+        title={trafficHint(realtime.observed_at, realtime.window_seconds, cumulative.source, cumulative.status, cumulative.message, text)}
+      />
+      <MetricTile
+        label={text('入站实时流量')}
+        value={rateLabel(realtime.rate_up, realtime.rate_down, text, realtime.status)}
+        sub={trafficStatusInline(realtime.status, text)}
+        title={trafficHint(realtime.observed_at, realtime.window_seconds, realtime.source, realtime.status, realtime.message, text)}
+      />
+    </div>
+  );
+}
+
+function MetricTile({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
+  return (
+    <div className="inbound-metric" title={title}>
       <span>{label}</span>
       <strong>{value}</strong>
+      {sub ? <small>{sub}</small> : null}
     </div>
   );
 }
@@ -798,15 +821,11 @@ function MoreActions({ resetLabel, onReset, onDelete }: { resetLabel: string | n
   );
 }
 
-function InboundStatusBadge({ inbound }: { inbound: Inbound }) {
+function InboundStatusBadge({ inbound, traffic }: { inbound: Inbound; traffic?: TrafficV2Inbound }) {
   const { text } = useI18n();
-  const attention = inboundNeedsAttention(inbound);
+  const attention = inboundNeedsAttention(inbound, traffic);
   if (attention) return <span className="status-badge status-error">{text('异常')}</span>;
   return <StatusBadge enabled={inbound.enabled}>{text(inbound.enabled ? '运行中' : '已停用')}</StatusBadge>;
-}
-
-function refreshInboundDependencies(queryClient: ReturnType<typeof useQueryClient>) {
-  refreshTopologyDependencies(queryClient);
 }
 
 export const protocolBadgeClasses: Record<string, string> = {
@@ -839,17 +858,21 @@ export function inboundClientMatchesQuery(inbound: Inbound, query: string) {
   return (inbound.clients || []).some((client) => String(client.email || '').toLowerCase().includes(query));
 }
 
-function inboundNeedsAttention(inbound: Inbound) {
-  return Boolean(inbound.enabled && abnormalTrafficStatus(inbound.traffic_status));
+function inboundNeedsAttention(inbound: Inbound, traffic?: TrafficV2Inbound) {
+  return Boolean(inbound.enabled && abnormalTrafficStatus(inboundTrafficStatus(traffic)));
 }
 
-function inboundAttentionNotice(inbound: Inbound, text: (value: string) => string) {
-  if (!inboundNeedsAttention(inbound)) return '';
-  return attentionTrafficStatusLabel(inbound.traffic_status, text);
+function inboundAttentionNotice(inbound: Inbound, traffic: TrafficV2Inbound | undefined, text: (value: string) => string) {
+  if (!inboundNeedsAttention(inbound, traffic)) return '';
+  return attentionTrafficStatusLabel(inboundTrafficStatus(traffic), text);
 }
 
 function abnormalTrafficStatus(status: string | undefined) {
   return ['partial', 'stale', 'unavailable', 'unsupported', 'not_configured'].includes(String(status || ''));
+}
+
+function inboundTrafficStatus(traffic: TrafficV2Inbound | undefined) {
+  return traffic?.realtime.status || traffic?.cumulative.status;
 }
 
 function attentionTrafficStatusLabel(status: string | undefined, text: (value: string) => string) {
@@ -861,16 +884,29 @@ function attentionTrafficStatusLabel(status: string | undefined, text: (value: s
   return '';
 }
 
-export function rateLabel(rateUp: unknown, rateDown: unknown, text: (value: string) => string) {
+export function rateLabel(rateUp: unknown, rateDown: unknown, text: (value: string) => string, status?: string) {
+  if (status && ['waiting', 'stale', 'unavailable', 'unsupported', 'not_configured', 'partial'].includes(status)) {
+    if (status === 'waiting') return text('等待采样');
+    if (status === 'stale') return text('统计已过期');
+    if (status === 'unavailable') return text('统计不可用');
+    if (status === 'unsupported') return text('实时统计不可用');
+    if (status === 'not_configured') return text('核心节点未配置');
+    if (status === 'partial') return text('部分不可用');
+  }
   const up = Number(rateUp || 0);
   const down = Number(rateDown || 0);
-  if (!up && !down) return text('暂无速率');
+  if (!up && !down) return text('0 B/s');
   return `${formatBytes(up)}/s ↑ / ${formatBytes(down)}/s ↓`;
 }
 
-export function clientUsageSummary(client: Pick<Client, 'up' | 'down' | 'traffic_limit'>, text: (value: string) => string): { label: string; percent: number; percentLabel: string; tone: UsageTone } {
-  const used = Number(client.up || 0) + Number(client.down || 0);
-  const limit = Number(client.traffic_limit || 0);
+function trafficStatusInline(status: string | undefined, text: (value: string) => string) {
+  if (!status || status === 'ok') return text('统计正常');
+  return attentionTrafficStatusLabel(status, text) || text('等待采样');
+}
+
+export function clientUsageSummary(limitValue: number | undefined, cumulative: TrafficV2Metric, text: (value: string) => string): { label: string; percent: number; percentLabel: string; tone: UsageTone } {
+  const used = Number(cumulative.total || 0);
+  const limit = Number(limitValue || 0);
   if (used <= 0) return { label: text('暂无流量'), percent: 0, percentLabel: '', tone: 'normal' };
   if (limit <= 0) return { label: `${text('已用')} ${formatBytes(used)}`, percent: 0, percentLabel: '', tone: 'normal' };
   const rawPercent = (used / limit) * 100;
@@ -941,12 +977,6 @@ export function buildFullInboundPayload(inbound: Inbound | null, values: Inbound
   const payload: Record<string, unknown> = inbound ? { ...inbound } : {};
   delete payload.id;
   delete payload.clients;
-  delete payload.traffic_up;
-  delete payload.traffic_down;
-  delete payload.traffic_total;
-  delete payload.traffic_stats_source;
-  delete payload.realtime_stats_source;
-  delete payload.client_traffic;
   const normalized = normalizeInboundCombination(values);
   Object.assign(payload, normalized);
   payload.port = Number(normalized.port || 0);
@@ -1250,64 +1280,35 @@ export function shouldSyncInboundWSHost(network: string, wsHost: string | undefi
   return Boolean(oldSNI && currentHost === oldSNI);
 }
 
-function mergeClientTraffic(inbound: Inbound, client: Client): Client {
-  const live = inbound.client_traffic?.[String(client.id)] || inbound.client_traffic?.[client.id as unknown as string];
+export function trafficV2Index(snapshot: TrafficV2Snapshot | undefined) {
   return {
-    ...client,
-    up: Number(live?.up ?? client.up ?? 0),
-    down: Number(live?.down ?? client.down ?? 0),
-    rate_up: Number(live?.rate_up ?? client.rate_up ?? 0),
-    rate_down: Number(live?.rate_down ?? client.rate_down ?? 0),
-    xray_up: Number(live?.xray_up ?? client.xray_up ?? 0),
-    xray_down: Number(live?.xray_down ?? client.xray_down ?? 0),
-    traffic_status: live?.status || client.traffic_status || inbound.traffic_status,
-    traffic_message: live?.message || client.traffic_message || inbound.traffic_message,
-    traffic_stats_source: live?.source || client.traffic_stats_source || inbound.traffic_stats_source,
-    realtime_stats_source: live?.realtime_source || client.realtime_stats_source || inbound.realtime_stats_source,
+    inbounds: new Map((snapshot?.inbounds || []).map((inbound) => [inbound.id, inbound])),
+    clients: new Map((snapshot?.clients || []).map((client) => [client.id, client])),
   };
 }
 
-export function mergeInboundTraffic(current: Inbound[], traffic: Inbound[]): Inbound[] {
-  const byID = new Map(traffic.map((inbound) => [inbound.id, inbound]));
-  return current.map((inbound) => {
-    const update = byID.get(inbound.id);
-    if (!update) return inbound;
-    return {
-      ...inbound,
-      enabled: update.enabled,
-      clients: mergeClients(inbound.clients || [], update.clients || [], update.client_traffic),
-      traffic_up: update.traffic_up,
-      traffic_down: update.traffic_down,
-      traffic_total: update.traffic_total,
-      rate_up: update.rate_up,
-      rate_down: update.rate_down,
-      traffic_status: update.traffic_status,
-      traffic_message: update.traffic_message,
-      traffic_stats_source: update.traffic_stats_source,
-      realtime_stats_source: update.realtime_stats_source,
-      client_traffic: update.client_traffic,
-    };
-  });
+export function inboundCumulative(inbound: Pick<TrafficV2Inbound, 'cumulative'> | undefined): TrafficV2Metric {
+  return inbound?.cumulative || emptyV2Metric('waiting', 'inbound');
 }
 
-function mergeClients(current: Client[], traffic: Client[], clientTraffic?: Inbound['client_traffic']): Client[] {
-  const byID = new Map(traffic.map((client) => [client.id, client]));
-  return current.map((client) => {
-    const update = byID.get(client.id);
-    if (!update) return client;
-    return {
-      ...client,
-      enabled: update.enabled,
-      up: update.up,
-      down: update.down,
-      rate_up: clientTraffic?.[String(client.id)]?.rate_up ?? update.rate_up,
-      rate_down: clientTraffic?.[String(client.id)]?.rate_down ?? update.rate_down,
-      traffic_status: clientTraffic?.[String(client.id)]?.status ?? update.traffic_status,
-      traffic_message: clientTraffic?.[String(client.id)]?.message ?? update.traffic_message,
-      traffic_limit: update.traffic_limit,
-      expiry_at: update.expiry_at,
-    };
-  });
+export function clientCumulative(client: Pick<TrafficV2Client, 'cumulative'> | undefined): TrafficV2Metric {
+  return client?.cumulative || emptyV2Metric('waiting', 'client');
+}
+
+export function inboundRealtime(inbound: Pick<TrafficV2Inbound, 'realtime'> | undefined): TrafficV2Realtime {
+  return inbound?.realtime || emptyV2Realtime('waiting', 'inbound');
+}
+
+export function clientRealtime(client: Pick<TrafficV2Client, 'realtime'> | undefined): TrafficV2Realtime {
+  return client?.realtime || emptyV2Realtime('waiting', 'client');
+}
+
+function emptyV2Metric(status: string, source: string): TrafficV2Metric {
+  return { up: 0, down: 0, total: 0, status, source, message: '' };
+}
+
+function emptyV2Realtime(status: string, source: string): TrafficV2Realtime {
+  return { delta_up: 0, delta_down: 0, delta_total: 0, rate_up: 0, rate_down: 0, rate_total: 0, observed_at: '', window_seconds: 0, status, source, message: '' };
 }
 
 export function clientFormValues(inbound: Inbound, client?: Client): ClientValues {

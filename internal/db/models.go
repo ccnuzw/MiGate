@@ -276,8 +276,6 @@ type Client struct {
 	StatsKey          string `json:"stats_key,omitempty"`
 	Email             string `json:"email"`
 	Enabled           bool   `json:"enabled"`
-	Up                int64  `json:"up"`
-	Down              int64  `json:"down"`
 	TrafficLimit      int64  `json:"traffic_limit"`
 	ExpiryAt          int64  `json:"expiry_at"`
 }
@@ -348,30 +346,36 @@ type TrafficStatusMarker struct {
 }
 
 type TrafficState struct {
-	Engine      string  `json:"engine"`
-	ScopeType   string  `json:"scope_type"`
-	ScopeKey    string  `json:"scope_key"`
-	TotalUp     int64   `json:"total_up"`
-	TotalDown   int64   `json:"total_down"`
-	LastRawUp   int64   `json:"last_raw_up"`
-	LastRawDown int64   `json:"last_raw_down"`
-	RateUp      float64 `json:"rate_up"`
-	RateDown    float64 `json:"rate_down"`
-	LastSeenAt  string  `json:"last_seen_at"`
-	Status      string  `json:"status"`
-	Message     string  `json:"message,omitempty"`
+	Engine        string  `json:"engine"`
+	ScopeType     string  `json:"scope_type"`
+	ScopeKey      string  `json:"scope_key"`
+	TotalUp       int64   `json:"total_up"`
+	TotalDown     int64   `json:"total_down"`
+	LastRawUp     int64   `json:"last_raw_up"`
+	LastRawDown   int64   `json:"last_raw_down"`
+	DeltaUp       int64   `json:"delta_up"`
+	DeltaDown     int64   `json:"delta_down"`
+	RateUp        float64 `json:"rate_up"`
+	RateDown      float64 `json:"rate_down"`
+	WindowSeconds float64 `json:"window_seconds"`
+	LastSeenAt    string  `json:"last_seen_at"`
+	Status        string  `json:"status"`
+	Message       string  `json:"message,omitempty"`
 }
 
 type TrafficSample struct {
-	SampledAt string  `json:"sampled_at"`
-	Engine    string  `json:"engine"`
-	ScopeType string  `json:"scope_type"`
-	ScopeKey  string  `json:"scope_key"`
-	TotalUp   int64   `json:"total_up"`
-	TotalDown int64   `json:"total_down"`
-	RateUp    float64 `json:"rate_up"`
-	RateDown  float64 `json:"rate_down"`
-	Status    string  `json:"status"`
+	SampledAt     string  `json:"sampled_at"`
+	Engine        string  `json:"engine"`
+	ScopeType     string  `json:"scope_type"`
+	ScopeKey      string  `json:"scope_key"`
+	TotalUp       int64   `json:"total_up"`
+	TotalDown     int64   `json:"total_down"`
+	DeltaUp       int64   `json:"delta_up"`
+	DeltaDown     int64   `json:"delta_down"`
+	RateUp        float64 `json:"rate_up"`
+	RateDown      float64 `json:"rate_down"`
+	WindowSeconds float64 `json:"window_seconds"`
+	Status        string  `json:"status"`
 }
 
 type ClientTrafficUsage struct {

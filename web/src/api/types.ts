@@ -16,19 +16,8 @@ export interface Client {
   password?: string;
   subscription_token?: string;
   enabled: boolean;
-  up?: number;
-  down?: number;
   traffic_limit?: number;
   expiry_at?: number;
-  xray_up?: number;
-  xray_down?: number;
-  rate_up?: number;
-  rate_down?: number;
-  traffic_status?: string;
-  traffic_message?: string;
-  traffic_stats_source?: string;
-  realtime_stats_source?: string;
-  traffic_stats_note?: string;
 }
 
 export interface Inbound {
@@ -42,16 +31,6 @@ export interface Inbound {
   enabled: boolean;
   uuid?: string;
   clients?: Client[];
-  traffic_up?: number;
-  traffic_down?: number;
-  traffic_total?: number;
-  rate_up?: number;
-  rate_down?: number;
-  traffic_status?: string;
-  traffic_message?: string;
-  traffic_stats_source?: string;
-  realtime_stats_source?: string;
-  client_traffic?: Record<string, { up: number; down: number; rate_up?: number; rate_down?: number; xray_up?: number; xray_down?: number; status?: string; message?: string; source?: string; realtime_source?: string; note?: string }>;
   [key: string]: unknown;
 }
 
@@ -464,63 +443,121 @@ export interface TrafficCoverage {
   engines?: Record<string, string>;
 }
 
-export interface TrafficSummary {
-  total_up: number;
-  total_down: number;
+export interface TrafficCumulative {
+  up: number;
+  down: number;
   total: number;
+  status?: string;
+  source?: string;
+  message?: string;
+}
+
+export interface TrafficRealtime {
+  delta_up: number;
+  delta_down: number;
+  delta_total: number;
   rate_up: number;
   rate_down: number;
   rate_total: number;
-  status: TrafficCoverage;
-  engine?: string;
+  window_seconds?: number;
+  observed_at?: string;
+  status?: string;
   source?: string;
-  last_sampled_at?: string;
-  generated_at: string;
+  message?: string;
+  coverage?: TrafficCoverage;
 }
 
-export interface TrafficInbound {
+export interface TrafficV2Coverage {
+  overall: string;
+  engines: Record<string, string>;
+  ok: number;
+  waiting: number;
+  stale: number;
+  unavailable: number;
+  unsupported: number;
+  partial: number;
+  not_configured?: number;
+}
+
+export interface TrafficV2Metric {
+  up: number;
+  down: number;
+  total: number;
+  status: string;
+  source: string;
+  message: string;
+}
+
+export interface TrafficV2Realtime {
+  delta_up: number;
+  delta_down: number;
+  delta_total: number;
+  rate_up: number;
+  rate_down: number;
+  rate_total: number;
+  observed_at: string;
+  window_seconds: number;
+  status: string;
+  source: string;
+  message: string;
+}
+
+export interface TrafficV2Total {
+  cumulative: TrafficV2Metric;
+  realtime: TrafficV2Realtime;
+}
+
+export interface TrafficV2Inbound {
   id: number;
   remark: string;
   protocol: string;
   port: number;
-  total_up: number;
-  total_down: number;
-  total: number;
-  rate_up: number;
-  rate_down: number;
-  status: string;
-  message?: string;
-  engine?: string;
-  source?: string;
-  last_sampled_at?: string;
+  enabled: boolean;
+  cumulative: TrafficV2Metric;
+  realtime: TrafficV2Realtime;
 }
 
-export interface TrafficClient {
+export interface TrafficV2Client {
   id: number;
   inbound_id: number;
   email: string;
-  protocol: string;
-  total_up: number;
-  total_down: number;
-  total: number;
-  rate_up: number;
-  rate_down: number;
+  enabled: boolean;
   traffic_limit: number;
   expiry_at: number;
-  status: string;
-  message?: string;
-  engine?: string;
-  source?: string;
-  last_sampled_at?: string;
+  cumulative: TrafficV2Metric;
+  realtime: TrafficV2Realtime;
 }
 
-export interface TrafficSeriesPoint {
-  name: string;
-  time?: string;
+export interface TrafficV2Snapshot {
+  generated_at: string;
+  observed_at: string;
+  window_seconds: number;
+  total: TrafficV2Total;
+  inbounds: TrafficV2Inbound[];
+  clients: TrafficV2Client[];
+  coverage: TrafficV2Coverage;
+}
+
+export interface TrafficV2Patch {
+  generated_at: string;
+  observed_at: string;
+  window_seconds: number;
+  total?: TrafficV2Total;
+  inbounds?: TrafficV2Inbound[];
+  removed_inbound_ids?: number[];
+  clients?: TrafficV2Client[];
+  removed_client_ids?: number[];
+  coverage?: TrafficV2Coverage;
+}
+
+export interface TrafficV2SeriesPoint {
+  time: string;
   up: number;
   down: number;
+  total: number;
   rate_up?: number;
   rate_down?: number;
+  rate_total?: number;
 }
 
 export interface VersionResponse {

@@ -62,11 +62,11 @@ func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "get_traffic_usage_failed")
 				return
 			}
-			used := client.Up + client.Down
+			used, hasUsage := int64(0), false
 			if found {
-				used = usage.TotalUp + usage.TotalDown
+				used, hasUsage = businessTrafficUsage(usage)
 			}
-			if used >= client.TrafficLimit {
+			if hasUsage && used >= client.TrafficLimit {
 				writeInactiveSubscription(w)
 				return
 			}

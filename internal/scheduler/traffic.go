@@ -10,6 +10,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/singbox"
+	"github.com/imzyb/MiGate/internal/trafficstats"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -25,7 +26,9 @@ type inboundStore interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
 }
 
-// TrafficSyncScheduler periodically syncs traffic statistics from Xray to the database.
+const DefaultTrafficSyncInterval = 5 * time.Second
+
+// TrafficSyncScheduler periodically syncs traffic statistics from Xray and sing-box to the database.
 type TrafficSyncScheduler struct {
 	store              Store
 	statsClient        xray.StatsClient
@@ -41,8 +44,11 @@ type TrafficSyncScheduler struct {
 }
 
 // NewTrafficSyncScheduler creates a new scheduler.
-// interval: how often to sync (e.g., 1 * time.Minute)
+// interval: how often to sync. Non-positive values use DefaultTrafficSyncInterval.
 func NewTrafficSyncScheduler(store Store, statsClient xray.StatsClient, interval time.Duration) *TrafficSyncScheduler {
+	if interval <= 0 {
+		interval = DefaultTrafficSyncInterval
+	}
 	return &TrafficSyncScheduler{
 		store:       store,
 		statsClient: statsClient,
@@ -329,7 +335,7 @@ func singboxTrafficStatusMarkersForScopes(inbounds []db.Inbound, status, message
 	return markers
 }
 
-func convertRawStats(stats []xray.TrafficStat) []db.TrafficRawStat {
+func convertRawStats(stats []trafficstats.Stat) []db.TrafficRawStat {
 	raw := make([]db.TrafficRawStat, 0, len(stats))
 	for _, stat := range stats {
 		raw = append(raw, db.TrafficRawStat{

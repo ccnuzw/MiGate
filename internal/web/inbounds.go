@@ -10,6 +10,7 @@ import (
 
 	"github.com/imzyb/MiGate/internal/db"
 	"github.com/imzyb/MiGate/internal/singbox"
+	"github.com/imzyb/MiGate/internal/trafficstats"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
@@ -141,82 +142,16 @@ func ensureRealityShortID(value *string) error {
 
 func listInbounds(w http.ResponseWriter, r *http.Request, store Store, statsClient xray.StatsClient) {
 	inbounds := []db.Inbound{}
-	refreshTraffic := r.URL.Query().Get("refresh") == "traffic"
 	if store != nil {
-		var loaded []db.Inbound
-		var err error
-		if refreshTraffic {
-			loaded, err = store.ListInboundTraffic(r.Context())
-		} else {
-			loaded, err = store.ListInbounds(r.Context())
-			if err == nil {
-				deriveRealityPublicKeys(loaded)
-			}
-		}
+		loaded, err := store.ListInbounds(r.Context())
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 			return
 		}
+		deriveRealityPublicKeys(loaded)
 		inbounds = loaded
 	}
-	trafficByInbound, trafficByClient := summarizeTraffic(r.Context(), store, inbounds)
-	if refreshTraffic {
-		views := make([]inboundTrafficView, 0, len(inbounds))
-		for _, inbound := range inbounds {
-			summary := trafficByInbound[inbound.ID]
-			view := inboundTrafficView{
-				ID:             inbound.ID,
-				UUID:           inbound.UUID,
-				Remark:         inbound.Remark,
-				Protocol:       inbound.Protocol,
-				Port:           inbound.Port,
-				Network:        inbound.Network,
-				Security:       inbound.Security,
-				Enabled:        inbound.Enabled,
-				Clients:        inbound.Clients,
-				TrafficUp:      summary.Up,
-				TrafficDown:    summary.Down,
-				TrafficTotal:   summary.Total,
-				RateUp:         summary.RateUp,
-				RateDown:       summary.RateDown,
-				TrafficStatus:  summary.Status,
-				TrafficMessage: summary.Message,
-				TrafficSource:  summary.Source,
-				ClientTraffic:  map[int64]clientTrafficSummary{},
-			}
-			for _, client := range inbound.Clients {
-				if clientTraffic, ok := trafficByClient[client.ID]; ok {
-					view.ClientTraffic[client.ID] = clientTraffic
-				}
-			}
-			views = append(views, view)
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": views})
-		return
-	}
-	views := make([]inboundView, 0, len(inbounds))
-	for _, inbound := range inbounds {
-		summary := trafficByInbound[inbound.ID]
-		view := inboundView{
-			Inbound:        inbound,
-			TrafficUp:      summary.Up,
-			TrafficDown:    summary.Down,
-			TrafficTotal:   summary.Total,
-			RateUp:         summary.RateUp,
-			RateDown:       summary.RateDown,
-			TrafficStatus:  summary.Status,
-			TrafficMessage: summary.Message,
-			TrafficSource:  summary.Source,
-			ClientTraffic:  map[int64]clientTrafficSummary{},
-		}
-		for _, client := range inbound.Clients {
-			if clientTraffic, ok := trafficByClient[client.ID]; ok {
-				view.ClientTraffic[client.ID] = clientTraffic
-			}
-		}
-		views = append(views, view)
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": views})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": inbounds})
 }
 
 func createInbound(w http.ResponseWriter, r *http.Request, store Store) (db.Inbound, bool) {
@@ -631,7 +566,7 @@ func clientBelongsToInbound(ctx context.Context, store Store, inboundID, clientI
 
 func collectTrafficBaselines(ctx context.Context, store Store, statsClient xray.StatsClient, singboxStatsClient singbox.StatsClient) []db.TrafficRawStat {
 	baselines := []db.TrafficRawStat{}
-	appendStats := func(stats []xray.TrafficStat) {
+	appendStats := func(stats []trafficstats.Stat) {
 		for _, stat := range stats {
 			baselines = append(baselines, db.TrafficRawStat{
 				Engine: stat.Engine, ScopeType: stat.ScopeType, ScopeKey: stat.ScopeKey,

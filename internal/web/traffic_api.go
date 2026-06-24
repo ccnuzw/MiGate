@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,138 +12,7 @@ import (
 	"github.com/imzyb/MiGate/internal/db"
 )
 
-func trafficSummaryHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-		view, err := cache.get(r.Context(), store)
-		if err != nil {
-			writeTrafficViewError(w, err)
-			return
-		}
-		var totalUp int64
-		var totalDown int64
-		var rateUp float64
-		var rateDown float64
-		for _, inbound := range view.inbounds {
-			traffic := view.trafficByInbound[inbound.ID]
-			totalUp += traffic.Up
-			totalDown += traffic.Down
-			rateUp += traffic.RateUp
-			rateDown += traffic.RateDown
-		}
-		generatedAt := time.Now().UTC().Format(time.RFC3339)
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"total_up":        totalUp,
-			"total_down":      totalDown,
-			"total":           totalUp + totalDown,
-			"rate_up":         rateUp,
-			"rate_down":       rateDown,
-			"rate_total":      rateUp + rateDown,
-			"status":          buildTrafficCoverage(view.trafficByInbound),
-			"engine":          trafficViewEngine(view.trafficByInbound),
-			"source":          "migate",
-			"last_sampled_at": lastTrafficSampledAt(view.trafficByInbound, view.trafficByClient),
-			"generated_at":    generatedAt,
-		})
-	}
-}
-
-func trafficInboundsHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-		view, err := cache.get(r.Context(), store)
-		if err != nil {
-			writeTrafficViewError(w, err)
-			return
-		}
-		items := make([]map[string]interface{}, 0, len(view.inbounds))
-		for _, inbound := range view.inbounds {
-			traffic := view.trafficByInbound[inbound.ID]
-			items = append(items, map[string]interface{}{
-				"id":              inbound.ID,
-				"remark":          inbound.Remark,
-				"protocol":        inbound.Protocol,
-				"port":            inbound.Port,
-				"total_up":        traffic.Up,
-				"total_down":      traffic.Down,
-				"total":           traffic.Total,
-				"rate_up":         traffic.RateUp,
-				"rate_down":       traffic.RateDown,
-				"status":          traffic.Status,
-				"message":         traffic.Message,
-				"engine":          traffic.Engine,
-				"source":          traffic.Source,
-				"last_sampled_at": traffic.LastSampledAt,
-			})
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"inbounds": items})
-	}
-}
-
-func trafficClientsHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-		view, err := cache.get(r.Context(), store)
-		if err != nil {
-			writeTrafficViewError(w, err)
-			return
-		}
-		items := []map[string]interface{}{}
-		for _, inbound := range view.inbounds {
-			for _, client := range inbound.Clients {
-				traffic := view.trafficByClient[client.ID]
-				items = append(items, map[string]interface{}{
-					"id":              client.ID,
-					"inbound_id":      inbound.ID,
-					"email":           client.Email,
-					"protocol":        inbound.Protocol,
-					"total_up":        traffic.Up,
-					"total_down":      traffic.Down,
-					"total":           traffic.Up + traffic.Down,
-					"rate_up":         traffic.RateUp,
-					"rate_down":       traffic.RateDown,
-					"traffic_limit":   client.TrafficLimit,
-					"expiry_at":       client.ExpiryAt,
-					"status":          traffic.Status,
-					"message":         traffic.Message,
-					"engine":          traffic.Engine,
-					"source":          traffic.Source,
-					"last_sampled_at": traffic.LastSampledAt,
-				})
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"clients": items})
-	}
-}
-
-func trafficViewEngine(byInbound map[int64]inboundTrafficSummary) string {
-	seen := map[string]struct{}{}
-	for _, traffic := range byInbound {
-		engine := normalizeTrafficEngine(traffic.Engine)
-		if engine != "" {
-			seen[engine] = struct{}{}
-		}
-	}
-	if len(seen) == 0 {
-		return "migate"
-	}
-	if len(seen) > 1 {
-		return "mixed"
-	}
-	for engine := range seen {
-		return engine
-	}
-	return "migate"
-}
+const trafficStreamInterval = 5 * time.Second
 
 type trafficView struct {
 	inbounds         []db.Inbound
@@ -218,57 +86,6 @@ func writeTrafficViewError(w http.ResponseWriter, err error) {
 	}
 }
 
-func trafficSeriesHandler(store Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-		if store == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
-			return
-		}
-		scopeType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope_type")))
-		if scopeType == "" {
-			scopeType = "client"
-		}
-		if scopeType != "client" && scopeType != "inbound" && scopeType != "outbound" && scopeType != "core" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_scope_type")
-			return
-		}
-		since := time.Now().UTC().Add(-24 * time.Hour)
-		if rawSince := strings.TrimSpace(r.URL.Query().Get("since")); rawSince != "" {
-			parsed, err := time.Parse(time.RFC3339, rawSince)
-			if err != nil {
-				writeJSONError(w, http.StatusBadRequest, "invalid_since")
-				return
-			}
-			since = parsed.UTC()
-		}
-		limit := 2000
-		if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
-			parsed, err := strconv.Atoi(rawLimit)
-			if err != nil || parsed <= 0 || parsed > 2000 {
-				writeJSONError(w, http.StatusBadRequest, "invalid_limit")
-				return
-			}
-			limit = parsed
-		}
-		samples, err := store.ListTrafficSamples(r.Context(), scopeType, since, limit)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "traffic_samples_failed")
-			return
-		}
-		inbounds, err := store.ListInboundTraffic(r.Context())
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
-			return
-		}
-		points := trafficSamplesToSeries(samples, scopeType, inbounds)
-		writeJSON(w, http.StatusOK, map[string]interface{}{"series": points})
-	}
-}
-
 func trafficSamplesToSeries(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound) []trafficSeriesPoint {
 	allowed := selectedTrafficSeriesEngines(samples, scopeType, inbounds)
 	byTime := map[string]*trafficSeriesPoint{}
@@ -333,18 +150,14 @@ func selectedTrafficSeriesEngines(samples []db.TrafficSample, scopeType string, 
 			continue
 		}
 		engines := sampleEngines[scopeKey]
+		matched := map[string]struct{}{}
 		for expectedEngine := range expectedEngines {
 			if _, ok := engines[expectedEngine]; ok {
-				selected[scopeKey] = map[string]struct{}{expectedEngine: {}}
-				break
+				matched[expectedEngine] = struct{}{}
 			}
-			for _, fallback := range fallbackTrafficEngines(expectedEngine) {
-				if _, ok := engines[fallback]; ok {
-					selected[scopeKey] = map[string]struct{}{fallback: {}}
-					break
-				}
-			}
-			break
+		}
+		if len(matched) > 0 {
+			selected[scopeKey] = matched
 		}
 	}
 	return selected

@@ -40,9 +40,10 @@ export default function TopologyPage() {
   const inbounds = useQuery({ queryKey: ['inbounds'], queryFn: api.inbounds, staleTime: 30_000 });
   const outbounds = useQuery({ queryKey: ['outbounds'], queryFn: api.outbounds, staleTime: 30_000 });
   const routingRules = useQuery({ queryKey: ['routing-rules'], queryFn: api.routingRules, staleTime: 30_000 });
+  const trafficSnapshot = useQuery({ queryKey: ['traffic-v2-snapshot'], queryFn: api.trafficV2Snapshot, staleTime: 10_000 });
   const graph = useMemo(
-    () => buildTopologyGraph(inbounds.data || [], outbounds.data || [], routingRules.data || []),
-    [inbounds.data, outbounds.data, routingRules.data],
+    () => buildTopologyGraph(inbounds.data || [], outbounds.data || [], routingRules.data || [], trafficSnapshot.data),
+    [inbounds.data, outbounds.data, routingRules.data, trafficSnapshot.data],
   );
   const [reactFlow, setReactFlow] = useState<ReactFlowInstance<Node<TopologyNodeData>, Edge<TopologyEdgeData>> | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<TopologyNodeData>>([]);

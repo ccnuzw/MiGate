@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  invalidateTrafficV2Series,
+  invalidateTrafficV2Snapshot,
+  refreshCertificateApplyDependencies,
+  refreshOutboundDependencies,
   refreshQueries,
   refreshQuery,
   refreshCertificateOperationDependencies,
@@ -17,14 +21,25 @@ describe('query invalidation helpers', () => {
     refreshTopologyDependencies(queryClient as never);
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['inbounds'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['inbounds', 'traffic'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['outbounds'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['routing-rules'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['dashboard-summary'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-summary'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-inbounds'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-clients'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-series'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
+  });
+
+  it('refreshes outbound dependencies as topology plus subscriptions', () => {
+    const queryClient = { invalidateQueries: vi.fn() };
+
+    refreshOutboundDependencies(queryClient as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['inbounds'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['outbounds'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['routing-rules'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['dashboard-summary'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['outbound-subscriptions'] });
   });
 
   it('centralizes explicit query refresh calls', () => {
@@ -36,6 +51,16 @@ describe('query invalidation helpers', () => {
 
     expect(first.refetch).toHaveBeenCalledTimes(2);
     expect(second.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('centralizes traffic v2 cache invalidation helpers', () => {
+    const queryClient = { invalidateQueries: vi.fn() };
+
+    invalidateTrafficV2Snapshot(queryClient as never);
+    invalidateTrafficV2Series(queryClient as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
   });
 
   it('centralizes settings page invalidation groups', () => {
@@ -52,6 +77,18 @@ describe('query invalidation helpers', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['update-status'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['update-logs'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+  });
+
+  it('centralizes certificate apply invalidation groups', () => {
+    const queryClient = { invalidateQueries: vi.fn() };
+
+    refreshCertificateApplyDependencies(queryClient as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['cert-status'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['certificates'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['certificate-inbounds'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['inbounds'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['dashboard-summary'] });
   });
 
   it('centralizes current session refresh after login state changes', () => {

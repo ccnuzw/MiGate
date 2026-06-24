@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/imzyb/MiGate/internal/trafficstats"
 )
 
 type flakyStatsClient struct {
@@ -24,14 +26,14 @@ func (c *flakyStatsClient) QueryAllStats(ctx context.Context) (map[string]*Clien
 	}, nil
 }
 
-func (c *flakyStatsClient) QueryTrafficStats(ctx context.Context) ([]TrafficStat, error) {
+func (c *flakyStatsClient) QueryTrafficStats(ctx context.Context) ([]trafficstats.Stat, error) {
 	stats, err := c.QueryAllStats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]TrafficStat, 0, len(stats))
+	result := make([]trafficstats.Stat, 0, len(stats))
 	for _, stat := range stats {
-		result = append(result, TrafficStat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
+		result = append(result, trafficstats.Stat{Engine: "xray", ScopeType: "client", ScopeKey: stat.Email, Uplink: stat.Uplink, Downlink: stat.Downlink})
 	}
 	return result, nil
 }
@@ -132,7 +134,7 @@ func TestClientStatsStruct(t *testing.T) {
 }
 
 func TestGRPCStatsClientQueriesStatsService(t *testing.T) {
-	addr, closeServer := startFakeStatsService(t, []TrafficStat{
+	addr, closeServer := startFakeStatsService(t, []trafficstats.Stat{
 		{ScopeType: "client", ScopeKey: "sam@example.com", Uplink: 100, Downlink: 200},
 		{ScopeType: "inbound", ScopeKey: "inbound-1-vless", Uplink: 30, Downlink: 40},
 	})
@@ -148,7 +150,7 @@ func TestGRPCStatsClientQueriesStatsService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query grpc stats: %v", err)
 	}
-	byScope := map[string]TrafficStat{}
+	byScope := map[string]trafficstats.Stat{}
 	for _, stat := range stats {
 		byScope[stat.ScopeType+"/"+stat.ScopeKey] = stat
 	}
@@ -161,7 +163,7 @@ func TestGRPCStatsClientQueriesStatsService(t *testing.T) {
 }
 
 func TestGRPCStatsClientWithEngine(t *testing.T) {
-	addr, closeServer := startFakeStatsService(t, []TrafficStat{
+	addr, closeServer := startFakeStatsService(t, []trafficstats.Stat{
 		{ScopeType: "client", ScopeKey: "c_singbox", Uplink: 10, Downlink: 20},
 	})
 	defer closeServer()
@@ -182,7 +184,7 @@ func TestGRPCStatsClientWithEngine(t *testing.T) {
 }
 
 func TestGRPCStatsClientWithCustomServiceName(t *testing.T) {
-	addr, closeServer := startFakeStatsServiceAtPath(t, "/experimental.v2rayapi.StatsService/QueryStats", []TrafficStat{
+	addr, closeServer := startFakeStatsServiceAtPath(t, "/experimental.v2rayapi.StatsService/QueryStats", []trafficstats.Stat{
 		{ScopeType: "client", ScopeKey: "c_singbox", Uplink: 10, Downlink: 20},
 	})
 	defer closeServer()
@@ -235,7 +237,7 @@ func TestParseTrafficStatsQueryOutputAllScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse traffic stats: %v", err)
 	}
-	byScope := map[string]TrafficStat{}
+	byScope := map[string]trafficstats.Stat{}
 	for _, stat := range stats {
 		byScope[stat.ScopeType+"/"+stat.ScopeKey] = stat
 	}
@@ -250,11 +252,11 @@ func TestParseTrafficStatsQueryOutputAllScopes(t *testing.T) {
 	}
 }
 
-func startFakeStatsService(t *testing.T, stats []TrafficStat) (string, func()) {
+func startFakeStatsService(t *testing.T, stats []trafficstats.Stat) (string, func()) {
 	return startFakeStatsServiceAtPath(t, "/xray.app.stats.command.StatsService/QueryStats", stats)
 }
 
-func startFakeStatsServiceAtPath(t *testing.T, path string, stats []TrafficStat) (string, func()) {
+func startFakeStatsServiceAtPath(t *testing.T, path string, stats []trafficstats.Stat) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

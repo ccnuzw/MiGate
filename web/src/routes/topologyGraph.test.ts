@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Inbound, Outbound } from '../api/types';
+import type { Inbound, Outbound, TrafficV2Snapshot } from '../api/types';
 import { buildInboundTagLookup, buildTopologyGraph } from './topologyGraph';
 
 const inbounds: Inbound[] = [
@@ -12,7 +12,7 @@ const inbounds: Inbound[] = [
     security: 'reality',
     enabled: true,
     clients: [
-      { id: 11, inbound_id: 7, email: 'alice@example.com', uuid: 'u-1', enabled: true, up: 1024, down: 2048, traffic_limit: 4096 },
+      { id: 11, inbound_id: 7, email: 'alice@example.com', uuid: 'u-1', enabled: true, traffic_limit: 4096 },
       { id: 12, inbound_id: 7, email: 'bob@example.com', uuid: 'u-2', enabled: false },
     ],
   },
@@ -33,9 +33,33 @@ const outbounds: Outbound[] = [
   { id: 2, tag: 'proxy-a', remark: 'Tokyo relay', protocol: 'socks', address: '127.0.0.1', port: 1080, enabled: false },
 ];
 
+const trafficSnapshot: TrafficV2Snapshot = {
+  generated_at: '2026-06-24T00:00:00Z',
+  observed_at: '2026-06-24T00:00:00Z',
+  window_seconds: 5,
+  total: {
+    cumulative: { up: 1024, down: 2048, total: 3072, status: 'ok', source: 'inbound', message: '' },
+    realtime: { delta_up: 0, delta_down: 0, delta_total: 0, rate_up: 0, rate_down: 0, rate_total: 0, observed_at: '2026-06-24T00:00:00Z', window_seconds: 5, status: 'waiting', source: 'inbound', message: '' },
+  },
+  inbounds: [],
+  clients: [
+    {
+      id: 11,
+      inbound_id: 7,
+      email: 'alice@example.com',
+      enabled: true,
+      traffic_limit: 4096,
+      expiry_at: 0,
+      cumulative: { up: 1024, down: 2048, total: 3072, status: 'ok', source: 'client', message: '' },
+      realtime: { delta_up: 0, delta_down: 0, delta_total: 0, rate_up: 0, rate_down: 0, rate_total: 0, observed_at: '2026-06-24T00:00:00Z', window_seconds: 5, status: 'waiting', source: 'client', message: '' },
+    },
+  ],
+  coverage: { overall: 'ok', engines: { xray: 'ok', singbox: 'not_configured' }, ok: 1, waiting: 0, stale: 0, unavailable: 0, unsupported: 0, partial: 0 },
+};
+
 describe('topology graph helpers', () => {
   it('generates inbound, client and outbound nodes with display data', () => {
-    const graph = buildTopologyGraph(inbounds, outbounds, []);
+    const graph = buildTopologyGraph(inbounds, outbounds, [], trafficSnapshot);
 
     expect(graph.nodes.find((node) => node.id === 'inbound:7')?.data).toMatchObject({
       kind: 'inbound',
@@ -47,6 +71,14 @@ describe('topology graph helpers', () => {
       kind: 'client',
       title: 'alice@example.com',
       enabled: true,
+    });
+    expect(graph.nodes.find((node) => node.id === 'client:11')?.data.meta).toContainEqual({
+      label: '上行',
+      value: '1.0 KB',
+    });
+    expect(graph.nodes.find((node) => node.id === 'client:11')?.data.meta).toContainEqual({
+      label: '下行',
+      value: '2.0 KB',
     });
     expect(graph.nodes.find((node) => node.id === 'outbound:proxy-a')?.data).toMatchObject({
       kind: 'outbound',
