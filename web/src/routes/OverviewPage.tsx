@@ -193,31 +193,24 @@ export function useTrafficStream(enabled: boolean) {
         // REST polling remains the fallback if a streaming frame is malformed.
       }
     };
-    const handleStreamError = () => {
+    const invalidateSnapshotOnError = () => {
       if (queryClient.isFetching({ queryKey: ['traffic-v2-snapshot'] }) > 0) return;
       const now = Date.now();
-      if (now-lastErrorInvalidateAt.current < 5000) return;
-      lastErrorInvalidateAt.current = now;
-      invalidateTrafficV2Snapshot(queryClient);
-    };
-    const handleError = () => {
-      if (queryClient.isFetching({ queryKey: ['traffic-v2-snapshot'] }) > 0) return;
-      const now = Date.now();
-      if (now-lastErrorInvalidateAt.current < 5000) return;
+      if (now - lastErrorInvalidateAt.current < 5000) return;
       lastErrorInvalidateAt.current = now;
       invalidateTrafficV2Snapshot(queryClient);
     };
     source.addEventListener('snapshot', handleSnapshot);
     source.addEventListener('patch', handlePatch);
     source.addEventListener('delta', handlePatch);
-    source.addEventListener('stream-error', handleStreamError);
-    source.addEventListener('error', handleError);
+    source.addEventListener('stream-error', invalidateSnapshotOnError);
+    source.addEventListener('error', invalidateSnapshotOnError);
     return () => {
       source.removeEventListener('snapshot', handleSnapshot);
       source.removeEventListener('patch', handlePatch);
       source.removeEventListener('delta', handlePatch);
-      source.removeEventListener('stream-error', handleStreamError);
-      source.removeEventListener('error', handleError);
+      source.removeEventListener('stream-error', invalidateSnapshotOnError);
+      source.removeEventListener('error', invalidateSnapshotOnError);
       source.close();
     };
   }, [enabled, queryClient]);
