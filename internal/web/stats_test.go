@@ -26,24 +26,25 @@ func (r fixedSingboxRuntime) Capability(ctx context.Context) singbox.Capability 
 }
 
 type countingSummaryStore struct {
-	mu                      sync.Mutex
-	inbounds                []db.Inbound
-	outbounds               []db.Outbound
-	rules                   []db.RoutingRule
-	states                  []db.TrafficState
-	samples                 []db.TrafficSample
-	trafficSampleLimits     []int
+	mu                       sync.Mutex
+	inbounds                 []db.Inbound
+	outbounds                []db.Outbound
+	rules                    []db.RoutingRule
+	states                   []db.TrafficState
+	samples                  []db.TrafficSample
+	trafficSampleLimits      []int
 	trafficSampleWindowUntil []time.Time
-	listInboundsErr         error
-	listOutboundsErr        error
-	listRulesErr            error
-	listInboundsCalls       int
-	listInboundTrafficCalls int
-	validationHashCalls     int
-	validationVersionCalls  int
-	validationVersion       int64
-	listTrafficStatesCalls  int
-	listTrafficSamplesCalls int
+	trafficAnalyticsBuckets  []int
+	listInboundsErr          error
+	listOutboundsErr         error
+	listRulesErr             error
+	listInboundsCalls        int
+	listInboundTrafficCalls  int
+	validationHashCalls      int
+	validationVersionCalls   int
+	validationVersion        int64
+	listTrafficStatesCalls   int
+	listTrafficSamplesCalls  int
 }
 
 func (s *countingSummaryStore) ListInbounds(ctx context.Context) ([]db.Inbound, error) {
@@ -256,6 +257,33 @@ func (s *countingSummaryStore) ListTrafficSamplesWindow(ctx context.Context, sco
 		if sample.ScopeType == scopeType {
 			filtered = append(filtered, sample)
 		}
+	}
+	return filtered, nil
+}
+
+func (s *countingSummaryStore) ListTrafficAnalyticsSamples(ctx context.Context, params db.TrafficAnalyticsSampleParams) ([]db.TrafficSample, error) {
+	s.listTrafficSamplesCalls++
+	s.trafficSampleLimits = append(s.trafficSampleLimits, 0)
+	s.trafficSampleWindowUntil = append(s.trafficSampleWindowUntil, params.Until)
+	s.trafficAnalyticsBuckets = append(s.trafficAnalyticsBuckets, params.BucketSeconds)
+	filtered := []db.TrafficSample{}
+	for _, sample := range s.samples {
+		if sample.ScopeType != params.ScopeType {
+			continue
+		}
+		sampledAt, err := time.Parse(time.RFC3339Nano, sample.SampledAt)
+		if err != nil {
+			sampledAt, err = time.Parse(time.RFC3339, sample.SampledAt)
+		}
+		if err == nil {
+			if !params.Since.IsZero() && sampledAt.Before(params.Since) {
+				continue
+			}
+			if !params.Until.IsZero() && sampledAt.After(params.Until) {
+				continue
+			}
+		}
+		filtered = append(filtered, sample)
 	}
 	return filtered, nil
 }
@@ -1009,19 +1037,22 @@ func TestSummarizeTrafficAggregatesClientTotalsWhenOnlyClientStateExists(t *test
 		t.Fatalf("expected ok client totals to be preserved, got %+v", client)
 	}
 	inbound := trafficByInbound[1]
-	if inbound.Status != "waiting" || inbound.Up != 0 || inbound.Down != 0 || inbound.Total != 0 || inbound.RateUp != 0 || inbound.RateDown != 0 || inbound.Source != "migate" {
-		t.Fatalf("expected inbound without inbound state to remain waiting/zero, got %+v", inbound)
+	if inbound.Status != "ok" || inbound.Up != 30 || inbound.Down != 40 || inbound.Total != 70 || inbound.RateUp != 3 || inbound.RateDown != 4 || inbound.Source != "client_aggregate" {
+		t.Fatalf("expected inbound without inbound state to fall back to client aggregate, got %+v", inbound)
 	}
 	view := trafficView{inbounds: inbounds, trafficByInbound: trafficByInbound, trafficByClient: trafficByClient}
 	metrics := buildTrafficMetricSet(view)
-	if metrics.InboundCumulative[1].Status != "waiting" || metrics.InboundCumulative[1].Source != "migate" {
-		t.Fatalf("expected inbound cumulative to stay waiting without inbound state, got %+v", metrics.InboundCumulative[1])
+	if metrics.InboundCumulative[1].Status != "ok" || metrics.InboundCumulative[1].Source != "client_aggregate" || metrics.InboundCumulative[1].Total != 70 {
+		t.Fatalf("expected inbound cumulative to use client aggregate without inbound state, got %+v", metrics.InboundCumulative[1])
 	}
-	if metrics.InboundRealtime[1].Status != "waiting" || metrics.InboundRealtime[1].Source != "migate" || metrics.InboundRealtime[1].RateTotal != 0 || metrics.TotalRealtime.Status != "waiting" {
-		t.Fatalf("expected inbound realtime to wait for real inbound sample, got inbound=%+v total=%+v", metrics.InboundRealtime[1], metrics.TotalRealtime)
+	if metrics.InboundRealtime[1].Status != "ok" || metrics.InboundRealtime[1].Source != "client_aggregate" || metrics.InboundRealtime[1].RateTotal != 7 || metrics.TotalRealtime.Status != "ok" {
+		t.Fatalf("expected inbound realtime to use client aggregate, got inbound=%+v total=%+v", metrics.InboundRealtime[1], metrics.TotalRealtime)
 	}
-	if metrics.TotalCumulative.Source != "migate" || metrics.TotalCumulative.Total != 0 {
-		t.Fatalf("expected total cumulative to aggregate inbound source only, got %+v", metrics.TotalCumulative)
+	if metrics.TotalCumulative.Source != "client_aggregate" || metrics.TotalCumulative.Total != 70 {
+		t.Fatalf("expected total cumulative to expose aggregate source, got %+v", metrics.TotalCumulative)
+	}
+	if metrics.TotalRealtime.Source != "client_aggregate" || metrics.TotalRealtime.RateTotal != 7 {
+		t.Fatalf("expected total realtime source to expose aggregate source, got %+v", metrics.TotalRealtime)
 	}
 }
 
@@ -1067,6 +1098,44 @@ func TestTrafficMetricSetMarksMixedTotalCumulativeSource(t *testing.T) {
 	metrics := buildTrafficMetricSet(view)
 	if metrics.TotalCumulative.Total != 100 || metrics.TotalCumulative.Source != "mixed" || metrics.TotalCumulative.Message != "" {
 		t.Fatalf("expected mixed total cumulative source, got %+v", metrics.TotalCumulative)
+	}
+	if metrics.TotalRealtime.Source != "mixed" || metrics.TotalRealtime.Status != "ok" {
+		t.Fatalf("expected mixed total realtime source with ok status, got %+v", metrics.TotalRealtime)
+	}
+}
+
+func TestTrafficMetricSetMarksInboundTotalRealtimeSource(t *testing.T) {
+	view := trafficView{
+		inbounds: []db.Inbound{{ID: 1, Protocol: "vless"}},
+		trafficByInbound: map[int64]inboundTrafficSummary{
+			1: {Up: 100, Down: 200, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, Status: "ok", Source: "inbound", LastSampledAt: "2026-06-25T01:00:00Z"},
+		},
+	}
+	metrics := buildTrafficMetricSet(view)
+	if metrics.TotalRealtime.Source != "inbound" || metrics.TotalRealtime.Status != "ok" || metrics.TotalRealtime.RateTotal != 3 {
+		t.Fatalf("expected inbound total realtime source, got %+v", metrics.TotalRealtime)
+	}
+}
+
+func TestBuildStatsResponseIncludesClientAggregateTotals(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{{
+			ID:       1,
+			Protocol: "vless",
+			Enabled:  true,
+			Clients:  []db.Client{{ID: 10, StatsKey: "c_stats", Email: "client@example.com", Enabled: true}},
+		}},
+		states: []db.TrafficState{
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_stats", TotalUp: 30, TotalDown: 40, DeltaUp: 3, DeltaDown: 4, RateUp: 0.3, RateDown: 0.4, WindowSeconds: 10, Status: "ok", LastSeenAt: now},
+		},
+	}
+	response, err := buildStatsResponse(context.Background(), store, nil, false)
+	if err != nil {
+		t.Fatalf("build stats response: %v", err)
+	}
+	if response["traffic_up"] != int64(30) || response["traffic_down"] != int64(40) || response["traffic_total"] != int64(70) {
+		t.Fatalf("legacy stats total should match traffic-v2 effective inbound total, got %+v", response)
 	}
 }
 
@@ -1122,7 +1191,7 @@ func TestTrafficV2SnapshotExposesCleanSixMetricShape(t *testing.T) {
 	}
 }
 
-func TestTrafficV2SnapshotFallbackDoesNotForgeInboundRealtime(t *testing.T) {
+func TestTrafficV2SnapshotFallbackMarksClientAggregateInboundRealtime(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	store := &countingSummaryStore{
 		inbounds: []db.Inbound{{
@@ -1140,14 +1209,14 @@ func TestTrafficV2SnapshotFallbackDoesNotForgeInboundRealtime(t *testing.T) {
 		t.Fatalf("build traffic view: %v", err)
 	}
 	payload := buildTrafficV2Snapshot(view)
-	if payload.Inbounds[0].Cumulative.Source != "migate" || payload.Inbounds[0].Cumulative.Status != "waiting" || payload.Inbounds[0].Cumulative.Total != 0 {
-		t.Fatalf("expected inbound cumulative to remain waiting without inbound state, got %+v", payload.Inbounds[0].Cumulative)
+	if payload.Inbounds[0].Cumulative.Source != "client_aggregate" || payload.Inbounds[0].Cumulative.Status != "ok" || payload.Inbounds[0].Cumulative.Total != 70 {
+		t.Fatalf("expected inbound cumulative to use explicit client aggregate fallback, got %+v", payload.Inbounds[0].Cumulative)
 	}
-	if payload.Inbounds[0].Realtime.Status != "waiting" || payload.Inbounds[0].Realtime.Source != "migate" || payload.Inbounds[0].Realtime.RateTotal != 0 {
-		t.Fatalf("client realtime must not be forged as inbound realtime, got %+v", payload.Inbounds[0].Realtime)
+	if payload.Inbounds[0].Realtime.Status != "ok" || payload.Inbounds[0].Realtime.Source != "client_aggregate" || payload.Inbounds[0].Realtime.RateTotal != 70 {
+		t.Fatalf("expected inbound realtime to use explicit client aggregate fallback, got %+v", payload.Inbounds[0].Realtime)
 	}
-	if payload.Total.Realtime.Status != "waiting" || payload.Total.Realtime.RateTotal != 0 {
-		t.Fatalf("total realtime should aggregate only inbound realtime, got %+v", payload.Total.Realtime)
+	if payload.Total.Realtime.Status != "ok" || payload.Total.Realtime.RateTotal != 70 {
+		t.Fatalf("total realtime should include aggregate fallback, got %+v", payload.Total.Realtime)
 	}
 }
 
@@ -1378,7 +1447,7 @@ func TestTrafficV2StreamSkipsPatchWhenNothingChanges(t *testing.T) {
 }
 
 func TestTrafficV2AnalyticsUsesInboundSamplesShape(t *testing.T) {
-	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	t0 := time.Now().UTC().Add(-50 * time.Minute).Truncate(time.Second)
 	inboundKey := db.GeneratedInboundTag(db.Inbound{ID: 1, Protocol: "vless"})
 	store := &countingSummaryStore{
 		inbounds: []db.Inbound{{ID: 1, Remark: "edge", Protocol: "vless", Port: 443, Enabled: true}},
@@ -1406,13 +1475,13 @@ func TestTrafficV2AnalyticsUsesInboundSamplesShape(t *testing.T) {
 	if last.Time == "" || last.Up != 30 || last.Down != 60 || last.Total != 90 || last.RateTotal != 7 {
 		t.Fatalf("unexpected analytics point: %+v", last)
 	}
-	if payload.Summary.Total != 120 || payload.Summary.PeakTotal != 90 || payload.BucketSeconds != 60 || store.listTrafficSamplesCalls != 2 {
+	if payload.Summary.Total != 120 || payload.Summary.PeakTotal != 90 || payload.BucketSeconds != 60 || payload.Semantics != "historical_samples" || store.listTrafficSamplesCalls != 2 {
 		t.Fatalf("unexpected analytics summary: %+v calls=%d", payload.Summary, store.listTrafficSamplesCalls)
 	}
 }
 
 func TestTrafficV2AnalyticsRanksUseBothScopes(t *testing.T) {
-	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	t0 := time.Now().UTC().Add(-50 * time.Minute).Truncate(time.Second)
 	inbound := db.Inbound{
 		ID:       1,
 		Remark:   "edge",
@@ -1444,11 +1513,295 @@ func TestTrafficV2AnalyticsRanksUseBothScopes(t *testing.T) {
 	if len(payload.TopInbounds) != 1 || payload.TopInbounds[0].Total != 70 {
 		t.Fatalf("expected inbound ranking from inbound samples, got %+v", payload.TopInbounds)
 	}
-	if len(store.trafficSampleLimits) != 2 || store.trafficSampleLimits[0] != 20000 || store.trafficSampleLimits[1] != 20000 {
-		t.Fatalf("analytics should request bounded window sample ranges for bucket aggregation, got %+v", store.trafficSampleLimits)
+	if len(store.trafficAnalyticsBuckets) != 2 || store.trafficAnalyticsBuckets[0] != 21600 || store.trafficAnalyticsBuckets[1] != 21600 {
+		t.Fatalf("analytics should request database bucket aggregation, got %+v", store.trafficAnalyticsBuckets)
 	}
 	if len(store.trafficSampleWindowUntil) != 2 || store.trafficSampleWindowUntil[0].IsZero() || store.trafficSampleWindowUntil[1].IsZero() {
 		t.Fatalf("analytics should query a bounded time window, got %+v", store.trafficSampleWindowUntil)
+	}
+}
+
+func TestTrafficV2AnalyticsUsesEmailFallbackForClientsWithoutStatsKey(t *testing.T) {
+	t0 := time.Now().UTC().Add(-50 * time.Minute).Truncate(time.Second)
+	inbound := db.Inbound{
+		ID:       1,
+		Remark:   "edge",
+		Protocol: "vless",
+		Port:     443,
+		Enabled:  true,
+		Clients:  []db.Client{{ID: 10, Email: "legacy@example.com", Enabled: true}},
+	}
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{inbound},
+		samples: []db.TrafficSample{
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "legacy@example.com", TotalUp: 10, TotalDown: 20, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, Status: "ok"},
+		},
+	}
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?range=1h&scope_type=client", nil)
+	trafficV2AnalyticsHandler(store)(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected traffic v2 analytics 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var payload TrafficV2AnalyticsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode v2 analytics: %v", err)
+	}
+	if payload.Summary.Total != 30 || len(payload.Series) != 1 {
+		t.Fatalf("expected email-keyed client sample to be included in series, got summary=%+v series=%+v", payload.Summary, payload.Series)
+	}
+	if len(payload.TopClients) != 1 || payload.TopClients[0].ID != 10 || payload.TopClients[0].Total != 30 {
+		t.Fatalf("expected email-keyed client sample to rank, got %+v", payload.TopClients)
+	}
+}
+
+func TestTrafficV2AnalyticsKeepsSharedClientKeyAcrossExpectedEngines(t *testing.T) {
+	samples := []db.TrafficSample{
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "shared-key", DeltaUp: 10, DeltaDown: 20, Status: "ok"},
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "singbox", ScopeType: "client", ScopeKey: "shared-key", DeltaUp: 30, DeltaDown: 40, Status: "ok"},
+	}
+	inbounds := []db.Inbound{
+		{ID: 1, Protocol: "vless", Clients: []db.Client{{ID: 10, StatsKey: "shared-key", Email: "xray@example.com", Enabled: true}}},
+		{ID: 2, Protocol: "hysteria2", Clients: []db.Client{{ID: 20, StatsKey: "shared-key", Email: "singbox@example.com", Enabled: true}}},
+	}
+	filtered := filterTrafficAnalyticsSamples(samples, "client", inbounds)
+	if len(filtered) != 2 {
+		t.Fatalf("expected shared client key to keep both expected engines, got %+v", filtered)
+	}
+	series := bucketTrafficAnalyticsSeries(filtered, 60, "usage")
+	if len(series) != 1 || series[0].Total != 100 {
+		t.Fatalf("expected both engine samples to contribute to client analytics, got %+v", series)
+	}
+	ranks := rankTrafficAnalyticsSamples(filtered, "client", inbounds, 2, "usage")
+	if len(ranks) != 2 {
+		t.Fatalf("expected shared client key to keep separate engine ranks, got %+v", ranks)
+	}
+	byID := map[int64]int64{}
+	for _, rank := range ranks {
+		byID[rank.ID] = rank.Total
+	}
+	if byID[10] != 30 || byID[20] != 70 {
+		t.Fatalf("expected shared key ranks to preserve engine-specific clients, got %+v", ranks)
+	}
+}
+
+func TestTrafficV2AnalyticsFallbackKeepsSharedClientKeyPerEngine(t *testing.T) {
+	t0 := time.Now().UTC().Add(-50 * time.Minute).Truncate(time.Second)
+	xrayInbound := db.Inbound{
+		ID:       1,
+		Remark:   "xray-edge",
+		Protocol: "vless",
+		Port:     443,
+		Enabled:  true,
+		Clients:  []db.Client{{ID: 10, StatsKey: "shared-key", Email: "xray@example.com", Enabled: true}},
+	}
+	singboxInbound := db.Inbound{
+		ID:       2,
+		Remark:   "singbox-edge",
+		Protocol: "hysteria2",
+		Port:     8443,
+		Enabled:  true,
+		Clients:  []db.Client{{ID: 20, StatsKey: "shared-key", Email: "singbox@example.com", Enabled: true}},
+	}
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{xrayInbound, singboxInbound},
+		samples: []db.TrafficSample{
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "shared-key", DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, Status: "ok"},
+			{SampledAt: t0.Format(time.RFC3339), Engine: "singbox", ScopeType: "client", ScopeKey: "shared-key", DeltaUp: 30, DeltaDown: 40, RateUp: 3, RateDown: 4, Status: "ok"},
+		},
+	}
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?range=1h&scope_type=inbound&top=2", nil)
+	trafficV2AnalyticsHandler(store)(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected traffic v2 analytics 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var payload TrafficV2AnalyticsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode v2 analytics: %v", err)
+	}
+	if payload.Summary.Total != 100 || len(payload.TopInbounds) != 2 {
+		t.Fatalf("expected both shared-key engines to be aggregated separately, summary=%+v top=%+v", payload.Summary, payload.TopInbounds)
+	}
+	byScope := map[string]int64{}
+	for _, rank := range payload.TopInbounds {
+		byScope[rank.ScopeKey] = rank.Total
+	}
+	if byScope[db.GeneratedInboundTag(xrayInbound)] != 30 || byScope[inboundStatsKey(singboxInbound)] != 70 {
+		t.Fatalf("expected shared key fallback to preserve engine-specific inbound mapping, got %+v", payload.TopInbounds)
+	}
+}
+
+func TestTrafficV2AnalyticsStoreStubFiltersSampleWindow(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store := &countingSummaryStore{
+		samples: []db.TrafficSample{
+			{SampledAt: now.Add(-2 * time.Hour).Format(time.RFC3339), ScopeType: "client", ScopeKey: "too-old", DeltaUp: 100, Status: "ok"},
+			{SampledAt: now.Add(-30 * time.Minute).Format(time.RFC3339), ScopeType: "client", ScopeKey: "inside", DeltaUp: 10, Status: "ok"},
+			{SampledAt: now.Add(2 * time.Hour).Format(time.RFC3339), ScopeType: "client", ScopeKey: "too-new", DeltaUp: 100, Status: "ok"},
+			{SampledAt: now.Add(-30 * time.Minute).Format(time.RFC3339), ScopeType: "inbound", ScopeKey: "wrong-scope", DeltaUp: 100, Status: "ok"},
+		},
+	}
+	samples, err := store.ListTrafficAnalyticsSamples(context.Background(), db.TrafficAnalyticsSampleParams{
+		ScopeType:     "client",
+		Since:         now.Add(-time.Hour),
+		Until:         now,
+		BucketSeconds: 60,
+	})
+	if err != nil {
+		t.Fatalf("list analytics samples: %v", err)
+	}
+	if len(samples) != 1 || samples[0].ScopeKey != "inside" {
+		t.Fatalf("expected stub to mirror bounded analytics window, got %+v", samples)
+	}
+}
+
+func TestTrafficV2AnalyticsFallsBackToClientSamplesForMissingInboundSamples(t *testing.T) {
+	t0 := time.Now().UTC().Add(-50 * time.Minute).Truncate(time.Second)
+	t1 := t0.Add(time.Minute)
+	inbound := db.Inbound{
+		ID:       1,
+		Remark:   "edge",
+		Protocol: "vless",
+		Port:     443,
+		Enabled:  true,
+		Clients: []db.Client{
+			{ID: 10, StatsKey: "client-a", Email: "a@example.com", Enabled: true},
+			{ID: 11, StatsKey: "client-b", Email: "b@example.com", Enabled: true},
+			{ID: 13, StatsKey: "client-waiting", Email: "waiting@example.com", Enabled: true},
+			{ID: 12, StatsKey: "client-disabled", Email: "disabled@example.com", Enabled: false},
+		},
+	}
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{inbound},
+		samples: []db.TrafficSample{
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "inbound", ScopeKey: db.GeneratedInboundTag(inbound), TotalUp: 5, TotalDown: 6, DeltaUp: 5, DeltaDown: 6, RateUp: 0.5, RateDown: 0.6, WindowSeconds: 5, Status: "ok"},
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-a", TotalUp: 100, TotalDown: 200, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, WindowSeconds: 5, Status: "ok"},
+			{SampledAt: t1.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-a", TotalUp: 100, TotalDown: 200, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, WindowSeconds: 5, Status: "ok"},
+			{SampledAt: t1.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-b", TotalUp: 300, TotalDown: 400, DeltaUp: 30, DeltaDown: 40, RateUp: 3, RateDown: 4, WindowSeconds: 5, Status: "ok"},
+			{SampledAt: t1.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-waiting", TotalUp: 0, TotalDown: 0, DeltaUp: 0, DeltaDown: 0, RateUp: 0, RateDown: 0, WindowSeconds: 0, Status: "waiting"},
+			{SampledAt: t1.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-disabled", TotalUp: 900, TotalDown: 900, DeltaUp: 90, DeltaDown: 90, RateUp: 9, RateDown: 9, WindowSeconds: 5, Status: "ok"},
+		},
+	}
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?range=1h&scope_type=inbound", nil)
+	trafficV2AnalyticsHandler(store)(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected traffic v2 analytics 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var payload TrafficV2AnalyticsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode v2 analytics: %v", err)
+	}
+	if len(payload.Series) != 2 {
+		t.Fatalf("expected inbound series from aggregated client samples, got %+v", payload.Series)
+	}
+	if payload.Series[0].Up != 5 || payload.Series[0].Down != 6 || payload.Series[0].Total != 11 {
+		t.Fatalf("expected native inbound point to stay native, got %+v", payload.Series[0])
+	}
+	if payload.Series[1].Up != 40 || payload.Series[1].Down != 60 || payload.Series[1].Total != 100 || payload.Series[1].RateTotal != 10 {
+		t.Fatalf("expected missing native point to fall back to client aggregate, got %+v", payload.Series[1])
+	}
+	if len(payload.TopInbounds) != 1 || payload.TopInbounds[0].ScopeKey != db.GeneratedInboundTag(inbound) || payload.TopInbounds[0].Total != 111 {
+		t.Fatalf("expected inbound rank from aggregated client samples, got %+v", payload.TopInbounds)
+	}
+}
+
+func TestTrafficV2AnalyticsSeriesSkipsNonAggregateStatuses(t *testing.T) {
+	samples := []db.TrafficSample{
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "ok", TotalUp: 10, TotalDown: 20, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, Status: "OK"},
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "partial", TotalUp: 1, TotalDown: 2, DeltaUp: 1, DeltaDown: 2, RateUp: 0.1, RateDown: 0.2, Status: "Partial"},
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "waiting", TotalUp: 1000, TotalDown: 2000, DeltaUp: 1000, DeltaDown: 2000, RateUp: 100, RateDown: 200, Status: "waiting"},
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "unavailable", TotalUp: 3000, TotalDown: 4000, DeltaUp: 3000, DeltaDown: 4000, RateUp: 300, RateDown: 400, Status: "unavailable"},
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "stale", TotalUp: 5000, TotalDown: 6000, DeltaUp: 5000, DeltaDown: 6000, RateUp: 500, RateDown: 600, Status: "stale"},
+	}
+	usage := bucketTrafficAnalyticsSeries(samples, 60, "usage")
+	if len(usage) != 1 || usage[0].Total != 33 || usage[0].RateTotal < 1.64 || usage[0].RateTotal > 1.66 {
+		t.Fatalf("usage series should ignore non-aggregate statuses, got %+v", usage)
+	}
+	cumulative := bucketTrafficAnalyticsSeries(samples, 60, "cumulative")
+	if len(cumulative) != 1 || cumulative[0].Total != 33 || cumulative[0].RateTotal < 1.64 || cumulative[0].RateTotal > 1.66 {
+		t.Fatalf("cumulative series should ignore non-aggregate statuses, got %+v", cumulative)
+	}
+}
+
+func TestTrafficV2AnalyticsEmptyReasonWhenOnlyNonAggregateSamplesRemain(t *testing.T) {
+	t0 := time.Now().UTC().Add(-50 * time.Minute).Truncate(time.Second)
+	inbound := db.Inbound{
+		ID:       1,
+		Remark:   "edge",
+		Protocol: "vless",
+		Port:     443,
+		Enabled:  true,
+		Clients:  []db.Client{{ID: 10, StatsKey: "waiting-key", Email: "waiting@example.com", Enabled: true}},
+	}
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{inbound},
+		samples: []db.TrafficSample{
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "waiting-key", DeltaUp: 1000, DeltaDown: 2000, RateUp: 100, RateDown: 200, Status: "waiting"},
+		},
+	}
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?range=1h&scope_type=client", nil)
+	trafficV2AnalyticsHandler(store)(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected traffic v2 analytics 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var payload TrafficV2AnalyticsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode v2 analytics: %v", err)
+	}
+	if payload.Summary.HasData || payload.Summary.EmptyReason != "waiting" || len(payload.Series) != 0 {
+		t.Fatalf("expected empty reason when only non-aggregate samples remain, got summary=%+v series=%+v", payload.Summary, payload.Series)
+	}
+}
+
+func TestTrafficV2AnalyticsRanksFollowMetricSemantics(t *testing.T) {
+	samples := []db.TrafficSample{
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "slow-heavy", TotalUp: 1000, TotalDown: 0, DeltaUp: 1000, DeltaDown: 0, RateUp: 1, RateDown: 0, Status: "ok"},
+		{SampledAt: "2026-06-25T01:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "fast-light", TotalUp: 10, TotalDown: 0, DeltaUp: 10, DeltaDown: 0, RateUp: 50, RateDown: 0, Status: "ok"},
+		{SampledAt: "2026-06-25T02:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "slow-heavy", TotalUp: 1100, TotalDown: 0, DeltaUp: 100, DeltaDown: 0, RateUp: 2, RateDown: 0, Status: "ok"},
+		{SampledAt: "2026-06-25T02:00:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "fast-light", TotalUp: 20, TotalDown: 0, DeltaUp: 10, DeltaDown: 0, RateUp: 60, RateDown: 0, Status: "ok"},
+	}
+	inbounds := []db.Inbound{{
+		ID:       1,
+		Protocol: "vless",
+		Clients: []db.Client{
+			{ID: 10, StatsKey: "slow-heavy", Email: "slow@example.com", Enabled: true},
+			{ID: 11, StatsKey: "fast-light", Email: "fast@example.com", Enabled: true},
+		},
+	}}
+	usageRanks := rankTrafficAnalyticsSamples(samples, "client", inbounds, 2, "usage")
+	if len(usageRanks) != 2 || usageRanks[0].ScopeKey != "slow-heavy" || usageRanks[0].Total != 1100 {
+		t.Fatalf("usage ranks should sort by interval deltas, got %+v", usageRanks)
+	}
+	rateRanks := rankTrafficAnalyticsSamples(samples, "client", inbounds, 2, "rate")
+	if len(rateRanks) != 2 || rateRanks[0].ScopeKey != "fast-light" || rateRanks[0].RateTotal != 55 {
+		t.Fatalf("rate ranks should sort by average rate, got %+v", rateRanks)
+	}
+	cumulativeRanks := rankTrafficAnalyticsSamples(samples, "client", inbounds, 2, "cumulative")
+	if len(cumulativeRanks) != 2 || cumulativeRanks[0].ScopeKey != "slow-heavy" || cumulativeRanks[0].Total != 1100 || cumulativeRanks[1].Total != 20 {
+		t.Fatalf("cumulative ranks should use latest totals, got %+v", cumulativeRanks)
+	}
+}
+
+func TestSummarizeTrafficUsesFreshClientAggregateWhenInboundStateIsStale(t *testing.T) {
+	staleAt := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	store := &countingSummaryStore{
+		states: []db.TrafficState{
+			{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", TotalUp: 100, TotalDown: 200, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, WindowSeconds: 5, Status: "ok", LastSeenAt: staleAt},
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_fresh", TotalUp: 30, TotalDown: 40, DeltaUp: 3, DeltaDown: 4, RateUp: 0.3, RateDown: 0.4, WindowSeconds: 5, Status: "ok", LastSeenAt: now},
+		},
+	}
+	inbounds := []db.Inbound{{ID: 1, Protocol: "vless", Enabled: true, Clients: []db.Client{
+		{ID: 10, StatsKey: "c_fresh", Email: "fresh@example.com", Enabled: true},
+		{ID: 11, StatsKey: "c_waiting", Email: "waiting@example.com", Enabled: true},
+	}}}
+	trafficByInbound, _ := summarizeTraffic(context.Background(), store, inbounds)
+	inbound := trafficByInbound[1]
+	if inbound.Status != "partial" || inbound.Source != "client_aggregate" || inbound.Up != 30 || inbound.Down != 40 || inbound.RateTotal != 0.7 {
+		t.Fatalf("expected stale inbound state to fall back to fresh client aggregate, got %+v", inbound)
 	}
 }
 

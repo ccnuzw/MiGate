@@ -3832,6 +3832,59 @@ func TestListTrafficSamplesWindowSupportsBoundedAnalyticsQueries(t *testing.T) {
 	}
 }
 
+func TestListTrafficAnalyticsSamplesAggregatesBucketsWithoutSampleLimit(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "analytics", Protocol: "vless", Port: 28104, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "analytics@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	start := time.Unix(4020, 0).UTC()
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	for i := 0; i < 120; i++ {
+		if err := store.ApplyTrafficRawStats(ctx, raw(int64(1000+i), int64(2000+i*2)), start.Add(time.Duration(i)*10*time.Second)); err != nil {
+			t.Fatalf("write traffic sample %d: %v", i, err)
+		}
+	}
+	samples, err := store.ListTrafficAnalyticsSamples(ctx, db.TrafficAnalyticsSampleParams{
+		ScopeType:     "client",
+		Since:         start.Add(-time.Second),
+		Until:         start.Add(30 * time.Minute),
+		BucketSeconds: 60,
+	})
+	if err != nil {
+		t.Fatalf("list analytics samples: %v", err)
+	}
+	if len(samples) != 20 {
+		t.Fatalf("expected 20 one-minute bucket samples, got %d: %+v", len(samples), samples)
+	}
+	var up, down int64
+	for _, sample := range samples {
+		up += sample.DeltaUp
+		down += sample.DeltaDown
+		if sample.SampledAt == "" || !strings.Contains(sample.SampledAt, "T") || !strings.HasSuffix(sample.SampledAt, "Z") {
+			t.Fatalf("expected RFC3339 bucket timestamp, got %+v", sample)
+		}
+	}
+	if up != 119 || down != 238 {
+		t.Fatalf("expected analytics buckets to retain all sample deltas, got up=%d down=%d samples=%+v", up, down, samples)
+	}
+	if samples[0].TotalUp != 5 || samples[len(samples)-1].TotalUp != 119 {
+		t.Fatalf("expected bucket cumulative values to use latest sample per bucket, got first=%+v last=%+v", samples[0], samples[len(samples)-1])
+	}
+}
+
 func TestResetWithoutRawBaselineClearsExistingEngineAndUsesNextRawAsBaseline(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

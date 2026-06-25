@@ -142,7 +142,7 @@ func TestTrafficSyncSchedulerWithEmptyStats(t *testing.T) {
 	}
 }
 
-func TestTrafficSyncSchedulerMarksMissingXrayClientsWaitingWhenStatsAreEmpty(t *testing.T) {
+func TestTrafficSyncSchedulerMarksMissingXrayScopesWaitingWhenStatsAreEmpty(t *testing.T) {
 	store := &mockStore{inbounds: []db.Inbound{
 		{
 			ID: 1, Protocol: "vless", Enabled: true,
@@ -167,11 +167,12 @@ func TestTrafficSyncSchedulerMarksMissingXrayClientsWaitingWhenStatsAreEmpty(t *
 	if len(store.unavail) != 0 {
 		t.Fatalf("did not expect unavailable marker for successful empty stats response, got %+v", store.unavail)
 	}
-	if len(store.scopeStatus) != 1 {
-		t.Fatalf("expected xray client waiting marker, got %+v", store.scopeStatus)
+	if len(store.scopeStatus) != 2 {
+		t.Fatalf("expected xray inbound and client waiting markers, got %+v", store.scopeStatus)
 	}
 	want := map[string]bool{
-		"client/c_xray": false,
+		"inbound/inbound-1-vless": false,
+		"client/c_xray":           false,
 	}
 	for _, marker := range store.scopeStatus {
 		if marker.Engine != "xray" || marker.Status != "waiting" {
@@ -190,7 +191,7 @@ func TestTrafficSyncSchedulerMarksMissingXrayClientsWaitingWhenStatsAreEmpty(t *
 	}
 }
 
-func TestTrafficSyncSchedulerMarksOnlyMissingXrayClientsWaitingWhenRawStatsArePartial(t *testing.T) {
+func TestTrafficSyncSchedulerMarksOnlyMissingXrayScopesWaitingWhenRawStatsArePartial(t *testing.T) {
 	store := &mockStore{inbounds: []db.Inbound{{
 		ID: 1, Protocol: "vless", Enabled: true,
 		Clients: []db.Client{
@@ -209,12 +210,27 @@ func TestTrafficSyncSchedulerMarksOnlyMissingXrayClientsWaitingWhenRawStatsArePa
 	if len(store.raw) != 1 || store.raw[0].ScopeKey != "c_seen" || store.raw[0].Status != "ok" {
 		t.Fatalf("expected returned xray client to be applied as ok, got %+v", store.raw)
 	}
-	if len(store.scopeStatus) != 1 {
-		t.Fatalf("expected one missing xray client waiting marker, got %+v", store.scopeStatus)
+	if len(store.scopeStatus) != 2 {
+		t.Fatalf("expected missing xray inbound and client waiting markers, got %+v", store.scopeStatus)
 	}
-	marker := store.scopeStatus[0]
-	if marker.Engine != "xray" || marker.ScopeType != "client" || marker.ScopeKey != "c_missing" || marker.Status != "waiting" {
-		t.Fatalf("unexpected missing client marker: %+v", marker)
+	want := map[string]bool{
+		"inbound/inbound-1-vless": false,
+		"client/c_missing":        false,
+	}
+	for _, marker := range store.scopeStatus {
+		if marker.Engine != "xray" || marker.Status != "waiting" {
+			t.Fatalf("unexpected missing scope marker: %+v", marker)
+		}
+		key := marker.ScopeType + "/" + marker.ScopeKey
+		if _, ok := want[key]; !ok {
+			t.Fatalf("unexpected missing scope marker %q in %+v", key, store.scopeStatus)
+		}
+		want[key] = true
+	}
+	for key, found := range want {
+		if !found {
+			t.Fatalf("missing waiting marker %q in %+v", key, store.scopeStatus)
+		}
 	}
 	if len(store.unavail) != 0 {
 		t.Fatalf("did not expect unavailable marker for partial successful stats, got %+v", store.unavail)
@@ -231,11 +247,12 @@ func TestTrafficSyncSchedulerDoesNotMarkXrayWaitingWhenQueryFails(t *testing.T) 
 	scheduler := NewTrafficSyncScheduler(store, client, 1*time.Minute)
 	scheduler.sync()
 
-	if len(store.scopeStatus) != 1 {
+	if len(store.scopeStatus) != 2 {
 		t.Fatalf("query failure should write xray unavailable scope markers, got %+v", store.scopeStatus)
 	}
 	want := map[string]bool{
-		"client/c_xray": false,
+		"inbound/inbound-1-vless": false,
+		"client/c_xray":           false,
 	}
 	for _, marker := range store.scopeStatus {
 		if marker.Engine != "xray" || marker.Status != "unavailable" || marker.Message != "connection refused" {
@@ -294,6 +311,7 @@ func TestTrafficSyncSchedulerDoesNotMarkXrayWaitingWhenAllRawStatsExist(t *testi
 		Clients: []db.Client{{ID: 10, StatsKey: "c_xray", Enabled: true}},
 	}}}
 	client := &mockStatsClient{raw: []trafficstats.Stat{
+		{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", Uplink: 300, Downlink: 400},
 		{Engine: "xray", ScopeType: "client", ScopeKey: "c_xray", Uplink: 100, Downlink: 200},
 	}}
 
@@ -301,10 +319,29 @@ func TestTrafficSyncSchedulerDoesNotMarkXrayWaitingWhenAllRawStatsExist(t *testi
 	scheduler.sync()
 
 	if len(store.scopeStatus) != 0 {
-		t.Fatalf("raw client stats should not write waiting markers, got %+v", store.scopeStatus)
+		t.Fatalf("raw inbound/client stats should not write waiting markers, got %+v", store.scopeStatus)
 	}
-	if len(store.raw) != 1 || store.raw[0].Engine != "xray" || store.raw[0].Status != "ok" {
+	if len(store.raw) != 2 {
 		t.Fatalf("expected xray raw stats to be applied, got %+v", store.raw)
+	}
+	want := map[string]bool{
+		"inbound/inbound-1-vless": false,
+		"client/c_xray":           false,
+	}
+	for _, stat := range store.raw {
+		if stat.Engine != "xray" || stat.Status != "ok" {
+			t.Fatalf("unexpected xray raw stat: %+v", stat)
+		}
+		key := stat.ScopeType + "/" + stat.ScopeKey
+		if _, ok := want[key]; !ok {
+			t.Fatalf("unexpected raw stat scope %q in %+v", key, store.raw)
+		}
+		want[key] = true
+	}
+	for key, found := range want {
+		if !found {
+			t.Fatalf("missing raw stat scope %q in %+v", key, store.raw)
+		}
 	}
 }
 

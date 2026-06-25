@@ -3787,7 +3787,7 @@ func TestStatsAPIDefaultIsSummaryOnlyAndCached(t *testing.T) {
 			t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 		}
 		body := response.Body.String()
-		for _, want := range []string{`"clients":1`, `"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`} {
+		for _, want := range []string{`"clients":1`, `"traffic_up":12`, `"traffic_down":34`, `"traffic_total":46`} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("summary stats response missing %q: %s", want, body)
 			}
@@ -4029,7 +4029,7 @@ func TestTrafficAPIsExposeConsistentPartialWaitingState(t *testing.T) {
 	if stats.Code != http.StatusOK {
 		t.Fatalf("stats detail 200, got %d: %s", stats.Code, stats.Body.String())
 	}
-	for _, want := range []string{`"traffic_up":0`, `"traffic_down":0`, `"traffic_total":0`, `"traffic_status":"ok"`, `"traffic_status":"waiting"`} {
+	for _, want := range []string{`"traffic_up":60`, `"traffic_down":60`, `"traffic_total":120`, `"traffic_status":"ok"`, `"traffic_status":"waiting"`} {
 		if !strings.Contains(stats.Body.String(), want) {
 			t.Fatalf("stats detail response missing %q: %s", want, stats.Body.String())
 		}
@@ -7255,6 +7255,58 @@ func TestSubscriptionLimitWaitsForTrafficStateWhenNoTrafficState(t *testing.T) {
 	router.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/sub/"+under.SubscriptionToken, nil))
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("expected legacy under-limit subscription to pass, got %d: %s", allowed.Code, allowed.Body.String())
+	}
+}
+
+func TestTrafficResetKeepsHistoricalAnalyticsButResetsSnapshotCumulative(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "reset-hist", Protocol: "vless", Port: 18460, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "reset-hist@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	raw := func(up, down int64) []db.TrafficRawStat {
+		return []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: up, RawDown: down, Status: "ok"}}
+	}
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if err := store.ApplyTrafficRawStats(ctx, raw(100, 200), t0); err != nil {
+		t.Fatalf("baseline sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, raw(160, 260), t0.Add(time.Minute)); err != nil {
+		t.Fatalf("increment sample: %v", err)
+	}
+	if _, err := store.ResetClientTrafficBaseline(ctx, client.ID, raw(160, 260)); err != nil {
+		t.Fatalf("reset baseline: %v", err)
+	}
+
+	router := web.NewRouter(web.WithStore(store))
+	snapshot := httptest.NewRecorder()
+	router.ServeHTTP(snapshot, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/snapshot", nil))
+	if snapshot.Code != http.StatusOK {
+		t.Fatalf("expected snapshot 200, got %d: %s", snapshot.Code, snapshot.Body.String())
+	}
+	if strings.Contains(snapshot.Body.String(), `"total":60`) || strings.Contains(snapshot.Body.String(), `"traffic_total":60`) {
+		t.Fatalf("snapshot should not retain pre-reset cumulative usage: %s", snapshot.Body.String())
+	}
+
+	analytics := httptest.NewRecorder()
+	router.ServeHTTP(analytics, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h", nil))
+	if analytics.Code != http.StatusOK {
+		t.Fatalf("expected analytics 200, got %d: %s", analytics.Code, analytics.Body.String())
+	}
+	body := analytics.Body.String()
+	for _, want := range []string{`"semantics":"historical_samples"`, `"total":120`, `"label":"reset-hist@example.com"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("analytics should preserve historical pre-reset samples and semantics, missing %q: %s", want, body)
+		}
 	}
 }
 

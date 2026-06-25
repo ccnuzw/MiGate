@@ -123,6 +123,8 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			inboundSummary.Source = "inbound"
 		}
 		clientAggregateStatus := ""
+		clientAggregate := inboundTrafficSummary{Status: "", Source: "client_aggregate", Engine: expectedEngine}
+		clientAggregateHasData := false
 		for _, client := range inbound.Clients {
 			clientSummary := clientTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 			clientKey := clientTrafficStatsKey(client)
@@ -149,10 +151,32 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			}
 			if client.Enabled {
 				clientAggregateStatus = combineTrafficStatuses(clientAggregateStatus, clientSummary.Status)
+				if clientTrafficCanAggregate(clientSummary) {
+					clientAggregateHasData = true
+					clientAggregate.Up += clientSummary.Up
+					clientAggregate.Down += clientSummary.Down
+					clientAggregate.DeltaUp += clientSummary.DeltaUp
+					clientAggregate.DeltaDown += clientSummary.DeltaDown
+					clientAggregate.RateUp += clientSummary.RateUp
+					clientAggregate.RateDown += clientSummary.RateDown
+					if clientSummary.WindowSeconds > clientAggregate.WindowSeconds {
+						clientAggregate.WindowSeconds = clientSummary.WindowSeconds
+					}
+					clientAggregate.Status = combineTrafficStatuses(clientAggregate.Status, clientSummary.Status)
+					if clientSummary.LastSampledAt > clientAggregate.LastSampledAt {
+						clientAggregate.LastSampledAt = clientSummary.LastSampledAt
+					}
+				}
 			}
 			byClient[client.ID] = clientSummary
 		}
-		if clientAggregateStatus != "" && hasInboundState {
+		nativeInboundUsable := inboundSummaryHasUsableData(inboundSummary, hasInboundState)
+		if !nativeInboundUsable && clientAggregateHasData {
+			clientAggregate.Total = clientAggregate.Up + clientAggregate.Down
+			clientAggregate.RateTotal = clientAggregate.RateUp + clientAggregate.RateDown
+			clientAggregate.Status = clientAggregateStatus
+			inboundSummary = clientAggregate
+		} else if clientAggregateStatus != "" && hasInboundState {
 			inboundSummary.Status = combineTrafficStatuses(inboundSummary.Status, clientAggregateStatus)
 		}
 		inboundSummary.Total = inboundSummary.Up + inboundSummary.Down
@@ -160,6 +184,27 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 		byInbound[inbound.ID] = inboundSummary
 	}
 	return byInbound, byClient
+}
+
+func clientTrafficCanAggregate(summary clientTrafficSummary) bool {
+	switch strings.TrimSpace(summary.Status) {
+	case "ok", "partial":
+		return true
+	default:
+		return false
+	}
+}
+
+func inboundSummaryHasUsableData(summary inboundTrafficSummary, hasState bool) bool {
+	if !hasState {
+		return false
+	}
+	switch strings.TrimSpace(summary.Status) {
+	case "ok", "partial":
+		return true
+	default:
+		return false
+	}
 }
 
 func clientTrafficStatsKey(client db.Client) string {

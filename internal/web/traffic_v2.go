@@ -41,6 +41,7 @@ type TrafficV2AnalyticsResponse struct {
 	Range         string                    `json:"range"`
 	Metric        string                    `json:"metric"`
 	ScopeType     string                    `json:"scope_type"`
+	Semantics     string                    `json:"semantics,omitempty"`
 	BucketSeconds int                       `json:"bucket_seconds"`
 	Summary       TrafficV2AnalyticsSummary `json:"summary"`
 	Series        []TrafficV2AnalyticsPoint `json:"series"`
@@ -352,7 +353,6 @@ func parseTrafficV2AnalyticsParams(r *http.Request) (trafficV2AnalyticsParams, e
 		BucketSeconds: bucketSeconds,
 		Since:         now.Add(-duration),
 		Until:         now,
-		Limit:         20000,
 		Top:           top,
 	}, nil
 }
@@ -375,7 +375,12 @@ func trafficAnalyticsRange(rangeKey string) (time.Duration, int, error) {
 func loadTrafficAnalyticsSamples(ctx context.Context, store Store, params trafficV2AnalyticsParams, _ []db.Inbound) ([]db.TrafficSample, error) {
 	samples := []db.TrafficSample{}
 	for _, scopeType := range []string{"inbound", "client"} {
-		scopeSamples, err := store.ListTrafficSamplesWindow(ctx, scopeType, params.Since, params.Until, params.Limit)
+		scopeSamples, err := store.ListTrafficAnalyticsSamples(ctx, db.TrafficAnalyticsSampleParams{
+			ScopeType:     scopeType,
+			Since:         params.Since,
+			Until:         params.Until,
+			BucketSeconds: params.BucketSeconds,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -385,12 +390,16 @@ func loadTrafficAnalyticsSamples(ctx context.Context, store Store, params traffi
 }
 
 func buildTrafficV2Analytics(params trafficV2AnalyticsParams, samples []db.TrafficSample, inbounds []db.Inbound) TrafficV2AnalyticsResponse {
-	seriesSamples := filterTrafficAnalyticsSamples(samples, params.ScopeType, inbounds)
 	clientSamples := filterTrafficAnalyticsSamples(samples, "client", inbounds)
 	inboundSamples := filterTrafficAnalyticsSamples(samples, "inbound", inbounds)
+	effectiveInboundSamples := trafficAnalyticsInboundSamplesWithClientFallback(inboundSamples, clientSamples, inbounds)
+	seriesSamples := clientSamples
+	if params.ScopeType == "inbound" {
+		seriesSamples = effectiveInboundSamples
+	}
 	series := bucketTrafficAnalyticsSeries(seriesSamples, params.BucketSeconds, params.Metric)
 	summary := summarizeTrafficAnalyticsSeries(series, params.Metric)
-	if len(seriesSamples) == 0 {
+	if len(series) == 0 {
 		summary.EmptyReason = "waiting"
 	}
 	return TrafficV2AnalyticsResponse{
@@ -398,13 +407,158 @@ func buildTrafficV2Analytics(params trafficV2AnalyticsParams, samples []db.Traff
 		Range:         params.Range,
 		Metric:        params.Metric,
 		ScopeType:     params.ScopeType,
+		Semantics:     "historical_samples",
 		BucketSeconds: params.BucketSeconds,
 		Summary:       summary,
 		Series:        series,
-		TopClients:    rankTrafficAnalyticsSamples(clientSamples, "client", inbounds, params.Top),
-		TopInbounds:   rankTrafficAnalyticsSamples(inboundSamples, "inbound", inbounds, params.Top),
+		TopClients:    rankTrafficAnalyticsSamples(clientSamples, "client", inbounds, params.Top, params.Metric),
+		TopInbounds:   rankTrafficAnalyticsSamples(effectiveInboundSamples, "inbound", inbounds, params.Top, params.Metric),
 		Heatmap:       heatmapTrafficAnalytics(series),
 	}
+}
+
+func trafficAnalyticsInboundSamplesWithClientFallback(inboundSamples, clientSamples []db.TrafficSample, inbounds []db.Inbound) []db.TrafficSample {
+	if len(clientSamples) == 0 {
+		return inboundSamples
+	}
+	type aggregateKey struct {
+		SampledAt string
+		Engine    string
+		ScopeKey  string
+	}
+	nativeInboundKeys := map[aggregateKey]bool{}
+	for _, sample := range inboundSamples {
+		if normalizeTrafficScopeType(sample.ScopeType) != "inbound" {
+			continue
+		}
+		scopeKey := strings.TrimSpace(sample.ScopeKey)
+		engine := normalizeTrafficEngine(sample.Engine)
+		if scopeKey != "" && engine != "" && trafficSampleCanAggregate(sample) {
+			nativeInboundKeys[aggregateKey{SampledAt: sample.SampledAt, Engine: engine, ScopeKey: scopeKey}] = true
+		}
+	}
+	type clientInboundMeta struct {
+		InboundKey string
+		Engine     string
+	}
+	clientKeysByInbound := map[string][]string{}
+	clientMetaByKey := map[string]clientInboundMeta{}
+	for _, inbound := range inbounds {
+		inboundKey := inboundStatsKey(inbound)
+		engine := expectedTrafficEngine(inbound.Protocol)
+		for _, client := range inbound.Clients {
+			if !client.Enabled {
+				continue
+			}
+			clientKey := clientTrafficStatsKey(client)
+			if clientKey == "" {
+				continue
+			}
+			clientMetaByKey[engine+"\x00"+clientKey] = clientInboundMeta{InboundKey: inboundKey, Engine: engine}
+			clientKeysByInbound[engine+"\x00"+inboundKey] = append(clientKeysByInbound[engine+"\x00"+inboundKey], clientKey)
+		}
+	}
+	clientStatusByPoint := map[aggregateKey]map[string]string{}
+	aggregates := map[aggregateKey]*db.TrafficSample{}
+	order := []aggregateKey{}
+	for _, sample := range clientSamples {
+		sampleEngine := normalizeTrafficEngine(sample.Engine)
+		meta, ok := clientMetaByKey[sampleEngine+"\x00"+sample.ScopeKey]
+		if !ok {
+			continue
+		}
+		key := aggregateKey{SampledAt: sample.SampledAt, Engine: meta.Engine, ScopeKey: meta.InboundKey}
+		if nativeInboundKeys[key] {
+			continue
+		}
+		statusByClient := clientStatusByPoint[key]
+		if statusByClient == nil {
+			statusByClient = map[string]string{}
+			clientStatusByPoint[key] = statusByClient
+		}
+		statusByClient[sample.ScopeKey] = sample.Status
+		if !trafficSampleCanAggregate(sample) {
+			continue
+		}
+		aggregate := aggregates[key]
+		if aggregate == nil {
+			aggregate = &db.TrafficSample{
+				SampledAt: sample.SampledAt,
+				Engine:    meta.Engine,
+				ScopeType: "inbound",
+				ScopeKey:  meta.InboundKey,
+				Status:    sample.Status,
+			}
+			aggregates[key] = aggregate
+			order = append(order, key)
+		}
+		aggregate.TotalUp += sample.TotalUp
+		aggregate.TotalDown += sample.TotalDown
+		aggregate.DeltaUp += sample.DeltaUp
+		aggregate.DeltaDown += sample.DeltaDown
+		aggregate.RateUp += sample.RateUp
+		aggregate.RateDown += sample.RateDown
+		aggregate.WindowSeconds = maxFloat64(aggregate.WindowSeconds, sample.WindowSeconds)
+		aggregate.Status = combineTrafficStatuses(aggregate.Status, sample.Status)
+	}
+	if len(aggregates) == 0 {
+		return inboundSamples
+	}
+	for key, aggregate := range aggregates {
+		status := ""
+		knownStatuses := clientStatusByPoint[key]
+		for _, clientKey := range clientKeysByInbound[key.Engine+"\x00"+key.ScopeKey] {
+			clientStatus := "waiting"
+			if knownStatuses != nil && strings.TrimSpace(knownStatuses[clientKey]) != "" {
+				clientStatus = knownStatuses[clientKey]
+			}
+			status = combineTrafficStatuses(status, clientStatus)
+		}
+		if status != "" {
+			aggregate.Status = status
+		}
+	}
+	aggregateScopes := map[string]bool{}
+	for key := range aggregates {
+		aggregateScopes[key.SampledAt+"\x00"+key.Engine+"\x00"+key.ScopeKey] = true
+	}
+	result := make([]db.TrafficSample, 0, len(inboundSamples)+len(aggregates))
+	for _, sample := range inboundSamples {
+		scopeKey := sample.SampledAt + "\x00" + normalizeTrafficEngine(sample.Engine) + "\x00" + strings.TrimSpace(sample.ScopeKey)
+		if aggregateScopes[scopeKey] && !trafficSampleCanAggregate(sample) {
+			continue
+		}
+		result = append(result, sample)
+	}
+	for _, key := range order {
+		result = append(result, *aggregates[key])
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].SampledAt == result[j].SampledAt {
+			if result[i].Engine == result[j].Engine {
+				return result[i].ScopeKey < result[j].ScopeKey
+			}
+			return result[i].Engine < result[j].Engine
+		}
+		return result[i].SampledAt < result[j].SampledAt
+	})
+	return result
+}
+
+func trafficSampleCanAggregate(sample db.TrafficSample) bool {
+	switch strings.ToLower(strings.TrimSpace(sample.Status)) {
+	case "", "ok", "partial":
+		return true
+	default:
+		return false
+	}
+}
+
+func maxFloat64(left, right float64) float64 {
+	if right > left {
+		return right
+	}
+	return left
 }
 
 func filterTrafficAnalyticsSamples(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound) []db.TrafficSample {
@@ -448,6 +602,9 @@ func bucketTrafficAnalyticsSeries(samples []db.TrafficSample, bucketSeconds int,
 	buckets := map[int64]*bucketValue{}
 	order := []int64{}
 	for _, sample := range samples {
+		if !trafficSampleCanAggregate(sample) {
+			continue
+		}
 		sampledAt, err := time.Parse(time.RFC3339Nano, sample.SampledAt)
 		if err != nil {
 			continue
@@ -546,17 +703,42 @@ func summarizeTrafficAnalyticsSeries(series []TrafficV2AnalyticsPoint, metric st
 	return summary
 }
 
-func rankTrafficAnalyticsSamples(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound, limit int) []TrafficV2AnalyticsRank {
+func rankTrafficAnalyticsSamples(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound, limit int, metric string) []TrafficV2AnalyticsRank {
 	if limit <= 0 {
 		limit = 5
 	}
 	if scopeType == "client" {
-		return rankTrafficAnalyticsClients(samples, inbounds, limit)
+		return rankTrafficAnalyticsClients(samples, inbounds, limit, metric)
 	}
-	return rankTrafficAnalyticsInbounds(samples, inbounds, limit)
+	return rankTrafficAnalyticsInbounds(samples, inbounds, limit, metric)
 }
 
-func rankTrafficAnalyticsClients(samples []db.TrafficSample, inbounds []db.Inbound, limit int) []TrafficV2AnalyticsRank {
+type trafficAnalyticsRankAggregate struct {
+	rank      TrafficV2AnalyticsRank
+	rateSum   float64
+	rateCount int
+	latestAt  string
+}
+
+func (aggregate *trafficAnalyticsRankAggregate) addSample(sample db.TrafficSample, metric string) {
+	if metric == "cumulative" {
+		if sample.SampledAt >= aggregate.latestAt {
+			aggregate.latestAt = sample.SampledAt
+			aggregate.rank.Up = sample.TotalUp
+			aggregate.rank.Down = sample.TotalDown
+			aggregate.rank.Total = sample.TotalUp + sample.TotalDown
+		}
+	} else {
+		aggregate.rank.Up += sample.DeltaUp
+		aggregate.rank.Down += sample.DeltaDown
+		aggregate.rank.Total += sample.DeltaUp + sample.DeltaDown
+	}
+	aggregate.rateSum += sample.RateUp + sample.RateDown
+	aggregate.rateCount++
+	aggregate.rank.RateTotal = aggregate.rateSum / float64(aggregate.rateCount)
+}
+
+func rankTrafficAnalyticsClients(samples []db.TrafficSample, inbounds []db.Inbound, limit int, metric string) []TrafficV2AnalyticsRank {
 	type clientMeta struct {
 		ID       int64
 		Label    string
@@ -564,69 +746,75 @@ func rankTrafficAnalyticsClients(samples []db.TrafficSample, inbounds []db.Inbou
 	}
 	metaByKey := map[string]clientMeta{}
 	for _, inbound := range inbounds {
+		engine := expectedTrafficEngine(inbound.Protocol)
 		for _, client := range inbound.Clients {
-			if strings.TrimSpace(client.StatsKey) == "" {
+			clientKey := clientTrafficStatsKey(client)
+			if clientKey == "" {
 				continue
 			}
-			metaByKey[client.StatsKey] = clientMeta{ID: client.ID, Label: client.Email, Protocol: inbound.Protocol}
+			metaByKey[engine+"\x00"+clientKey] = clientMeta{ID: client.ID, Label: client.Email, Protocol: inbound.Protocol}
 		}
 	}
-	byKey := map[string]*TrafficV2AnalyticsRank{}
+	byKey := map[string]*trafficAnalyticsRankAggregate{}
 	for _, sample := range samples {
 		if normalizeTrafficScopeType(sample.ScopeType) != "client" {
 			continue
 		}
-		meta, ok := metaByKey[sample.ScopeKey]
+		if !trafficSampleCanAggregate(sample) {
+			continue
+		}
+		engine := normalizeTrafficEngine(sample.Engine)
+		rankKey := engine + "\x00" + sample.ScopeKey
+		meta, ok := metaByKey[rankKey]
 		if !ok {
 			continue
 		}
-		rank := byKey[sample.ScopeKey]
-		if rank == nil {
-			rank = &TrafficV2AnalyticsRank{ID: meta.ID, Label: meta.Label, ScopeKey: sample.ScopeKey, Protocol: meta.Protocol}
-			byKey[sample.ScopeKey] = rank
+		aggregate := byKey[rankKey]
+		if aggregate == nil {
+			aggregate = &trafficAnalyticsRankAggregate{rank: TrafficV2AnalyticsRank{ID: meta.ID, Label: meta.Label, ScopeKey: sample.ScopeKey, Protocol: meta.Protocol}}
+			byKey[rankKey] = aggregate
 		}
-		rank.Up += sample.DeltaUp
-		rank.Down += sample.DeltaDown
-		rank.Total += sample.DeltaUp + sample.DeltaDown
-		rank.RateTotal += sample.RateUp + sample.RateDown
+		aggregate.addSample(sample, metric)
 	}
-	return sortedTrafficAnalyticsRanks(byKey, limit)
+	return sortedTrafficAnalyticsRanks(byKey, limit, metric)
 }
 
-func rankTrafficAnalyticsInbounds(samples []db.TrafficSample, inbounds []db.Inbound, limit int) []TrafficV2AnalyticsRank {
+func rankTrafficAnalyticsInbounds(samples []db.TrafficSample, inbounds []db.Inbound, limit int, metric string) []TrafficV2AnalyticsRank {
 	metaByKey := map[string]TrafficV2AnalyticsRank{}
 	for _, inbound := range inbounds {
 		metaByKey[inboundStatsKey(inbound)] = TrafficV2AnalyticsRank{ID: inbound.ID, Label: inbound.Remark, ScopeKey: inboundStatsKey(inbound), Protocol: inbound.Protocol}
 	}
-	byKey := map[string]*TrafficV2AnalyticsRank{}
+	byKey := map[string]*trafficAnalyticsRankAggregate{}
 	for _, sample := range samples {
 		if normalizeTrafficScopeType(sample.ScopeType) != "inbound" {
+			continue
+		}
+		if !trafficSampleCanAggregate(sample) {
 			continue
 		}
 		meta, ok := metaByKey[sample.ScopeKey]
 		if !ok {
 			continue
 		}
-		rank := byKey[sample.ScopeKey]
-		if rank == nil {
-			copy := meta
-			rank = &copy
-			byKey[sample.ScopeKey] = rank
+		aggregate := byKey[sample.ScopeKey]
+		if aggregate == nil {
+			aggregate = &trafficAnalyticsRankAggregate{rank: meta}
+			byKey[sample.ScopeKey] = aggregate
 		}
-		rank.Up += sample.DeltaUp
-		rank.Down += sample.DeltaDown
-		rank.Total += sample.DeltaUp + sample.DeltaDown
-		rank.RateTotal += sample.RateUp + sample.RateDown
+		aggregate.addSample(sample, metric)
 	}
-	return sortedTrafficAnalyticsRanks(byKey, limit)
+	return sortedTrafficAnalyticsRanks(byKey, limit, metric)
 }
 
-func sortedTrafficAnalyticsRanks(byKey map[string]*TrafficV2AnalyticsRank, limit int) []TrafficV2AnalyticsRank {
+func sortedTrafficAnalyticsRanks(byKey map[string]*trafficAnalyticsRankAggregate, limit int, metric string) []TrafficV2AnalyticsRank {
 	ranks := make([]TrafficV2AnalyticsRank, 0, len(byKey))
-	for _, rank := range byKey {
-		ranks = append(ranks, *rank)
+	for _, aggregate := range byKey {
+		ranks = append(ranks, aggregate.rank)
 	}
 	sort.SliceStable(ranks, func(i, j int) bool {
+		if metric == "rate" && ranks[i].RateTotal != ranks[j].RateTotal {
+			return ranks[i].RateTotal > ranks[j].RateTotal
+		}
 		if ranks[i].Total == ranks[j].Total {
 			return ranks[i].Label < ranks[j].Label
 		}

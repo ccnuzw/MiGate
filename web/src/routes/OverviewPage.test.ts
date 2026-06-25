@@ -36,6 +36,7 @@ describe('OverviewPage traffic status labels', () => {
   it('distinguishes waiting and unavailable labels', () => {
     expect(trafficStatusLabel('waiting', text)).toBe('等待采样');
     expect(trafficStatusLabel('unavailable', text)).toBe('统计接口不可用');
+    expect(trafficStatusLabel('partial', text)).toBe('统计覆盖不完整');
   });
 
   it('folds traffic status into the current rate summary', () => {
@@ -47,7 +48,8 @@ describe('OverviewPage traffic status labels', () => {
     expect(realtimeRateLabel(0, 0)).toBe('0 B/s ↑ / 0 B/s ↓');
     expect(realtimeTotalLabel(3072, 'ok', text)).toBe('3.0 KB/s');
     expect(realtimeTotalLabel(3072, 'stale', text)).toBe('统计状态过期');
-    expect(trafficHint('2026-06-24T00:00:00Z', 5, 'inbound', 'ok', 'sampled', text)).toBe('采样时间: 2026-06-24T00:00:00Z · 采样窗口: 5.0s · 统计源: inbound · 状态: 统计正常 · 说明: sampled');
+    expect(trafficHint('2026-06-24T00:00:00Z', 5, 'inbound', 'ok', 'sampled', text)).toBe('采样时间: 2026-06-24T00:00:00Z · 采样窗口: 5.0s · 统计源: 入站原生统计 · 状态: 统计正常 · 说明: sampled');
+    expect(trafficHint('2026-06-24T00:00:00Z', 5, 'client_aggregate', 'partial', 'fallback', text)).toBe('采样时间: 2026-06-24T00:00:00Z · 采样窗口: 5.0s · 统计源: 客户端汇总回退 · 状态: 统计覆盖不完整 · 说明: fallback');
   });
 });
 

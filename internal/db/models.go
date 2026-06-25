@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 const (
@@ -376,6 +377,13 @@ type TrafficSample struct {
 	RateDown      float64 `json:"rate_down"`
 	WindowSeconds float64 `json:"window_seconds"`
 	Status        string  `json:"status"`
+}
+
+type TrafficAnalyticsSampleParams struct {
+	ScopeType     string
+	Since         time.Time
+	Until         time.Time
+	BucketSeconds int
 }
 
 type ClientTrafficUsage struct {

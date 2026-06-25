@@ -130,14 +130,19 @@ func expectedTrafficSeriesEngines(scopeType string, inbounds []db.Inbound) map[s
 		if scopeKey == "" || engine == "" {
 			return
 		}
-		allowed[scopeKey] = map[string]struct{}{engine: {}}
+		engines := allowed[scopeKey]
+		if engines == nil {
+			engines = map[string]struct{}{}
+			allowed[scopeKey] = engines
+		}
+		engines[engine] = struct{}{}
 	}
 	switch scopeType {
 	case "client":
 		for _, inbound := range inbounds {
 			engine := expectedTrafficEngine(inbound.Protocol)
 			for _, client := range inbound.Clients {
-				add(client.StatsKey, engine)
+				add(clientTrafficStatsKey(client), engine)
 			}
 		}
 	case "inbound":

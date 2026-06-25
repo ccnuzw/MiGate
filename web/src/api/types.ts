@@ -600,6 +600,7 @@ export interface TrafficV2AnalyticsResponse {
   range: '1h' | '24h' | '7d' | '30d' | string;
   metric: 'usage' | 'rate' | 'cumulative' | string;
   scope_type: 'inbound' | 'client' | string;
+  semantics?: string;
   bucket_seconds: number;
   summary: TrafficV2AnalyticsSummary;
   series: TrafficV2AnalyticsPoint[];
