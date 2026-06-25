@@ -176,8 +176,6 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			clientAggregate.RateTotal = clientAggregate.RateUp + clientAggregate.RateDown
 			clientAggregate.Status = clientAggregateStatus
 			inboundSummary = clientAggregate
-		} else if clientAggregateStatus != "" && hasInboundState {
-			inboundSummary.Status = combineTrafficStatuses(inboundSummary.Status, clientAggregateStatus)
 		}
 		inboundSummary.Total = inboundSummary.Up + inboundSummary.Down
 		inboundSummary.RateTotal = inboundSummary.RateUp + inboundSummary.RateDown

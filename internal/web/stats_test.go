@@ -1949,7 +1949,7 @@ func TestSummarizeTrafficAggregatesClientUnavailableWhenNoInboundStateExists(t *
 	}
 }
 
-func TestSummarizeTrafficMarksInboundPartialWhenSomeClientsAreWaiting(t *testing.T) {
+func TestSummarizeTrafficKeepsNativeInboundOKWhenSomeClientsAreWaiting(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	store := &countingSummaryStore{
 		states: []db.TrafficState{
@@ -1972,13 +1972,13 @@ func TestSummarizeTrafficMarksInboundPartialWhenSomeClientsAreWaiting(t *testing
 		t.Fatalf("expected client statuses ok/waiting, got ok=%+v waiting=%+v", trafficByClient[10], trafficByClient[11])
 	}
 	inbound := trafficByInbound[1]
-	if inbound.Status != "partial" || inbound.Up != 100 || inbound.Down != 200 || inbound.RateUp != 10 || inbound.RateDown != 20 {
-		t.Fatalf("inbound with ok state and waiting client should be partial without changing inbound totals/rates, got %+v", inbound)
+	if inbound.Status != "ok" || inbound.Up != 100 || inbound.Down != 200 || inbound.RateUp != 10 || inbound.RateDown != 20 {
+		t.Fatalf("native inbound stats should stay ok even when a client is waiting, got %+v", inbound)
 	}
 	coverage := buildTrafficCoverage(trafficByInbound)
 	engines := coverage["engines"].(map[string]string)
-	if coverage["overall"] != "partial" || engines["xray"] != "partial" {
-		t.Fatalf("dashboard coverage should surface partial xray status, got %+v", coverage)
+	if coverage["overall"] != "ok" || engines["xray"] != "ok" {
+		t.Fatalf("dashboard inbound coverage should follow native inbound status, got %+v", coverage)
 	}
 }
 
