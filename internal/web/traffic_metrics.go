@@ -127,11 +127,29 @@ func buildTrafficMetricSet(view trafficView) TrafficMetricSet {
 	overallStatus, _ := coverage["overall"].(string)
 	totalCumulativeSource, totalCumulativeMessage := totalCumulativeMetadata(metrics.InboundCumulative)
 	metrics.TotalCumulative = newTrafficCumulativeMetric(totalUp, totalDown, overallStatus, totalCumulativeSource, totalCumulativeMessage)
-	metrics.TotalRealtime = newTrafficRealtimeMetric(totalDeltaUp, totalDeltaDown, totalRateUp, totalRateDown, totalWindowSeconds, lastTrafficSampledAt(view.trafficByInbound, nil), realtimeCounts.status(), "inbound", "")
+	totalRealtimeSource, totalRealtimeMessage := totalRealtimeMetadata(metrics.InboundRealtime)
+	metrics.TotalRealtime = newTrafficRealtimeMetric(totalDeltaUp, totalDeltaDown, totalRateUp, totalRateDown, totalWindowSeconds, lastTrafficSampledAt(view.trafficByInbound, nil), realtimeCounts.status(), totalRealtimeSource, totalRealtimeMessage)
 	return metrics
 }
 
 func totalCumulativeMetadata(inbounds map[int64]TrafficCumulativeMetric) (string, string) {
+	if len(inbounds) == 0 {
+		return "migate", ""
+	}
+	sources := map[string]struct{}{}
+	for _, metric := range inbounds {
+		source := normalizedMetricSource(metric.Source)
+		sources[source] = struct{}{}
+	}
+	if len(sources) == 1 {
+		for source := range sources {
+			return source, ""
+		}
+	}
+	return "mixed", ""
+}
+
+func totalRealtimeMetadata(inbounds map[int64]TrafficRealtimeMetric) (string, string) {
 	if len(inbounds) == 0 {
 		return "migate", ""
 	}

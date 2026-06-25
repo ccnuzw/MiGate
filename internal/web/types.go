@@ -102,6 +102,7 @@ type Store interface {
 	ListTrafficStates(ctx context.Context) ([]db.TrafficState, error)
 	ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]db.TrafficSample, error)
 	ListTrafficSamplesWindow(ctx context.Context, scopeType string, since time.Time, until time.Time, limit int) ([]db.TrafficSample, error)
+	ListTrafficAnalyticsSamples(ctx context.Context, params db.TrafficAnalyticsSampleParams) ([]db.TrafficSample, error)
 	ApplyTrafficRawStats(ctx context.Context, stats []db.TrafficRawStat, observedAt time.Time) error
 	MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error
 	AddToBlacklist(ctx context.Context, tokenHash string, expiresAt time.Time, revoked bool) error

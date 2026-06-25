@@ -116,7 +116,7 @@ func (s *TrafficSyncScheduler) sync() {
 		stats, err := s.statsClient.QueryTrafficStats(ctx)
 		if err != nil {
 			log.Printf("traffic sync: failed to query xray stats: %v", err)
-			if markers, refreshed := s.xrayTrafficStatusMarkers(ctx, nil, "unavailable", err.Error(), false); refreshed && len(markers) > 0 {
+			if markers, refreshed := s.xrayTrafficStatusMarkers(ctx, nil, "unavailable", err.Error(), true); refreshed && len(markers) > 0 {
 				if err := s.store.MarkTrafficScopeStatus(ctx, markers, observedAt); err != nil {
 					log.Printf("traffic sync: failed to apply xray unavailable markers: %v", err)
 				}
@@ -124,7 +124,7 @@ func (s *TrafficSyncScheduler) sync() {
 			_ = s.store.MarkTrafficUnavailable(ctx, "xray", "unavailable", err.Error(), observedAt)
 		} else {
 			xrayRawStats := convertRawStats(stats)
-			if markers, refreshed := s.xrayTrafficStatusMarkers(ctx, xrayRawStats, "waiting", "waiting for traffic sample", false); refreshed && len(markers) > 0 {
+			if markers, refreshed := s.xrayTrafficStatusMarkers(ctx, xrayRawStats, "waiting", "waiting for traffic sample", true); refreshed && len(markers) > 0 {
 				if err := s.store.MarkTrafficScopeStatus(ctx, markers, observedAt); err != nil {
 					log.Printf("traffic sync: failed to apply xray waiting markers: %v", err)
 				}

@@ -396,6 +396,7 @@ describe('inbound management display helpers', () => {
     expect(rateLabel(1024, 2048, text, 'stale')).toBe('统计已过期');
     expect(rateLabel(1024, 2048, text, 'unavailable')).toBe('统计不可用');
     expect(rateLabel(1024, 2048, text, 'unsupported')).toBe('实时统计不可用');
+    expect(rateLabel(1024, 2048, text, 'partial')).toBe('1.0 KB/s ↑ / 2.0 KB/s ↓');
     expect(protocolBadgeClasses).toMatchObject({
       vless: 'protocol-vless',
       vmess: 'protocol-vmess',

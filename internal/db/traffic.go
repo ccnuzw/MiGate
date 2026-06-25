@@ -650,6 +650,89 @@ ORDER BY sampled_at ASC, engine ASC, scope_key ASC`
 	return samples, rows.Err()
 }
 
+func (s *Store) ListTrafficAnalyticsSamples(ctx context.Context, params TrafficAnalyticsSampleParams) ([]TrafficSample, error) {
+	scopeType := normalizeTrafficToken(params.ScopeType)
+	if scopeType == "" {
+		scopeType = "core"
+	}
+	bucketSeconds := params.BucketSeconds
+	if bucketSeconds <= 0 {
+		bucketSeconds = 300
+	}
+	if bucketSeconds > 86400 {
+		bucketSeconds = 86400
+	}
+	sinceText := params.Since.UTC().Format(time.RFC3339Nano)
+	where := `scope_type = ? AND sampled_at >= ?`
+	args := []interface{}{scopeType, sinceText}
+	if !params.Until.IsZero() {
+		where += ` AND sampled_at <= ?`
+		args = append(args, params.Until.UTC().Format(time.RFC3339Nano))
+	}
+	query := fmt.Sprintf(`
+WITH bucketed AS (
+  SELECT
+    ((CAST(strftime('%%s', sampled_at) AS INTEGER) / %[1]d) * %[1]d) AS bucket_unix,
+    sampled_at,
+    engine,
+    scope_type,
+    scope_key,
+    total_up,
+    total_down,
+    delta_up,
+    delta_down,
+    rate_up,
+    rate_down,
+    window_seconds,
+    status,
+    ROW_NUMBER() OVER (
+      PARTITION BY ((CAST(strftime('%%s', sampled_at) AS INTEGER) / %[1]d) * %[1]d), engine, scope_type, scope_key
+      ORDER BY sampled_at DESC
+    ) AS rn
+  FROM traffic_samples
+  WHERE `+where+`
+)
+SELECT
+  strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', bucket_unix, 'unixepoch') AS sampled_at,
+  engine,
+  scope_type,
+  scope_key,
+  MAX(CASE WHEN rn = 1 THEN total_up ELSE 0 END) AS total_up,
+  MAX(CASE WHEN rn = 1 THEN total_down ELSE 0 END) AS total_down,
+  SUM(delta_up) AS delta_up,
+  SUM(delta_down) AS delta_down,
+  AVG(rate_up) AS rate_up,
+  AVG(rate_down) AS rate_down,
+  MAX(window_seconds) AS window_seconds,
+  CASE
+    WHEN SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) = COUNT(*) THEN 'ok'
+    WHEN SUM(CASE WHEN status = 'not_configured' THEN 1 ELSE 0 END) = COUNT(*) THEN 'not_configured'
+    WHEN COUNT(DISTINCT status) > 1 THEN 'partial'
+    WHEN SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) > 0 THEN 'partial'
+    WHEN SUM(CASE WHEN status = 'unsupported' THEN 1 ELSE 0 END) > 0 AND SUM(CASE WHEN status IN ('unavailable', 'stale') THEN 1 ELSE 0 END) = 0 THEN 'unsupported'
+    WHEN SUM(CASE WHEN status = 'stale' THEN 1 ELSE 0 END) > 0 AND SUM(CASE WHEN status = 'unavailable' THEN 1 ELSE 0 END) = 0 THEN 'stale'
+    WHEN SUM(CASE WHEN status = 'unavailable' THEN 1 ELSE 0 END) > 0 THEN 'unavailable'
+    ELSE 'waiting'
+  END AS status
+FROM bucketed
+GROUP BY bucket_unix, engine, scope_type, scope_key
+ORDER BY bucket_unix ASC, engine ASC, scope_key ASC`, bucketSeconds)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	samples := []TrafficSample{}
+	for rows.Next() {
+		var sample TrafficSample
+		if err := rows.Scan(&sample.SampledAt, &sample.Engine, &sample.ScopeType, &sample.ScopeKey, &sample.TotalUp, &sample.TotalDown, &sample.DeltaUp, &sample.DeltaDown, &sample.RateUp, &sample.RateDown, &sample.WindowSeconds, &sample.Status); err != nil {
+			return nil, err
+		}
+		samples = append(samples, sample)
+	}
+	return samples, rows.Err()
+}
+
 func (s *Store) GetClientTrafficUsage(ctx context.Context, statsKey string) (ClientTrafficUsage, bool, error) {
 	statsKey = strings.TrimSpace(statsKey)
 	if statsKey == "" {

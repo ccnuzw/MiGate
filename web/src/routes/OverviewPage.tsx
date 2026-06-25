@@ -516,7 +516,8 @@ export function buildTrafficAnalyticsOption(data: TrafficV2AnalyticsResponse | u
 function trafficAnalyticsSubtitle(data: TrafficV2AnalyticsResponse | undefined, metric: TrafficAnalyticsMetric, text: (value: string) => string) {
   if (!data?.summary?.has_data) return text('至少需要采样数据后才能绘制趋势');
   const peakAt = data.summary.peak_at ? formatAxisTime(data.summary.peak_at, data.range) : text('未知');
-  return `${text(trafficMetricLabel(metric))} · ${text('峰值')} ${formatBytes(metric === 'rate' ? data.summary.peak_rate : data.summary.peak_total)}${metric === 'rate' ? '/s' : ''} · ${peakAt}`;
+  const suffix = data.semantics === 'historical_samples' ? ` · ${text('重置累计不会改写历史趋势')}` : '';
+  return `${text(trafficMetricLabel(metric))} · ${text('峰值')} ${formatBytes(metric === 'rate' ? data.summary.peak_rate : data.summary.peak_total)}${metric === 'rate' ? '/s' : ''} · ${peakAt}${suffix}`;
 }
 
 function RuntimeStatusPanel({
@@ -613,7 +614,7 @@ function errorText(error: unknown) {
 
 export function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
   if (status === 'ok') return text('统计正常');
-  if (status === 'partial') return text('部分不可用');
+  if (status === 'partial') return text('统计覆盖不完整');
   if (status === 'unsupported') return text('当前 sing-box 二进制不支持实时统计');
   if (status === 'not_configured') return text('未配置对应核心入站');
   if (status === 'unavailable') return text('统计接口不可用');
@@ -655,10 +656,18 @@ export function trafficHint(sampledAt: string | undefined, windowSeconds: number
   const parts = [];
   if (sampledAt) parts.push(`${text('采样时间')}: ${sampledAt}`);
   if (windowSeconds) parts.push(`${text('采样窗口')}: ${Number(windowSeconds).toFixed(1)}s`);
-  if (source) parts.push(`${text('统计源')}: ${source}`);
+  if (source) parts.push(`${text('统计源')}: ${trafficSourceLabel(source, text)}`);
   if (status) parts.push(`${text('状态')}: ${trafficStatusLabel(status, text)}`);
   if (message) parts.push(`${text('说明')}: ${message}`);
   return parts.join(' · ') || undefined;
+}
+
+function trafficSourceLabel(source: string | undefined, text: (value: string) => string) {
+  if (source === 'inbound') return text('入站原生统计');
+  if (source === 'client') return text('客户端原生统计');
+  if (source === 'client_aggregate') return text('客户端汇总回退');
+  if (source === 'mixed') return text('混合来源');
+  return source || text('MiGate');
 }
 
 function refreshOverview(queries: Array<{ refetch: () => unknown }>) {

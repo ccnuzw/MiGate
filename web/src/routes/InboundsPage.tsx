@@ -862,12 +862,15 @@ function inboundNeedsAttention(inbound: Inbound, traffic?: TrafficV2Inbound) {
 }
 
 function inboundAttentionNotice(inbound: Inbound, traffic: TrafficV2Inbound | undefined, text: (value: string) => string) {
+  if (!inbound.enabled) return '';
+  const status = inboundTrafficStatus(traffic);
+  if (status === 'partial') return attentionTrafficStatusLabel(status, text);
   if (!inboundNeedsAttention(inbound, traffic)) return '';
-  return attentionTrafficStatusLabel(inboundTrafficStatus(traffic), text);
+  return attentionTrafficStatusLabel(status, text);
 }
 
 function abnormalTrafficStatus(status: string | undefined) {
-  return ['partial', 'stale', 'unavailable', 'unsupported', 'not_configured'].includes(String(status || ''));
+  return ['stale', 'unavailable', 'unsupported', 'not_configured'].includes(String(status || ''));
 }
 
 function inboundTrafficStatus(traffic: TrafficV2Inbound | undefined) {
@@ -875,7 +878,7 @@ function inboundTrafficStatus(traffic: TrafficV2Inbound | undefined) {
 }
 
 function attentionTrafficStatusLabel(status: string | undefined, text: (value: string) => string) {
-  if (status === 'partial') return text('部分统计不可用');
+  if (status === 'partial') return text('统计覆盖不完整');
   if (status === 'stale') return text('统计已过期');
   if (status === 'unavailable') return text('统计不可用');
   if (status === 'unsupported') return text('实时统计不可用');
@@ -890,7 +893,6 @@ export function rateLabel(rateUp: unknown, rateDown: unknown, text: (value: stri
     if (status === 'unavailable') return text('统计不可用');
     if (status === 'unsupported') return text('实时统计不可用');
     if (status === 'not_configured') return text('核心节点未配置');
-    if (status === 'partial') return text('部分不可用');
   }
   const up = Number(rateUp || 0);
   const down = Number(rateDown || 0);
@@ -1434,7 +1436,7 @@ function formatLocalDate(date: Date): string {
 function trafficStatusLabel(status: string | undefined, text: (value: string) => string) {
   if (status === 'ok') return text('统计正常');
   if (status === 'cumulative_only') return text('仅显示累计');
-  if (status === 'partial') return text('部分不可用');
+  if (status === 'partial') return text('统计覆盖不完整');
   if (status === 'stale') return text('统计状态过期');
   if (status === 'unavailable') return text('统计接口不可用');
   if (status === 'unsupported') return text('当前 sing-box 二进制不支持实时统计');
