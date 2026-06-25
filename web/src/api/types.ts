@@ -550,14 +550,62 @@ export interface TrafficV2Patch {
   coverage?: TrafficV2Coverage;
 }
 
-export interface TrafficV2SeriesPoint {
+export interface TrafficV2AnalyticsPoint {
   time: string;
   up: number;
   down: number;
   total: number;
-  rate_up?: number;
-  rate_down?: number;
+  rate_up: number;
+  rate_down: number;
+  rate_total: number;
+}
+
+export interface TrafficV2AnalyticsSummary {
+  up: number;
+  down: number;
+  total: number;
+  rate_up: number;
+  rate_down: number;
+  rate_total: number;
+  peak_up: number;
+  peak_down: number;
+  peak_total: number;
+  peak_rate: number;
+  peak_at?: string;
+  points: number;
+  has_data: boolean;
+  empty_reason?: string;
+}
+
+export interface TrafficV2AnalyticsRank {
+  id: number;
+  label: string;
+  scope_key?: string;
+  protocol?: string;
+  up: number;
+  down: number;
+  total: number;
   rate_total?: number;
+}
+
+export interface TrafficV2HeatmapPoint {
+  day: string;
+  hour: number;
+  total: number;
+  rate_total?: number;
+}
+
+export interface TrafficV2AnalyticsResponse {
+  generated_at: string;
+  range: '1h' | '24h' | '7d' | '30d' | string;
+  metric: 'usage' | 'rate' | 'cumulative' | string;
+  scope_type: 'inbound' | 'client' | string;
+  bucket_seconds: number;
+  summary: TrafficV2AnalyticsSummary;
+  series: TrafficV2AnalyticsPoint[];
+  top_clients: TrafficV2AnalyticsRank[];
+  top_inbounds: TrafficV2AnalyticsRank[];
+  heatmap?: TrafficV2HeatmapPoint[];
 }
 
 export interface VersionResponse {

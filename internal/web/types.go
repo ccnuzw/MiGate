@@ -59,15 +59,6 @@ type inboundTrafficSummary struct {
 	Source        string  `json:"source,omitempty"`
 }
 
-type trafficSeriesPoint struct {
-	Name     string  `json:"name"`
-	Time     string  `json:"time,omitempty"`
-	Up       int64   `json:"up"`
-	Down     int64   `json:"down"`
-	RateUp   float64 `json:"rate_up,omitempty"`
-	RateDown float64 `json:"rate_down,omitempty"`
-}
-
 type Store interface {
 	ListInbounds(ctx context.Context) ([]db.Inbound, error)
 	ListInboundTraffic(ctx context.Context) ([]db.Inbound, error)
@@ -110,6 +101,7 @@ type Store interface {
 	GetClientTrafficUsageForClient(ctx context.Context, clientID int64) (db.ClientTrafficUsage, bool, error)
 	ListTrafficStates(ctx context.Context) ([]db.TrafficState, error)
 	ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]db.TrafficSample, error)
+	ListTrafficSamplesWindow(ctx context.Context, scopeType string, since time.Time, until time.Time, limit int) ([]db.TrafficSample, error)
 	ApplyTrafficRawStats(ctx context.Context, stats []db.TrafficRawStat, observedAt time.Time) error
 	MarkTrafficUnavailable(ctx context.Context, engine, status, message string, observedAt time.Time) error
 	AddToBlacklist(ctx context.Context, tokenHash string, expiresAt time.Time, revoked bool) error

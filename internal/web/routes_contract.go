@@ -98,7 +98,7 @@ func routeTable() []Route {
 		route(http.MethodPost, "/api/routing-rules/", AuthRequired, CSRFRequired, "routingRuleChildrenHandler", func(d *routeDeps) http.HandlerFunc { return routingRuleChildrenHandler(d.cfg) }),
 		route(http.MethodGet, "/api/stats", AuthRequired, CSRFNotRequired, "statsHandler", func(d *routeDeps) http.HandlerFunc { return statsHandler(d.cfg.store, d.cfg.statsClient) }),
 		route(http.MethodGet, "/api/traffic/v2/snapshot", AuthRequired, CSRFNotRequired, "trafficV2SnapshotHandler", func(d *routeDeps) http.HandlerFunc { return trafficV2SnapshotHandler(d.cfg.store, d.trafficCache) }),
-		route(http.MethodGet, "/api/traffic/v2/series", AuthRequired, CSRFNotRequired, "trafficV2SeriesHandler", func(d *routeDeps) http.HandlerFunc { return trafficV2SeriesHandler(d.cfg.store) }),
+		route(http.MethodGet, "/api/traffic/v2/analytics", AuthRequired, CSRFNotRequired, "trafficV2AnalyticsHandler", func(d *routeDeps) http.HandlerFunc { return trafficV2AnalyticsHandler(d.cfg.store) }),
 		route(http.MethodGet, "/api/traffic/v2/stream", AuthRequired, CSRFNotRequired, "trafficV2StreamHandler", func(d *routeDeps) http.HandlerFunc { return trafficV2StreamHandler(d.cfg.store, d.trafficCache) }),
 		route(http.MethodGet, "/api/dashboard/summary", AuthRequired, CSRFNotRequired, "dashboardSummaryHandler", func(d *routeDeps) http.HandlerFunc { return dashboardSummaryHandler(d.cfg) }),
 		route(http.MethodGet, "/api/system/resources", AuthRequired, CSRFNotRequired, "systemResourcesHandler", func(*routeDeps) http.HandlerFunc { return systemResourcesHandler() }),

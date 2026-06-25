@@ -588,7 +588,7 @@ func TestTrafficSamplesCleanupIsThrottled(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 110, RawDown: 110, Status: "ok"}}, oldAt.Add(10*time.Second)); err != nil {
 		t.Fatalf("old increment: %v", err)
 	}
-	newAt := oldAt.Add(8 * 24 * time.Hour)
+	newAt := oldAt.Add(31 * 24 * time.Hour)
 	if err := store.ApplyTrafficRawStats(ctx, []TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 120, RawDown: 120, Status: "ok"}}, newAt); err != nil {
 		t.Fatalf("new cleanup trigger: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestTrafficSamplesCleanupIsThrottled(t *testing.T) {
 	if len(samples) != 1 || samples[0].SampledAt != newAt.UTC().Truncate(trafficSampleBucketSize).Format(time.RFC3339Nano) {
 		t.Fatalf("expected first new sample to prune old samples, got %+v", samples)
 	}
-	staleAt := newAt.Add(-8 * 24 * time.Hour)
+	staleAt := newAt.Add(-31 * 24 * time.Hour)
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, rate_up, rate_down, status) VALUES (?, 'xray', 'client', ?, 1, 1, 0, 0, 'ok')`, staleAt.UTC().Format(time.RFC3339Nano), client.StatsKey); err != nil {
 		t.Fatalf("insert manual stale sample: %v", err)
 	}

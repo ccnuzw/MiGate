@@ -1,7 +1,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -34,14 +36,61 @@ type TrafficV2Patch struct {
 	Coverage          *TrafficV2Coverage `json:"coverage,omitempty"`
 }
 
-type TrafficV2SeriesPoint struct {
+type TrafficV2AnalyticsResponse struct {
+	GeneratedAt   string                    `json:"generated_at"`
+	Range         string                    `json:"range"`
+	Metric        string                    `json:"metric"`
+	ScopeType     string                    `json:"scope_type"`
+	BucketSeconds int                       `json:"bucket_seconds"`
+	Summary       TrafficV2AnalyticsSummary `json:"summary"`
+	Series        []TrafficV2AnalyticsPoint `json:"series"`
+	TopClients    []TrafficV2AnalyticsRank  `json:"top_clients"`
+	TopInbounds   []TrafficV2AnalyticsRank  `json:"top_inbounds"`
+	Heatmap       []TrafficV2HeatmapPoint   `json:"heatmap,omitempty"`
+}
+
+type TrafficV2AnalyticsSummary struct {
+	Up          int64   `json:"up"`
+	Down        int64   `json:"down"`
+	Total       int64   `json:"total"`
+	RateUp      float64 `json:"rate_up"`
+	RateDown    float64 `json:"rate_down"`
+	RateTotal   float64 `json:"rate_total"`
+	PeakUp      int64   `json:"peak_up"`
+	PeakDown    int64   `json:"peak_down"`
+	PeakTotal   int64   `json:"peak_total"`
+	PeakRate    float64 `json:"peak_rate"`
+	PeakAt      string  `json:"peak_at,omitempty"`
+	Points      int     `json:"points"`
+	HasData     bool    `json:"has_data"`
+	EmptyReason string  `json:"empty_reason,omitempty"`
+}
+
+type TrafficV2AnalyticsPoint struct {
 	Time      string  `json:"time"`
 	Up        int64   `json:"up"`
 	Down      int64   `json:"down"`
 	Total     int64   `json:"total"`
-	RateUp    float64 `json:"rate_up,omitempty"`
-	RateDown  float64 `json:"rate_down,omitempty"`
-	RateTotal float64 `json:"rate_total,omitempty"`
+	RateUp    float64 `json:"rate_up"`
+	RateDown  float64 `json:"rate_down"`
+	RateTotal float64 `json:"rate_total"`
+}
+
+type TrafficV2AnalyticsRank struct {
+	ID        int64   `json:"id"`
+	Label     string  `json:"label"`
+	ScopeKey  string  `json:"scope_key,omitempty"`
+	Protocol  string  `json:"protocol,omitempty"`
+	Up        int64   `json:"up"`
+	Down      int64   `json:"down"`
+	Total     int64   `json:"total"`
+	RateTotal float64 `json:"rate_total"`
+}
+
+type TrafficV2HeatmapPoint struct {
+	Day   string `json:"day"`
+	Hour  int    `json:"hour"`
+	Total int64  `json:"total"`
 }
 
 type TrafficV2Total struct {
@@ -84,6 +133,17 @@ type TrafficV2Coverage struct {
 
 var trafficV2StreamInterval = trafficStreamInterval
 var trafficV2StreamResyncEvery = 12
+
+type trafficV2AnalyticsParams struct {
+	Range         string
+	Metric        string
+	ScopeType     string
+	BucketSeconds int
+	Since         time.Time
+	Until         time.Time
+	Limit         int
+	Top           int
+}
 
 func trafficV2SnapshotHandler(store Store, cache *trafficViewCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +240,7 @@ func trafficV2StreamHandler(store Store, cache *trafficViewCache) http.HandlerFu
 	}
 }
 
-func trafficV2SeriesHandler(store Store) http.HandlerFunc {
+func trafficV2AnalyticsHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -190,35 +250,9 @@ func trafficV2SeriesHandler(store Store) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable")
 			return
 		}
-		scopeType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope_type")))
-		if scopeType == "" {
-			scopeType = "inbound"
-		}
-		if scopeType != "client" && scopeType != "inbound" && scopeType != "outbound" && scopeType != "core" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_scope_type")
-			return
-		}
-		since := time.Now().UTC().Add(-24 * time.Hour)
-		if rawSince := strings.TrimSpace(r.URL.Query().Get("since")); rawSince != "" {
-			parsed, err := time.Parse(time.RFC3339, rawSince)
-			if err != nil {
-				writeJSONError(w, http.StatusBadRequest, "invalid_since")
-				return
-			}
-			since = parsed.UTC()
-		}
-		limit := 2000
-		if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
-			parsed, err := strconv.Atoi(rawLimit)
-			if err != nil || parsed <= 0 || parsed > 2000 {
-				writeJSONError(w, http.StatusBadRequest, "invalid_limit")
-				return
-			}
-			limit = parsed
-		}
-		samples, err := store.ListTrafficSamples(r.Context(), scopeType, since, limit)
+		params, err := parseTrafficV2AnalyticsParams(r)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "traffic_samples_failed")
+			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		inbounds, err := store.ListInboundTraffic(r.Context())
@@ -226,9 +260,12 @@ func trafficV2SeriesHandler(store Store) http.HandlerFunc {
 			writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"series": trafficV2SeriesFromSamples(samples, scopeType, inbounds),
-		})
+		samples, err := loadTrafficAnalyticsSamples(r.Context(), store, params, inbounds)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "traffic_samples_failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, buildTrafficV2Analytics(params, samples, inbounds))
 	}
 }
 
@@ -275,11 +312,108 @@ func buildTrafficV2Snapshot(view trafficView) TrafficV2Snapshot {
 	}
 }
 
-func trafficV2SeriesFromSamples(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound) []TrafficV2SeriesPoint {
+func parseTrafficV2AnalyticsParams(r *http.Request) (trafficV2AnalyticsParams, error) {
+	query := r.URL.Query()
+	rangeKey := strings.ToLower(strings.TrimSpace(query.Get("range")))
+	if rangeKey == "" {
+		rangeKey = "24h"
+	}
+	duration, bucketSeconds, err := trafficAnalyticsRange(rangeKey)
+	if err != nil {
+		return trafficV2AnalyticsParams{}, err
+	}
+	metric := strings.ToLower(strings.TrimSpace(query.Get("metric")))
+	if metric == "" {
+		metric = "usage"
+	}
+	if metric != "usage" && metric != "rate" && metric != "cumulative" {
+		return trafficV2AnalyticsParams{}, errors.New("invalid_metric")
+	}
+	scopeType := strings.ToLower(strings.TrimSpace(query.Get("scope_type")))
+	if scopeType == "" || scopeType == "total" {
+		scopeType = "inbound"
+	}
+	if scopeType != "client" && scopeType != "inbound" {
+		return trafficV2AnalyticsParams{}, errors.New("invalid_scope_type")
+	}
+	top := 5
+	if rawTop := strings.TrimSpace(query.Get("top")); rawTop != "" {
+		parsed, err := strconv.Atoi(rawTop)
+		if err != nil || parsed <= 0 || parsed > 10 {
+			return trafficV2AnalyticsParams{}, errors.New("invalid_top")
+		}
+		top = parsed
+	}
+	now := time.Now().UTC()
+	return trafficV2AnalyticsParams{
+		Range:         rangeKey,
+		Metric:        metric,
+		ScopeType:     scopeType,
+		BucketSeconds: bucketSeconds,
+		Since:         now.Add(-duration),
+		Until:         now,
+		Limit:         20000,
+		Top:           top,
+	}, nil
+}
+
+func trafficAnalyticsRange(rangeKey string) (time.Duration, int, error) {
+	switch rangeKey {
+	case "1h":
+		return time.Hour, 60, nil
+	case "24h":
+		return 24 * time.Hour, 5 * 60, nil
+	case "7d":
+		return 7 * 24 * time.Hour, 60 * 60, nil
+	case "30d":
+		return 30 * 24 * time.Hour, 6 * 60 * 60, nil
+	default:
+		return 0, 0, errors.New("invalid_range")
+	}
+}
+
+func loadTrafficAnalyticsSamples(ctx context.Context, store Store, params trafficV2AnalyticsParams, _ []db.Inbound) ([]db.TrafficSample, error) {
+	samples := []db.TrafficSample{}
+	for _, scopeType := range []string{"inbound", "client"} {
+		scopeSamples, err := store.ListTrafficSamplesWindow(ctx, scopeType, params.Since, params.Until, params.Limit)
+		if err != nil {
+			return nil, err
+		}
+		samples = append(samples, scopeSamples...)
+	}
+	return samples, nil
+}
+
+func buildTrafficV2Analytics(params trafficV2AnalyticsParams, samples []db.TrafficSample, inbounds []db.Inbound) TrafficV2AnalyticsResponse {
+	seriesSamples := filterTrafficAnalyticsSamples(samples, params.ScopeType, inbounds)
+	clientSamples := filterTrafficAnalyticsSamples(samples, "client", inbounds)
+	inboundSamples := filterTrafficAnalyticsSamples(samples, "inbound", inbounds)
+	series := bucketTrafficAnalyticsSeries(seriesSamples, params.BucketSeconds, params.Metric)
+	summary := summarizeTrafficAnalyticsSeries(series, params.Metric)
+	if len(seriesSamples) == 0 {
+		summary.EmptyReason = "waiting"
+	}
+	return TrafficV2AnalyticsResponse{
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		Range:         params.Range,
+		Metric:        params.Metric,
+		ScopeType:     params.ScopeType,
+		BucketSeconds: params.BucketSeconds,
+		Summary:       summary,
+		Series:        series,
+		TopClients:    rankTrafficAnalyticsSamples(clientSamples, "client", inbounds, params.Top),
+		TopInbounds:   rankTrafficAnalyticsSamples(inboundSamples, "inbound", inbounds, params.Top),
+		Heatmap:       heatmapTrafficAnalytics(series),
+	}
+}
+
+func filterTrafficAnalyticsSamples(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound) []db.TrafficSample {
 	allowed := selectedTrafficSeriesEngines(samples, scopeType, inbounds)
-	byTime := map[string]*TrafficV2SeriesPoint{}
-	order := []string{}
+	filtered := make([]db.TrafficSample, 0, len(samples))
 	for _, sample := range samples {
+		if sample.ScopeType != "" && normalizeTrafficScopeType(sample.ScopeType) != scopeType {
+			continue
+		}
 		if scopeType == "client" || scopeType == "inbound" {
 			engines, ok := allowed[sample.ScopeKey]
 			if !ok {
@@ -289,32 +423,256 @@ func trafficV2SeriesFromSamples(samples []db.TrafficSample, scopeType string, in
 				continue
 			}
 		}
-		point := byTime[sample.SampledAt]
-		if point == nil {
-			point = &TrafficV2SeriesPoint{Time: sample.SampledAt}
-			byTime[sample.SampledAt] = point
-			order = append(order, sample.SampledAt)
-		}
-		point.Up += sample.TotalUp
-		point.Down += sample.TotalDown
-		point.Total += sample.TotalUp + sample.TotalDown
-		point.RateUp += sample.RateUp
-		point.RateDown += sample.RateDown
-		point.RateTotal += sample.RateUp + sample.RateDown
+		filtered = append(filtered, sample)
 	}
-	sort.SliceStable(order, func(i, j int) bool {
-		left, leftErr := time.Parse(time.RFC3339Nano, order[i])
-		right, rightErr := time.Parse(time.RFC3339Nano, order[j])
-		if leftErr == nil && rightErr == nil {
-			return left.Before(right)
+	return filtered
+}
+
+func bucketTrafficAnalyticsSeries(samples []db.TrafficSample, bucketSeconds int, metric string) []TrafficV2AnalyticsPoint {
+	if bucketSeconds <= 0 {
+		bucketSeconds = 300
+	}
+	type cumulativeValue struct {
+		Up   int64
+		Down int64
+	}
+	type bucketValue struct {
+		Time       time.Time
+		Up         int64
+		Down       int64
+		RateUp     float64
+		RateDown   float64
+		RateCount  int
+		Cumulative map[string]cumulativeValue
+	}
+	buckets := map[int64]*bucketValue{}
+	order := []int64{}
+	for _, sample := range samples {
+		sampledAt, err := time.Parse(time.RFC3339Nano, sample.SampledAt)
+		if err != nil {
+			continue
 		}
-		return order[i] < order[j]
-	})
-	points := make([]TrafficV2SeriesPoint, 0, len(order))
-	for _, sampledAt := range order {
-		points = append(points, *byTime[sampledAt])
+		bucketUnix := sampledAt.UTC().Unix() / int64(bucketSeconds) * int64(bucketSeconds)
+		bucket := buckets[bucketUnix]
+		if bucket == nil {
+			bucket = &bucketValue{Time: time.Unix(bucketUnix, 0).UTC(), Cumulative: map[string]cumulativeValue{}}
+			buckets[bucketUnix] = bucket
+			order = append(order, bucketUnix)
+		}
+		if metric == "cumulative" {
+			bucket.Cumulative[sample.ScopeKey] = cumulativeValue{Up: sample.TotalUp, Down: sample.TotalDown}
+		} else if metric == "usage" {
+			bucket.Up += sample.DeltaUp
+			bucket.Down += sample.DeltaDown
+		}
+		bucket.RateUp += sample.RateUp
+		bucket.RateDown += sample.RateDown
+		bucket.RateCount++
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	points := make([]TrafficV2AnalyticsPoint, 0, len(order))
+	for _, key := range order {
+		bucket := buckets[key]
+		up, down := bucket.Up, bucket.Down
+		if metric == "cumulative" {
+			for _, cumulative := range bucket.Cumulative {
+				up += cumulative.Up
+				down += cumulative.Down
+			}
+		}
+		rateDivisor := float64(bucket.RateCount)
+		if rateDivisor <= 0 {
+			rateDivisor = 1
+		}
+		point := TrafficV2AnalyticsPoint{
+			Time:      bucket.Time.Format(time.RFC3339),
+			Up:        up,
+			Down:      down,
+			Total:     up + down,
+			RateUp:    bucket.RateUp / rateDivisor,
+			RateDown:  bucket.RateDown / rateDivisor,
+			RateTotal: (bucket.RateUp + bucket.RateDown) / rateDivisor,
+		}
+		points = append(points, point)
 	}
 	return points
+}
+
+func summarizeTrafficAnalyticsSeries(series []TrafficV2AnalyticsPoint, metric string) TrafficV2AnalyticsSummary {
+	summary := TrafficV2AnalyticsSummary{Points: len(series), HasData: len(series) > 0}
+	if metric == "cumulative" {
+		if len(series) == 0 {
+			return summary
+		}
+		last := series[len(series)-1]
+		summary.Up = last.Up
+		summary.Down = last.Down
+		summary.Total = last.Total
+		summary.RateUp = last.RateUp
+		summary.RateDown = last.RateDown
+		summary.RateTotal = last.RateTotal
+		for _, point := range series {
+			if point.Total > summary.PeakTotal || (point.Total == summary.PeakTotal && point.RateTotal > summary.PeakRate) {
+				summary.PeakUp = point.Up
+				summary.PeakDown = point.Down
+				summary.PeakTotal = point.Total
+				summary.PeakRate = point.RateTotal
+				summary.PeakAt = point.Time
+			}
+		}
+		return summary
+	}
+	for _, point := range series {
+		summary.Up += point.Up
+		summary.Down += point.Down
+		summary.Total += point.Total
+		summary.RateUp += point.RateUp
+		summary.RateDown += point.RateDown
+		summary.RateTotal += point.RateTotal
+		if point.Total > summary.PeakTotal || (point.Total == summary.PeakTotal && point.RateTotal > summary.PeakRate) {
+			summary.PeakUp = point.Up
+			summary.PeakDown = point.Down
+			summary.PeakTotal = point.Total
+			summary.PeakRate = point.RateTotal
+			summary.PeakAt = point.Time
+		}
+	}
+	if len(series) > 0 {
+		divisor := float64(len(series))
+		summary.RateUp /= divisor
+		summary.RateDown /= divisor
+		summary.RateTotal /= divisor
+	}
+	return summary
+}
+
+func rankTrafficAnalyticsSamples(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound, limit int) []TrafficV2AnalyticsRank {
+	if limit <= 0 {
+		limit = 5
+	}
+	if scopeType == "client" {
+		return rankTrafficAnalyticsClients(samples, inbounds, limit)
+	}
+	return rankTrafficAnalyticsInbounds(samples, inbounds, limit)
+}
+
+func rankTrafficAnalyticsClients(samples []db.TrafficSample, inbounds []db.Inbound, limit int) []TrafficV2AnalyticsRank {
+	type clientMeta struct {
+		ID       int64
+		Label    string
+		Protocol string
+	}
+	metaByKey := map[string]clientMeta{}
+	for _, inbound := range inbounds {
+		for _, client := range inbound.Clients {
+			if strings.TrimSpace(client.StatsKey) == "" {
+				continue
+			}
+			metaByKey[client.StatsKey] = clientMeta{ID: client.ID, Label: client.Email, Protocol: inbound.Protocol}
+		}
+	}
+	byKey := map[string]*TrafficV2AnalyticsRank{}
+	for _, sample := range samples {
+		if normalizeTrafficScopeType(sample.ScopeType) != "client" {
+			continue
+		}
+		meta, ok := metaByKey[sample.ScopeKey]
+		if !ok {
+			continue
+		}
+		rank := byKey[sample.ScopeKey]
+		if rank == nil {
+			rank = &TrafficV2AnalyticsRank{ID: meta.ID, Label: meta.Label, ScopeKey: sample.ScopeKey, Protocol: meta.Protocol}
+			byKey[sample.ScopeKey] = rank
+		}
+		rank.Up += sample.DeltaUp
+		rank.Down += sample.DeltaDown
+		rank.Total += sample.DeltaUp + sample.DeltaDown
+		rank.RateTotal += sample.RateUp + sample.RateDown
+	}
+	return sortedTrafficAnalyticsRanks(byKey, limit)
+}
+
+func rankTrafficAnalyticsInbounds(samples []db.TrafficSample, inbounds []db.Inbound, limit int) []TrafficV2AnalyticsRank {
+	metaByKey := map[string]TrafficV2AnalyticsRank{}
+	for _, inbound := range inbounds {
+		metaByKey[inboundStatsKey(inbound)] = TrafficV2AnalyticsRank{ID: inbound.ID, Label: inbound.Remark, ScopeKey: inboundStatsKey(inbound), Protocol: inbound.Protocol}
+	}
+	byKey := map[string]*TrafficV2AnalyticsRank{}
+	for _, sample := range samples {
+		if normalizeTrafficScopeType(sample.ScopeType) != "inbound" {
+			continue
+		}
+		meta, ok := metaByKey[sample.ScopeKey]
+		if !ok {
+			continue
+		}
+		rank := byKey[sample.ScopeKey]
+		if rank == nil {
+			copy := meta
+			rank = &copy
+			byKey[sample.ScopeKey] = rank
+		}
+		rank.Up += sample.DeltaUp
+		rank.Down += sample.DeltaDown
+		rank.Total += sample.DeltaUp + sample.DeltaDown
+		rank.RateTotal += sample.RateUp + sample.RateDown
+	}
+	return sortedTrafficAnalyticsRanks(byKey, limit)
+}
+
+func sortedTrafficAnalyticsRanks(byKey map[string]*TrafficV2AnalyticsRank, limit int) []TrafficV2AnalyticsRank {
+	ranks := make([]TrafficV2AnalyticsRank, 0, len(byKey))
+	for _, rank := range byKey {
+		ranks = append(ranks, *rank)
+	}
+	sort.SliceStable(ranks, func(i, j int) bool {
+		if ranks[i].Total == ranks[j].Total {
+			return ranks[i].Label < ranks[j].Label
+		}
+		return ranks[i].Total > ranks[j].Total
+	})
+	if len(ranks) > limit {
+		ranks = ranks[:limit]
+	}
+	return ranks
+}
+
+func heatmapTrafficAnalytics(series []TrafficV2AnalyticsPoint) []TrafficV2HeatmapPoint {
+	type heatmapBucket struct {
+		Day   string
+		Hour  int
+		Total int64
+	}
+	byKey := map[string]*heatmapBucket{}
+	order := []string{}
+	for _, point := range series {
+		parsed, err := time.Parse(time.RFC3339Nano, point.Time)
+		if err != nil {
+			continue
+		}
+		day := parsed.UTC().Format("2006-01-02")
+		hour := parsed.UTC().Hour()
+		key := fmt.Sprintf("%s-%02d", day, hour)
+		bucket := byKey[key]
+		if bucket == nil {
+			bucket = &heatmapBucket{Day: day, Hour: hour}
+			byKey[key] = bucket
+			order = append(order, key)
+		}
+		bucket.Total += point.Total
+	}
+	sort.Strings(order)
+	points := make([]TrafficV2HeatmapPoint, 0, len(order))
+	for _, key := range order {
+		bucket := byKey[key]
+		points = append(points, TrafficV2HeatmapPoint{Day: bucket.Day, Hour: bucket.Hour, Total: bucket.Total})
+	}
+	return points
+}
+
+func normalizeTrafficScopeType(value string) string {
+	return strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "-", "_")))
 }
 
 func buildTrafficV2Patch(previous, current TrafficV2Snapshot) (TrafficV2Patch, bool) {

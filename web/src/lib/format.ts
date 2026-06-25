@@ -2,7 +2,7 @@ export function formatBytes(value: number | undefined | null): string {
   const n = Number(value || 0);
   if (!Number.isFinite(n) || n <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
+  const index = Math.max(0, Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1));
   return `${(n / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 

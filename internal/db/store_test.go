@@ -3784,6 +3784,54 @@ func TestApplyTrafficRawStatsBatchesClientSamplesAndTotals(t *testing.T) {
 	}
 }
 
+func TestListTrafficSamplesWindowSupportsBoundedAnalyticsQueries(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "unbounded", Protocol: "vless", Port: 28103, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "unbounded@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	t0 := time.Unix(3000, 0)
+	for i := int64(0); i < 4; i++ {
+		if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 100 + i, RawDown: 200 + i, Status: "ok"}}, t0.Add(time.Duration(i)*10*time.Second)); err != nil {
+			t.Fatalf("write traffic sample %d: %v", i, err)
+		}
+	}
+	limited, err := store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 2)
+	if err != nil {
+		t.Fatalf("list limited samples: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("expected explicit limit to still apply, got %+v", limited)
+	}
+	defaultLimited, err := store.ListTrafficSamples(ctx, "client", time.Unix(0, 0), 0)
+	if err != nil {
+		t.Fatalf("list default-limited samples: %v", err)
+	}
+	if len(defaultLimited) != 4 {
+		t.Fatalf("expected small default-limited sample set to be returned, got %+v", defaultLimited)
+	}
+	windowed, err := store.ListTrafficSamplesWindow(ctx, "client", time.Unix(0, 0), t0.Add(time.Minute), 3)
+	if err != nil {
+		t.Fatalf("list windowed samples: %v", err)
+	}
+	if len(windowed) != 3 {
+		t.Fatalf("expected explicit analytics window limit to apply, got %+v", windowed)
+	}
+	if windowed[0].SampledAt != t0.Add(10*time.Second).UTC().Truncate(5*time.Second).Format(time.RFC3339Nano) {
+		t.Fatalf("expected bounded analytics window to retain latest samples when truncated, got %+v", windowed)
+	}
+}
+
 func TestResetWithoutRawBaselineClearsExistingEngineAndUsesNextRawAsBaseline(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

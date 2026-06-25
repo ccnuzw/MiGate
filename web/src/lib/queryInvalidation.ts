@@ -10,7 +10,7 @@ export function refreshTopologyDependencies(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['routing-rules'] });
   queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
   invalidateTrafficV2Snapshot(queryClient);
-  invalidateTrafficV2Series(queryClient);
+  invalidateTrafficV2Analytics(queryClient);
 }
 
 export function refreshOutboundDependencies(queryClient: QueryClient) {
@@ -50,8 +50,8 @@ export function invalidateTrafficV2Snapshot(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['traffic-v2-snapshot'] });
 }
 
-export function invalidateTrafficV2Series(queryClient: QueryClient) {
-  queryClient.invalidateQueries({ queryKey: ['traffic-v2-series'] });
+export function invalidateTrafficV2Analytics(queryClient: QueryClient) {
+  queryClient.invalidateQueries({ queryKey: ['traffic-v2-analytics'] });
 }
 
 export function refetchTopologyDependencies(queryClient: QueryClient) {

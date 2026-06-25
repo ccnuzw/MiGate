@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  invalidateTrafficV2Series,
+  invalidateTrafficV2Analytics,
   invalidateTrafficV2Snapshot,
   refreshCertificateApplyDependencies,
   refreshOutboundDependencies,
@@ -25,7 +25,7 @@ describe('query invalidation helpers', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['routing-rules'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['dashboard-summary'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-analytics'] });
   });
 
   it('refreshes outbound dependencies as topology plus subscriptions', () => {
@@ -38,7 +38,7 @@ describe('query invalidation helpers', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['routing-rules'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['dashboard-summary'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-analytics'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['outbound-subscriptions'] });
   });
 
@@ -57,10 +57,10 @@ describe('query invalidation helpers', () => {
     const queryClient = { invalidateQueries: vi.fn() };
 
     invalidateTrafficV2Snapshot(queryClient as never);
-    invalidateTrafficV2Series(queryClient as never);
+    invalidateTrafficV2Analytics(queryClient as never);
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-snapshot'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-series'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['traffic-v2-analytics'] });
   });
 
   it('centralizes settings page invalidation groups', () => {
