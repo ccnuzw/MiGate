@@ -1,0 +1,28 @@
+services:
+  migate:
+    build:
+      context: .
+    container_name: migate-local
+    restart: unless-stopped
+    environment:
+      MIGATE_PANEL_PORT: "9999"
+      MIGATE_PANEL_USERNAME: "admin"
+      MIGATE_PANEL_PASSWORD: "admin123"
+      MIGATE_WEB_BASE_PATH: "/panel"
+    ports:
+      - "10099:9999"
+      - "20000-20050:20000-20050/tcp"
+      - "20000-20050:20000-20050/udp"
+      - "21000-21050:21000-21050/tcp"
+      - "21000-21050:21000-21050/udp"
+    volumes:
+      - migate-config:/etc/migate
+      - migate-data:/var/lib/migate
+      - migate-logs:/var/log/migate
+      - migate-run:/run/migate
+
+volumes:
+  migate-config:
+  migate-data:
+  migate-logs:
+  migate-run:

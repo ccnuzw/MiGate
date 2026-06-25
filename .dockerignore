@@ -1,0 +1,13 @@
+.git
+.github
+.dev
+dist
+node_modules
+web/node_modules
+web/dist
+coverage
+*.log
+migate
+migate-local
+Dockerfile
+docker-compose.override.yml
