@@ -4066,7 +4066,7 @@ func TestTrafficAPIsExposeUnavailableStateAfterXrayQueryFailure(t *testing.T) {
 	}
 }
 
-func TestTrafficSeriesAPIUsesTrafficSamples(t *testing.T) {
+func TestTrafficAnalyticsAPIUsesTrafficSamples(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -4092,22 +4092,22 @@ func TestTrafficSeriesAPIUsesTrafficSamples(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"series"`, `"time"`, `"up":20`, `"down":40`, `"rate_up":0.3333333333333333`} {
+	for _, want := range []string{`"series"`, `"summary"`, `"top_clients"`, `"up":20`, `"down":40`, `"rate_up":0.3333333333333333`} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("traffic series response missing %q: %s", want, body)
+			t.Fatalf("traffic analytics response missing %q: %s", want, body)
 		}
 	}
-	if strings.Contains(body, client.StatsKey) {
-		t.Fatalf("traffic series should be aggregated by time, not raw client key: %s", body)
+	if !strings.Contains(body, `"label":"series@example.com"`) {
+		t.Fatalf("traffic analytics should include client ranking labels: %s", body)
 	}
 }
 
-func TestTrafficSeriesAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing.T) {
+func TestTrafficAnalyticsAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -4149,22 +4149,22 @@ func TestTrafficSeriesAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing.T)
 	}
 	router := web.NewRouter(web.WithStore(store))
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=20", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	if !strings.Contains(body, `"up":40`) || !strings.Contains(body, `"down":60`) {
-		t.Fatalf("expected series to aggregate only xray expected delta 10/20 plus singbox expected delta 30/40, got %s", body)
+		t.Fatalf("expected analytics to aggregate only xray expected delta 10/20 plus singbox expected delta 30/40, got %s", body)
 	}
-	for _, forbidden := range []string{xrayClient.StatsKey, singboxClient.StatsKey, `"up":140`, `"down":260`} {
+	for _, forbidden := range []string{`"up":140`, `"down":260`} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("series leaked unfiltered or unaggregated sample %q: %s", forbidden, body)
+			t.Fatalf("analytics leaked unfiltered or unaggregated sample %q: %s", forbidden, body)
 		}
 	}
 }
 
-func TestTrafficSeriesAPIUsesExpectedEngineFilter(t *testing.T) {
+func TestTrafficAnalyticsAPIUsesExpectedEngineFilter(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -4205,30 +4205,30 @@ func TestTrafficSeriesAPIUsesExpectedEngineFilter(t *testing.T) {
 		t.Fatalf("increment samples: %v", err)
 	}
 	router := web.NewRouter(web.WithStore(store))
-	series := httptest.NewRecorder()
-	router.ServeHTTP(series, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=240", nil))
-	if series.Code != http.StatusOK {
-		t.Fatalf("expected series 200, got %d: %s", series.Code, series.Body.String())
+	analytics := httptest.NewRecorder()
+	router.ServeHTTP(analytics, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h", nil))
+	if analytics.Code != http.StatusOK {
+		t.Fatalf("expected analytics 200, got %d: %s", analytics.Code, analytics.Body.String())
 	}
-	var seriesBody struct {
+	var analyticsBody struct {
 		Series []struct {
 			Up   int64 `json:"up"`
 			Down int64 `json:"down"`
 		} `json:"series"`
 	}
-	if err := json.NewDecoder(series.Body).Decode(&seriesBody); err != nil {
-		t.Fatalf("decode series: %v", err)
+	if err := json.NewDecoder(analytics.Body).Decode(&analyticsBody); err != nil {
+		t.Fatalf("decode analytics: %v", err)
 	}
-	if len(seriesBody.Series) != 2 {
-		t.Fatalf("expected two traffic series points, got %+v", seriesBody.Series)
+	if len(analyticsBody.Series) < 1 {
+		t.Fatalf("expected bucketed traffic analytics points, got %+v", analyticsBody.Series)
 	}
-	last := seriesBody.Series[len(seriesBody.Series)-1]
+	last := analyticsBody.Series[len(analyticsBody.Series)-1]
 	if last.Up != 40 || last.Down != 60 {
-		t.Fatalf("expected traffic series to avoid cross-engine double count, got %+v", seriesBody.Series)
+		t.Fatalf("expected traffic analytics to avoid cross-engine double count, got %+v", analyticsBody.Series)
 	}
 }
 
-func TestTrafficSeriesLimitUpperBoundIsExplicit(t *testing.T) {
+func TestTrafficAnalyticsParameterValidationIsExplicit(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -4252,17 +4252,22 @@ func TestTrafficSeriesLimitUpperBoundIsExplicit(t *testing.T) {
 	}
 	router := web.NewRouter(web.WithStore(store))
 	ok := httptest.NewRecorder()
-	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=2000", nil))
+	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h&top=10", nil))
 	if ok.Code != http.StatusOK {
-		t.Fatalf("expected legal upper limit 2000 to pass, got %d: %s", ok.Code, ok.Body.String())
+		t.Fatalf("expected legal analytics params to pass, got %d: %s", ok.Code, ok.Body.String())
 	}
 	if !strings.Contains(ok.Body.String(), `"series"`) || !strings.Contains(ok.Body.String(), `"up":1`) {
-		t.Fatalf("expected legal upper limit response to include series point, got %s", ok.Body.String())
+		t.Fatalf("expected legal analytics response to include series point, got %s", ok.Body.String())
 	}
-	tooHigh := httptest.NewRecorder()
-	router.ServeHTTP(tooHigh, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?scope_type=client&limit=2001", nil))
-	if tooHigh.Code != http.StatusBadRequest || !strings.Contains(tooHigh.Body.String(), "invalid_limit") {
-		t.Fatalf("expected over-limit request to fail clearly, got %d: %s", tooHigh.Code, tooHigh.Body.String())
+	badRange := httptest.NewRecorder()
+	router.ServeHTTP(badRange, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=90d", nil))
+	if badRange.Code != http.StatusBadRequest || !strings.Contains(badRange.Body.String(), "invalid_range") {
+		t.Fatalf("expected invalid range to fail clearly, got %d: %s", badRange.Code, badRange.Body.String())
+	}
+	badTop := httptest.NewRecorder()
+	router.ServeHTTP(badTop, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&top=11", nil))
+	if badTop.Code != http.StatusBadRequest || !strings.Contains(badTop.Body.String(), "invalid_top") {
+		t.Fatalf("expected invalid top to fail clearly, got %d: %s", badTop.Code, badTop.Body.String())
 	}
 }
 
@@ -4279,6 +4284,7 @@ func TestLegacyTrafficRoutesAreRemoved(t *testing.T) {
 		"/api/traffic/clients",
 		"/api/traffic/series",
 		"/api/traffic/stream",
+		"/api/traffic/v2/series",
 	} {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))

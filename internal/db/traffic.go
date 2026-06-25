@@ -329,7 +329,7 @@ WHERE `+strings.Join(conditions, " OR "), args...)
 const (
 	trafficSampleBucketSize       = 5 * time.Second
 	trafficSamplesHotRetention    = 24 * time.Hour
-	trafficSamplesRetention       = 7 * 24 * time.Hour
+	trafficSamplesRetention       = 30 * 24 * time.Hour
 	trafficSamplesCleanupInterval = time.Hour
 )
 
@@ -598,20 +598,43 @@ func (s *Store) ListTrafficStates(ctx context.Context) ([]TrafficState, error) {
 }
 
 func (s *Store) ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]TrafficSample, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 2000
+	}
+	return s.ListTrafficSamplesWindow(ctx, scopeType, since, time.Time{}, limit)
+}
+
+func (s *Store) ListTrafficSamplesWindow(ctx context.Context, scopeType string, since time.Time, until time.Time, limit int) ([]TrafficSample, error) {
 	scopeType = normalizeTrafficToken(scopeType)
 	if scopeType == "" {
 		scopeType = "core"
 	}
-	if limit <= 0 || limit > 2000 {
-		limit = 2000
-	}
 	sinceText := since.UTC().Format(time.RFC3339Nano)
-	rows, err := s.db.QueryContext(ctx, `
+	where := `scope_type = ? AND sampled_at >= ?`
+	args := []interface{}{scopeType, sinceText}
+	if !until.IsZero() {
+		where += ` AND sampled_at <= ?`
+		args = append(args, until.UTC().Format(time.RFC3339Nano))
+	}
+	query := `
 SELECT sampled_at, engine, scope_type, scope_key, total_up, total_down, delta_up, delta_down, rate_up, rate_down, window_seconds, status
 FROM traffic_samples
-WHERE scope_type = ? AND sampled_at >= ?
-ORDER BY sampled_at ASC, engine ASC, scope_key ASC
-LIMIT ?`, scopeType, sinceText, limit)
+WHERE ` + where + `
+ORDER BY sampled_at ASC, engine ASC, scope_key ASC`
+	if limit > 0 {
+		query = `
+SELECT sampled_at, engine, scope_type, scope_key, total_up, total_down, delta_up, delta_down, rate_up, rate_down, window_seconds, status
+FROM (
+  SELECT sampled_at, engine, scope_type, scope_key, total_up, total_down, delta_up, delta_down, rate_up, rate_down, window_seconds, status
+  FROM traffic_samples
+  WHERE ` + where + `
+  ORDER BY sampled_at DESC, engine DESC, scope_key DESC
+  LIMIT ?
+)
+ORDER BY sampled_at ASC, engine ASC, scope_key ASC`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

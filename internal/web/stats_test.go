@@ -32,6 +32,8 @@ type countingSummaryStore struct {
 	rules                   []db.RoutingRule
 	states                  []db.TrafficState
 	samples                 []db.TrafficSample
+	trafficSampleLimits     []int
+	trafficSampleWindowUntil []time.Time
 	listInboundsErr         error
 	listOutboundsErr        error
 	listRulesErr            error
@@ -242,8 +244,20 @@ func (s *countingSummaryStore) ListTrafficStates(ctx context.Context) ([]db.Traf
 }
 
 func (s *countingSummaryStore) ListTrafficSamples(ctx context.Context, scopeType string, since time.Time, limit int) ([]db.TrafficSample, error) {
+	return s.ListTrafficSamplesWindow(ctx, scopeType, since, time.Time{}, limit)
+}
+
+func (s *countingSummaryStore) ListTrafficSamplesWindow(ctx context.Context, scopeType string, since time.Time, until time.Time, limit int) ([]db.TrafficSample, error) {
 	s.listTrafficSamplesCalls++
-	return s.samples, nil
+	s.trafficSampleLimits = append(s.trafficSampleLimits, limit)
+	s.trafficSampleWindowUntil = append(s.trafficSampleWindowUntil, until)
+	filtered := []db.TrafficSample{}
+	for _, sample := range s.samples {
+		if sample.ScopeType == scopeType {
+			filtered = append(filtered, sample)
+		}
+	}
+	return filtered, nil
 }
 
 func (s *countingSummaryStore) setTrafficStates(states []db.TrafficState) {
@@ -1363,36 +1377,127 @@ func TestTrafficV2StreamSkipsPatchWhenNothingChanges(t *testing.T) {
 	}
 }
 
-func TestTrafficV2SeriesUsesInboundSamplesShape(t *testing.T) {
+func TestTrafficV2AnalyticsUsesInboundSamplesShape(t *testing.T) {
 	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	inboundKey := db.GeneratedInboundTag(db.Inbound{ID: 1, Protocol: "vless"})
 	store := &countingSummaryStore{
 		inbounds: []db.Inbound{{ID: 1, Remark: "edge", Protocol: "vless", Port: 443, Enabled: true}},
 		samples: []db.TrafficSample{
-			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "inbound", ScopeKey: inboundKey, TotalUp: 100, TotalDown: 200, RateUp: 1, RateDown: 2, Status: "ok"},
-			{SampledAt: t0.Add(time.Minute).Format(time.RFC3339), Engine: "xray", ScopeType: "inbound", ScopeKey: inboundKey, TotalUp: 130, TotalDown: 260, RateUp: 3, RateDown: 4, Status: "ok"},
-			{SampledAt: t0.Add(time.Minute).Format(time.RFC3339), Engine: "singbox", ScopeType: "inbound", ScopeKey: inboundKey, TotalUp: 999, TotalDown: 999, RateUp: 99, RateDown: 99, Status: "ok"},
-			{SampledAt: t0.Add(time.Minute).Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-key", TotalUp: 777, TotalDown: 888, RateUp: 77, RateDown: 88, Status: "ok"},
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "inbound", ScopeKey: inboundKey, TotalUp: 100, TotalDown: 200, DeltaUp: 10, DeltaDown: 20, RateUp: 1, RateDown: 2, Status: "ok"},
+			{SampledAt: t0.Add(time.Minute).Format(time.RFC3339), Engine: "xray", ScopeType: "inbound", ScopeKey: inboundKey, TotalUp: 130, TotalDown: 260, DeltaUp: 30, DeltaDown: 60, RateUp: 3, RateDown: 4, Status: "ok"},
+			{SampledAt: t0.Add(time.Minute).Format(time.RFC3339), Engine: "singbox", ScopeType: "inbound", ScopeKey: inboundKey, TotalUp: 999, TotalDown: 999, DeltaUp: 999, DeltaDown: 999, RateUp: 99, RateDown: 99, Status: "ok"},
+			{SampledAt: t0.Add(time.Minute).Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-key", TotalUp: 777, TotalDown: 888, DeltaUp: 777, DeltaDown: 888, RateUp: 77, RateDown: 88, Status: "ok"},
 		},
 	}
 	response := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/series?limit=20", nil)
-	trafficV2SeriesHandler(store)(response, req)
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?range=1h&scope_type=inbound", nil)
+	trafficV2AnalyticsHandler(store)(response, req)
 	if response.Code != http.StatusOK {
-		t.Fatalf("expected traffic v2 series 200, got %d body=%s", response.Code, response.Body.String())
+		t.Fatalf("expected traffic v2 analytics 200, got %d body=%s", response.Code, response.Body.String())
 	}
-	var payload struct {
-		Series []TrafficV2SeriesPoint `json:"series"`
-	}
+	var payload TrafficV2AnalyticsResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode v2 series: %v", err)
+		t.Fatalf("decode v2 analytics: %v", err)
 	}
 	if len(payload.Series) != 2 {
-		t.Fatalf("expected two v2 series points, got %+v", payload.Series)
+		t.Fatalf("expected two analytics points, got %+v", payload.Series)
 	}
 	last := payload.Series[1]
-	if last.Time == "" || last.Up != 130 || last.Down != 260 || last.Total != 390 || last.RateTotal != 7 {
-		t.Fatalf("unexpected v2 series point: %+v", last)
+	if last.Time == "" || last.Up != 30 || last.Down != 60 || last.Total != 90 || last.RateTotal != 7 {
+		t.Fatalf("unexpected analytics point: %+v", last)
+	}
+	if payload.Summary.Total != 120 || payload.Summary.PeakTotal != 90 || payload.BucketSeconds != 60 || store.listTrafficSamplesCalls != 2 {
+		t.Fatalf("unexpected analytics summary: %+v calls=%d", payload.Summary, store.listTrafficSamplesCalls)
+	}
+}
+
+func TestTrafficV2AnalyticsRanksUseBothScopes(t *testing.T) {
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	inbound := db.Inbound{
+		ID:       1,
+		Remark:   "edge",
+		Protocol: "vless",
+		Port:     443,
+		Enabled:  true,
+		Clients:  []db.Client{{ID: 10, StatsKey: "client-key", Email: "client@example.com", Enabled: true}},
+	}
+	store := &countingSummaryStore{
+		inbounds: []db.Inbound{inbound},
+		samples: []db.TrafficSample{
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "client", ScopeKey: "client-key", DeltaUp: 10, DeltaDown: 20, Status: "ok"},
+			{SampledAt: t0.Format(time.RFC3339), Engine: "xray", ScopeType: "inbound", ScopeKey: db.GeneratedInboundTag(inbound), DeltaUp: 30, DeltaDown: 40, Status: "ok"},
+		},
+	}
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?range=30d&scope_type=client", nil)
+	trafficV2AnalyticsHandler(store)(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected traffic v2 analytics 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var payload TrafficV2AnalyticsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode v2 analytics: %v", err)
+	}
+	if len(payload.TopClients) != 1 || payload.TopClients[0].Total != 30 {
+		t.Fatalf("expected client ranking from client samples, got %+v", payload.TopClients)
+	}
+	if len(payload.TopInbounds) != 1 || payload.TopInbounds[0].Total != 70 {
+		t.Fatalf("expected inbound ranking from inbound samples, got %+v", payload.TopInbounds)
+	}
+	if len(store.trafficSampleLimits) != 2 || store.trafficSampleLimits[0] != 20000 || store.trafficSampleLimits[1] != 20000 {
+		t.Fatalf("analytics should request bounded window sample ranges for bucket aggregation, got %+v", store.trafficSampleLimits)
+	}
+	if len(store.trafficSampleWindowUntil) != 2 || store.trafficSampleWindowUntil[0].IsZero() || store.trafficSampleWindowUntil[1].IsZero() {
+		t.Fatalf("analytics should query a bounded time window, got %+v", store.trafficSampleWindowUntil)
+	}
+}
+
+func TestTrafficV2AnalyticsCumulativeSummaryUsesLatestBucket(t *testing.T) {
+	series := []TrafficV2AnalyticsPoint{
+		{Time: "2026-06-25T01:00:00Z", Up: 100, Down: 200, Total: 300, RateUp: 1, RateDown: 2, RateTotal: 3},
+		{Time: "2026-06-25T02:00:00Z", Up: 150, Down: 260, Total: 410, RateUp: 4, RateDown: 5, RateTotal: 9},
+	}
+	summary := summarizeTrafficAnalyticsSeries(series, "cumulative")
+	if summary.Up != 150 || summary.Down != 260 || summary.Total != 410 || summary.RateTotal != 9 {
+		t.Fatalf("cumulative summary should use latest bucket totals, got %+v", summary)
+	}
+	if summary.PeakTotal != 410 || summary.PeakAt != "2026-06-25T02:00:00Z" {
+		t.Fatalf("cumulative peak should still be derived from the series, got %+v", summary)
+	}
+}
+
+func TestTrafficV2AnalyticsRateSeriesKeepsFloatRateFields(t *testing.T) {
+	samples := []db.TrafficSample{
+		{SampledAt: "2026-06-25T01:00:00Z", ScopeType: "inbound", ScopeKey: "inbound-1-vless", Engine: "xray", RateUp: 0.4, RateDown: 0.5, DeltaUp: 10, DeltaDown: 20},
+	}
+	series := bucketTrafficAnalyticsSeries(samples, 60, "rate")
+	if len(series) != 1 {
+		t.Fatalf("expected one rate point, got %+v", series)
+	}
+	point := series[0]
+	if point.Up != 0 || point.Down != 0 || point.Total != 0 {
+		t.Fatalf("rate mode should not coerce float rates into integer byte fields, got %+v", point)
+	}
+	if point.RateUp != 0.4 || point.RateDown != 0.5 || point.RateTotal != 0.9 {
+		t.Fatalf("rate mode should preserve float rate fields, got %+v", point)
+	}
+}
+
+func TestTrafficV2AnalyticsHeatmapAggregatesByHour(t *testing.T) {
+	series := []TrafficV2AnalyticsPoint{
+		{Time: "2026-06-25T01:00:00Z", Total: 10},
+		{Time: "2026-06-25T01:30:00Z", Total: 15},
+		{Time: "2026-06-25T02:00:00Z", Total: 20},
+	}
+	heatmap := heatmapTrafficAnalytics(series)
+	if len(heatmap) != 2 {
+		t.Fatalf("expected unique hourly heatmap buckets, got %+v", heatmap)
+	}
+	if heatmap[0].Day != "2026-06-25" || heatmap[0].Hour != 1 || heatmap[0].Total != 25 {
+		t.Fatalf("unexpected first heatmap bucket: %+v", heatmap[0])
+	}
+	if heatmap[1].Hour != 2 || heatmap[1].Total != 20 {
+		t.Fatalf("unexpected second heatmap bucket: %+v", heatmap[1])
 	}
 }
 
@@ -1635,18 +1740,19 @@ func TestBuildTrafficCoverageCountsPartialStatus(t *testing.T) {
 	}
 }
 
-func TestTrafficSamplesToSeriesDropsUnknownKeysAndSortsByTime(t *testing.T) {
+func TestTrafficAnalyticsDropsUnknownKeysAndSortsByTime(t *testing.T) {
 	inbounds := []db.Inbound{{
 		ID: 1, Protocol: "vless",
 		Clients: []db.Client{{ID: 10, StatsKey: "c_xray"}},
 	}}
 	samples := []db.TrafficSample{
-		{SampledAt: "2026-06-16T00:02:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "c_xray", TotalUp: 20, TotalDown: 30},
+		{SampledAt: "2026-06-16T00:02:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "c_xray", DeltaUp: 20, DeltaDown: 30},
 		{SampledAt: "2026-06-16T00:01:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "old_deleted", TotalUp: 999, TotalDown: 999},
 		{SampledAt: "2026-06-16T00:01:00Z", Engine: "singbox", ScopeType: "client", ScopeKey: "c_xray", TotalUp: 888, TotalDown: 888},
-		{SampledAt: "2026-06-16T00:01:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "c_xray", TotalUp: 10, TotalDown: 15},
+		{SampledAt: "2026-06-16T00:01:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "c_xray", DeltaUp: 10, DeltaDown: 15},
 	}
-	points := trafficSamplesToSeries(samples, "client", inbounds)
+	filtered := filterTrafficAnalyticsSamples(samples, "client", inbounds)
+	points := bucketTrafficAnalyticsSeries(filtered, 60, "usage")
 	if len(points) != 2 {
 		t.Fatalf("expected two sorted known-key points, got %+v", points)
 	}
@@ -1658,7 +1764,7 @@ func TestTrafficSamplesToSeriesDropsUnknownKeysAndSortsByTime(t *testing.T) {
 	}
 }
 
-func TestTrafficSamplesToSeriesDropsUnexpectedEngineWhenExpectedEngineMissing(t *testing.T) {
+func TestTrafficAnalyticsDropsUnexpectedEngineWhenExpectedEngineMissing(t *testing.T) {
 	inbounds := []db.Inbound{{
 		ID: 1, Protocol: "hysteria2",
 		Clients: []db.Client{{ID: 10, StatsKey: "c_hy2"}},
@@ -1667,9 +1773,9 @@ func TestTrafficSamplesToSeriesDropsUnexpectedEngineWhenExpectedEngineMissing(t 
 		{SampledAt: "2026-06-16T00:01:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "c_hy2", TotalUp: 10, TotalDown: 15},
 		{SampledAt: "2026-06-16T00:02:00Z", Engine: "xray", ScopeType: "client", ScopeKey: "c_hy2", TotalUp: 20, TotalDown: 30},
 	}
-	points := trafficSamplesToSeries(samples, "client", inbounds)
-	if len(points) != 0 {
-		t.Fatalf("expected no points when expected engine sample is missing, got %+v", points)
+	filtered := filterTrafficAnalyticsSamples(samples, "client", inbounds)
+	if len(filtered) != 0 {
+		t.Fatalf("expected no samples when expected engine sample is missing, got %+v", filtered)
 	}
 }
 

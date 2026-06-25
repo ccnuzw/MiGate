@@ -53,7 +53,7 @@ vi.mock('../api/endpoints', () => ({ api: apiMock }));
 vi.mock('./InboundsPageForms', () => ({
   savedClientLinkActions: (protocol: string) => (['shadowtls'].includes(protocol) ? [] : ['share']),
   InboundModal: () => null,
-  ClientModal: () => null,
+  ClientModal: ({ client }: { client?: Client }) => client ? createElement('div', { role: 'dialog', 'data-testid': 'client-edit-modal' }, client.email) : null,
 }));
 
 let root: Root | null = null;
@@ -225,6 +225,30 @@ describe('inbound client panel behavior', () => {
     expect(pageText()).toContain('phone-a');
   });
 
+  it('keeps client edit inside the more actions menu', async () => {
+    apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a'])]);
+    renderPage();
+
+    await waitForText('edge-a');
+    clickButtonByExactText('展开', cardByTitle('edge-a'));
+    const clientRow = rowByClientName('phone-a');
+
+    expect(clientRow.querySelector('.client-actions > button[title="编辑"]')).toBeNull();
+    const menu = clientMoreActionsByName('phone-a');
+    openDetails(menu);
+
+    const editMenuItem = Array.from(menu.querySelectorAll('.more-actions-menu button')).find((item) => item.textContent?.trim() === '编辑');
+    if (!editMenuItem) throw new Error('missing client edit menu item');
+    await act(async () => {
+      editMenuItem.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(pageRoot().querySelector('[data-testid="client-edit-modal"]')?.textContent).toContain('phone-a');
+    });
+  });
+
   it('auto-expands nodes whose clients match the search query', async () => {
     apiMock.inbounds.mockResolvedValueOnce([sampleInbound(1, 'edge-a', ['phone-a']), sampleInbound(2, 'edge-b', ['tablet-b'])]);
     renderPage();
@@ -328,6 +352,7 @@ describe('inbound management display helpers', () => {
     clickButtonByExactText('展开', cardByTitle('edge-a'));
 
     expect(rowByClientName('unlimited').textContent).not.toContain('%');
+    expect(rowByClientName('unlimited').querySelector('.usage-line')).toBeNull();
     expect(rowByClientName('limited').textContent).toContain('95%');
     expect(rowByClientName('limited').querySelector('.usage-bar')).not.toBeNull();
   });
@@ -418,7 +443,8 @@ describe('inbound management display helpers', () => {
     clickButtonByExactText('展开', card);
     const row = rowByClientName('sam@example.com');
     expect(row.textContent).toContain('已用 70 B / 1000 B');
-    expect(row.textContent).toContain('6 B/s ↑ / 7 B/s ↓');
+    expect(row.textContent).not.toContain('6 B/s ↑ / 7 B/s ↓');
+    expect(clientUsageIndicator(row)).toHaveAttribute('title', expect.stringContaining('6 B/s ↑ / 7 B/s ↓'));
     expect(row.textContent).not.toContain('999 B');
   });
 
@@ -455,7 +481,7 @@ describe('inbound management display helpers', () => {
     expect(card.textContent).toContain('4 B/s ↑ / 5 B/s ↓');
     clickButtonByExactText('展开', card);
     let row = rowByClientName('sam@example.com');
-    expect(row.textContent).toContain('6 B/s ↑ / 7 B/s ↓');
+    expect(clientUsageIndicator(row)).toHaveAttribute('title', expect.stringContaining('6 B/s ↑ / 7 B/s ↓'));
 
     act(() => {
       instances[0].listeners.get('patch')?.[0]({
@@ -474,8 +500,9 @@ describe('inbound management display helpers', () => {
       card = cardByTitle('edge');
       expect(card.textContent).toContain('实时统计不可用');
       row = rowByClientName('sam@example.com');
-      expect(row.textContent).toContain('等待采样');
-      expect(row.textContent).not.toContain('1 B/s ↑ / 2 B/s ↓');
+      expect(row.textContent).not.toContain('等待采样');
+      expect(clientUsageIndicator(row)).toHaveAttribute('title', expect.stringContaining('等待采样'));
+      expect(clientUsageIndicator(row)).not.toHaveAttribute('title', expect.stringContaining('1 B/s ↑ / 2 B/s ↓'));
     });
   });
 
@@ -510,7 +537,7 @@ describe('inbound management display helpers', () => {
     await waitForText('edge');
     clickButtonByExactText('展开', cardByTitle('edge'));
     expect(pageText()).toContain('sam@example.com');
-    expect(pageText()).toContain('6 B/s ↑ / 7 B/s ↓');
+    expect(clientUsageIndicator(rowByClientName('sam@example.com'))).toHaveAttribute('title', expect.stringContaining('6 B/s ↑ / 7 B/s ↓'));
 
     await act(async () => {
       instances[0].listeners.get('patch')?.[0]({
@@ -526,7 +553,7 @@ describe('inbound management display helpers', () => {
 
     await vi.waitFor(() => {
       expect(pageText()).toContain('sam@example.com');
-      expect(pageText()).toContain('等待采样');
+      expect(rowByClientName('sam@example.com').querySelector('.usage-bar, .usage-line')).toBeNull();
       expect(pageText()).not.toContain('6 B/s ↑ / 7 B/s ↓');
     });
   });
@@ -1147,6 +1174,18 @@ function rowByClientName(name: string) {
   const row = label?.closest('.client-row');
   if (!row) throw new Error(`missing client row: ${name}`);
   return row;
+}
+
+function clientUsageIndicator(row: Element) {
+  const indicator = row.querySelector('.usage-bar, .usage-line');
+  if (!indicator) throw new Error('missing client usage indicator');
+  return indicator;
+}
+
+function clientMoreActionsByName(name: string) {
+  const menu = rowByClientName(name).querySelector('details[data-more-actions]') as HTMLDetailsElement | null;
+  if (!menu) throw new Error(`missing client more actions: ${name}`);
+  return menu;
 }
 
 function moreActionsByCard(title: string) {

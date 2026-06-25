@@ -33,6 +33,7 @@ export default function SettingsPage() {
   const [preflightResult, setPreflightResult] = useState<CertificatePreflight | null>(null);
   const [certWorkspace, setCertWorkspace] = useState<CertificateWorkspace>('acme');
   const [showUpdateLogs, setShowUpdateLogs] = useState(false);
+  const [revokingSessionId, setRevokingSessionId] = useState<number | null>(null);
   const session = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 5 * 60_000 });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, retry: false, staleTime: 60_000 });
   const cert = useQuery({ queryKey: ['cert-status'], queryFn: api.certStatus, retry: false, staleTime: 60_000 });
@@ -225,6 +226,7 @@ export default function SettingsPage() {
       refreshSessionDependencies(queryClient);
     },
     onError: (error) => showToast(errorMessage(error, text('撤销会话失败')), 'error'),
+    onSettled: () => setRevokingSessionId(null),
   });
   const revokeOthers = useMutation({
     mutationFn: api.revokeOtherSessions,
@@ -361,31 +363,40 @@ export default function SettingsPage() {
         />
       </Card>
       <Card className="p-5">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="session-card-header">
           <div>
             <h2 className="section-title">{text('活动会话')}</h2>
             <div className="mt-1 text-xs text-panel-muted">{text('最多保留最近')} {maxActiveSessionsLabel} {text('个活动会话')}</div>
           </div>
-          <SpinnerButton className="btn danger h-8" loading={revokeOthers.isPending} disabled={sessionItems.length <= 1} onClick={async () => (await confirm({ title: text('撤销其他会话？'), description: text('当前会话会保留，其他设备和浏览器需要重新登录。'), tone: 'danger' })) && revokeOthers.mutate()}>
+          <SpinnerButton className="btn danger session-action-button" loading={revokeOthers.isPending} disabled={sessionItems.length <= 1} onClick={async () => (await confirm({ title: text('撤销其他会话？'), description: text('当前会话会保留，其他设备和浏览器需要重新登录。'), tone: 'danger' })) && revokeOthers.mutate()}>
             <ShieldX className="h-4 w-4" /> {text('撤销其他会话')}
           </SpinnerButton>
         </div>
-        <div className="grid gap-2">
+        <div className="session-stack">
+          {visibleSessions.length > 0 ? (
+            <div className="session-list">
           {visibleSessions.map((item) => (
-            <div key={item.id} className="client-row">
-              <div className="min-w-0">
+            <div key={item.id} className="session-row">
+              <div className="session-details">
                 <div className="font-medium">{text('会话')} {item.id_prefix}</div>
-                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-panel-muted">
+                <div className="session-meta-line">
                   <span>{text('最后使用')}：{item.last_used || '-'}</span>
                   <span>{text('创建')}：{item.created_at || '-'}</span>
                   <span>{text('过期')}：{item.expires_at || '-'}</span>
                 </div>
               </div>
-              <SpinnerButton className="btn danger h-8" loading={revoke.isPending} onClick={async () => (await confirm({ title: text('撤销该会话？'), tone: 'danger' })) && revoke.mutate(item.id)}>
+              <SpinnerButton className="btn danger session-action-button" loading={revoke.isPending && revokingSessionId === item.id} disabled={revoke.isPending} onClick={async () => {
+                if (await confirm({ title: text('撤销该会话？'), tone: 'danger' })) {
+                  setRevokingSessionId(item.id);
+                  revoke.mutate(item.id);
+                }
+              }}>
                 <ShieldX className="h-4 w-4" /> {text('撤销')}
               </SpinnerButton>
             </div>
           ))}
+            </div>
+          ) : null}
           {hiddenSessionCount > 0 || showAllSessions ? (
             <button type="button" className="btn secondary h-8 w-fit" onClick={() => setShowAllSessions((value) => !value)}>
               {showAllSessions ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}

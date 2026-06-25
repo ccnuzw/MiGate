@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { serviceLabel, versionLabel } from './format';
+import { formatBytes, serviceLabel, versionLabel } from './format';
 
 describe('display format helpers', () => {
+  it('formats sub-byte chart ticks without leaking missing units', () => {
+    expect(formatBytes(0.2)).toBe('0 B');
+    expect(formatBytes(819.2)).toBe('819 B');
+    expect(formatBytes(1024)).toBe('1.0 KB');
+  });
+
   it('localizes service status enum values', () => {
     expect(serviceLabel('running')).toBe('运行中');
     expect(serviceLabel('not_managed')).toBe('未托管');

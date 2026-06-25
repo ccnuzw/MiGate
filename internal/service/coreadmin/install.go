@@ -138,6 +138,10 @@ write_migate_default_xray_config() {
         "statsUserUplink": true,
         "statsUserDownlink": true
       }
+    },
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true
     }
   },
   "api": {

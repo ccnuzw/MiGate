@@ -1110,12 +1110,12 @@ func TestBuildConfigIncludesStatsAndPolicy(t *testing.T) {
 	if !strings.Contains(text, `"stats":{}`) {
 		t.Fatalf("config missing stats: %s", text)
 	}
-	// Must have policy with statsUserUplink and statsUserDownlink
-	if !strings.Contains(text, `"statsUserUplink":true`) {
-		t.Fatalf("config missing statsUserUplink: %s", text)
+	level := config.Policy.Levels["0"]
+	if !level.StatsUserUplink || !level.StatsUserDownlink {
+		t.Fatalf("config missing user stats policy: %+v", config.Policy)
 	}
-	if !strings.Contains(text, `"statsUserDownlink":true`) {
-		t.Fatalf("config missing statsUserDownlink: %s", text)
+	if !config.Policy.System.StatsInboundUplink || !config.Policy.System.StatsInboundDownlink {
+		t.Fatalf("config missing inbound stats policy: %+v", config.Policy)
 	}
 	if !strings.Contains(text, `"email":"c_stats_key"`) || strings.Contains(text, `"email":"client1@test.com"`) {
 		t.Fatalf("config should use stats_key as traffic identity: %s", text)

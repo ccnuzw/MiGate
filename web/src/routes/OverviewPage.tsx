@@ -1,10 +1,11 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
-import { useEffect, useMemo, useRef } from 'react';
+import type { EChartsOption } from 'echarts';
+import { Activity, AlertTriangle, BarChart3, Cpu, Database, HardDrive, Network, RefreshCw, Shield, Users } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { appPath, getAPIErrorMessage } from '../api/client';
 import { api } from '../api/endpoints';
 import { trafficV2StreamPath } from '../api/traffic';
-import type { DashboardSummary, TrafficV2Metric, TrafficV2Patch, TrafficV2Realtime, TrafficV2SeriesPoint, TrafficV2Snapshot } from '../api/types';
+import type { DashboardSummary, TrafficV2AnalyticsPoint, TrafficV2AnalyticsRank, TrafficV2AnalyticsResponse, TrafficV2Metric, TrafficV2Patch, TrafficV2Realtime, TrafficV2Snapshot } from '../api/types';
 import { Card, LoadingBlock } from '../components/ui';
 import { formatBytes, formatDuration, formatPercent, serviceLabel, versionLabel } from '../lib/format';
 import { useI18n } from '../lib/i18n';
@@ -14,9 +15,24 @@ import { usePageVisible } from '../lib/visibility';
 export default function OverviewPage() {
   const visible = usePageVisible();
   const { text } = useI18n();
+  const [trafficRange, setTrafficRange] = useState<TrafficAnalyticsRange>('24h');
+  const [trafficMetric, setTrafficMetric] = useState<TrafficAnalyticsMetric>('usage');
+  const [trafficScope, setTrafficScope] = useState<TrafficAnalyticsScope>('inbound');
+  const [trafficChartMode, setTrafficChartMode] = useState<TrafficChartMode>('area');
+  useEffect(() => {
+    if (trafficMetric === 'rate' && trafficChartMode === 'heatmap') {
+      setTrafficChartMode('area');
+    }
+  }, [trafficChartMode, trafficMetric]);
   const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: api.dashboardSummary, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
   const trafficSnapshot = useQuery({ queryKey: ['traffic-v2-snapshot'], queryFn: api.trafficV2Snapshot, refetchInterval: visible ? 15000 : false, retry: false, staleTime: 10_000 });
-  const trafficSeriesQuery = useQuery({ queryKey: ['traffic-v2-series'], queryFn: () => api.trafficV2Series(), refetchInterval: visible ? 30000 : false, retry: false, staleTime: 20_000 });
+  const trafficAnalyticsQuery = useQuery({
+    queryKey: ['traffic-v2-analytics', trafficRange, trafficMetric, trafficScope],
+    queryFn: () => api.trafficV2Analytics({ range: trafficRange, metric: trafficMetric, scope_type: trafficScope, top: 5 }),
+    refetchInterval: visible ? 30000 : false,
+    retry: false,
+    staleTime: 20_000,
+  });
   const resources = useQuery({ queryKey: ['resources'], queryFn: api.resources, refetchInterval: visible ? 10000 : false, staleTime: 5_000 });
   const [xray, singbox] = useQueries({
     queries: [
@@ -33,13 +49,12 @@ export default function OverviewPage() {
   useTrafficStream(visible);
   const trafficStatus = traffic.coverage;
   const protocols = Object.entries(data?.protocols || {}).map(([name, value]) => ({ name, value }));
-  const trafficSeries = trafficSeriesQuery.data?.series || [];
   const trafficLoading = trafficSnapshot.isLoading && !trafficSnapshot.data;
   const trafficUnavailable = trafficSnapshot.isError && !trafficSnapshot.data;
   const trafficHidden = trafficLoading || trafficUnavailable;
   const trafficPlaceholder = trafficLoading ? text('加载中') : text('不可用');
   const trafficPlaceholderSub = trafficLoading ? text('等待流量摘要') : text('查看告警');
-  const trafficSeriesLoading = trafficSeriesQuery.isLoading && !trafficSeriesQuery.data;
+  const trafficAnalyticsLoading = trafficAnalyticsQuery.isLoading && !trafficAnalyticsQuery.data;
 
   if (summary.isLoading) return <LoadingBlock />;
 
@@ -48,13 +63,13 @@ export default function OverviewPage() {
       <PageTitle
         title={text('运行概览')}
         description={text('VPS 面板、核心服务和业务累计用量的摘要。')}
-        action={<button className="btn secondary" onClick={() => refreshOverview([summary, trafficSnapshot, trafficSeriesQuery, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
+        action={<button className="btn secondary" onClick={() => refreshOverview([summary, trafficSnapshot, trafficAnalyticsQuery, resources, xray, singbox])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>}
       />
       <OverviewAlerts
         errors={[
           summary.error ? `${text('概览摘要加载失败')}：${errorText(summary.error)}` : '',
           trafficSnapshot.error ? `${text('流量摘要加载失败')}：${errorText(trafficSnapshot.error)}` : '',
-          trafficSeriesQuery.error ? `${text('流量趋势加载失败')}：${errorText(trafficSeriesQuery.error)}` : '',
+          trafficAnalyticsQuery.error ? `${text('流量分析加载失败')}：${errorText(trafficAnalyticsQuery.error)}` : '',
           resources.error ? `${text('资源加载失败')}：${errorText(resources.error)}` : '',
           xray.error ? `Xray ${text('状态加载失败')}：${errorText(xray.error)}` : '',
           singbox.error ? `sing-box ${text('状态加载失败')}：${errorText(singbox.error)}` : '',
@@ -86,32 +101,22 @@ export default function OverviewPage() {
           <ValidationSummary label="sing-box" loading={summary.isLoading} valid={data?.validation.singbox.valid} error={summary.error} detail={validationSummary(data?.validation.singbox, text, summary.error)} />
         </div>
       </Card>
-      <div className="grid gap-4 xl:grid-cols-[1.4fr_.9fr]">
-        <Card className="p-5">
-          <div className="mb-4 flex items-center justify-between gap-4">
-            <h2 className="section-title">{text('累计流量趋势')}</h2>
-            <div className="flex gap-2 text-xs text-panel-muted">
-              <span className="inline-flex items-center gap-1">
-                <ArrowUp className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(totalCumulative.up)}
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <ArrowDown className="h-3 w-3" /> {trafficHidden ? trafficPlaceholder : formatBytes(totalCumulative.down)}
-              </span>
-            </div>
-          </div>
-          <div className="h-64">
-            <TrafficChart data={trafficSeries} loading={trafficSeriesLoading} />
-          </div>
-        </Card>
-        <Card className="p-5">
-          <h2 className="section-title mb-4">{text('服务器资源')}</h2>
-          <div className="grid gap-3">
-            <Resource icon={Cpu} tone="blue" label="CPU" value={formatPercent(resources.data?.cpu_percent)} />
-            <Resource icon={Database} tone="violet" label={text('内存')} value={`${formatBytes(resources.data?.memory_used)} / ${formatBytes(resources.data?.memory_total)}`} />
-            <Resource icon={HardDrive} tone="amber" label={text('磁盘')} value={`${formatBytes(resources.data?.disk_used)} / ${formatBytes(resources.data?.disk_total)}`} />
-            <Resource icon={Activity} tone="teal" label={text('运行时间')} value={formatDuration(resources.data?.uptime_seconds)} />
-          </div>
-        </Card>
+      <div className="dashboard-monitor-grid">
+        <TrafficAnalyticsCard
+          data={trafficAnalyticsQuery.data}
+          loading={trafficAnalyticsLoading}
+          range={trafficRange}
+          metric={trafficMetric}
+          scope={trafficScope}
+          mode={trafficChartMode}
+          onRangeChange={setTrafficRange}
+          onMetricChange={setTrafficMetric}
+          onScopeChange={setTrafficScope}
+          onModeChange={setTrafficChartMode}
+        />
+        <RuntimeStatusPanel
+          resources={resources.data}
+        />
       </div>
       <Card className="p-5">
         <h2 className="section-title mb-4">{text('协议分布')}</h2>
@@ -168,6 +173,16 @@ const emptyTrafficV2: TrafficV2Snapshot = {
   clients: [],
   coverage: { overall: 'waiting', engines: { xray: 'not_configured', singbox: 'not_configured' }, ok: 0, waiting: 0, stale: 0, unavailable: 0, unsupported: 0, partial: 0 },
 };
+
+type TrafficAnalyticsRange = '1h' | '24h' | '7d' | '30d';
+type TrafficAnalyticsMetric = 'usage' | 'rate' | 'cumulative';
+type TrafficAnalyticsScope = 'inbound' | 'client';
+type TrafficChartMode = 'area' | 'bar' | 'rank' | 'heatmap';
+
+const trafficRanges: TrafficAnalyticsRange[] = ['1h', '24h', '7d', '30d'];
+const trafficMetrics: TrafficAnalyticsMetric[] = ['usage', 'rate', 'cumulative'];
+const trafficScopes: TrafficAnalyticsScope[] = ['inbound', 'client'];
+const trafficChartModes: TrafficChartMode[] = ['area', 'bar', 'rank', 'heatmap'];
 
 export function useTrafficStream(enabled: boolean) {
   const queryClient = useQueryClient();
@@ -261,77 +276,300 @@ function OverviewAlerts({ errors }: { errors: string[] }) {
   );
 }
 
-function TrafficChart({ data, loading }: { data: TrafficV2SeriesPoint[]; loading?: boolean }) {
+function TrafficAnalyticsCard({
+  data,
+  loading,
+  range,
+  metric,
+  scope,
+  mode,
+  onRangeChange,
+  onMetricChange,
+  onScopeChange,
+  onModeChange,
+}: {
+  data?: TrafficV2AnalyticsResponse;
+  loading?: boolean;
+  range: TrafficAnalyticsRange;
+  metric: TrafficAnalyticsMetric;
+  scope: TrafficAnalyticsScope;
+  mode: TrafficChartMode;
+  onRangeChange: (value: TrafficAnalyticsRange) => void;
+  onMetricChange: (value: TrafficAnalyticsMetric) => void;
+  onScopeChange: (value: TrafficAnalyticsScope) => void;
+  onModeChange: (value: TrafficChartMode) => void;
+}) {
   const { text } = useI18n();
-  const chart = useMemo(() => buildChart(data), [data]);
-  if (loading) {
-    return <div className="flex h-full items-center justify-center text-sm text-panel-muted">{text('流量趋势加载中')}</div>;
-  }
-  if (data.length === 0) {
-    return <div className="flex h-full items-center justify-center text-sm text-panel-muted">{text('暂无流量数据')}</div>;
-  }
+  const availableModes = metric === 'rate' ? trafficChartModes.filter((item) => item !== 'heatmap') : trafficChartModes;
+  const effectiveMode = metric === 'rate' && mode === 'heatmap' ? 'area' : mode;
+  const option = useMemo(() => buildTrafficAnalyticsOption(data, effectiveMode, metric, scope, text), [data, effectiveMode, metric, scope, text]);
+  const summary = data?.summary;
+  const valueLabel = metric === 'rate' ? `${formatBytes(summary?.rate_total || 0)}/s` : formatBytes(summary?.total || 0);
+  const upLabel = metric === 'rate' ? `${formatBytes(summary?.rate_up || 0)}/s` : formatBytes(summary?.up || 0);
+  const downLabel = metric === 'rate' ? `${formatBytes(summary?.rate_down || 0)}/s` : formatBytes(summary?.down || 0);
+  const peakLabel = metric === 'rate' ? `${formatBytes(summary?.peak_rate || 0)}/s` : formatBytes(summary?.peak_total || 0);
+  const totalLabel = metric === 'rate' ? `${formatBytes(summary?.rate_total || 0)}/s` : formatBytes(summary?.total || 0);
+  const pointsLabel = summary?.points != null ? String(summary.points) : '-';
   return (
-    <div className="relative h-full w-full">
-      <svg className="h-full w-full overflow-visible" viewBox="0 0 640 220" role="img" aria-label={text('累计流量趋势')}>
-        <defs>
-          <linearGradient id="traffic-up-fill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#0f766e" stopOpacity="0.32" />
-            <stop offset="100%" stopColor="#0f766e" stopOpacity="0.04" />
-          </linearGradient>
-          <linearGradient id="traffic-down-fill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#b45309" stopOpacity="0.26" />
-            <stop offset="100%" stopColor="#b45309" stopOpacity="0.04" />
-          </linearGradient>
-        </defs>
-        <g stroke="#e5e7eb" strokeWidth="1">
-          {[0, 1, 2, 3].map((line) => <line key={line} x1="0" x2="640" y1={line * 55} y2={line * 55} />)}
-        </g>
-        <path d={chart.upArea} fill="url(#traffic-up-fill)" />
-        <path d={chart.downArea} fill="url(#traffic-down-fill)" />
-        <path d={chart.upLine} fill="none" stroke="#0f766e" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
-        <path d={chart.downLine} fill="none" stroke="#b45309" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
-        {chart.points.map((point) => (
-          <g key={point.name + point.x}>
-            <circle cx={point.x} cy={point.upY} fill="#0f766e" r="3.5" />
-            <circle cx={point.x} cy={point.downY} fill="#b45309" r="3.5" />
-            <title>{`${formatSeriesTime(point.time)} · ${text('累计')} ↑ ${formatBytes(point.up)} / ↓ ${formatBytes(point.down)}`}</title>
-          </g>
-        ))}
-      </svg>
+    <Card className="traffic-analytics-card">
+      <div className="traffic-analytics-header">
+        <div className="traffic-analytics-title">
+          <div className="traffic-analytics-kicker"><BarChart3 className="h-4 w-4" /> {text('流量分析')}</div>
+          <h2>{summary?.has_data ? valueLabel : text('等待采样')}</h2>
+          <p>{trafficAnalyticsSubtitle(data, metric, text)}</p>
+        </div>
+        <div className="traffic-analytics-controls">
+          <div className="traffic-control-row traffic-control-row-primary">
+            <Segmented values={trafficRanges} value={range} label={(value) => text(trafficRangeLabel(value))} onChange={onRangeChange} />
+            <Segmented values={trafficScopes} value={scope} label={(value) => text(value === 'client' ? '客户端' : '入站')} onChange={onScopeChange} />
+          </div>
+          <div className="traffic-control-row traffic-control-row-secondary">
+            <Segmented values={trafficMetrics} value={metric} label={(value) => text(trafficMetricLabel(value))} onChange={onMetricChange} />
+            <Segmented values={availableModes} value={effectiveMode} label={(value) => text(trafficModeLabel(value))} onChange={onModeChange} />
+          </div>
+        </div>
+      </div>
+      <div className="traffic-meta-tags">
+        <InfoTag label={text('采样粒度')} value={formatBucketSeconds(data?.bucket_seconds || 0)} />
+        <InfoTag label={text('数据点')} value={pointsLabel} />
+        <InfoTag label={text('峰值时间')} value={summary?.peak_at ? formatAxisTime(summary.peak_at, data?.range) : text('未知')} />
+        <InfoTag label={text('维度')} value={text(scope === 'client' ? '客户端' : '入站')} />
+      </div>
+      <div className="traffic-stat-strip">
+        <InlineStat label={text('上传')} value={upLabel} tone="up" />
+        <InlineStat label={text('下载')} value={downLabel} tone="down" />
+        <InlineStat label={text('峰值')} value={peakLabel} tone="peak" />
+        <InlineStat label={text('总量')} value={totalLabel} tone="muted" />
+      </div>
+      <div className="traffic-chart-shell">
+        {loading ? (
+          <div className="traffic-chart-empty">{text('流量分析加载中')}</div>
+        ) : !data?.summary?.has_data ? (
+          <div className="traffic-chart-empty">{text('暂无流量数据')}</div>
+        ) : (
+          <EChartsView option={option} />
+        )}
+      </div>
+      <TrafficInsightTags data={data} metric={metric} />
+    </Card>
+  );
+}
+
+function InfoTag({ label, value }: { label: string; value: string }) {
+  return <span className="info-tag"><span>{label}</span><b>{value}</b></span>;
+}
+
+function InlineStat({ label, value, tone }: { label: string; value: string; tone: 'up' | 'down' | 'peak' | 'muted' }) {
+  return <span className={`inline-stat inline-stat-${tone}`}><span>{label}</span><b>{value}</b></span>;
+}
+
+function TrafficInsightTags({ data, metric }: { data?: TrafficV2AnalyticsResponse; metric: TrafficAnalyticsMetric }) {
+  const { text } = useI18n();
+  const summary = data?.summary;
+  if (!summary?.has_data) return null;
+  const total = metric === 'rate' ? summary.rate_total || 0 : summary.total || 0;
+  const up = metric === 'rate' ? summary.rate_up || 0 : summary.up || 0;
+  const down = metric === 'rate' ? summary.rate_down || 0 : summary.down || 0;
+  const upPercent = total > 0 ? Math.round((up / total) * 100) : 0;
+  const downPercent = total > 0 ? Math.max(0, 100 - upPercent) : 0;
+  const client = data?.top_clients?.[0];
+  const inbound = data?.top_inbounds?.[0];
+  return (
+    <div className="traffic-insight-tags">
+      <InfoTag label={text('上传占比')} value={`${upPercent}%`} />
+      <InfoTag label={text('下载占比')} value={`${downPercent}%`} />
+      {client ? <InfoTag label={text('Top 客户端')} value={client.label || client.scope_key || `#${client.id}`} /> : null}
+      {inbound ? <InfoTag label={text('Top 入站')} value={inbound.label || inbound.scope_key || `#${inbound.id}`} /> : null}
     </div>
   );
 }
 
-function buildChart(data: TrafficV2SeriesPoint[]) {
-  const width = 640;
-  const bottom = 205;
-  if (data.length === 0) {
-    return { points: [], upLine: '', downLine: '', upArea: '', downArea: '' };
-  }
-  const max = Math.max(1, ...data.flatMap((item) => [Number(item.up || 0), Number(item.down || 0)]));
-  const xFor = (index: number) => data.length === 1 ? width / 2 : (index / (data.length - 1)) * width;
-  const yFor = (value: number) => bottom - (Number(value || 0) / max) * 180;
-  const points = data.map((item, index) => ({
-    name: item.time,
-    time: item.time,
-    up: Number(item.up || 0),
-    down: Number(item.down || 0),
-    x: xFor(index),
-    upY: yFor(item.up),
-    downY: yFor(item.down),
-  }));
-  const line = (key: 'upY' | 'downY') => points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point[key].toFixed(1)}`).join(' ');
-  const area = (path: string) => `${path} L ${points[points.length - 1].x.toFixed(1)} ${bottom} L ${points[0].x.toFixed(1)} ${bottom} Z`;
-  const upLine = line('upY');
-  const downLine = line('downY');
-  return { points, upLine, downLine, upArea: area(upLine), downArea: area(downLine) };
+function Segmented<T extends string>({ values, value, label, onChange }: { values: T[]; value: T; label: (value: T) => string; onChange: (value: T) => void }) {
+  return (
+    <div className="traffic-segmented">
+      {values.map((item) => (
+        <button key={item} className={item === value ? 'active' : ''} type="button" onClick={() => onChange(item)}>
+          {label(item)}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-function formatSeriesTime(value: string | undefined) {
+function EChartsView({ option }: { option: EChartsOption }) {
+  const elementRef = useRef<HTMLDivElement | null>(null);
+  const optionRef = useRef(option);
+  optionRef.current = option;
+  useEffect(() => {
+    if (!elementRef.current) return;
+    let disposed = false;
+    let chart: import('echarts').ECharts | undefined;
+    let observer: ResizeObserver | undefined;
+    const resize = () => chart?.resize();
+    void import('echarts').then((echarts) => {
+      if (disposed || !elementRef.current) return;
+      chart = echarts.init(elementRef.current, undefined, { renderer: 'canvas' });
+      chart.setOption(optionRef.current, true);
+      window.addEventListener('resize', resize);
+      if (typeof ResizeObserver !== 'undefined') {
+        observer = new ResizeObserver(resize);
+        observer.observe(elementRef.current);
+      }
+    });
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      window.removeEventListener('resize', resize);
+      chart?.dispose();
+    };
+  }, []);
+  useEffect(() => {
+    if (!elementRef.current) return;
+    void import('echarts').then((echarts) => {
+      const chart = elementRef.current ? echarts.getInstanceByDom(elementRef.current) : undefined;
+      chart?.setOption(option, true);
+    });
+  }, [option]);
+  return <div ref={elementRef} className="traffic-echart" role="img" aria-label="traffic analytics chart" />;
+}
+
+export function buildTrafficAnalyticsOption(data: TrafficV2AnalyticsResponse | undefined, mode: TrafficChartMode, metric: TrafficAnalyticsMetric, scope: TrafficAnalyticsScope, text: (value: string) => string): EChartsOption {
+  const series = data?.series || [];
+  const axis = series.map((point) => formatAxisTime(point.time, data?.range));
+  const valueFor = (point: TrafficV2AnalyticsPoint, key: 'up' | 'down' | 'total') => metric === 'rate' ? point[`rate_${key}` as 'rate_up' | 'rate_down' | 'rate_total'] : point[key];
+  const formatValue = (value: number) => metric === 'rate' ? `${formatBytes(value)}/s` : formatBytes(value);
+  const rankValueFor = (item: TrafficV2AnalyticsRank) => metric === 'rate' ? Number(item.rate_total ?? item.total ?? 0) : Number(item.total ?? 0);
+  const values = series.flatMap((point) => [valueFor(point, 'up'), valueFor(point, 'down'), valueFor(point, 'total')]);
+  const hasPositiveValue = values.some((value) => Number(value) > 0);
+  const yAxisMax = hasPositiveValue ? undefined : 1;
+  if (mode === 'heatmap') {
+    const heatmap = data?.heatmap || [];
+    const heatmapValueFor = (item: (typeof heatmap)[number]) => metric === 'rate' ? Number(item.rate_total ?? item.total ?? 0) : Number(item.total ?? 0);
+    const days = Array.from(new Set(heatmap.map((item) => item.day)));
+    const hours = Array.from({ length: 24 }, (_, index) => `${String(index).padStart(2, '0')}:00`);
+    return {
+      color: ['#0f766e'],
+      grid: { left: 58, right: 18, top: 20, bottom: 46 },
+      tooltip: { position: 'top', valueFormatter: (value) => formatValue(Number(value || 0)) },
+      xAxis: { type: 'category', data: days, splitArea: { show: true }, axisTick: { show: false } },
+      yAxis: { type: 'category', data: hours, splitArea: { show: true }, axisTick: { show: false } },
+      visualMap: { min: 0, max: Math.max(1, ...heatmap.map(heatmapValueFor)), calculable: true, orient: 'horizontal', left: 'center', bottom: 0, formatter: (value) => formatValue(Number(value || 0)) },
+      series: [{ type: 'heatmap', data: heatmap.map((item) => [item.day, `${String(item.hour).padStart(2, '0')}:00`, heatmapValueFor(item)]), emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(15, 23, 42, 0.2)' } } }],
+    };
+  }
+  if (mode === 'rank') {
+    const ranks = scope === 'client' ? data?.top_clients || [] : data?.top_inbounds || [];
+    return {
+      color: ['#2563eb'],
+      grid: { left: 12, right: 28, top: 18, bottom: 18, containLabel: true },
+      tooltip: { trigger: 'axis', valueFormatter: (value) => formatValue(Number(value || 0)) },
+      xAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatValue(value) }, splitLine: { lineStyle: { color: 'rgba(148,163,184,0.18)' } } },
+      yAxis: { type: 'category', data: ranks.map((item) => item.label || item.scope_key || `#${item.id}`), axisTick: { show: false } },
+      series: [{ type: 'bar', data: ranks.map(rankValueFor), barMaxWidth: 16, itemStyle: { borderRadius: [0, 7, 7, 0] } }],
+    };
+  }
+  return {
+    color: ['#0f766e', '#2563eb', '#f59e0b'],
+    legend: { top: 0, right: 0, icon: 'roundRect', textStyle: { color: '#64748b' } },
+    grid: { left: 10, right: 18, top: 42, bottom: mode === 'area' ? 58 : 36, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross', label: { backgroundColor: '#0f172a' } },
+      valueFormatter: (value) => formatValue(Number(value || 0)),
+    },
+    dataZoom: mode === 'area' ? [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 12, borderColor: 'transparent', fillerColor: 'rgba(37,99,235,0.12)', handleSize: 14 }] : [{ type: 'inside' }],
+    xAxis: { type: 'category', boundaryGap: mode === 'bar', data: axis, axisTick: { show: false }, axisLine: { lineStyle: { color: 'rgba(148,163,184,0.35)' } } },
+    yAxis: { type: 'value', min: 0, max: yAxisMax, minInterval: metric === 'rate' ? undefined : 1, axisLabel: { formatter: (value: number) => formatValue(value) }, splitLine: { lineStyle: { color: 'rgba(148,163,184,0.18)' } } },
+    series: [
+      {
+        name: text('上传'),
+        type: mode === 'bar' ? 'bar' : 'line',
+        stack: mode === 'bar' ? 'traffic' : undefined,
+        smooth: mode !== 'bar',
+        showSymbol: false,
+        areaStyle: mode === 'area' ? { opacity: 0.18 } : undefined,
+        data: series.map((point) => valueFor(point, 'up')),
+        markPoint: { data: [{ type: 'max', name: text('峰值') }], symbolSize: 42 },
+      },
+      {
+        name: text('下载'),
+        type: mode === 'bar' ? 'bar' : 'line',
+        stack: mode === 'bar' ? 'traffic' : undefined,
+        smooth: mode !== 'bar',
+        showSymbol: false,
+        areaStyle: mode === 'area' ? { opacity: 0.14 } : undefined,
+        data: series.map((point) => valueFor(point, 'down')),
+      },
+      {
+        name: text('总量'),
+        type: 'line',
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 2, type: metric === 'cumulative' ? 'solid' : 'dashed' },
+        data: series.map((point) => valueFor(point, 'total')),
+        markLine: { data: [{ type: 'average', name: text('平均') }], symbol: 'none' },
+      },
+    ],
+  };
+}
+
+function trafficAnalyticsSubtitle(data: TrafficV2AnalyticsResponse | undefined, metric: TrafficAnalyticsMetric, text: (value: string) => string) {
+  if (!data?.summary?.has_data) return text('至少需要采样数据后才能绘制趋势');
+  const peakAt = data.summary.peak_at ? formatAxisTime(data.summary.peak_at, data.range) : text('未知');
+  return `${text(trafficMetricLabel(metric))} · ${text('峰值')} ${formatBytes(metric === 'rate' ? data.summary.peak_rate : data.summary.peak_total)}${metric === 'rate' ? '/s' : ''} · ${peakAt}`;
+}
+
+function RuntimeStatusPanel({
+  resources,
+}: {
+  resources?: { cpu_percent?: number; memory_used?: number; memory_total?: number; disk_used?: number; disk_total?: number; uptime_seconds?: number };
+}) {
+  const { text } = useI18n();
+  return (
+    <Card className="runtime-status-card">
+      <div className="runtime-status-header">
+        <div>
+          <h2>{text('服务器资源')}</h2>
+        </div>
+        <Activity className="h-5 w-5" />
+      </div>
+      <div className="runtime-resource-grid">
+        <Resource icon={Cpu} tone="blue" label="CPU" value={formatPercent(resources?.cpu_percent)} />
+        <Resource icon={Database} tone="violet" label={text('内存')} value={`${formatBytes(resources?.memory_used)} / ${formatBytes(resources?.memory_total)}`} />
+        <Resource icon={HardDrive} tone="amber" label={text('磁盘')} value={`${formatBytes(resources?.disk_used)} / ${formatBytes(resources?.disk_total)}`} />
+        <Resource icon={Activity} tone="teal" label={text('运行时间')} value={formatDuration(resources?.uptime_seconds)} />
+      </div>
+    </Card>
+  );
+}
+
+function trafficRangeLabel(value: TrafficAnalyticsRange) {
+  return value === '1h' ? '1小时' : value === '24h' ? '24小时' : value === '7d' ? '7天' : '30天';
+}
+
+function trafficMetricLabel(value: TrafficAnalyticsMetric) {
+  return value === 'usage' ? '区间用量' : value === 'rate' ? '实时速率' : '累计总量';
+}
+
+function trafficModeLabel(value: TrafficChartMode) {
+  return value === 'area' ? '趋势' : value === 'bar' ? '堆叠' : value === 'rank' ? '排行' : '热力';
+}
+
+function formatBucketSeconds(seconds: number) {
+  if (!seconds) return '-';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}min`;
+  return `${Math.round(seconds / 3600)}h`;
+}
+
+function formatAxisTime(value: string | undefined, range?: string) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  if (range === '1h' || range === '24h') {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString([], { month: '2-digit', day: '2-digit' });
 }
 
 function ValidationSummary({ label, loading, valid, error, detail }: { label: string; loading: boolean; valid?: boolean; error: unknown; detail: string }) {

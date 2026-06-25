@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -84,46 +83,6 @@ func writeTrafficViewError(w http.ResponseWriter, err error) {
 	default:
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 	}
-}
-
-func trafficSamplesToSeries(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound) []trafficSeriesPoint {
-	allowed := selectedTrafficSeriesEngines(samples, scopeType, inbounds)
-	byTime := map[string]*trafficSeriesPoint{}
-	order := []string{}
-	for _, sample := range samples {
-		if scopeType == "client" || scopeType == "inbound" {
-			engines, ok := allowed[sample.ScopeKey]
-			if !ok {
-				continue
-			}
-			if _, ok := engines[normalizeTrafficEngine(sample.Engine)]; !ok {
-				continue
-			}
-		}
-		point := byTime[sample.SampledAt]
-		if point == nil {
-			point = &trafficSeriesPoint{Name: sample.SampledAt, Time: sample.SampledAt}
-			byTime[sample.SampledAt] = point
-			order = append(order, sample.SampledAt)
-		}
-		point.Up += sample.TotalUp
-		point.Down += sample.TotalDown
-		point.RateUp += sample.RateUp
-		point.RateDown += sample.RateDown
-	}
-	sort.SliceStable(order, func(i, j int) bool {
-		left, leftErr := time.Parse(time.RFC3339Nano, order[i])
-		right, rightErr := time.Parse(time.RFC3339Nano, order[j])
-		if leftErr == nil && rightErr == nil {
-			return left.Before(right)
-		}
-		return order[i] < order[j]
-	})
-	points := make([]trafficSeriesPoint, 0, len(order))
-	for _, sampledAt := range order {
-		points = append(points, *byTime[sampledAt])
-	}
-	return points
 }
 
 func selectedTrafficSeriesEngines(samples []db.TrafficSample, scopeType string, inbounds []db.Inbound) map[string]map[string]struct{} {
