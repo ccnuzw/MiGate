@@ -35,6 +35,7 @@ import (
 var Version = "dev"
 
 var defaultPanelConfigPath = paths.PanelConfig
+var routerOptionsFromConfigHook func([]web.Option) []web.Option
 
 type lang string
 
@@ -977,7 +978,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	// Traffic sync scheduler keeps retrying Xray StatsService because Xray may
 	// become available only after the panel starts and applies generated config.
 	trafficSched := scheduler.NewTrafficSyncSchedulerWithSingboxConfig(store, statsClient, singboxStatsClient, singboxInbounds, scheduler.DefaultTrafficSyncInterval)
-	outboundSubSched := scheduler.NewOutboundSubscriptionScheduler(store, web.OutboundSubscriptionRefresher{
+	outboundSubSched := scheduler.NewOutboundSubscriptionScheduler(store, &web.OutboundSubscriptionRefresher{
 		Store:   store,
 		Options: append(opts, web.WithStore(store)),
 	}, 1*time.Minute)
@@ -1053,6 +1054,9 @@ func routerOptionsFromConfig(cfg panelcfg.Config, path string) []web.Option {
 	}
 	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
 	opts = append(opts, web.WithXrayConfigPath(paths.XrayConfig))
+	if routerOptionsFromConfigHook != nil {
+		opts = routerOptionsFromConfigHook(opts)
+	}
 	return opts
 }
 

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Suspense, lazy } from 'react';
 import { api } from './api/endpoints';
 import { ConfirmProvider, LoadingBlock, ToastProvider } from './components/ui';
+import { configureCoreApplyJobTracking } from './lib/coreApply';
 import { I18nProvider } from './lib/i18n';
 import AppLayout from './layouts/AppLayout';
 
@@ -14,6 +15,8 @@ const RoutingPage = lazy(() => import('./routes/RoutingPage'));
 const TopologyPage = lazy(() => import('./routes/TopologyPage'));
 const CorePage = lazy(() => import('./routes/CorePage'));
 const SettingsPage = lazy(() => import('./routes/SettingsPage'));
+
+configureCoreApplyJobTracking(api.coreApplyJob);
 
 export default function App() {
   return (

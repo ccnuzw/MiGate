@@ -49,13 +49,14 @@ func outboundsHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 				return
 			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, scope.hasXray, scope.hasSingbox)
 			outbound, err := store.CreateOutbound(r.Context(), params)
 			if err != nil {
 				writeJSONError(w, http.StatusBadRequest, "create_outbound_failed")
 				return
 			}
 			includeXray, includeSingbox := xrayAndSingboxForOutboundWrite(scope, db.Outbound{}, false, outbound)
-			writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"outbound": outbound}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusCreated, map[string]interface{}{"outbound": outbound}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		default:
 			methodNotAllowed(w)
 		}
@@ -659,6 +660,7 @@ func proxyPoolImportHandler(cfg *routerConfig, outboundProtocol string, tagProto
 		writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 		return
 	}
+	before := captureCoreGeneratedHashes(r.Context(), cfg, scope.hasXray, scope.hasSingbox)
 	outbound, err := store.CreateOutbound(r.Context(), db.CreateOutboundParams{
 		Tag:      fmt.Sprintf("pool-%s-%s-%d", tagProtocol, strings.NewReplacer(".", "-", ":", "-").Replace(address), req.Port),
 		Remark:   remark,
@@ -674,7 +676,7 @@ func proxyPoolImportHandler(cfg *routerConfig, outboundProtocol string, tagProto
 		return
 	}
 	includeXray, includeSingbox := xrayAndSingboxForOutboundWrite(scope, db.Outbound{}, false, outbound)
-	writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"outbound": outbound}, includeXray, includeSingbox)
+	writeCoreWriteResultForHashes(w, r, cfg, http.StatusCreated, map[string]interface{}{"outbound": outbound}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 }
 
 func poolCountryLabel(country, countryCode string) string {
@@ -745,11 +747,12 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 			if err := store.ReorderOutbounds(r.Context(), req.IDs); err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "reorder_failed")
 				return
 			}
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "reordered"}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "reordered"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 			return
 		}
 		// Handle /api/outbounds/speedtest-all
@@ -841,6 +844,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 				return
 			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, scope.hasXray, scope.hasSingbox)
 			outbound, err := store.UpdateOutbound(r.Context(), id, params)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -853,7 +857,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				return
 			}
 			includeXray, includeSingbox := xrayAndSingboxForOutboundWrite(scope, previous, hadPrevious, outbound)
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"outbound": outbound}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"outbound": outbound}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		case http.MethodDelete:
 			deletedOutbound, found, err := findOutbound(r.Context(), store, id)
 			if err != nil {
@@ -869,6 +873,8 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_inbounds_failed")
 				return
 			}
+			includeXray, includeSingbox := xrayAndSingboxForOutboundDelete(scope, deletedOutbound)
+			before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 			err = store.DeleteOutbound(r.Context(), id)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -878,8 +884,7 @@ func outboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 				return
 			}
-			includeXray, includeSingbox := xrayAndSingboxForOutboundDelete(scope, deletedOutbound)
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "deleted"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		default:
 			methodNotAllowed(w)
 		}

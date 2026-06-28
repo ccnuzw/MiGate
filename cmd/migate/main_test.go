@@ -77,6 +77,11 @@ func useTempRuntimePaths(t *testing.T, root string) {
 
 func TestRouterFromPanelConfigOpensConfiguredDatabaseStore(t *testing.T) {
 	tmp := t.TempDir()
+	origHook := routerOptionsFromConfigHook
+	routerOptionsFromConfigHook = func(opts []web.Option) []web.Option {
+		return append(opts, web.WithAutoCoreApply(false))
+	}
+	t.Cleanup(func() { routerOptionsFromConfigHook = origHook })
 	configPath := filepath.Join(tmp, "panel.json")
 	databasePath := filepath.Join(tmp, "migate.db")
 	config := `{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/","database_path":"` + databasePath + `"}`

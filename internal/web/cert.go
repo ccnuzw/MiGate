@@ -245,6 +245,7 @@ func certificateApply(w http.ResponseWriter, r *http.Request, cfg *routerConfig,
 		writeJSONError(w, http.StatusForbidden, "confirmation_required", map[string]interface{}{"commands_executed": []string{}})
 		return
 	}
+	before := captureCoreGeneratedHashes(r.Context(), cfg, true, true)
 	updated, warnings, err := certServiceFor(cfg).Apply(r.Context(), certsvc.ApplyRequest{CertificateID: id, InboundIDs: req.InboundIDs})
 	if err != nil {
 		writeServiceError(w, certErrorStatus(err), err)
@@ -252,7 +253,7 @@ func certificateApply(w http.ResponseWriter, r *http.Request, cfg *routerConfig,
 	}
 	includeXray, includeSingbox := coresForInbounds(updated)
 	payload := map[string]interface{}{"status": "applied", "inbounds": updated, "warnings": warnings}
-	writeCoreWriteResult(w, r, cfg, cfg.store, http.StatusOK, payload, includeXray, includeSingbox)
+	writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, payload, before, includeXray, includeSingbox, includeXray, includeSingbox)
 }
 
 func certificateRenewDue(w http.ResponseWriter, r *http.Request, cfg *routerConfig) {

@@ -133,6 +133,12 @@ func outboundSubscriptionChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "get_outbound_subscription_failed")
 				return
 			}
+			includeXray, includeSingbox, err := xrayAndSingboxForAllOutbounds(r.Context(), store)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "list_failed")
+				return
+			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 			sub, err := store.UpdateOutboundSubscription(r.Context(), id, params)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -142,19 +148,15 @@ func outboundSubscriptionChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 				return
 			}
-			includeXray, includeSingbox, err := xrayAndSingboxForAllOutbounds(r.Context(), store)
-			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "list_failed")
-				return
-			}
 			needsRefresh := previousFound && !previous.Enabled && sub.Enabled
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"subscription": sub, "needs_refresh": needsRefresh}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"subscription": sub, "needs_refresh": needsRefresh}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		case http.MethodDelete:
 			includeXray, includeSingbox, err := xrayAndSingboxForAllOutbounds(r.Context(), store)
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 			if err := store.DeleteOutboundSubscription(r.Context(), id); err != nil {
 				if strings.Contains(err.Error(), "not found") {
 					writeJSONError(w, http.StatusNotFound, "not_found")
@@ -163,7 +165,7 @@ func outboundSubscriptionChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 				return
 			}
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "deleted"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		default:
 			methodNotAllowed(w)
 		}
@@ -171,13 +173,19 @@ func outboundSubscriptionChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 }
 
 func refreshOneOutboundSubscriptionHandler(cfg *routerConfig, id int64, w http.ResponseWriter, r *http.Request) {
+	includeXray, includeSingbox, err := xrayAndSingboxForAllOutbounds(r.Context(), cfg.store)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list_failed")
+		return
+	}
+	before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 	result, markXray, markSingbox, err := refreshOutboundSubscription(r.Context(), cfg.store, id)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "refresh_outbound_subscription_failed", map[string]interface{}{"detail": err.Error()})
 		return
 	}
-	includeXray, includeSingbox := includeExistingPendingCores(r.Context(), cfg, markXray, markSingbox)
-	writeCoreWriteResultWithPendingScope(w, r, cfg, cfg.store, http.StatusOK, map[string]interface{}{"result": result}, markXray, markSingbox, includeXray, includeSingbox)
+	includeXray, includeSingbox = includeExistingPendingCores(r.Context(), cfg, markXray, markSingbox)
+	writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"result": result}, before, markXray, markSingbox, includeXray, includeSingbox)
 }
 
 func refreshAllOutboundSubscriptionsHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
@@ -189,6 +197,12 @@ func refreshAllOutboundSubscriptionsHandler(cfg *routerConfig, w http.ResponseWr
 	results := []map[string]interface{}{}
 	markXray := false
 	markSingbox := false
+	includeXray, includeSingbox, err := xrayAndSingboxForAllOutbounds(r.Context(), cfg.store)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list_failed")
+		return
+	}
+	before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 	for _, sub := range subs {
 		if !sub.Enabled {
 			continue
@@ -202,8 +216,8 @@ func refreshAllOutboundSubscriptionsHandler(cfg *routerConfig, w http.ResponseWr
 		markXray = markXray || xrayChanged
 		markSingbox = markSingbox || singboxChanged
 	}
-	includeXray, includeSingbox := includeExistingPendingCores(r.Context(), cfg, markXray, markSingbox)
-	writeCoreWriteResultWithPendingScope(w, r, cfg, cfg.store, http.StatusOK, map[string]interface{}{"results": results}, markXray, markSingbox, includeXray, includeSingbox)
+	includeXray, includeSingbox = includeExistingPendingCores(r.Context(), cfg, markXray, markSingbox)
+	writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"results": results}, before, markXray, markSingbox, includeXray, includeSingbox)
 }
 
 func previewOutboundSubscriptionHandler(cfg *routerConfig, w http.ResponseWriter, r *http.Request) {
@@ -252,11 +266,12 @@ func reorderOutboundSubscriptionsHandler(cfg *routerConfig, w http.ResponseWrite
 		writeJSONError(w, http.StatusInternalServerError, "list_failed")
 		return
 	}
+	before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 	if err := cfg.store.ReorderOutboundSubscriptions(r.Context(), req.IDs); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "reorder_outbound_subscriptions_failed")
 		return
 	}
-	writeCoreWriteResult(w, r, cfg, cfg.store, http.StatusOK, map[string]interface{}{"status": "reordered"}, includeXray, includeSingbox)
+	writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "reordered"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 }
 
 func refreshOutboundSubscription(ctx context.Context, store Store, id int64) (map[string]interface{}, bool, bool, error) {

@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
-import { coreApplyWarning, coreApplyWarningTone, showCoreApplyWarning } from './coreApply';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { __resetCoreApplyJobTrackingForTests, configureCoreApplyJobTracking, coreApplyWarning, coreApplyWarningTone, showCoreApplyWarning, trackCoreApplyJobsFromResponse } from './coreApply';
+
+afterEach(() => {
+  vi.useRealTimers();
+  __resetCoreApplyJobTrackingForTests();
+});
 
 describe('core apply warning helpers', () => {
   it('detects xray and sing-box apply failures', () => {
@@ -18,6 +23,94 @@ describe('core apply warning helpers', () => {
     const response = { pending_apply: true, pending_cores: ['xray', 'sing-box'], xray: { pending_apply: true }, singbox: { pending_apply: true } };
     expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，但核心配置未生效：Xray、sing-box 有更改，需点击核心页“应用配置”后生效');
     expect(coreApplyWarningTone(response)).toBe('info');
+  });
+
+  it('does not show historical pending as a save warning when this save did not change core config', () => {
+    const response = { config_changed: false, pending_apply: true, pending_cores: ['xray'], xray: { pending_apply: true, pending_reason: 'validation_failed' } };
+    expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('');
+    expect(coreApplyWarningTone(response)).toBe('info');
+  });
+
+  it('reports queued automatic core sync for config-changing saves', () => {
+    const response = { config_changed: true, changed_cores: ['xray'], auto_apply: { xray: { status: 'queued' } } };
+    expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，正在同步核心配置');
+    expect(coreApplyWarningTone(response)).toBe('info');
+  });
+
+  it('tracks queued jobs and reports final success', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    configureCoreApplyJobTracking(vi.fn().mockResolvedValue({ id: 'job-1', core: 'xray', status: 'succeeded' }));
+    const response = { config_changed: true, changed_cores: ['xray'], auto_apply: { xray: { id: 'job-1', core: 'xray', status: 'queued' } } };
+    expect(showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast)).toBe(true);
+    expect(showToast).toHaveBeenCalledWith('已保存，正在同步核心配置', 'info');
+    await vi.advanceTimersByTimeAsync(700);
+    expect(showToast).toHaveBeenCalledWith('Xray 配置已同步', 'success');
+  });
+
+  it('tracks queued jobs and reports final failure', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    configureCoreApplyJobTracking(vi.fn().mockResolvedValue({ id: 'job-1', core: 'sing-box', status: 'failed', detail: 'check failed' }));
+    trackCoreApplyJobsFromResponse({ config_changed: true, auto_apply: { singbox: { id: 'job-1', core: 'sing-box', status: 'running' } } }, showToast);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(showToast).toHaveBeenCalledWith(
+      'sing-box 自动同步失败：check failed',
+      'error',
+      expect.objectContaining({ label: '查看核心页', onClick: expect.any(Function) }),
+    );
+  });
+
+  it('merges successful jobs for multiple cores', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    configureCoreApplyJobTracking(vi.fn()
+      .mockResolvedValueOnce({ id: 'job-x', core: 'xray', status: 'succeeded' })
+      .mockResolvedValueOnce({ id: 'job-s', core: 'sing-box', status: 'succeeded' }));
+    trackCoreApplyJobsFromResponse({
+      config_changed: true,
+      auto_apply: {
+        xray: { id: 'job-x', core: 'xray', status: 'queued' },
+        singbox: { id: 'job-s', core: 'sing-box', status: 'queued' },
+      },
+    }, showToast);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(showToast).toHaveBeenCalledWith('核心配置已同步', 'success');
+  });
+
+  it('does not track jobs when config did not change', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    const fetcher = vi.fn().mockResolvedValue({ id: 'job-1', core: 'xray', status: 'succeeded' });
+    configureCoreApplyJobTracking(fetcher);
+    trackCoreApplyJobsFromResponse({ config_changed: false, auto_apply: { xray: { id: 'job-1', core: 'xray', status: 'queued' } } }, showToast);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('reports automatic core sync failures', () => {
+    const showToast = vi.fn();
+    const response = { config_changed: true, auto_apply_error: { xray: { error: 'apply_locked', detail: 'lock busy' } } };
+    expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，但核心配置自动同步失败：lock busy');
+    expect(coreApplyWarningTone(response)).toBe('error');
+    expect(showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast)).toBe(true);
+    expect(showToast).toHaveBeenCalledWith(
+      '已保存，但核心配置自动同步失败：lock busy',
+      'error',
+      expect.objectContaining({ label: '查看核心页', onClick: expect.any(Function) }),
+    );
+  });
+
+  it('adds an action for immediately failed auto apply jobs', () => {
+    const showToast = vi.fn();
+    const response = { config_changed: true, auto_apply: { singbox: { id: 'job-1', core: 'sing-box', status: 'failed', detail: 'check failed' } } };
+    expect(showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast)).toBe(true);
+    expect(showToast).toHaveBeenCalledWith(
+      '已保存，但核心配置自动同步失败：check failed',
+      'error',
+      expect.objectContaining({ label: '查看核心页', onClick: expect.any(Function) }),
+    );
   });
 
   it('reports xray listener warnings as info', () => {

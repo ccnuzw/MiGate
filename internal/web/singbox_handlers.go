@@ -1049,6 +1049,7 @@ func buildSingboxConfigSyncPreview(ctx context.Context, cfg *routerConfig) singb
 		pending.Error = generated.Error
 		pending.Detail = generated.Detail
 		pending.Pending = true
+		pending.PendingReason = "generated_build_failed"
 	}
 	return singboxConfigSyncPreview{
 		ConfigPath:        singbox.DefaultConfigPath,

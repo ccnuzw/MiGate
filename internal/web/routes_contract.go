@@ -102,6 +102,7 @@ func routeTable() []Route {
 		route(http.MethodGet, "/api/traffic/v2/stream", AuthRequired, CSRFNotRequired, "trafficV2StreamHandler", func(d *routeDeps) http.HandlerFunc { return trafficV2StreamHandler(d.cfg.store, d.trafficCache) }),
 		route(http.MethodGet, "/api/dashboard/summary", AuthRequired, CSRFNotRequired, "dashboardSummaryHandler", func(d *routeDeps) http.HandlerFunc { return dashboardSummaryHandler(d.cfg) }),
 		route(http.MethodGet, "/api/system/resources", AuthRequired, CSRFNotRequired, "systemResourcesHandler", func(*routeDeps) http.HandlerFunc { return systemResourcesHandler() }),
+		route(http.MethodGet, "/api/core/apply-jobs/", AuthRequired, CSRFNotRequired, "coreApplyJobStatusHandler", func(d *routeDeps) http.HandlerFunc { return coreApplyJobStatusHandler(d.cfg) }),
 		route(http.MethodGet, "/api/xray/status", AuthRequired, CSRFNotRequired, "xrayStatusHandler", func(d *routeDeps) http.HandlerFunc { return d.coreCache.wrap("xray-status", xrayStatusHandler(d.cfg)) }),
 		route(http.MethodGet, "/api/xray/config", AuthRequired, CSRFNotRequired, "xrayConfigHandler", func(d *routeDeps) http.HandlerFunc { return xrayConfigHandler(d.cfg) }),
 		route(http.MethodGet, "/api/xray/config/preview", AuthRequired, CSRFNotRequired, "xrayConfigPreviewHandler", func(d *routeDeps) http.HandlerFunc { return xrayConfigPreviewHandler(d.cfg) }),

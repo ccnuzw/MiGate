@@ -3,16 +3,17 @@ import { CheckCircle2, Info, Loader2, X, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useI18n } from '../lib/i18n';
 
-type Toast = { id: number; title: string; tone: 'success' | 'error' | 'info' };
+type ToastAction = { label: string; onClick: () => void };
+type Toast = { id: number; title: string; tone: 'success' | 'error' | 'info'; action?: ToastAction };
 
-const ToastContext = createContext<{ showToast: (title: string, tone?: Toast['tone']) => void } | null>(null);
+const ToastContext = createContext<{ showToast: (title: string, tone?: Toast['tone'], action?: ToastAction) => void } | null>(null);
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const { text } = useI18n();
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const showToast = useCallback((title: string, tone: Toast['tone'] = 'info') => {
+  const showToast = useCallback((title: string, tone: Toast['tone'] = 'info', action?: ToastAction) => {
     const id = Date.now() + Math.random();
-    setToasts((items) => [...items, { id, title, tone }]);
+    setToasts((items) => [...items, { id, title, tone, action }]);
     window.setTimeout(() => setToasts((items) => items.filter((item) => item.id !== id)), 3200);
   }, []);
   return (
@@ -23,6 +24,17 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           <div key={toast.id} className="flex items-center gap-3 rounded-lg border border-panel-line bg-panel-surface px-4 py-3 text-sm shadow-panel">
             {toast.tone === 'error' ? <XCircle className="h-4 w-4 text-red-500" /> : toast.tone === 'info' ? <Info className="h-4 w-4 text-sky-500" /> : <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
             <span className="min-w-0 flex-1 text-panel-text">{text(toast.title)}</span>
+            {toast.action ? (
+              <button
+                className="btn secondary compact"
+                onClick={() => {
+                  setToasts((items) => items.filter((item) => item.id !== toast.id));
+                  toast.action?.onClick();
+                }}
+              >
+                {text(toast.action.label)}
+              </button>
+            ) : null}
             <button className="icon-button h-7 w-7" onClick={() => setToasts((items) => items.filter((item) => item.id !== toast.id))}>
               <X className="h-4 w-4" />
             </button>
