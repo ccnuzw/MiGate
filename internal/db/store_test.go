@@ -3689,8 +3689,13 @@ func TestTrafficWaitingRecoverySuppressesCompressedRateAfterMultipleMarkers(t *t
 		t.Fatalf("list states: %v", err)
 	}
 	state := findTrafficState(states, "xray", "client", client.StatsKey)
-	if state == nil || state.TotalUp != 600 || state.TotalDown != 800 || state.RateUp != 0 || state.RateDown != 0 || state.Status != "ok" {
-		t.Fatalf("recovery should keep cumulative delta but suppress compressed rate, got %+v", state)
+	if state == nil || state.TotalUp != 600 || state.TotalDown != 800 || state.Status != "ok" || state.Message != "" {
+		t.Fatalf("recovery should keep cumulative delta and compute normal rate (not suppressed), got %+v", state)
+	}
+	// Rate is no longer suppressed for transient states.
+	// delta=500/600, elapsed=10s (last_seen at marker t0+5m) → rateUp=50, rateDown=60
+	if state.RateUp != 50 || state.RateDown != 60 {
+		t.Fatalf("expected rate 50/60 after recovery, got RateUp=%f RateDown=%f", state.RateUp, state.RateDown)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(1660, 2920), t0.Add(6*time.Minute+10*time.Second)); err != nil {
 		t.Fatalf("post-recovery raw sample: %v", err)
@@ -3711,8 +3716,8 @@ func TestTrafficWaitingRecoverySuppressesCompressedRateAfterMultipleMarkers(t *t
 		t.Fatalf("expected baseline, waiting, recovery and post-recovery samples, got %+v", samples)
 	}
 	recovered := samples[len(samples)-2]
-	if recovered.Status != "ok" || recovered.TotalUp != 600 || recovered.TotalDown != 800 || recovered.RateUp != 0 || recovered.RateDown != 0 {
-		t.Fatalf("recovered series point should carry totals with zero rate, got %+v", recovered)
+	if recovered.Status != "ok" || recovered.TotalUp != 600 || recovered.TotalDown != 800 || recovered.RateUp != 50 || recovered.RateDown != 60 {
+		t.Fatalf("recovered series point should carry totals with normal rate (not suppressed), got %+v", recovered)
 	}
 }
 

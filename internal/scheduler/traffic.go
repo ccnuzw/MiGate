@@ -41,6 +41,7 @@ type TrafficSyncScheduler struct {
 	cancel             context.CancelFunc
 	stopped            bool
 	mu                 sync.Mutex
+	syncMu             sync.Mutex // serializes sync() calls to prevent concurrent write races
 }
 
 // NewTrafficSyncScheduler creates a new scheduler.
@@ -107,6 +108,9 @@ func (s *TrafficSyncScheduler) Stop() {
 
 // sync performs a single sync cycle: query Xray stats and update DB.
 func (s *TrafficSyncScheduler) sync() {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
 	ctx, timeout := context.WithTimeout(context.Background(), 10*time.Second)
 	defer timeout()
 	observedAt := time.Now().UTC()

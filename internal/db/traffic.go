@@ -154,7 +154,13 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
 			rateDown = float64(deltaDown) / elapsed
 		}
 		windowSeconds := elapsed
-		if _, err := upsertState.ExecContext(ctx, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, deltaUp, deltaDown, rateUp, rateDown, windowSeconds, seenAt, raw.Status, strings.TrimSpace(raw.Message)); err != nil {
+		message := strings.TrimSpace(raw.Message)
+		if deltaUp == 0 && deltaDown == 0 && hasCurrent && isCounterReset(raw.RawUp, raw.RawDown, current.LastRawUp, current.LastRawDown) {
+			if message == "" {
+				message = "counter reset detected, baseline re-established"
+			}
+		}
+		if _, err := upsertState.ExecContext(ctx, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, raw.RawUp, raw.RawDown, deltaUp, deltaDown, rateUp, rateDown, windowSeconds, seenAt, raw.Status, message); err != nil {
 			return err
 		}
 		if _, err := insertSample.ExecContext(ctx, sampleBucketAt, raw.Engine, raw.ScopeType, raw.ScopeKey, totalUp, totalDown, deltaUp, deltaDown, rateUp, rateDown, windowSeconds, raw.Status); err != nil {
@@ -383,9 +389,22 @@ func isResetWithoutRawBaseline(state TrafficState) bool {
 		strings.Contains(strings.ToLower(state.Message), "baseline unavailable")
 }
 
+// isCounterReset detects when a core counter has been reset (e.g. Xray/sing-box restart).
+// A reset is identified by new raw counters being lower than the last known values
+// while the previous state had non-zero raw counters.
+func isCounterReset(rawUp, rawDown, lastRawUp, lastRawDown int64) bool {
+	if lastRawUp > 0 && rawUp < lastRawUp {
+		return true
+	}
+	if lastRawDown > 0 && rawDown < lastRawDown {
+		return true
+	}
+	return false
+}
+
 func shouldSuppressRecoveredTrafficRate(state TrafficState) bool {
 	switch normalizeTrafficStatus(state.Status) {
-	case "waiting", "unavailable", "unsupported", "not_configured":
+	case "unsupported", "not_configured":
 		return true
 	default:
 		return false
