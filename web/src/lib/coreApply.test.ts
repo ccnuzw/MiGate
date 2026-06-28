@@ -90,9 +90,27 @@ describe('core apply warning helpers', () => {
   });
 
   it('reports automatic core sync failures', () => {
+    const showToast = vi.fn();
     const response = { config_changed: true, auto_apply_error: { xray: { error: 'apply_locked', detail: 'lock busy' } } };
     expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，但核心配置自动同步失败：lock busy');
     expect(coreApplyWarningTone(response)).toBe('error');
+    expect(showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast)).toBe(true);
+    expect(showToast).toHaveBeenCalledWith(
+      '已保存，但核心配置自动同步失败：lock busy',
+      'error',
+      expect.objectContaining({ label: '查看核心页', onClick: expect.any(Function) }),
+    );
+  });
+
+  it('adds an action for immediately failed auto apply jobs', () => {
+    const showToast = vi.fn();
+    const response = { config_changed: true, auto_apply: { singbox: { id: 'job-1', core: 'sing-box', status: 'failed', detail: 'check failed' } } };
+    expect(showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast)).toBe(true);
+    expect(showToast).toHaveBeenCalledWith(
+      '已保存，但核心配置自动同步失败：check failed',
+      'error',
+      expect.objectContaining({ label: '查看核心页', onClick: expect.any(Function) }),
+    );
   });
 
   it('reports xray listener warnings as info', () => {

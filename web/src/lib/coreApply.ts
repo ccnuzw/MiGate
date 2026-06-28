@@ -162,7 +162,12 @@ export function showCoreApplyWarning(
   const warning = coreApplyWarning(response, prefix);
   if (!warning) return false;
   trackCoreApplyJobsFromResponse(response, showToast, text);
-  showToast(text(warning), coreApplyWarningTone(response));
+  const action = autoApplyFailureAction(response);
+  if (action) {
+    showToast(text(warning), coreApplyWarningTone(response), action);
+  } else {
+    showToast(text(warning), coreApplyWarningTone(response));
+  }
   return true;
 }
 
@@ -236,7 +241,7 @@ async function pollCoreApplyJobs(token: number, showToast: ToastFn, text: TextFn
     showToast(
       text(`${coreLabel(job.core)} 自动同步失败${job.detail || job.error ? `：${job.detail || job.error}` : ''}`),
       'error',
-      { label: '查看核心页', onClick: () => window.location.assign(appPath(coreApplyCorePath(job.core))) },
+      coreApplyCoreAction(job.core),
     );
   }
   if (activeTrackedJobs.size) {
@@ -252,6 +257,20 @@ function coreApplySucceededMessage(jobs: CoreApplyJobStatus[]): string {
 
 function coreApplyJobActive(job?: Pick<CoreApplyJobStatus, 'status'>): boolean {
   return ['queued', 'running', 'retrying'].includes(String(job?.status || '').toLowerCase());
+}
+
+function autoApplyFailureAction(response: unknown): ToastAction | undefined {
+  if (!response || typeof response !== 'object') return undefined;
+  const data = response as CoreWriteResponse;
+  const explicitFailure = Object.entries(data.auto_apply_error || {}).find(([, failure]) => Boolean(failure));
+  if (explicitFailure) return coreApplyCoreAction(explicitFailure[0]);
+  const failedJob = Object.entries(data.auto_apply || {}).find(([, job]) => String(job?.status || '').toLowerCase() === 'failed' || job?.error);
+  if (!failedJob) return undefined;
+  return coreApplyCoreAction(failedJob[1]?.core || failedJob[0]);
+}
+
+function coreApplyCoreAction(core: string): ToastAction {
+  return { label: '查看核心页', onClick: () => window.location.assign(appPath(coreApplyCorePath(core))) };
 }
 
 function coreApplyCorePath(core: string): string {
