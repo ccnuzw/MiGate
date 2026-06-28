@@ -20,6 +20,24 @@ describe('core apply warning helpers', () => {
     expect(coreApplyWarningTone(response)).toBe('info');
   });
 
+  it('does not show historical pending as a save warning when this save did not change core config', () => {
+    const response = { config_changed: false, pending_apply: true, pending_cores: ['xray'], xray: { pending_apply: true, pending_reason: 'validation_failed' } };
+    expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('');
+    expect(coreApplyWarningTone(response)).toBe('info');
+  });
+
+  it('reports queued automatic core sync for config-changing saves', () => {
+    const response = { config_changed: true, changed_cores: ['xray'], auto_apply: { xray: { status: 'queued' } } };
+    expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，正在同步核心配置');
+    expect(coreApplyWarningTone(response)).toBe('info');
+  });
+
+  it('reports automatic core sync failures', () => {
+    const response = { config_changed: true, auto_apply_error: { xray: { error: 'apply_locked', detail: 'lock busy' } } };
+    expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，但核心配置自动同步失败：lock busy');
+    expect(coreApplyWarningTone(response)).toBe('error');
+  });
+
   it('reports xray listener warnings as info', () => {
     const showToast = vi.fn();
     const response = { xray: { applied: true, post_apply_warnings: ['配置已应用，但端口未监听：2443/tcp'] } };

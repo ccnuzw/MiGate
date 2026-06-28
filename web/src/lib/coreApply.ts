@@ -2,8 +2,11 @@ import type { CreateClientResponse, CreateInboundResponse, SingboxApplySummary, 
 
 type CoreWriteResponse = {
   applied?: boolean;
+  config_changed?: boolean;
   pending_apply?: boolean;
   pending_cores?: string[];
+  auto_apply?: Record<string, { status?: string; error?: string; detail?: string }>;
+  auto_apply_error?: Record<string, { error?: string; detail?: string }>;
   detail?: string;
   error?: string;
   warnings?: string[];
@@ -16,6 +19,16 @@ type CoreWriteResponse = {
 export function coreApplyWarning(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown, prefix: string): string {
   if (!response || typeof response !== 'object') return '';
   const data = response as CoreWriteResponse;
+  const autoApplyFailure = autoApplyFailureDetail(data);
+  if (autoApplyFailure) {
+    return `${savedPrefix(prefix)}，但核心配置自动同步失败：${autoApplyFailure}`;
+  }
+  if (data.config_changed === true && autoApplyQueuedOrRunning(data)) {
+    return `${savedPrefix(prefix)}，正在同步核心配置`;
+  }
+  if (data.config_changed === false) {
+    return '';
+  }
   if (data.pending_apply) {
     return pendingApplyMessage(data, prefix);
   }
@@ -35,8 +48,29 @@ export function coreApplyWarning(response: CreateInboundResponse | CreateClientR
 export function coreApplyWarningTone(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown): 'error' | 'info' {
   if (!response || typeof response !== 'object') return 'error';
   const data = response as CoreWriteResponse;
+  if (autoApplyFailureDetail(data)) return 'error';
+  if (data.config_changed === true && autoApplyQueuedOrRunning(data)) return 'info';
+  if (data.config_changed === false) return 'info';
   if (data.pending_apply) return 'info';
   return failedCoreResult(data) ? 'error' : 'info';
+}
+
+function savedPrefix(prefix: string): string {
+  const marker = '，但';
+  const index = prefix.indexOf(marker);
+  if (index > 0) return prefix.slice(0, index);
+  return prefix || '已保存';
+}
+
+function autoApplyQueuedOrRunning(data: CoreWriteResponse): boolean {
+  return Object.values(data.auto_apply || {}).some((job) => ['queued', 'running'].includes(String(job?.status || '').toLowerCase()));
+}
+
+function autoApplyFailureDetail(data: CoreWriteResponse): string {
+  const explicit = Object.values(data.auto_apply_error || {}).find(Boolean);
+  if (explicit) return explicit.detail || explicit.error || '未知错误';
+  const failed = Object.values(data.auto_apply || {}).find((job) => String(job?.status || '').toLowerCase() === 'failed' || job?.error);
+  return failed?.detail || failed?.error || '';
 }
 
 function pendingApplyMessage(data: CoreWriteResponse, prefix: string): string {

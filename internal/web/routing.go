@@ -32,13 +32,14 @@ func routingRulesHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, scope.hasXray, scope.hasSingbox)
 			rule, err := store.CreateRoutingRule(r.Context(), params)
 			if err != nil {
 				writeJSONError(w, http.StatusBadRequest, "create_failed")
 				return
 			}
 			includeXray, includeSingbox := xrayAndSingboxForRoutingRuleWriteWithScope(scope, db.RoutingRule{}, false, rule)
-			writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"rule": rule}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusCreated, map[string]interface{}{"rule": rule}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		default:
 			methodNotAllowed(w)
 		}
@@ -66,11 +67,12 @@ func routingRuleChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 			if err := store.ReorderRoutingRules(r.Context(), req.IDs); err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "reorder_failed")
 				return
 			}
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "reordered"}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "reordered"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 			return
 		}
 		idStr := strings.TrimSuffix(path, "/")
@@ -96,6 +98,7 @@ func routingRuleChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
+			before := captureCoreGeneratedHashes(r.Context(), cfg, scope.hasXray, scope.hasSingbox)
 			rule, err := store.UpdateRoutingRule(r.Context(), id, params)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -106,7 +109,7 @@ func routingRuleChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				return
 			}
 			includeXray, includeSingbox := xrayAndSingboxForRoutingRuleWriteWithScope(scope, previousRule, hadPreviousRule, rule)
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"rule": rule}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"rule": rule}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		case http.MethodDelete:
 			deletedRule, found, err := findRoutingRuleStrict(r.Context(), store, id)
 			if err != nil {
@@ -122,6 +125,8 @@ func routingRuleChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "list_failed")
 				return
 			}
+			includeXray, includeSingbox := xrayAndSingboxForRoutingRuleDeleteWithScope(scope, deletedRule)
+			before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 			err = store.DeleteRoutingRule(r.Context(), id)
 			if err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -131,8 +136,7 @@ func routingRuleChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 				}
 				return
 			}
-			includeXray, includeSingbox := xrayAndSingboxForRoutingRuleDeleteWithScope(scope, deletedRule)
-			writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
+			writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "deleted"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 		case http.MethodGet:
 			writeJSONError(w, http.StatusNotFound, "not_found")
 		default:

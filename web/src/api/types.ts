@@ -80,6 +80,10 @@ export interface CoreDiagnosticAction {
 export interface CreateResultFields {
   created?: boolean;
   applied?: boolean;
+  config_changed?: boolean;
+  changed_cores?: string[];
+  auto_apply?: Record<string, CoreApplyJobStatus>;
+  auto_apply_error?: Record<string, { error?: string; detail?: string }>;
   error?: string;
   detail?: string;
   warnings?: string[];

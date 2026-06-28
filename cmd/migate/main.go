@@ -977,7 +977,7 @@ func routerFromConfig(path string) (http.Handler, func(), error) {
 	// Traffic sync scheduler keeps retrying Xray StatsService because Xray may
 	// become available only after the panel starts and applies generated config.
 	trafficSched := scheduler.NewTrafficSyncSchedulerWithSingboxConfig(store, statsClient, singboxStatsClient, singboxInbounds, scheduler.DefaultTrafficSyncInterval)
-	outboundSubSched := scheduler.NewOutboundSubscriptionScheduler(store, web.OutboundSubscriptionRefresher{
+	outboundSubSched := scheduler.NewOutboundSubscriptionScheduler(store, &web.OutboundSubscriptionRefresher{
 		Store:   store,
 		Options: append(opts, web.WithStore(store)),
 	}, 1*time.Minute)

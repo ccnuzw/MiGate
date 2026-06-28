@@ -288,6 +288,7 @@ type routerConfig struct {
 	coreCache          *coreStatusCache
 	applyJobs          *coreApplyJobManager
 	coreApplyTimeout   time.Duration
+	autoCoreApply      bool
 }
 
 type SingboxRuntime interface {

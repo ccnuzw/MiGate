@@ -181,7 +181,7 @@ func withTempApplyLock(t *testing.T) {
 }
 
 func TestRemovedLegacyAPIRoutesReturnNotFound(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithAutoCoreApply(false))
 	for _, tc := range []struct {
 		method string
 		path   string
@@ -214,7 +214,7 @@ func TestCreateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithCertDir(t.TempDir()))
 	for i := 0; i < 2; i++ {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients", strings.NewReader(`{"email":"sam@example.com","uuid":"11111111-1111-4111-8111-111111111111"}`))
@@ -252,7 +252,7 @@ func TestUpdateClientAPIRejectsDuplicateEmailWithConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second client: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithCertDir(t.TempDir()))
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(second.ID, 10), strings.NewReader(`{"email":"sam@example.com","enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -281,7 +281,7 @@ func TestSocks5PoolAPIFetchesRegionsAndImportsOutbound(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(store), web.WithSocks5PoolURL(upstream.URL))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSocks5PoolURL(upstream.URL))
 
 	list := httptest.NewRecorder()
 	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/outbounds/socks5-pool?country=US", nil))
@@ -323,7 +323,7 @@ func TestProxyPoolAPISupportsSummaryAndPagination(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	router := web.NewRouter(web.WithSocks5PoolURL(upstream.URL))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithSocks5PoolURL(upstream.URL))
 	summary := httptest.NewRecorder()
 	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/outbounds/socks5-pool?summary=1", nil))
 	if summary.Code != http.StatusOK {
@@ -427,7 +427,7 @@ func TestHTTPProxyPoolAPIFetchesAndImportsHTTPOutbound(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(store), web.WithHTTPPoolURL(upstream.URL))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithHTTPPoolURL(upstream.URL))
 
 	list := httptest.NewRecorder()
 	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/outbounds/http-pool?country=FR", nil))
@@ -467,7 +467,7 @@ func TestHTTPSProxyPoolImportsHTTPOutbound(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(store), web.WithHTTPSPoolURL(upstream.URL))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithHTTPSPoolURL(upstream.URL))
 
 	list := httptest.NewRecorder()
 	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/outbounds/https-pool?country=US", nil))
@@ -505,14 +505,14 @@ func TestHTTPProxyPoolCacheRefreshesWhenURLChanges(t *testing.T) {
 	}))
 	defer second.Close()
 
-	firstRouter := web.NewRouter(web.WithHTTPPoolURL(first.URL))
+	firstRouter := web.NewRouter(web.WithAutoCoreApply(false), web.WithHTTPPoolURL(first.URL))
 	firstResp := httptest.NewRecorder()
 	firstRouter.ServeHTTP(firstResp, httptest.NewRequest(http.MethodGet, "/api/outbounds/http-pool", nil))
 	if firstResp.Code != http.StatusOK || !strings.Contains(firstResp.Body.String(), `"address":"198.51.100.10"`) {
 		t.Fatalf("expected first upstream response, got %d: %s", firstResp.Code, firstResp.Body.String())
 	}
 
-	secondRouter := web.NewRouter(web.WithHTTPPoolURL(second.URL))
+	secondRouter := web.NewRouter(web.WithAutoCoreApply(false), web.WithHTTPPoolURL(second.URL))
 	secondResp := httptest.NewRecorder()
 	secondRouter.ServeHTTP(secondResp, httptest.NewRequest(http.MethodGet, "/api/outbounds/http-pool", nil))
 	if secondResp.Code != http.StatusOK || !strings.Contains(secondResp.Body.String(), `"address":"203.0.113.20"`) {
@@ -532,7 +532,7 @@ func TestOutboundsAPIListsDefaultsAndCreatesOutbound(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 
 	list := httptest.NewRecorder()
 	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/outbounds", nil))
@@ -588,7 +588,7 @@ func TestUpdateOutboundAPIUpdatesFields(t *testing.T) {
 		t.Fatalf("create outbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"tag":"proxy-http-v2","remark":"HTTP代理v2","protocol":"socks","address":"10.0.0.2","port":1080,"username":"newuser","password":"newpass","enabled":false}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), bytes.NewReader(payload))
@@ -637,7 +637,7 @@ func TestUpdateOutboundAPIProtectsSubscriptionNodeConnectionFields(t *testing.T)
 			target = outbound
 		}
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"tag":"changed","remark":"可改备注","protocol":"socks","address":"127.0.0.1","port":1080,"username":"sam","password":"secret","enabled":false,"settings_json":"{\"security\":\"none\"}"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(target.ID, 10), bytes.NewReader(payload))
@@ -665,7 +665,7 @@ func TestUpdateOutboundAPIProtectsSubscriptionNodeConnectionFields(t *testing.T)
 
 func TestCreateOutboundAPIDoesNotCreateSpoofedSubscriptionNode(t *testing.T) {
 	store := openWebTestStore(t)
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"tag":"spoofed-sub","protocol":"socks","address":"127.0.0.1","port":1080,"source":"subscription","subscription_id":42,"subscription_identity":"fake","raw_link":"trojan://fake"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/outbounds", bytes.NewReader(payload))
@@ -706,7 +706,7 @@ func TestUpdateOutboundAPIRejectsEnablingDisabledSubscriptionNode(t *testing.T) 
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: false}); err != nil {
 		t.Fatalf("disable subscription: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"tag":"sub1-a","remark":"a","protocol":"trojan","address":"example.com","port":443,"password":"pw","enabled":true}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(target.ID, 10), bytes.NewReader(payload))
@@ -739,7 +739,7 @@ func TestUpdateOutboundAPIKeepsSettingsJSONWhenOmitted(t *testing.T) {
 		t.Fatalf("create outbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"tag":"proxy-vless-v2","remark":"VLESS代理v2","protocol":"vless","address":"example.org","port":443,"username":"11111111-1111-4111-8111-111111111111","password":"","enabled":true}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), bytes.NewReader(payload))
@@ -778,7 +778,7 @@ func TestUpdateOutboundAPIClearsSettingsJSONWhenExplicitEmpty(t *testing.T) {
 		t.Fatalf("create outbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"tag":"proxy-vless-v2","remark":"VLESS代理v2","protocol":"vless","address":"example.org","port":443,"username":"11111111-1111-4111-8111-111111111111","password":"","enabled":true,"settings_json":""}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), bytes.NewReader(payload))
@@ -812,7 +812,7 @@ func TestUpdateOutboundAPIRejectsUnknownID(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"tag":"x","remark":"x","protocol":"socks","address":"1.1.1.1","port":80}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/outbounds/99999", bytes.NewReader(payload))
@@ -824,7 +824,7 @@ func TestUpdateOutboundAPIRejectsUnknownID(t *testing.T) {
 }
 
 func TestOutboundSubscriptionPreviewShowsSkippedLinks(t *testing.T) {
-	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(openWebTestStore(t)))
 	payload := strings.NewReader(`{"body":"trojan://secret@example.com:443#ok\nvmess://eyJhZGQiOiJleGFtcGxlLmNvbSJ9"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/preview", payload)
@@ -841,7 +841,7 @@ func TestOutboundSubscriptionPreviewShowsSkippedLinks(t *testing.T) {
 }
 
 func TestOutboundSubscriptionPreviewShowsSkippedWhenAllLinksUnsupported(t *testing.T) {
-	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(openWebTestStore(t)))
 	payload := strings.NewReader(`{"body":"vmess://eyJhZGQiOiJleGFtcGxlLmNvbSJ9"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/preview", payload)
@@ -863,7 +863,7 @@ func TestRefreshOutboundSubscriptionRejectsDisabledSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create subscription: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10)+"/refresh", nil))
 	if response.Code != http.StatusBadGateway {
@@ -926,7 +926,7 @@ func TestReEnableOutboundSubscriptionReturnsNeedsRefreshAndKeepsNodesDisabled(t 
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", TagPrefix: "sub1-", Enabled: false}); err != nil {
 		t.Fatalf("disable subscription: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10), strings.NewReader(`{"remark":"sub","url":"https://example.com/sub","tag_prefix":"sub1-","update_interval_seconds":600,"enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -958,7 +958,7 @@ func (f staticSubscriptionFetcher) Fetch(context.Context, string, bool) ([]byte,
 	return []byte(f.body), nil
 }
 
-func TestOutboundSubscriptionRefresherMarksPendingWithoutApplying(t *testing.T) {
+func TestOutboundSubscriptionRefresherMarksPendingWhenAutoApplyDisabled(t *testing.T) {
 	store := openWebTestStore(t)
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
 		t.Fatalf("create xray inbound: %v", err)
@@ -976,6 +976,7 @@ func TestOutboundSubscriptionRefresherMarksPendingWithoutApplying(t *testing.T) 
 		Store:   store,
 		Fetcher: staticSubscriptionFetcher{body: "trojan://secret@example.com:443#node"},
 		Options: []web.Option{
+			web.WithAutoCoreApply(false),
 			web.WithXrayController(controller),
 			web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 				singboxApplyCalls++
@@ -1013,10 +1014,11 @@ func TestOutboundSubscriptionRefresherDoesNotMarkPendingWhenContentUnchanged(t *
 	if err != nil {
 		t.Fatalf("create subscription: %v", err)
 	}
+	controller := &fakeXrayController{}
 	refresher := web.OutboundSubscriptionRefresher{
 		Store:   store,
 		Fetcher: staticSubscriptionFetcher{body: "trojan://secret@example.com:443#node"},
-		Options: []web.Option{web.WithXrayController(&fakeXrayController{})},
+		Options: []web.Option{web.WithAutoCoreApply(false), web.WithXrayController(controller)},
 	}
 
 	if err := refresher.RefreshOutboundSubscription(context.Background(), sub.ID); err != nil {
@@ -1028,12 +1030,97 @@ func TestOutboundSubscriptionRefresherDoesNotMarkPendingWhenContentUnchanged(t *
 	if err := refresher.RefreshOutboundSubscription(context.Background(), sub.ID); err != nil {
 		t.Fatalf("unchanged refresh: %v", err)
 	}
+	if controller.applyCalls.Load() != 0 {
+		t.Fatalf("unchanged refresh must not auto apply, got %d calls", controller.applyCalls.Load())
+	}
 	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
 	if err != nil {
 		t.Fatalf("get apply state: %v", err)
 	}
 	if !found || state.PendingDirty {
 		t.Fatalf("unchanged refresh should not mark pending, found=%v state=%+v", found, state)
+	}
+}
+
+func TestOutboundSubscriptionRefresherWithAutoApplyDoesNotApplyWhenContentUnchanged(t *testing.T) {
+	origApplyLock := paths.ApplyLock
+	paths.ApplyLock = filepath.Join(t.TempDir(), "apply.lock")
+	t.Cleanup(func() { paths.ApplyLock = origApplyLock })
+
+	store := openWebTestStore(t)
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create xray inbound: %v", err)
+	}
+	sub, err := store.CreateOutboundSubscription(context.Background(), db.CreateOutboundSubscriptionParams{Remark: "sub", URL: "https://example.com/sub", Enabled: true})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	var generatedHash atomic.Value
+	var applyCalls atomic.Int32
+	applyCalled := make(chan struct{}, 2)
+	controller := &blockingXrayController{
+		applyFn: func(ctx context.Context) web.XrayApplyResult {
+			applyCalls.Add(1)
+			applyCalled <- struct{}{}
+			hash := waitAtomicString(ctx, &generatedHash)
+			return web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", AppliedHash: hash, CommandsExecuted: []string{"xray test", "restart"}}
+		},
+	}
+	refresher := web.OutboundSubscriptionRefresher{
+		Store:   store,
+		Fetcher: staticSubscriptionFetcher{body: "trojan://secret@example.com:443#node"},
+		Options: []web.Option{web.WithXrayController(controller)},
+	}
+
+	if err := refresher.RefreshOutboundSubscription(context.Background(), sub.ID); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+	config, err := xray.BuildConfigWithOutbounds(mustListInbounds(t, store), mustListOutbounds(t, store), mustListRules(t, store))
+	if err != nil {
+		t.Fatalf("build generated config: %v", err)
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal generated config: %v", err)
+	}
+	generatedHash.Store(hashJSONBytes(t, raw))
+	waitForCondition(t, 2*time.Second, func() bool {
+		state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+		return err == nil && found && !state.PendingDirty && strings.TrimSpace(state.LastAppliedHash) != ""
+	})
+	if applyCalls.Load() != 1 {
+		t.Fatalf("initial refresh should auto apply once, got %d calls", applyCalls.Load())
+	}
+	select {
+	case <-applyCalled:
+	default:
+		t.Fatalf("initial refresh should signal one auto apply call")
+	}
+	initialState, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+	if err != nil {
+		t.Fatalf("get initial apply state: %v", err)
+	}
+	if !found || initialState.PendingDirty || strings.TrimSpace(initialState.LastAppliedHash) == "" {
+		t.Fatalf("initial auto apply should record clean state, found=%v state=%+v", found, initialState)
+	}
+
+	if err := refresher.RefreshOutboundSubscription(context.Background(), sub.ID); err != nil {
+		t.Fatalf("unchanged refresh: %v", err)
+	}
+	select {
+	case <-applyCalled:
+		t.Fatalf("unchanged refresh must not enqueue another auto apply, got %d calls", applyCalls.Load())
+	case <-time.After(100 * time.Millisecond):
+	}
+	if applyCalls.Load() != 1 {
+		t.Fatalf("unchanged refresh must not enqueue another auto apply, got %d calls", applyCalls.Load())
+	}
+	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+	if err != nil {
+		t.Fatalf("get apply state: %v", err)
+	}
+	if !found || state.PendingDirty || state.LastAppliedHash != initialState.LastAppliedHash {
+		t.Fatalf("unchanged refresh should keep clean applied state, found=%v state=%+v initial=%+v", found, state, initialState)
 	}
 }
 
@@ -1128,7 +1215,7 @@ func TestRefreshOutboundSubscriptionHTTPDoesNotReMarkPendingWhenUnchanged(t *tes
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 		t.Fatalf("update subscription url: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 	refreshPath := "/api/outbound-subscriptions/" + strconv.FormatInt(sub.ID, 10) + "/refresh"
 
 	first := httptest.NewRecorder()
@@ -1192,7 +1279,7 @@ func TestRefreshOutboundSubscriptionHTTPReturnsExistingPendingWhenUnchanged(t *t
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 		t.Fatalf("update subscription url: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 	refreshPath := "/api/outbound-subscriptions/" + strconv.FormatInt(sub.ID, 10) + "/refresh"
 
 	first := httptest.NewRecorder()
@@ -1240,7 +1327,7 @@ func TestRefreshAllOutboundSubscriptionsReturnsExistingPendingWhenUnchanged(t *t
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 		t.Fatalf("update subscription url: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 
 	first := httptest.NewRecorder()
 	router.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/refresh", nil))
@@ -1284,7 +1371,7 @@ func TestRefreshOutboundSubscriptionHTTPReturnsExistingPendingWithoutRemainingXr
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 		t.Fatalf("update subscription url: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 	refreshPath := "/api/outbound-subscriptions/" + strconv.FormatInt(sub.ID, 10) + "/refresh"
 
 	first := httptest.NewRecorder()
@@ -1344,7 +1431,7 @@ func TestRefreshOutboundSubscriptionHTTPReturnsExistingPendingWithoutRemainingSi
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 		t.Fatalf("update subscription url: %v", err)
 	}
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithXrayController(&fakeXrayController{}),
 		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
@@ -1412,7 +1499,7 @@ func TestRefreshAllOutboundSubscriptionsReturnsExistingPendingWithoutRemainingCo
 		if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 			t.Fatalf("update subscription url: %v", err)
 		}
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 
 		first := httptest.NewRecorder()
 		router.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/refresh", nil))
@@ -1463,7 +1550,7 @@ func TestRefreshAllOutboundSubscriptionsReturnsExistingPendingWithoutRemainingCo
 		if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 			t.Fatalf("update subscription url: %v", err)
 		}
-		router := web.NewRouter(
+		router := web.NewRouter(web.WithAutoCoreApply(false),
 			web.WithStore(store),
 			web.WithXrayController(&fakeXrayController{}),
 			web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
@@ -1523,7 +1610,7 @@ func TestRefreshOutboundSubscriptionHTTPKeepsPendingWhenChanged(t *testing.T) {
 	if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 		t.Fatalf("update subscription url: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 	refreshPath := "/api/outbound-subscriptions/" + strconv.FormatInt(sub.ID, 10) + "/refresh"
 
 	first := httptest.NewRecorder()
@@ -1583,7 +1670,7 @@ func TestRefreshOutboundSubscriptionHTTPReturnsHashMismatchPendingWhenUnchanged(
 		if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 			t.Fatalf("update subscription url: %v", err)
 		}
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 		refreshPath := "/api/outbound-subscriptions/" + strconv.FormatInt(sub.ID, 10) + "/refresh"
 
 		first := httptest.NewRecorder()
@@ -1640,7 +1727,7 @@ func TestRefreshOutboundSubscriptionHTTPReturnsHashMismatchPendingWhenUnchanged(
 		if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 			t.Fatalf("update subscription url: %v", err)
 		}
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
 		refreshPath := "/api/outbound-subscriptions/" + strconv.FormatInt(sub.ID, 10) + "/refresh"
 
 		first := httptest.NewRecorder()
@@ -1694,13 +1781,13 @@ func TestRefreshOutboundSubscriptionHTTPReturnsBuildFailedPendingWhenUnchanged(t
 		if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 			t.Fatalf("update subscription url: %v", err)
 		}
-		okRouter := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+		okRouter := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 		first := httptest.NewRecorder()
 		okRouter.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10)+"/refresh", nil))
 		if first.Code != http.StatusOK {
 			t.Fatalf("expected first refresh 200, got %d: %s", first.Code, first.Body.String())
 		}
-		router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}), web.WithXrayController(&fakeXrayController{}))
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&xrayBuildFailingStore{Store: store}), web.WithXrayController(&fakeXrayController{}))
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10)+"/refresh", nil))
 		if response.Code != http.StatusOK {
@@ -1734,13 +1821,13 @@ func TestRefreshOutboundSubscriptionHTTPReturnsBuildFailedPendingWhenUnchanged(t
 		if _, err := store.UpdateOutboundSubscription(context.Background(), sub.ID, db.UpdateOutboundSubscriptionParams{Remark: "sub", URL: server.URL, Enabled: true, AllowPrivate: true}); err != nil {
 			t.Fatalf("update subscription url: %v", err)
 		}
-		okRouter := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
+		okRouter := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
 		first := httptest.NewRecorder()
 		okRouter.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10)+"/refresh", nil))
 		if first.Code != http.StatusOK {
 			t.Fatalf("expected first refresh 200, got %d: %s", first.Code, first.Body.String())
 		}
-		router := web.NewRouter(web.WithStore(&singboxBuildFailingStore{Store: store}), web.WithXrayController(&fakeXrayController{}), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&singboxBuildFailingStore{Store: store}), web.WithXrayController(&fakeXrayController{}), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/outbound-subscriptions/"+strconv.FormatInt(sub.ID, 10)+"/refresh", nil))
 		if response.Code != http.StatusOK {
@@ -1804,7 +1891,7 @@ func TestDeleteOutboundAPIDeletesOutbound(t *testing.T) {
 		t.Fatalf("create outbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), nil)
 	router.ServeHTTP(response, req)
@@ -1829,7 +1916,7 @@ func TestDeleteOutboundAPIRejectsUnknownID(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/outbounds/99999", nil)
 	router.ServeHTTP(response, req)
@@ -1866,7 +1953,7 @@ func TestDeleteOutboundAPIReportsListFailureBeforeDelete(t *testing.T) {
 	}
 
 	failingStore := &listOutboundsFailingStore{Store: store}
-	router := web.NewRouter(web.WithStore(failingStore))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(failingStore))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/outbounds/"+strconv.FormatInt(ob.ID, 10), nil)
 	router.ServeHTTP(response, req)
@@ -1950,7 +2037,7 @@ func TestRoutingRulesAPICRUD(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "socks-in", Protocol: "socks", Port: 2080, Network: "tcp", Security: "none"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 
 	// GET: empty list
 	listResp := httptest.NewRecorder()
@@ -2037,7 +2124,7 @@ func TestDeleteRoutingRuleAPIReportsListFailureBeforeDelete(t *testing.T) {
 	}
 
 	failingStore := &listRoutingRulesFailingStore{Store: store}
-	router := web.NewRouter(web.WithStore(failingStore))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(failingStore))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/routing-rules/"+strconv.FormatInt(rule.ID, 10), nil)
 	router.ServeHTTP(response, req)
@@ -2062,7 +2149,7 @@ func TestUpdateRoutingRuleAPIReportsListFailureBeforeUpdate(t *testing.T) {
 	}
 
 	failingStore := &listRoutingRulesFailingStore{Store: store}
-	router := web.NewRouter(web.WithStore(failingStore))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(failingStore))
 	response := httptest.NewRecorder()
 	body := `{"outbound_id":1,"outbound_tag":"direct","domain":"example.org","enabled":false}`
 	req := httptest.NewRequest(http.MethodPut, "/api/routing-rules/"+strconv.FormatInt(rule.ID, 10), strings.NewReader(body))
@@ -2084,7 +2171,7 @@ func TestCreateRoutingRuleReportsSingboxListFailureInResponse(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&listInboundsFailingStore{Store: store}))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/routing-rules", strings.NewReader(`{"outbound_id":1,"outbound_tag":"direct","domain":"example.com","enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -2117,7 +2204,7 @@ func TestRoutingRuleUpdateMarksSingboxPendingWithoutApplying(t *testing.T) {
 		t.Fatalf("create routing rule: %v", err)
 	}
 	var singboxApplyCalls int
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 			singboxApplyCalls++
@@ -2164,7 +2251,7 @@ func TestInboundsAPIListsStoredInboundsWithClients(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/inbounds", nil)
 	router.ServeHTTP(response, req)
@@ -2207,7 +2294,7 @@ func TestCreateInboundPersistsHysteria2MPortForWebUILink(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := map[string]any{
 		"remark":            "hy2-link",
 		"protocol":          "hysteria2",
@@ -2251,7 +2338,7 @@ func TestCreateSingboxInboundMarksPendingWithoutApplying(t *testing.T) {
 	}
 	defer store.Close()
 	var applyCalls int
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 		applyCalls++
 		return web.SingboxApplySummary{Applied: false, Error: "singbox_not_installed", Detail: "singbox_not_installed", Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{}}
 	}))
@@ -2291,7 +2378,7 @@ func TestCreateSingboxInboundReportsApplyFailureWithCreatedObject(t *testing.T) 
 	}
 	defer store.Close()
 	var applyCalls int
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 		applyCalls++
 		return web.SingboxApplySummary{Applied: false, Error: "singbox_apply_failed", Detail: "config check failed", Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{}}
 	}))
@@ -2333,7 +2420,7 @@ func TestCreateSingboxClientReportsApplyFailureWithCreatedObject(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	var applyCalls int
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 		applyCalls++
 		return web.SingboxApplySummary{Applied: false, Error: "singbox_apply_failed", Detail: "restart failed", Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{}}
 	}))
@@ -2397,7 +2484,7 @@ func TestUpdateAndDeleteSingboxInboundReportApplyFailure(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	var applyCalls int
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 		applyCalls++
 		return failedSingboxSummary("inbound apply failed")
 	}))
@@ -2444,7 +2531,7 @@ func TestUpdateInboundFromSingboxToXrayStillReportsSingboxApplyFailure(t *testin
 		t.Fatalf("create inbound: %v", err)
 	}
 	var calls int
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 		calls++
 		if !strict {
 			t.Fatal("sing-box inbound migration must use strict apply")
@@ -2488,7 +2575,7 @@ func TestUpdateToggleAndDeleteSingboxClientReportApplyFailure(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	var applyCalls int
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 		applyCalls++
 		return failedSingboxSummary("client apply failed")
 	}))
@@ -2501,7 +2588,7 @@ func TestUpdateToggleAndDeleteSingboxClientReportApplyFailure(t *testing.T) {
 		body   string
 		want   string
 	}{
-		{name: "update", method: http.MethodPut, path: base, body: `{"email":"new@example.com","enabled":true}`, want: `"client":`},
+		{name: "update", method: http.MethodPut, path: base, body: `{"email":"old@example.com","credential_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","password":"secret2","enabled":true}`, want: `"client":`},
 		{name: "toggle", method: http.MethodPatch, path: base + "/enabled", body: `{"enabled":false}`, want: `"client":`},
 		{name: "delete", method: http.MethodDelete, path: base, body: ``, want: `"status":"deleted"`},
 	} {
@@ -2543,7 +2630,7 @@ func TestOutboundAndRoutingWritesReportSingboxApplyFailure(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	var applyCalls int
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 		applyCalls++
 		return failedSingboxSummary("shared apply failed")
 	}))
@@ -2594,7 +2681,7 @@ func TestCoreWriteApplyScopeDoesNotApplyUnrelatedCore(t *testing.T) {
 		}
 		xrayCtrl := &fakeXrayController{}
 		var singboxCalls int
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 			singboxCalls++
 			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{"sing-box check"}}
 		}))
@@ -2626,7 +2713,7 @@ func TestCoreWriteApplyScopeDoesNotApplyUnrelatedCore(t *testing.T) {
 		defer store.Close()
 		xrayCtrl := &fakeXrayController{}
 		var singboxCalls int
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 			singboxCalls++
 			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{"sing-box check"}}
 		}))
@@ -2663,7 +2750,7 @@ func TestOutboundAndRoutingApplyScopeFollowsAffectedCores(t *testing.T) {
 		}
 		xrayCtrl := &fakeXrayController{}
 		var singboxCalls int
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 			singboxCalls++
 			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{"sing-box check"}}
 		}))
@@ -2696,7 +2783,7 @@ func TestOutboundAndRoutingApplyScopeFollowsAffectedCores(t *testing.T) {
 		}
 		xrayCtrl := &fakeXrayController{}
 		var singboxCalls int
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(xrayCtrl), web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
 			singboxCalls++
 			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", CommandsExecuted: []string{"sing-box check"}}
 		}))
@@ -2862,7 +2949,7 @@ func TestCreateInboundAPIStoresInbound(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"remark":"新入口","protocol":"trojan","port":9443,"network":"tcp","security":"tls"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
@@ -2895,7 +2982,7 @@ func TestCreateInboundAPIStoresXHTTPFieldsFromJSON(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"remark":"XHTTP入口","protocol":"vless","port":30040,"network":"xhttp","security":"reality","reality_dest":"www.cloudflare.com:443","reality_server_names":"www.cloudflare.com","xhttp_path":"/migate-xhttp","xhttp_mode":"stream-one"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
@@ -2928,7 +3015,7 @@ func TestCreateInboundAPIRejectsUnsupportedProtocol(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"remark":"unsupported","protocol":"` + join("open", "vpn") + `","port":1194,"network":"udp"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", bytes.NewReader(payload))
@@ -2961,7 +3048,7 @@ func TestCreateClientAPIStoresClientUnderInbound(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"email":"client@example.com"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients", bytes.NewReader(payload))
@@ -2993,7 +3080,7 @@ func TestCreateClientAPIRejectsUnknownInbound(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	payload := []byte(`{"email":"ghost@example.com"}`)
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds/999/clients", bytes.NewReader(payload))
@@ -3020,7 +3107,7 @@ func TestXrayConfigAPIProducesPreviewFromStoredInbounds(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/xray/config", nil)
 	router.ServeHTTP(response, req)
@@ -3060,7 +3147,7 @@ func TestXrayConfigAPIRendersAdvancedRoutingFields(t *testing.T) {
 		t.Fatalf("create routing rule: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
 	if response.Code != http.StatusOK {
@@ -3087,7 +3174,7 @@ func TestSingboxConfigAPISeparatesDiskConfigAndGeneratedPreview(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/config", nil))
 
@@ -3117,7 +3204,7 @@ func TestConfigValidateAPIsReturnStructuredResults(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21001, Network: "udp", Security: "tls"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 
 	xrayResp := httptest.NewRecorder()
 	router.ServeHTTP(xrayResp, httptest.NewRequest(http.MethodGet, "/api/xray/validate", nil))
@@ -3159,7 +3246,7 @@ func TestConfigValidateAPIsIncludeManagementDirectRuntimeOptions(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "panel.json"), []byte(panel), 0o600); err != nil {
 		t.Fatalf("write panel config: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir))
 
 	var xrayConfig xray.Config
 	getJSON(t, router, "/api/xray/config", &xrayConfig)
@@ -3216,7 +3303,7 @@ func TestConfigValidateAPIsIncludeManagementDirectRuntimeOptions(t *testing.T) {
 }
 
 func TestConfigValidateAPIReturnsStructuredInvalidResult(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithAutoCoreApply(false))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/validate", nil))
 	if response.Code != http.StatusOK {
@@ -3346,7 +3433,7 @@ func TestSubscriptionEndpointReturnsClientShareLink(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	if client.SubscriptionToken == "" {
 		t.Fatal("created client should have independent subscription token")
@@ -3381,7 +3468,7 @@ func TestSubscriptionEndpointRejectsClientUUIDFallback(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.UUID, nil)
 	req.Host = "panel.example.com"
@@ -3407,7 +3494,7 @@ func TestSubscriptionEndpointUsesConfiguredPublicHostOverRequestHost(t *testing.
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store), web.WithPublicHost("public.example.com"))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithPublicHost("public.example.com"))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "evil.example.net"
@@ -3440,7 +3527,7 @@ func TestSubscriptionEndpointNormalizesPublicHostURL(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store), web.WithPublicHost("https://public.example.com/panel"))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithPublicHost("https://public.example.com/panel"))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "evil.example.net"
@@ -3470,7 +3557,7 @@ func TestSubscriptionEndpointStripsPublicHostPort(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store), web.WithPublicHost("public.example.com:8443"))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithPublicHost("public.example.com:8443"))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "evil.example.net"
@@ -3500,7 +3587,7 @@ func TestSubscriptionEndpointSanitizesHostFallback(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "evil.example.com/path"
@@ -3530,7 +3617,7 @@ func TestSubscriptionEndpointStripsPanelPortBeforeAppendingInboundPort(t *testin
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "127.0.0.1:9999"
@@ -3564,7 +3651,7 @@ func TestSubscriptionEndpointStripsDomainPanelPortBeforeAppendingInboundPort(t *
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com:9999"
@@ -3598,7 +3685,7 @@ func TestSubscriptionEndpointBracketsIPv6Host(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "[2001:db8::1]:9999"
@@ -3638,7 +3725,7 @@ func TestSubscriptionHysteria2DefaultGeneratedTLSLink(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
@@ -3675,7 +3762,7 @@ func TestStatsMarksSingBoxClientTrafficAsWaitingBeforeFirstSample(t *testing.T) 
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
 	if response.Code != http.StatusOK {
@@ -3748,7 +3835,7 @@ func TestStatsAPIUsesRealtimeTrafficAsCurrentWhenAvailable(t *testing.T) {
 	}
 	seedClientTraffic(t, store, client, 1234, 5678)
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
 	if response.Code != http.StatusOK {
@@ -3779,7 +3866,7 @@ func TestStatsAPIDefaultIsSummaryOnlyAndCached(t *testing.T) {
 	seedClientTraffic(t, store, client, 12, 34)
 
 	calls := 0
-	router := web.NewRouter(web.WithStore(store), web.WithStatsClient(fixedStatsClient{calls: &calls}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithStatsClient(fixedStatsClient{calls: &calls}))
 	for i := 0; i < 2; i++ {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
@@ -3852,7 +3939,7 @@ func TestDashboardSummaryAPIReportsHealthAndValidationSnapshot(t *testing.T) {
 		t.Fatalf("seed outbound traffic increment: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
 	if response.Code != http.StatusOK {
@@ -3899,7 +3986,7 @@ func TestDashboardSummaryDoesNotRegressBelowStoredTraffic(t *testing.T) {
 	}
 	seedClientTraffic(t, store, client, 100, 50)
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/summary", nil))
 	if response.Code != http.StatusOK {
@@ -3937,7 +4024,7 @@ func TestTrafficAPIsKeepStoredSourceWhenStoredTrafficIsHigherThanRealtime(t *tes
 	}
 	seedClientTraffic(t, store, client, 100, 50)
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 
 	statsResponse := httptest.NewRecorder()
 	router.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, "/api/stats?detail=1", nil))
@@ -4017,7 +4104,7 @@ func TestTrafficAPIsExposeConsistentPartialWaitingState(t *testing.T) {
 		t.Fatalf("mark waiting: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	summary := httptest.NewRecorder()
 	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/traffic/summary", nil))
 	if summary.Code != http.StatusNotFound {
@@ -4058,7 +4145,7 @@ func TestTrafficAPIsExposeUnavailableStateAfterXrayQueryFailure(t *testing.T) {
 		t.Fatalf("mark unavailable: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	summary := httptest.NewRecorder()
 	router.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/traffic/summary", nil))
 	if summary.Code != http.StatusNotFound {
@@ -4090,7 +4177,7 @@ func TestTrafficAnalyticsAPIUsesTrafficSamples(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(context.Background(), raw(30, 60), t0.Add(time.Minute)); err != nil {
 		t.Fatalf("increment sample: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h", nil))
 	if response.Code != http.StatusOK {
@@ -4147,7 +4234,7 @@ func TestTrafficAnalyticsAPIFiltersExpectedEnginesAndAggregatesByTime(t *testing
 	}, t0.Add(time.Minute)); err != nil {
 		t.Fatalf("increment samples: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h", nil))
 	if response.Code != http.StatusOK {
@@ -4204,7 +4291,7 @@ func TestTrafficAnalyticsAPIUsesExpectedEngineFilter(t *testing.T) {
 	}, t0.Add(time.Minute)); err != nil {
 		t.Fatalf("increment samples: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	analytics := httptest.NewRecorder()
 	router.ServeHTTP(analytics, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h", nil))
 	if analytics.Code != http.StatusOK {
@@ -4250,7 +4337,7 @@ func TestTrafficAnalyticsParameterValidationIsExplicit(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 101, RawDown: 102, Status: "ok"}}, t0.Add(time.Minute)); err != nil {
 		t.Fatalf("increment: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	ok := httptest.NewRecorder()
 	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/analytics?scope_type=client&range=1h&top=10", nil))
 	if ok.Code != http.StatusOK {
@@ -4277,7 +4364,7 @@ func TestLegacyTrafficRoutesAreRemoved(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	for _, path := range []string{
 		"/api/traffic/summary",
 		"/api/traffic/inbounds",
@@ -4310,7 +4397,7 @@ func TestInboundsAPIDoesNotExposeTrafficFieldsWhenTrafficExists(t *testing.T) {
 	}
 	seedClientTraffic(t, store, client, 222, 333)
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/inbounds", nil))
 	if response.Code != http.StatusOK {
@@ -4361,7 +4448,7 @@ func TestSubscriptionVLESSXHTTPRealityOmitsVisionFlow(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "103.193.149.217:9999"
@@ -4388,7 +4475,7 @@ func TestSubscriptionEndpointRejectsUnknownClient(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/missing", nil)
 	router.ServeHTTP(response, req)
@@ -4416,7 +4503,7 @@ func TestSubscriptionVlessFormat(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
@@ -4459,7 +4546,7 @@ func TestSubscriptionVmessReturnsBase64JSON(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
@@ -4515,7 +4602,7 @@ func TestSubscriptionTrojanReturnsTrojanLink(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
@@ -4555,7 +4642,7 @@ func TestSubscriptionShadowsocksReturnsSSLink(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
@@ -4615,7 +4702,7 @@ func TestSubscriptionTUICKeepsUserinfoSeparator(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	req.Host = "panel.example.com"
@@ -4658,7 +4745,7 @@ func TestSubscriptionUserinfoEscapesReservedCharacters(t *testing.T) {
 		t.Fatalf("create hy2 client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	for _, tc := range []struct {
 		token string
 		want  string
@@ -4693,7 +4780,7 @@ func TestUpdateInboundAPIUpdatesFields(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	body := `{"remark":"new","port":8443,"network":"ws","security":"tls","enabled":false}`
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), bytes.NewReader([]byte(body)))
@@ -4734,7 +4821,7 @@ func TestPatchInboundEnabledAPIPartiallyUpdatesEnabledOnly(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/enabled", bytes.NewReader([]byte(`{"enabled":false}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -4777,7 +4864,7 @@ func TestPatchClientEnabledAPIPartiallyUpdatesEnabledOnly(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10)+"/enabled", bytes.NewReader([]byte(`{"enabled":false}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -4822,7 +4909,7 @@ func TestPatchClientEnabledAPIRejectsClientOutsideInbound(t *testing.T) {
 		t.Fatalf("create client b: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/api/inbounds/"+strconv.FormatInt(inboundA.ID, 10)+"/clients/"+strconv.FormatInt(clientB.ID, 10)+"/enabled", bytes.NewReader([]byte(`{"enabled":false}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -4869,7 +4956,7 @@ func TestResetClientTrafficAPIRejectsClientOutsideInbound(t *testing.T) {
 		t.Fatalf("increment traffic: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds/"+strconv.FormatInt(inboundA.ID, 10)+"/clients/"+strconv.FormatInt(clientB.ID, 10)+"/reset-traffic", nil)
 	router.ServeHTTP(response, req)
@@ -4892,7 +4979,7 @@ func TestUpdateInboundAPIRejectsUnknownInbound(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	body := `{"remark":"new","port":8443,"network":"tcp","security":"none","enabled":true}`
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/99999", bytes.NewReader([]byte(body)))
@@ -4905,7 +4992,7 @@ func TestUpdateInboundAPIRejectsUnknownInbound(t *testing.T) {
 }
 
 func TestUpdateInboundAPIWithoutStoreReturnsUnavailable(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithAutoCoreApply(false))
 	body := `{"remark":"new","port":8443,"network":"tcp","security":"none","enabled":true}`
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/1", bytes.NewReader([]byte(body)))
@@ -4940,7 +5027,7 @@ func TestUpdateInboundAPIRejectsUnknownInboundBeforeUpdate(t *testing.T) {
 	defer store.Close()
 
 	recordingStore := &updateInboundRecordingStore{Store: store}
-	router := web.NewRouter(web.WithStore(recordingStore))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(recordingStore))
 	body := `{"remark":"new","port":8443,"network":"tcp","security":"none","enabled":true}`
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/99999", bytes.NewReader([]byte(body)))
@@ -4973,7 +5060,7 @@ func TestUpdateClientAPIUpdatesFields(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	body := `{"email":"new@test.com","enabled":false}`
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10), bytes.NewReader([]byte(body)))
@@ -4998,7 +5085,7 @@ func TestUpdateClientAPIRejectsUnknownClient(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	body := `{"email":"x","enabled":true}`
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/1/clients/99999", bytes.NewReader([]byte(body)))
@@ -5007,6 +5094,298 @@ func TestUpdateClientAPIRejectsUnknownClient(t *testing.T) {
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown client, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestClientBusinessFieldsDoNotTriggerCoreSync(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		inbound        db.CreateInboundParams
+		core           string
+		updatePayload  string
+		expectedEmail  string
+		expectedUUID   string
+		expectedCredID string
+		expectedPass   string
+	}{
+		{
+			name:          "xray traffic limit",
+			inbound:       db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 28443, Network: "tcp", Security: "none"},
+			core:          db.CoreXray,
+			updatePayload: `{"email":"user@example.com","uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","enabled":true,"traffic_limit":1073741824,"expiry_at":0}`,
+			expectedEmail: "user@example.com",
+			expectedUUID:  "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		},
+		{
+			name:          "xray expiry",
+			inbound:       db.CreateInboundParams{Remark: "xray-expiry", Protocol: "vless", Port: 28444, Network: "tcp", Security: "none"},
+			core:          db.CoreXray,
+			updatePayload: `{"email":"user@example.com","uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","enabled":true,"traffic_limit":0,"expiry_at":1893456000}`,
+			expectedEmail: "user@example.com",
+			expectedUUID:  "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		},
+		{
+			name:          "singbox traffic and expiry",
+			inbound:       db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28445, Network: "udp", Security: "tls"},
+			core:          db.CoreSingbox,
+			updatePayload: `{"email":"user@example.com","password":"secret","enabled":true,"traffic_limit":1073741824,"expiry_at":1893456000}`,
+			expectedEmail: "user@example.com",
+			expectedPass:  "secret",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openWebTestStore(t)
+			inbound, err := store.CreateInbound(context.Background(), tc.inbound)
+			if err != nil {
+				t.Fatalf("create inbound: %v", err)
+			}
+			clientParams := db.CreateClientParams{InboundID: inbound.ID, Email: "user@example.com", UUID: tc.expectedUUID, CredentialID: tc.expectedCredID, Password: tc.expectedPass}
+			if clientParams.UUID == "" {
+				clientParams.UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+			}
+			if clientParams.Password == "" && tc.core == db.CoreSingbox {
+				clientParams.Password = "secret"
+			}
+			client, err := store.CreateClient(context.Background(), clientParams)
+			if err != nil {
+				t.Fatalf("create client: %v", err)
+			}
+			router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
+			resp := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10), strings.NewReader(tc.updatePayload))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(resp, req)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+			}
+			var body map[string]interface{}
+			if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body["config_changed"] != false {
+				t.Fatalf("business-only update should not change core config: %s", resp.Body.String())
+			}
+			if body["pending_apply"] != false {
+				t.Fatalf("business-only update should not return pending apply: %s", resp.Body.String())
+			}
+			changed, ok := body["changed_cores"].([]interface{})
+			if !ok || len(changed) != 0 {
+				t.Fatalf("business-only update should not report changed cores: %s", resp.Body.String())
+			}
+			state, found, err := store.GetCoreApplyState(context.Background(), tc.core)
+			if err != nil {
+				t.Fatalf("get core apply state: %v", err)
+			}
+			if found && state.PendingDirty {
+				t.Fatalf("business-only update should not dirty %s state: %+v", tc.core, state)
+			}
+		})
+	}
+}
+
+func TestClientConfigFieldsTriggerAutoCoreSync(t *testing.T) {
+	origApplyLock := paths.ApplyLock
+	paths.ApplyLock = filepath.Join(t.TempDir(), "apply.lock")
+	t.Cleanup(func() { paths.ApplyLock = origApplyLock })
+
+	store := openWebTestStore(t)
+	inbound, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 28446, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "user@example.com", UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	controller := &fakeXrayController{applyResult: &web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", AppliedHash: "auto-applied-hash", CommandsExecuted: []string{"xray test", "restart"}}}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10), strings.NewReader(`{"email":"changed@example.com","uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	for _, want := range []string{`"config_changed":true`, `"changed_cores":["xray"]`, `"auto_apply":`} {
+		if !strings.Contains(resp.Body.String(), want) {
+			t.Fatalf("response missing %q: %s", want, resp.Body.String())
+		}
+	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+		return err == nil && found && !state.PendingDirty && state.LastAppliedHash == "auto-applied-hash"
+	})
+	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+	if err != nil {
+		t.Fatalf("get core apply state: %v", err)
+	}
+	if !found || state.PendingDirty || state.LastAppliedHash != "auto-applied-hash" {
+		t.Fatalf("auto apply should record in-sync state, found=%v state=%+v", found, state)
+	}
+}
+
+func TestInboundConfigChangeAutoApplyFailureKeepsPending(t *testing.T) {
+	origApplyLock := paths.ApplyLock
+	paths.ApplyLock = filepath.Join(t.TempDir(), "apply.lock")
+	t.Cleanup(func() { paths.ApplyLock = origApplyLock })
+
+	store := openWebTestStore(t)
+	controller := &fakeXrayController{applyResult: &web.XrayApplyResult{Applied: false, Status: "failed: validation", Service: "xray", Error: "validation_failed", Detail: "bad config"}}
+	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"xray","protocol":"vless","port":28447,"network":"tcp","security":"none"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"config_changed":true`) || !strings.Contains(resp.Body.String(), `"auto_apply":`) {
+		t.Fatalf("expected auto apply to be queued: %s", resp.Body.String())
+	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+		return err == nil && found && state.PendingDirty && state.PendingReason == "validation_failed"
+	})
+	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+	if err != nil {
+		t.Fatalf("get core apply state: %v", err)
+	}
+	if !found || !state.PendingDirty || state.PendingReason != "validation_failed" {
+		t.Fatalf("failed auto apply should keep pending with failure reason, found=%v state=%+v", found, state)
+	}
+}
+
+func TestSharedConfigChangeQueuesBothCoreAutoApplyJobs(t *testing.T) {
+	origApplyLock := paths.ApplyLock
+	paths.ApplyLock = filepath.Join(t.TempDir(), "apply.lock")
+	t.Cleanup(func() { paths.ApplyLock = origApplyLock })
+
+	store := openWebTestStore(t)
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "xray", Protocol: "vless", Port: 28448, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create xray inbound: %v", err)
+	}
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 28449, Network: "udp", Security: "tls"}); err != nil {
+		t.Fatalf("create sing-box inbound: %v", err)
+	}
+	var xrayGeneratedHash atomic.Value
+	var singboxGeneratedHash atomic.Value
+	var xrayCalls atomic.Int32
+	controller := &blockingXrayController{
+		applyFn: func(ctx context.Context) web.XrayApplyResult {
+			xrayCalls.Add(1)
+			hash := waitAtomicString(ctx, &xrayGeneratedHash)
+			return web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", AppliedHash: hash, CommandsExecuted: []string{"xray test", "restart"}}
+		},
+	}
+	var singboxCalls atomic.Int32
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithXrayController(controller),
+		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
+		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			singboxCalls.Add(1)
+			hash := waitAtomicString(ctx, &singboxGeneratedHash)
+			return web.SingboxApplySummary{Applied: true, Service: "sing-box", ConfigPath: "/etc/migate/cores/sing-box.json", AppliedHash: hash, CommandsExecuted: []string{"sing-box check", "restart"}}
+		}),
+	)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/outbounds", strings.NewReader(`{"tag":"shared-socks","protocol":"socks","address":"127.0.0.1","port":1080}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.String()
+	for _, want := range []string{`"config_changed":true`, `"changed_cores":["xray","sing-box"]`, `"auto_apply":`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"auto_apply_error"`) || strings.Contains(body, `"apply_locked"`) {
+		t.Fatalf("same-save multi-core auto apply should queue, not fail on apply lock: %s", body)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	xrayResult, _ := parsed["xray"].(map[string]interface{})
+	singboxResult, _ := parsed["singbox"].(map[string]interface{})
+	xrayGeneratedHash.Store(fmt.Sprint(xrayResult["generated_hash"]))
+	singboxGeneratedHash.Store(fmt.Sprint(singboxResult["generated_hash"]))
+	waitForCondition(t, 3*time.Second, func() bool {
+		xrayState, xrayFound, xrayErr := store.GetCoreApplyState(context.Background(), db.CoreXray)
+		singState, singFound, singErr := store.GetCoreApplyState(context.Background(), db.CoreSingbox)
+		return xrayErr == nil && singErr == nil &&
+			xrayFound && singFound &&
+			xrayState.LastAppliedHash == fmt.Sprint(xrayResult["generated_hash"]) &&
+			singState.LastAppliedHash == fmt.Sprint(singboxResult["generated_hash"]) &&
+			!xrayState.PendingDirty && !singState.PendingDirty
+	})
+	if xrayCalls.Load() != 1 || singboxCalls.Load() != 1 {
+		t.Fatalf("expected both cores to auto apply once, xray=%d singbox=%d", xrayCalls.Load(), singboxCalls.Load())
+	}
+}
+
+func TestSingboxAutoApplyFailureWithoutErrorCodeKeepsPending(t *testing.T) {
+	origApplyLock := paths.ApplyLock
+	paths.ApplyLock = filepath.Join(t.TempDir(), "apply.lock")
+	t.Cleanup(func() { paths.ApplyLock = origApplyLock })
+
+	store := openWebTestStore(t)
+	var applyCalls atomic.Int32
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
+		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
+			applyCalls.Add(1)
+			return web.SingboxApplySummary{Applied: false, Service: "sing-box", Detail: "check failed"}
+		}),
+	)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"hy2","protocol":"hysteria2","port":28450,"network":"udp","security":"tls"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"config_changed":true`) || !strings.Contains(resp.Body.String(), `"auto_apply":`) {
+		t.Fatalf("expected auto apply to be queued: %s", resp.Body.String())
+	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		state, found, err := store.GetCoreApplyState(context.Background(), db.CoreSingbox)
+		return err == nil && found && state.PendingDirty && state.PendingReason == "singbox_apply_failed"
+	})
+	if applyCalls.Load() != 1 {
+		t.Fatalf("expected one sing-box auto apply call, got %d", applyCalls.Load())
+	}
+	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreSingbox)
+	if err != nil {
+		t.Fatalf("get core apply state: %v", err)
+	}
+	if !found || !state.PendingDirty || state.PendingReason != "singbox_apply_failed" {
+		t.Fatalf("failed sing-box auto apply should keep pending with fallback reason, found=%v state=%+v", found, state)
+	}
+}
+
+func waitAtomicString(ctx context.Context, value *atomic.Value) string {
+	deadline := time.NewTimer(500 * time.Millisecond)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if loaded, _ := value.Load().(string); strings.TrimSpace(loaded) != "" {
+			return loaded
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-deadline.C:
+			return ""
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -5066,7 +5445,7 @@ func TestXrayStatusAPIIsReadOnly(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "grpc", Protocol: "vless", Port: 2443, Network: "grpc", Security: "reality", GrpcServiceName: "svc"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithCertDir(t.TempDir()), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/xray/status", nil)
 	router.ServeHTTP(response, req)
@@ -5095,7 +5474,7 @@ func TestXrayStatusAPIFillsProductionConfigPathAndListeningPorts(t *testing.T) {
 	controller := &fakeXrayController{statusResult: &web.XrayStatus{
 		Service: "xray", Status: "running", Managed: true, Installed: true, Version: "Xray 26.3.27",
 	}}
-	router := web.NewRouter(web.WithConfigDir(dir), web.WithXrayConfigPath(filepath.Join(dir, "xray.json")), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithConfigDir(dir), web.WithXrayConfigPath(filepath.Join(dir, "xray.json")), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
 	if response.Code != http.StatusOK {
@@ -5124,7 +5503,7 @@ func TestXrayStatusAPIReturnsListeningPortsWithTransportDetails(t *testing.T) {
 		}
 	}
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithCertDir(t.TempDir()), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
 	if response.Code != http.StatusOK {
@@ -5170,7 +5549,7 @@ func TestXrayStatusAPIReturnsListeningPortsWithTransportDetails(t *testing.T) {
 
 func TestXrayStatusAPIUsesInjectedListenerDiagnostics(t *testing.T) {
 	controller := &fakeXrayController{}
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithXrayController(controller),
 		web.WithXrayListenerDiagnostics(func(ctx context.Context) []web.CoreListenerDiagnostic {
 			return []web.CoreListenerDiagnostic{{InboundID: 99, Protocol: "vless", Port: 29999, Network: "grpc", Transport: "tcp", GrpcServiceName: "injected", Security: "reality", Listening: true}}
@@ -5194,7 +5573,7 @@ func TestXrayStatusAPIUsesInjectedListenerDiagnostics(t *testing.T) {
 
 func TestXrayApplyAPIRejectsWithoutDoubleConfirmation(t *testing.T) {
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -5216,7 +5595,7 @@ func TestXrayApplyAPIRejectsWithoutDoubleConfirmation(t *testing.T) {
 func TestXrayApplyAPICallsControllerAfterDoubleConfirmation(t *testing.T) {
 	withTempApplyLock(t)
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -5239,7 +5618,7 @@ func TestXrayApplyAPIOmitsSingboxWhenNotNeeded(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -5257,7 +5636,7 @@ func TestXrayApplyAPIReportsSingboxDecisionReadFailure(t *testing.T) {
 	}
 	defer store.Close()
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&listInboundsFailingStore{Store: store}), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -5281,7 +5660,7 @@ func TestXrayApplyAPISkipsSingboxApplyWhenXrayFails(t *testing.T) {
 		Applied: false, Status: "failed: validation", Service: "xray", Error: "validation_failed", Detail: "invalid xray config", CommandsExecuted: []string{"xray run -test"},
 	}}
 	var applierCalls atomic.Int32
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithXrayController(controller),
 		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
@@ -5313,7 +5692,7 @@ func TestXrayApplyAPIUsesInjectedSingboxApplier(t *testing.T) {
 	}
 	controller := &fakeXrayController{}
 	var applierCalls atomic.Int32
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithXrayController(controller),
 		web.WithSingboxApplier(func(ctx context.Context, store web.Store, runtime web.SingboxRuntime, strict bool) web.SingboxApplySummary {
@@ -5360,7 +5739,7 @@ func TestXrayApplyAPIDefaultSingboxApplierReportsNotInstalled(t *testing.T) {
 	defer func() { singbox.DefaultBinaryPath = origBinary }()
 
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", bytes.NewReader([]byte(`{"confirm":true,"allow_system_changes":true}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -5390,7 +5769,7 @@ func TestSingboxStatusAPIReturnsManagedAndConfigPath(t *testing.T) {
 			restore := installFakeSingboxStatusCommands(t, tc.loadState, tc.active)
 			defer restore()
 
-			router := web.NewRouter()
+			router := web.NewRouter(web.WithAutoCoreApply(false))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/status", nil))
 			if response.Code != http.StatusOK {
@@ -5439,7 +5818,7 @@ func TestSingboxStatusAPIReturnsListeningPorts(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21080, Network: "udp", Security: "tls"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/status", nil))
 	if response.Code != http.StatusOK {
@@ -5482,7 +5861,7 @@ func TestSingboxDiagnosticsAPIReturnsStructuredResult(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "hy2", Protocol: "hysteria2", Port: 21082, Network: "udp", Security: "tls"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
 		web.WithSingboxProbe(apiTestSingboxProbe{installed: true, managed: true, service: "sing-box", status: "running", configExists: true, configValid: true}),
@@ -5534,7 +5913,7 @@ func TestSingboxApplyAPIReturnsMissingListenerWarning(t *testing.T) {
 	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-user", Password: "secret"}); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
 		web.WithSingboxListenerDiagnostics(func(ctx context.Context) []web.SingboxListenerDiagnostic {
@@ -5579,7 +5958,7 @@ func TestSingboxApplyRecordsPreApplyGeneratedHash(t *testing.T) {
 	if _, err := store.CreateClient(context.Background(), db.CreateClientParams{InboundID: inbound.ID, Email: "hy2-user", Password: "secret"}); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
 
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/singbox/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
@@ -5621,7 +6000,7 @@ func TestSingboxConfigPreviewReportsSyncState(t *testing.T) {
 		t.Fatalf("write disk config: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithSingboxRuntime(fixedWebSingboxRuntime{}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/singbox/config/preview", nil))
 	if response.Code != http.StatusOK {
@@ -5690,7 +6069,7 @@ func installFakeSingboxApplyCommands(t *testing.T) func() {
 
 func TestXrayVersionAPIReturnsVersionFromController(t *testing.T) {
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/xray/version", nil)
 	router.ServeHTTP(response, req)
@@ -6105,11 +6484,11 @@ func TestXrayConfigPreviewReportsMissingMismatchAndSync(t *testing.T) {
 	}
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "xray.json")
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath))
 
 	missing := httptest.NewRecorder()
 	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
-	if missing.Code != http.StatusOK || !strings.Contains(missing.Body.String(), `"reason":"disk_missing"`) {
+	if missing.Code != http.StatusOK || !strings.Contains(missing.Body.String(), `"reason":"disk_missing"`) || !strings.Contains(missing.Body.String(), `"pending_apply":true`) {
 		t.Fatalf("expected disk_missing preview, got %d: %s", missing.Code, missing.Body.String())
 	}
 
@@ -6118,7 +6497,7 @@ func TestXrayConfigPreviewReportsMissingMismatchAndSync(t *testing.T) {
 	}
 	mismatch := httptest.NewRecorder()
 	router.ServeHTTP(mismatch, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
-	if mismatch.Code != http.StatusOK || !strings.Contains(mismatch.Body.String(), `"reason":"hash_mismatch"`) {
+	if mismatch.Code != http.StatusOK || !strings.Contains(mismatch.Body.String(), `"reason":"hash_mismatch"`) || !strings.Contains(mismatch.Body.String(), `"pending_apply":true`) {
 		t.Fatalf("expected hash_mismatch preview, got %d: %s", mismatch.Code, mismatch.Body.String())
 	}
 
@@ -6136,15 +6515,45 @@ func TestXrayConfigPreviewReportsMissingMismatchAndSync(t *testing.T) {
 	synced := httptest.NewRecorder()
 	router.ServeHTTP(synced, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
 	if synced.Code != http.StatusOK || !strings.Contains(synced.Body.String(), `"in_sync":true`) || !strings.Contains(synced.Body.String(), `"pending_apply":false`) {
-		t.Fatalf("expected in_sync preview, got %d: %s", synced.Code, synced.Body.String())
+		t.Fatalf("expected synced disk/generated to be in sync without applied state, got %d: %s", synced.Code, synced.Body.String())
+	}
+	if _, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray); err != nil {
+		t.Fatalf("get core apply state: %v", err)
+	} else if found {
+		t.Fatalf("preview should not initialize core apply state")
+	}
+	generatedHash := generatedHashFromPreview(t, synced.Body.Bytes())
+	if err := store.MarkCoreApplied(context.Background(), db.CoreXray, generatedHash, time.Now().UTC()); err != nil {
+		t.Fatalf("mark core applied: %v", err)
+	}
+	applied := httptest.NewRecorder()
+	router.ServeHTTP(applied, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
+	if applied.Code != http.StatusOK || !strings.Contains(applied.Body.String(), `"in_sync":true`) || !strings.Contains(applied.Body.String(), `"pending_apply":false`) {
+		t.Fatalf("expected in_sync preview after applied state is recorded, got %d: %s", applied.Code, applied.Body.String())
 	}
 	_, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
 	if err != nil {
 		t.Fatalf("get core apply state: %v", err)
 	}
-	if found {
-		t.Fatalf("synced disk/generated preview must not initialize apply state")
+	if !found {
+		t.Fatalf("expected recorded apply state")
 	}
+}
+
+func generatedHashFromPreview(t *testing.T, raw []byte) string {
+	t.Helper()
+	var preview struct {
+		Generated struct {
+			Hash string `json:"hash"`
+		} `json:"generated"`
+	}
+	if err := json.Unmarshal(raw, &preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if strings.TrimSpace(preview.Generated.Hash) == "" {
+		t.Fatalf("preview missing generated hash: %s", string(raw))
+	}
+	return preview.Generated.Hash
 }
 
 func TestCorePendingDirtyKeepsPreviewAndStatusPendingWhenHashesMatch(t *testing.T) {
@@ -6168,7 +6577,7 @@ func TestCorePendingDirtyKeepsPreviewAndStatusPendingWhenHashesMatch(t *testing.
 	if err := store.MarkCorePending(context.Background(), db.CoreXray, "certificate_renewed", time.Now().UTC()); err != nil {
 		t.Fatalf("mark pending: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath), web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath), web.WithXrayController(&fakeXrayController{}))
 
 	preview := httptest.NewRecorder()
 	router.ServeHTTP(preview, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
@@ -6212,7 +6621,7 @@ func TestXrayApplyClearsPendingOnlyOnSuccess(t *testing.T) {
 			CommandsExecuted: []string{"xray run -test -c /etc/migate/cores/xray.json", "systemctl restart migate-xray"},
 			AppliedHash:      "applied-hash",
 		}}
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -6240,7 +6649,7 @@ func TestXrayApplyClearsPendingOnlyOnSuccess(t *testing.T) {
 			t.Fatalf("mark pending: %v", err)
 		}
 		controller := &fakeXrayController{applyResult: &web.XrayApplyResult{Applied: false, Status: "failed: validation", Error: "validation_failed", Detail: "bad config"}}
-		router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+		router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 		response := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -6278,7 +6687,7 @@ func TestXrayApplyRecordsPreApplyGeneratedHash(t *testing.T) {
 		return "", fmt.Errorf("unexpected command: %s %v", name, args)
 	}
 	controller := web.NewRealController(store, configPath, mockRun)
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath), web.WithXrayController(controller))
 
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
@@ -6316,7 +6725,7 @@ func TestXrayApplyAsyncTimesOutAndMarksJobFailed(t *testing.T) {
 			return web.XrayApplyResult{Applied: false, Status: "failed: timeout", Error: "apply_timeout", Detail: ctx.Err().Error()}
 		},
 	}
-	router := web.NewRouter(web.WithXrayController(blockingController), web.WithCoreApplyTimeout(50*time.Millisecond))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithXrayController(blockingController), web.WithCoreApplyTimeout(50*time.Millisecond))
 
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
@@ -6345,7 +6754,7 @@ func TestXrayApplyAsyncUpdatesJobAfterLateSuccess(t *testing.T) {
 			return web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", CommandsExecuted: []string{}}
 		},
 	}
-	router := web.NewRouter(web.WithXrayController(controller), web.WithCoreApplyTimeout(50*time.Millisecond))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithXrayController(controller), web.WithCoreApplyTimeout(50*time.Millisecond))
 
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
@@ -6383,7 +6792,7 @@ func TestXrayApplyAsyncRejectsConcurrentJobForSameCore(t *testing.T) {
 			}
 		},
 	}
-	router := web.NewRouter(web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithXrayController(controller))
 
 	first := httptest.NewRecorder()
 	req1 := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
@@ -6414,7 +6823,7 @@ func TestSingboxApplyAsyncRejectsConcurrentJobForSameCore(t *testing.T) {
 		t.Fatalf("create sing-box inbound: %v", err)
 	}
 	blockingStore := &blockingListInboundsStore{Store: store, blocked: blocked, release: release}
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(blockingStore),
 		web.WithSingboxRuntime(fixedWebSingboxRuntime{}),
 	)
@@ -6446,7 +6855,7 @@ func TestXrayWriteReturnsPendingErrorWhenGeneratedConfigFails(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&xrayBuildFailingStore{Store: store}))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"bad","protocol":"vless","port":2444,"network":"tcp","security":"none"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -6454,10 +6863,88 @@ func TestXrayWriteReturnsPendingErrorWhenGeneratedConfigFails(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("expected save 201, got %d: %s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{`"pending_apply":true`, `"pending_cores":["xray"]`, `"xray":`, `"error":"build_xray_config_failed"`} {
+	for _, want := range []string{`"pending_apply":true`, `"pending_cores":["xray"]`, `"xray":`, `"status":"pending_apply"`, `"pending_reason":"generated_build_failed"`, `"error":"build_xray_config_failed"`} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("response missing %q: %s", want, response.Body.String())
 		}
+	}
+	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+	if err != nil {
+		t.Fatalf("get core apply state: %v", err)
+	}
+	if !found || !state.PendingDirty || state.PendingReason != "build_xray_config_failed" {
+		t.Fatalf("change detection failure should mark xray pending, found=%v state=%+v", found, state)
+	}
+}
+
+func TestCorePendingResponseIncludesStatusAndDiskHash(t *testing.T) {
+	store := openWebTestStore(t)
+	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2447, Network: "tcp", Security: "none"}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "xray.json")
+	config, err := xray.BuildConfigWithOutbounds(mustListInbounds(t, store), mustListOutbounds(t, store), mustListRules(t, store))
+	if err != nil {
+		t.Fatalf("build generated config: %v", err)
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal generated config: %v", err)
+	}
+	if err := os.WriteFile(configPath, raw, 0644); err != nil {
+		t.Fatalf("write synced config: %v", err)
+	}
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath))
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"business","protocol":"vless","port":2448,"network":"tcp","security":"none","initial_client":{"email":"user@example.com","uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}`)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		PendingApply bool `json:"pending_apply"`
+		Xray         struct {
+			PendingApply bool   `json:"pending_apply"`
+			Status       string `json:"status"`
+			DiskHash     string `json:"disk_hash"`
+			Generated    string `json:"generated_hash"`
+		} `json:"xray"`
+		CorePending []struct {
+			Core          string `json:"core"`
+			Pending       bool   `json:"pending"`
+			Status        string `json:"status"`
+			DiskHash      string `json:"disk_hash"`
+			GeneratedHash string `json:"generated_hash"`
+		} `json:"core_pending"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.PendingApply || !body.Xray.PendingApply || body.Xray.Status != "pending_apply" {
+		t.Fatalf("expected pending xray status, got %+v", body)
+	}
+	if body.Xray.DiskHash == "" || body.Xray.Generated == "" {
+		t.Fatalf("expected nested xray hashes, got %+v", body.Xray)
+	}
+	if len(body.CorePending) == 0 {
+		t.Fatalf("expected core_pending entry: %s", response.Body.String())
+	}
+	var xrayState *struct {
+		Core          string `json:"core"`
+		Pending       bool   `json:"pending"`
+		Status        string `json:"status"`
+		DiskHash      string `json:"disk_hash"`
+		GeneratedHash string `json:"generated_hash"`
+	}
+	for i := range body.CorePending {
+		if body.CorePending[i].Core == db.CoreXray {
+			xrayState = &body.CorePending[i]
+			break
+		}
+	}
+	if xrayState == nil || !xrayState.Pending || xrayState.Status != "pending_apply" || xrayState.DiskHash != body.Xray.DiskHash || xrayState.GeneratedHash != body.Xray.Generated {
+		t.Fatalf("unexpected core_pending xray state: %+v body=%s", xrayState, response.Body.String())
 	}
 }
 
@@ -6483,7 +6970,7 @@ func TestXrayConfigPreviewHasNoApplyStateWriteSideEffect(t *testing.T) {
 	if err := os.WriteFile(configPath, raw, 0644); err != nil {
 		t.Fatalf("write synced config: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
 	if response.Code != http.StatusOK {
@@ -6511,7 +6998,7 @@ func TestXrayApplyUsesApplyLock(t *testing.T) {
 	}
 	defer unlock()
 
-	router := web.NewRouter(web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithXrayController(&fakeXrayController{}))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/xray/apply", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -6530,7 +7017,7 @@ func TestXrayConfigPreviewUsesDedicatedXrayConfigPath(t *testing.T) {
 	defer store.Close()
 	panelDir := t.TempDir()
 	xrayPath := filepath.Join(t.TempDir(), "xray.json")
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(panelDir), web.WithXrayConfigPath(xrayPath))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(panelDir), web.WithXrayConfigPath(xrayPath))
 
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config/preview", nil))
@@ -6556,7 +7043,7 @@ func TestXrayConfigReturnsStoreReadFailure(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	router := web.NewRouter(web.WithStore(&listInboundsFailingStore{Store: store}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&listInboundsFailingStore{Store: store}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
 	if response.Code != http.StatusInternalServerError {
@@ -6574,7 +7061,7 @@ func TestXrayConfigReturnsBadRequestForGeneratedConfigFailure(t *testing.T) {
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&xrayBuildFailingStore{Store: store}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/config", nil))
 	if response.Code != http.StatusBadRequest {
@@ -6597,7 +7084,7 @@ func TestXrayDiagnosticsGeneratedConfigBuildFailureHasStructuredAction(t *testin
 	if _, err := store.CreateInbound(context.Background(), db.CreateInboundParams{Remark: "vless", Protocol: "vless", Port: 2443, Network: "tcp", Security: "none"}); err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(&xrayBuildFailingStore{Store: store}), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(&xrayBuildFailingStore{Store: store}), web.WithConfigDir(dir), web.WithXrayConfigPath(configPath), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 	if response.Code != http.StatusOK {
@@ -6617,7 +7104,7 @@ func TestXrayDiagnosticsStructuredWarnings(t *testing.T) {
 	}
 	defer store.Close()
 	dir := t.TempDir()
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: false}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: false}))
 	notInstalled := httptest.NewRecorder()
 	router.ServeHTTP(notInstalled, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 	if notInstalled.Code != http.StatusOK || !strings.Contains(notInstalled.Body.String(), `"xray_not_installed"`) || !strings.Contains(notInstalled.Body.String(), `"actions":[`) || !strings.Contains(notInstalled.Body.String(), `"category":"service"`) {
@@ -6627,21 +7114,21 @@ func TestXrayDiagnosticsStructuredWarnings(t *testing.T) {
 	if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	router = web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: false, configExists: true, configValid: true}))
+	router = web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: false, configExists: true, configValid: true}))
 	notManaged := httptest.NewRecorder()
 	router.ServeHTTP(notManaged, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 	if !strings.Contains(notManaged.Body.String(), `"service_status":"not_managed"`) || !strings.Contains(notManaged.Body.String(), `"xray_not_systemd_managed"`) || !strings.Contains(notManaged.Body.String(), `"command":"systemctl status migate-xray"`) {
 		t.Fatalf("expected not managed diagnostics: %s", notManaged.Body.String())
 	}
 
-	router = web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, checkErr: errors.New("bad config")}))
+	router = web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, checkErr: errors.New("bad config")}))
 	invalid := httptest.NewRecorder()
 	router.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 	if !strings.Contains(invalid.Body.String(), `"xray_config_invalid"`) || !strings.Contains(invalid.Body.String(), `"config_error":"bad config"`) || !strings.Contains(invalid.Body.String(), `"category":"config"`) {
 		t.Fatalf("expected invalid config diagnostics: %s", invalid.Body.String())
 	}
 
-	router = web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: false}))
+	router = web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: false}))
 	configMissing := httptest.NewRecorder()
 	router.ServeHTTP(configMissing, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 	if !strings.Contains(configMissing.Body.String(), `"xray_config_missing"`) || !strings.Contains(configMissing.Body.String(), `"actions":[`) || !strings.Contains(configMissing.Body.String(), `"message":"点击应用重新写入 Xray 配置。"`) {
@@ -6652,7 +7139,7 @@ func TestXrayDiagnosticsStructuredWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router = web.NewRouter(
+	router = web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithConfigDir(dir),
 		web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}),
@@ -6681,7 +7168,7 @@ func TestXrayDiagnosticsReturnsStructuredSemanticAndLogActions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create inbound: %v", err)
 	}
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithConfigDir(dir),
 		web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true, logs: []string{"failed to listen tcp 0.0.0.0:2444: bind: address already in use"}}),
@@ -6746,7 +7233,7 @@ func TestXrayDiagnosticsStructuredActionsCoverExpectedCodes(t *testing.T) {
 	if _, err := store.CreateRoutingRule(context.Background(), db.CreateRoutingRuleParams{InboundTag: db.GeneratedInboundTag(vless), OutboundID: badOutbound.ID, OutboundTag: badOutbound.Tag, Enabled: true}); err != nil {
 		t.Fatalf("create routing rule: %v", err)
 	}
-	router := web.NewRouter(
+	router := web.NewRouter(web.WithAutoCoreApply(false),
 		web.WithStore(store),
 		web.WithConfigDir(dir),
 		web.WithXrayProbe(fakeWebXrayProbe{
@@ -6828,7 +7315,7 @@ func TestXrayDiagnosticsStructuredActionsCoverInstallAndManagementCodes(t *testi
 			if err := os.WriteFile(dir+"/xray.json", []byte(`{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}`), 0644); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
-			router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(tc.probe))
+			router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(tc.probe))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 			var diagnostics struct {
@@ -6879,7 +7366,7 @@ func TestXrayDiagnosticsExpectedListenersIncludeTransportDetails(t *testing.T) {
 			t.Fatalf("create %s inbound: %v", params.Remark, err)
 		}
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithConfigDir(dir), web.WithXrayProbe(fakeWebXrayProbe{installed: true, managed: true, status: "running", configExists: true, configValid: true}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/xray/diagnostics", nil))
 	if response.Code != http.StatusOK {
@@ -6907,7 +7394,7 @@ func TestCreateXrayInboundMarksPendingWithoutSynchronousApply(t *testing.T) {
 		Applied: false, Status: "failed: validation", Service: "xray", ConfigPath: "/tmp/xray.json",
 		Error: "validation_failed", Detail: "invalid config", CommandsExecuted: []string{"write /tmp/xray.json", "xray run -test -c /tmp/xray.json"},
 	}}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"vless","protocol":"vless","port":2445,"network":"tcp","security":"none"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -6933,7 +7420,7 @@ func TestCreateXrayInboundSaveDoesNotRunSemanticApplyChecks(t *testing.T) {
 	}
 	defer store.Close()
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"bad-ws","protocol":"vless","port":2451,"network":"ws","security":"tls","ws_path":"bad"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -6966,7 +7453,7 @@ func TestCreateXrayInboundApplyFailureIsDeferredToManualApply(t *testing.T) {
 		Applied: false, Status: "failed: validation", Service: "xray", ConfigPath: "/tmp/xray.json",
 		Error: "validation_failed", Detail: "invalid config", CommandsExecuted: []string{"xray run -test -c /tmp/xray.json"},
 	}}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"bad-ws","protocol":"vless","port":2452,"network":"ws","security":"tls","ws_path":"bad"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -6999,7 +7486,7 @@ func TestDeleteInboundAPIRemovesInboundAndReturns200(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(&fakeXrayController{}))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10), nil)
 	router.ServeHTTP(response, req)
@@ -7026,7 +7513,7 @@ func TestDeleteInboundAPIRejectsUnknownID(t *testing.T) {
 	}
 	defer store.Close()
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/99999", nil)
 	router.ServeHTTP(response, req)
@@ -7054,7 +7541,7 @@ func TestDeleteClientAPIRemovesClientAndReturns200(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/"+strconv.FormatInt(client.ID, 10), nil)
 	router.ServeHTTP(response, req)
@@ -7089,7 +7576,7 @@ func TestDeleteClientAPIRejectsUnknownClient(t *testing.T) {
 		t.Fatalf("create inbound: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/inbounds/"+strconv.FormatInt(inbound.ID, 10)+"/clients/99999", nil)
 	router.ServeHTTP(response, req)
@@ -7111,7 +7598,7 @@ func TestSubscriptionSkipsExpiredClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	router.ServeHTTP(response, req)
@@ -7141,7 +7628,7 @@ func TestSubscriptionSkipsDisabledClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update client: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	router.ServeHTTP(response, req)
@@ -7166,7 +7653,7 @@ func TestSubscriptionPassesValidClientWithFutureExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil)
 	router.ServeHTTP(response, req)
@@ -7199,7 +7686,7 @@ func TestSubscriptionLimitUsesUnifiedTrafficStateAndResetReopens(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, raw(1060, 1050), time.Unix(110, 0)); err != nil {
 		t.Fatalf("over limit sample: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil))
 	if response.Code != http.StatusNotFound {
@@ -7245,7 +7732,7 @@ func TestSubscriptionLimitWaitsForTrafficStateWhenNoTrafficState(t *testing.T) {
 	if _, err := rawDB.ExecContext(ctx, `DELETE FROM traffic_states WHERE scope_type='client' AND scope_key IN (?, ?)`, over.StatsKey, under.StatsKey); err != nil {
 		t.Fatalf("delete traffic states: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	blocked := httptest.NewRecorder()
 	router.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/sub/"+over.SubscriptionToken, nil))
 	if blocked.Code != http.StatusOK {
@@ -7287,7 +7774,7 @@ func TestTrafficResetKeepsHistoricalAnalyticsButResetsSnapshotCumulative(t *test
 		t.Fatalf("reset baseline: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	snapshot := httptest.NewRecorder()
 	router.ServeHTTP(snapshot, httptest.NewRequest(http.MethodGet, "/api/traffic/v2/snapshot", nil))
 	if snapshot.Code != http.StatusOK {
@@ -7334,7 +7821,7 @@ func TestSubscriptionLimitUsesSingboxTrafficState(t *testing.T) {
 	if err := store.ApplyTrafficRawStats(ctx, raw(20, 20), time.Unix(110, 0)); err != nil {
 		t.Fatalf("under limit sample: %v", err)
 	}
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	allowed := httptest.NewRecorder()
 	router.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/sub/"+client.SubscriptionToken, nil))
 	if allowed.Code != http.StatusOK {
@@ -7351,7 +7838,7 @@ func TestSubscriptionLimitUsesSingboxTrafficState(t *testing.T) {
 }
 
 func TestCertStatusReturnsEmptyStateWhenNotConfigured(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithAutoCoreApply(false))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/cert/status", nil)
 	router.ServeHTTP(response, req)
@@ -7382,7 +7869,7 @@ func TestCertStatusReturnsCertInfoWhenConfigured(t *testing.T) {
 		t.Fatalf("seed certificate: %v", err)
 	}
 
-	router := web.NewRouter(web.WithStore(store))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/cert/status", nil)
 	router.ServeHTTP(response, req)
@@ -7412,7 +7899,7 @@ func TestCertStatusRejectsInvalidPanelConfigFields(t *testing.T) {
 		t.Fatalf("write panel.json: %v", err)
 	}
 
-	router := web.NewRouter(web.WithConfigDir(dir))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithConfigDir(dir))
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/cert/status", nil)
 	router.ServeHTTP(response, req)
@@ -7430,7 +7917,7 @@ func TestCertStatusRejectsInvalidPanelConfigFields(t *testing.T) {
 }
 
 func TestCertIssueValidatesRequiredFields(t *testing.T) {
-	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(openWebTestStore(t)))
 	// Missing domain
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"","email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
@@ -7451,7 +7938,7 @@ func TestCertIssueValidatesRequiredFields(t *testing.T) {
 	response3 := httptest.NewRecorder()
 	req3 := httptest.NewRequest(http.MethodPost, "/api/cert/issue", strings.NewReader(`{"domain":"example.com","email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
 	req3.Header.Set("Content-Type", "application/json")
-	web.NewRouter().ServeHTTP(response3, req3)
+	web.NewRouter(web.WithAutoCoreApply(false)).ServeHTTP(response3, req3)
 	if response3.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 when no store, got %d: %s", response3.Code, response3.Body.String())
 	}
@@ -7510,7 +7997,7 @@ func TestCertIssuePreflightFailuresReturnStructuredClientErrors(t *testing.T) {
 					t.Fatalf("prepare unwritable parent: %v", err)
 				}
 			}
-			router := web.NewRouter(web.WithStore(openWebTestStore(t)), web.WithCertDir(tt.certDir), web.WithCertPreflightHooks(tt.lookupIP, tt.listenTCP))
+			router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(openWebTestStore(t)), web.WithCertDir(tt.certDir), web.WithCertPreflightHooks(tt.lookupIP, tt.listenTCP))
 			resp := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/api/certificates", strings.NewReader(`{"domains":["example.com"],"email":"admin@example.com","confirm":true,"allow_system_changes":true}`))
 			req.Header.Set("Content-Type", "application/json")
@@ -7540,7 +8027,7 @@ func TestCertIssuePreflightFailuresReturnStructuredClientErrors(t *testing.T) {
 }
 
 func TestCertificatePreflightValidationErrorUsesStandardErrorObject(t *testing.T) {
-	router := web.NewRouter(web.WithStore(openWebTestStore(t)), web.WithCertDir(t.TempDir()))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(openWebTestStore(t)), web.WithCertDir(t.TempDir()))
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/certificates/preflight", strings.NewReader(`{"domains":[],"email":"admin@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -7556,7 +8043,7 @@ func TestCertificatePreflightValidationErrorUsesStandardErrorObject(t *testing.T
 }
 
 func TestCertificateFixedChildRoutesReturnMethodNotAllowed(t *testing.T) {
-	router := web.NewRouter(web.WithStore(openWebTestStore(t)))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(openWebTestStore(t)))
 	tests := []struct {
 		method string
 		path   string
@@ -7637,7 +8124,7 @@ func TestCertificateRenewDueMarksPendingWithoutApplying(t *testing.T) {
 	}
 	controller := &fakeXrayController{}
 	issuer := &stubCertIssuer{certPEM: newCertPEM, keyPEM: newKeyPEM}
-	router := web.NewRouter(web.WithStore(store), web.WithCertIssuer(issuer), web.WithXrayController(controller), web.WithCertDir(t.TempDir()))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithCertIssuer(issuer), web.WithXrayController(controller), web.WithCertDir(t.TempDir()))
 
 	response := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/certificates/renew-due", strings.NewReader(`{"days":30,"confirm":true,"allow_system_changes":true}`))
@@ -7678,7 +8165,7 @@ func TestCertificateImportListAndOperationsAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := web.NewRouter(web.WithStore(store), web.WithCertDir(t.TempDir()))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithCertDir(t.TempDir()))
 
 	missingConfirm := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/certificates/import", strings.NewReader(`{"name":"example","fullchain":"x","private_key":"y","confirm":true}`))
@@ -7726,7 +8213,7 @@ func TestCertificateImportListAndOperationsAPI(t *testing.T) {
 }
 
 func TestCertificateImportValidationErrorsReturnBadRequest(t *testing.T) {
-	router := web.NewRouter(web.WithStore(openWebTestStore(t)), web.WithCertDir(t.TempDir()))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(openWebTestStore(t)), web.WithCertDir(t.TempDir()))
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/certificates/import", strings.NewReader(`{"name":"bad","fullchain":"not a cert","private_key":"not a key","confirm":true,"allow_system_changes":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -7752,7 +8239,7 @@ func TestCertificateApplyAPIWritesTLSInboundAndReturnsCoreSummary(t *testing.T) 
 		t.Fatalf("create inbound: %v", err)
 	}
 	controller := &fakeXrayController{}
-	router := web.NewRouter(web.WithStore(store), web.WithXrayController(controller))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithStore(store), web.WithXrayController(controller))
 	body := fmt.Sprintf(`{"inbound_ids":[%d],"confirm":true,"allow_system_changes":true}`, inbound.ID)
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/certificates/%d/apply", certificate.ID), strings.NewReader(body))
@@ -7775,7 +8262,7 @@ func TestCertificateApplyAPIWritesTLSInboundAndReturnsCoreSummary(t *testing.T) 
 }
 
 func TestSettingsGetReturnsNotFoundWithoutConfigDir(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithAutoCoreApply(false))
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	router.ServeHTTP(resp, req)
@@ -7790,7 +8277,7 @@ func TestSettingsGetReturnsPanelConfig(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(`{"panel_port":8888,"panel_username":"admin","panel_password":"secret","database_path":"/var/lib/migate/migate.db","web_base_path":"/migate"}`), 0644); err != nil {
 		t.Fatalf("write panel.json: %v", err)
 	}
-	router := web.NewRouter(web.WithConfigDir(dir))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithConfigDir(dir))
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	router.ServeHTTP(resp, req)
@@ -7818,7 +8305,7 @@ func TestSettingsPutUpdatesPanelConfig(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(`{"panel_port":9999,"panel_username":"admin","panel_password":"secret","web_base_path":"/"}`), 0644); err != nil {
 		t.Fatalf("write panel.json: %v", err)
 	}
-	router := web.NewRouter(web.WithConfigDir(dir))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithConfigDir(dir))
 	body := `{"panel_port":7777,"panel_username":"newadmin","panel_password":"newpass","unknown_config_path":"/opt/xray","web_base_path":"/panel"}`
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
@@ -7863,7 +8350,7 @@ func TestSettingsPutPreservesPasswordWhenEmpty(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(`{"panel_port":9999,"panel_username":"admin","panel_password":"secret","database_path":"/db/migate.db","web_base_path":"/"}`), 0644); err != nil {
 		t.Fatalf("write panel.json: %v", err)
 	}
-	router := web.NewRouter(web.WithConfigDir(dir))
+	router := web.NewRouter(web.WithAutoCoreApply(false), web.WithConfigDir(dir))
 	body := `{"panel_port":7777,"panel_username":"admin","panel_password":"","web_base_path":"/"}`
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
@@ -7889,7 +8376,7 @@ func TestSettingsPutPreservesPasswordWhenEmpty(t *testing.T) {
 }
 
 func TestRestartReturnsRestarting(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithAutoCoreApply(false))
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/restart", strings.NewReader(`{"confirm":true,"allow_system_changes":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -7907,7 +8394,7 @@ func TestRestartReturnsRestarting(t *testing.T) {
 }
 
 func TestRestartRejectsNonPost(t *testing.T) {
-	router := web.NewRouter()
+	router := web.NewRouter(web.WithAutoCoreApply(false))
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(method, "/api/restart", nil)

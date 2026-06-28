@@ -6,18 +6,22 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+
+	"github.com/imzyb/MiGate/internal/lockfile"
 )
 
 type coreApplyJobManager struct {
-	mu     sync.Mutex
-	byCore map[string]*CoreApplyJobStatus
-	byID   map[string]*CoreApplyJobStatus
+	mu       sync.Mutex
+	applySem chan struct{}
+	byCore   map[string]*CoreApplyJobStatus
+	byID     map[string]*CoreApplyJobStatus
 }
 
 func newCoreApplyJobManager() *coreApplyJobManager {
 	return &coreApplyJobManager{
-		byCore: map[string]*CoreApplyJobStatus{},
-		byID:   map[string]*CoreApplyJobStatus{},
+		applySem: make(chan struct{}, 1),
+		byCore:   map[string]*CoreApplyJobStatus{},
+		byID:     map[string]*CoreApplyJobStatus{},
 	}
 }
 
@@ -106,6 +110,24 @@ func (m *coreApplyJobManager) update(id string, mutate func(*CoreApplyJobStatus)
 	mutate(job)
 }
 
+func (m *coreApplyJobManager) withApplyLock(ctx context.Context, path string, work func(context.Context) (bool, string, string, string)) (bool, string, string, string) {
+	if m == nil {
+		return false, "核心应用失败", "apply_jobs_unavailable", "apply_jobs_unavailable"
+	}
+	select {
+	case <-ctx.Done():
+		return false, "核心应用取消", "apply_cancelled", ctx.Err().Error()
+	case m.applySem <- struct{}{}:
+	}
+	defer func() { <-m.applySem }()
+	unlock, err := lockfile.TryAcquire(path)
+	if err != nil {
+		return false, "核心应用失败", "apply_locked", err.Error()
+	}
+	defer unlock()
+	return work(ctx)
+}
+
 // runCoreApplyJob reports apply_timeout promptly for UI feedback. If the work
 // later returns despite cancellation, the job is updated to the actual result.
 func runCoreApplyJob(ctx context.Context, cfg *routerConfig, core string, message string, keys []string, work func(context.Context) (bool, string, string, string)) *CoreApplyJobStatus {
@@ -141,6 +163,9 @@ func runCoreApplyJob(ctx context.Context, cfg *routerConfig, core string, messag
 			}
 			if cfg.coreCache != nil {
 				cfg.coreCache.invalidate(keys...)
+			}
+			if result.ok {
+				scheduleCoreAutoApplyIfStillDirty(context.WithoutCancel(ctx), cfg, core)
 			}
 			resultCh <- result
 		}()

@@ -21,10 +21,11 @@ func inboundsHandler(cfg *routerConfig) http.HandlerFunc {
 		case http.MethodGet:
 			listInbounds(w, r, store, statsClient)
 		case http.MethodPost:
+			before := captureCoreGeneratedHashes(r.Context(), cfg, true, true)
 			created, ok := createInbound(w, r, store)
 			if ok {
 				includeXray, includeSingbox := xrayAndSingboxForInboundWrite(db.Inbound{}, false, created)
-				writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"inbound": created, "created": true}, includeXray, includeSingbox)
+				writeCoreWriteResultForHashes(w, r, cfg, http.StatusCreated, map[string]interface{}{"inbound": created, "created": true}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 			}
 		default:
 			methodNotAllowed(w)
@@ -219,10 +220,12 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
+				includeXray, includeSingbox := candidateCoresForInboundID(r.Context(), store, inboundID)
+				before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 				created, inbound, ok := createClient(w, r, store, inboundID)
 				if ok {
-					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
-					writeCoreWriteResult(w, r, cfg, store, http.StatusCreated, map[string]interface{}{"client": created, "created": true}, includeXray, includeSingbox)
+					includeXray, includeSingbox = xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResultForHashes(w, r, cfg, http.StatusCreated, map[string]interface{}{"client": created, "created": true}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 				}
 			}
 		case http.MethodPatch:
@@ -232,9 +235,11 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
+				includeXray, includeSingbox := candidateCoresForInboundID(r.Context(), store, inboundID)
+				before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 				if updated, ok := patchInboundEnabled(w, r, store, inboundID); ok {
 					includeXray, includeSingbox := xrayAndSingboxForInboundWrite(db.Inbound{}, false, updated)
-					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated}, includeXray, includeSingbox)
+					writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"inbound": updated}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 				}
 			} else if len(parts) == 4 && parts[1] == "clients" && parts[3] == "enabled" {
 				clientID, err := strconv.ParseInt(parts[2], 10, 64)
@@ -247,9 +252,11 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
+				includeXray, includeSingbox := candidateCoresForInboundID(r.Context(), store, inboundID)
+				before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 				if updated, inbound, ok := patchClientEnabled(w, r, store, inboundID, clientID); ok {
-					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
-					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated}, includeXray, includeSingbox)
+					includeXray, includeSingbox = xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"client": updated}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 				}
 			} else {
 				http.NotFound(w, r)
@@ -275,9 +282,10 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 					return
 				}
+				before := captureCoreGeneratedHashes(r.Context(), cfg, true, true)
 				if updated, ok := updateInbound(w, r, store, inboundID); ok {
 					includeXray, includeSingbox := xrayAndSingboxForInboundWrite(previous, hadPrevious, updated)
-					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"inbound": updated}, includeXray, includeSingbox)
+					writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"inbound": updated}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 				}
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// PUT /api/inbounds/{id}/clients/{clientId}
@@ -291,9 +299,11 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
+				includeXray, includeSingbox := candidateCoresForInboundID(r.Context(), store, inboundID)
+				before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 				if updated, inbound, ok := updateClient(w, r, store, inboundID, clientID); ok {
-					includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
-					writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"client": updated}, includeXray, includeSingbox)
+					includeXray, includeSingbox = xrayAndSingboxForClientWrite(inbound)
+					writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"client": updated}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 				}
 			} else {
 				http.NotFound(w, r)
@@ -319,12 +329,13 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 					return
 				}
+				includeXray, includeSingbox := xrayAndSingboxForInboundDelete(inbound)
+				before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 				if err := store.DeleteInbound(r.Context(), inboundID); err != nil {
 					writeJSONError(w, http.StatusNotFound, "inbound_not_found")
 					return
 				}
-				includeXray, includeSingbox := xrayAndSingboxForInboundDelete(inbound)
-				writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
+				writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "deleted"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 			} else if len(parts) == 3 && parts[1] == "clients" {
 				// DELETE /api/inbounds/{id}/clients/{clientId}
 				inboundID, err := strconv.ParseInt(parts[0], 10, 64)
@@ -350,12 +361,13 @@ func inboundChildrenHandler(cfg *routerConfig) http.HandlerFunc {
 					writeJSONError(w, http.StatusNotFound, "client_not_found")
 					return
 				}
+				includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
+				before := captureCoreGeneratedHashes(r.Context(), cfg, includeXray, includeSingbox)
 				if err := store.DeleteClient(r.Context(), clientID); err != nil {
 					writeJSONError(w, http.StatusNotFound, "client_not_found")
 					return
 				}
-				includeXray, includeSingbox := xrayAndSingboxForClientWrite(inbound)
-				writeCoreWriteResult(w, r, cfg, store, http.StatusOK, map[string]interface{}{"status": "deleted"}, includeXray, includeSingbox)
+				writeCoreWriteResultForHashes(w, r, cfg, http.StatusOK, map[string]interface{}{"status": "deleted"}, before, includeXray, includeSingbox, includeXray, includeSingbox)
 			} else {
 				http.NotFound(w, r)
 			}
@@ -477,6 +489,14 @@ func findInbound(ctx context.Context, store Store, inboundID int64) (db.Inbound,
 		}
 	}
 	return db.Inbound{}, false, nil
+}
+
+func candidateCoresForInboundID(ctx context.Context, store Store, inboundID int64) (bool, bool) {
+	inbound, found, err := findInbound(ctx, store, inboundID)
+	if err != nil || !found {
+		return false, false
+	}
+	return xrayAndSingboxForClientWrite(inbound)
 }
 
 func inboundChangeAffectsSingbox(previous db.Inbound, hadPrevious bool, updated db.Inbound) bool {

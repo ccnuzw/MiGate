@@ -17,6 +17,7 @@ func NewRouter(options ...Option) http.Handler {
 		loginLimiter:     newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
 		coreScriptRunner: runCoreScript,
 		singboxApplier:   tryApplySingboxWithRuntime,
+		autoCoreApply:    true,
 	}
 	for _, option := range options {
 		option(&cfg)
@@ -25,7 +26,9 @@ func NewRouter(options ...Option) http.Handler {
 	trafficCache := newTrafficViewCache(2 * time.Second)
 	coreCache := newCoreStatusCache(3 * time.Second)
 	cfg.coreCache = coreCache
-	cfg.applyJobs = newCoreApplyJobManager()
+	if cfg.applyJobs == nil {
+		cfg.applyJobs = newCoreApplyJobManager()
+	}
 	if cfg.coreApplyTimeout <= 0 {
 		cfg.coreApplyTimeout = 2 * time.Minute
 	}
