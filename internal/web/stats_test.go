@@ -1023,6 +1023,29 @@ func TestSummarizeTrafficMarksStaleSamples(t *testing.T) {
 	}
 }
 
+func TestSummarizeTrafficCapsPollutedClientTotalsToNativeInbound(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	store := &countingSummaryStore{
+		states: []db.TrafficState{
+			{Engine: "xray", ScopeType: "inbound", ScopeKey: "inbound-1-vless", TotalUp: 300, TotalDown: 700, RateUp: 30, RateDown: 70, Status: "ok", LastSeenAt: now},
+			{Engine: "xray", ScopeType: "client", ScopeKey: "c_polluted", TotalUp: 900, TotalDown: 2400, RateUp: 90, RateDown: 240, Status: "ok", LastSeenAt: now},
+		},
+	}
+	inbounds := []db.Inbound{{ID: 1, Protocol: "vless", Enabled: true, Clients: []db.Client{{ID: 10, StatsKey: "c_polluted", Email: "polluted@example.com", Enabled: true}}}}
+	trafficByInbound, trafficByClient := summarizeTraffic(context.Background(), store, inbounds)
+	client := trafficByClient[10]
+	if client.Up != 300 || client.Down != 700 || client.Total != 1000 || client.RateUp != 30 || client.RateDown != 70 || client.RateTotal != 100 {
+		t.Fatalf("polluted single client should be capped to native inbound totals/rates, got %+v", client)
+	}
+	if client.Status != "partial" || client.Source != "client_reconciled" || !strings.Contains(client.Note, "reconciled") {
+		t.Fatalf("reconciled client should be marked partial with note, got %+v", client)
+	}
+	inbound := trafficByInbound[1]
+	if inbound.Up != 300 || inbound.Down != 700 || inbound.Source != "inbound" || inbound.Status != "ok" {
+		t.Fatalf("native inbound summary should remain authoritative, got %+v", inbound)
+	}
+}
+
 func TestSummarizeTrafficAggregatesClientTotalsWhenOnlyClientStateExists(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	store := &countingSummaryStore{

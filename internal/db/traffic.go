@@ -183,6 +183,9 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
 		current.Message = strings.TrimSpace(raw.Message)
 		currentStates[stateKey] = current
 	}
+	if err := repairPollutedSingleClientTraffic(ctx, tx, currentStates, normalizedStats, sampleBucketAt, seenAt); err != nil {
+		return err
+	}
 	rollbackCleanup, err := s.cleanupTrafficSamples(ctx, tx, observedAt)
 	if err != nil {
 		return err
@@ -190,6 +193,96 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
 	if err := tx.Commit(); err != nil {
 		rollbackCleanup()
 		return err
+	}
+	return nil
+}
+
+func repairPollutedSingleClientTraffic(ctx context.Context, tx *sql.Tx, currentStates map[string]TrafficState, stats []TrafficRawStat, sampleBucketAt, seenAt string) error {
+	observedInboundKeys := map[string]struct{}{}
+	for _, raw := range stats {
+		if raw.Engine == "xray" && raw.ScopeType == "inbound" {
+			observedInboundKeys[raw.ScopeKey] = struct{}{}
+		}
+	}
+	if len(observedInboundKeys) == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT i.id, i.protocol, c.stats_key
+FROM inbounds i
+JOIN clients c ON c.inbound_id = i.id
+WHERE i.enabled = 1 AND c.enabled = 1 AND i.protocol NOT IN ('hysteria2', 'tuic', 'shadowtls', 'wireguard')
+  AND (SELECT COUNT(*) FROM clients c2 WHERE c2.inbound_id = i.id AND c2.enabled = 1) = 1
+`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type singleClientInbound struct {
+		inboundKey string
+		clientKey  string
+	}
+	candidates := []singleClientInbound{}
+	for rows.Next() {
+		var inboundID int64
+		var protocol, clientKey string
+		if err := rows.Scan(&inboundID, &protocol, &clientKey); err != nil {
+			return err
+		}
+		inboundKey := fmt.Sprintf("inbound-%d-%s", inboundID, strings.ToLower(strings.TrimSpace(protocol)))
+		if _, ok := observedInboundKeys[inboundKey]; ok && strings.TrimSpace(clientKey) != "" {
+			candidates = append(candidates, singleClientInbound{inboundKey: inboundKey, clientKey: strings.TrimSpace(clientKey)})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		inboundState, hasInbound := currentStates[trafficStateKey("xray", "inbound", candidate.inboundKey)]
+		clientKey := trafficStateKey("xray", "client", candidate.clientKey)
+		clientState, hasClient := currentStates[clientKey]
+		if !hasInbound || !hasClient || inboundState.Status != "ok" || clientState.Status != "ok" {
+			continue
+		}
+		if clientState.TotalUp <= inboundState.TotalUp && clientState.TotalDown <= inboundState.TotalDown {
+			continue
+		}
+		message := "client totals reconciled to native inbound counters because stored client totals exceeded the inbound total"
+		_, err := tx.ExecContext(ctx, `
+UPDATE traffic_states
+SET total_up=?, total_down=?, delta_up=?, delta_down=?, rate_up=?, rate_down=?, window_seconds=?, last_seen_at=?, status='partial', message=?
+WHERE engine='xray' AND scope_type='client' AND scope_key=?
+`, inboundState.TotalUp, inboundState.TotalDown, inboundState.DeltaUp, inboundState.DeltaDown, inboundState.RateUp, inboundState.RateDown, inboundState.WindowSeconds, seenAt, message, candidate.clientKey)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO traffic_samples (sampled_at, engine, scope_type, scope_key, total_up, total_down, delta_up, delta_down, rate_up, rate_down, window_seconds, status)
+VALUES (?, 'xray', 'client', ?, ?, ?, ?, ?, ?, ?, ?, 'partial')
+ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
+  total_up=excluded.total_up,
+  total_down=excluded.total_down,
+  delta_up=excluded.delta_up,
+  delta_down=excluded.delta_down,
+  rate_up=excluded.rate_up,
+  rate_down=excluded.rate_down,
+  window_seconds=excluded.window_seconds,
+  status=excluded.status
+`, sampleBucketAt, candidate.clientKey, inboundState.TotalUp, inboundState.TotalDown, inboundState.DeltaUp, inboundState.DeltaDown, inboundState.RateUp, inboundState.RateDown, inboundState.WindowSeconds)
+		if err != nil {
+			return err
+		}
+		clientState.TotalUp = inboundState.TotalUp
+		clientState.TotalDown = inboundState.TotalDown
+		clientState.DeltaUp = inboundState.DeltaUp
+		clientState.DeltaDown = inboundState.DeltaDown
+		clientState.RateUp = inboundState.RateUp
+		clientState.RateDown = inboundState.RateDown
+		clientState.WindowSeconds = inboundState.WindowSeconds
+		clientState.LastSeenAt = seenAt
+		clientState.Status = "partial"
+		clientState.Message = message
+		currentStates[clientKey] = clientState
 	}
 	return nil
 }

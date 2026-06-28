@@ -122,9 +122,16 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			inboundSummary.LastSampledAt = inboundState.LastSeenAt
 			inboundSummary.Source = "inbound"
 		}
+		nativeInboundUsable := inboundSummaryHasUsableData(inboundSummary, hasInboundState)
 		clientAggregateStatus := ""
 		clientAggregate := inboundTrafficSummary{Status: "", Source: "client_aggregate", Engine: expectedEngine}
 		clientAggregateHasData := false
+		enabledClientCount := 0
+		for _, client := range inbound.Clients {
+			if client.Enabled {
+				enabledClientCount++
+			}
+		}
 		for _, client := range inbound.Clients {
 			clientSummary := clientTrafficSummary{Status: "waiting", Source: "migate", Engine: expectedEngine}
 			clientKey := clientTrafficStatsKey(client)
@@ -148,6 +155,20 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 					clientSummary.XrayUp = state.LastRawUp
 					clientSummary.XrayDown = state.LastRawDown
 				}
+				if client.Enabled && enabledClientCount == 1 && nativeInboundUsable && clientSummaryExceedsInbound(clientSummary, inboundSummary) {
+					clientSummary.Up = inboundSummary.Up
+					clientSummary.Down = inboundSummary.Down
+					clientSummary.Total = inboundSummary.Up + inboundSummary.Down
+					clientSummary.DeltaUp = inboundSummary.DeltaUp
+					clientSummary.DeltaDown = inboundSummary.DeltaDown
+					clientSummary.RateUp = inboundSummary.RateUp
+					clientSummary.RateDown = inboundSummary.RateDown
+					clientSummary.RateTotal = inboundSummary.RateUp + inboundSummary.RateDown
+					clientSummary.WindowSeconds = inboundSummary.WindowSeconds
+					clientSummary.Status = combineTrafficStatuses(clientSummary.Status, "partial")
+					clientSummary.Source = "client_reconciled"
+					clientSummary.Note = "client totals reconciled to native inbound counters because stored client totals exceeded the inbound total"
+				}
 			}
 			if client.Enabled {
 				clientAggregateStatus = combineTrafficStatuses(clientAggregateStatus, clientSummary.Status)
@@ -170,7 +191,6 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 			}
 			byClient[client.ID] = clientSummary
 		}
-		nativeInboundUsable := inboundSummaryHasUsableData(inboundSummary, hasInboundState)
 		if !nativeInboundUsable && clientAggregateHasData {
 			clientAggregate.Total = clientAggregate.Up + clientAggregate.Down
 			clientAggregate.RateTotal = clientAggregate.RateUp + clientAggregate.RateDown
@@ -182,6 +202,10 @@ func summarizeTrafficFromStates(states []db.TrafficState, inbounds []db.Inbound)
 		byInbound[inbound.ID] = inboundSummary
 	}
 	return byInbound, byClient
+}
+
+func clientSummaryExceedsInbound(client clientTrafficSummary, inbound inboundTrafficSummary) bool {
+	return client.Up > inbound.Up || client.Down > inbound.Down
 }
 
 func clientTrafficCanAggregate(summary clientTrafficSummary) bool {
