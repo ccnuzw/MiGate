@@ -24,7 +24,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   const [applyPollingUntil, setApplyPollingUntil] = useState<number>(0);
   const statusQuery = useQuery({ queryKey: [core, 'status'], queryFn: endpoints.status, refetchInterval: (query) => {
     const current = query.state.data as CoreStatus | undefined;
-    const applyRunning = current?.apply_job?.status === 'queued' || current?.apply_job?.status === 'running' || Date.now() < applyPollingUntil;
+    const applyRunning = coreApplyJobInProgress(current?.apply_job?.status) || Date.now() < applyPollingUntil;
     if (!visible) return false;
     return applyRunning ? 1500 : coreStatusRefetchInterval(true);
   }, staleTime: 10_000 });
@@ -52,7 +52,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
       const result = coreActionResult(data, `${label} 配置已应用`);
       setLastResult({ ok: result.ok, message: result.message, detail: result.detail });
       showToast(text(result.message), result.tone || (result.ok ? 'success' : 'error'));
-      if (data.accepted || data.apply_job?.status === 'queued' || data.apply_job?.status === 'running') {
+      if (data.accepted || coreApplyJobInProgress(data.apply_job?.status)) {
         setApplyPollingUntil(Date.now() + 30_000);
       }
       refreshQuery(statusQuery);
@@ -120,6 +120,8 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
   const installActionLabel = installed ? '升级/重装核心' : '安装核心';
   const configPreview = configPreviewQuery.data;
   const health = coreHealthSummary(status, diagnostics, configPreview, diagnosticsQuery.isLoading, diagnosticsQuery.error, configPreviewQuery.isLoading, configPreviewQuery.error);
+  const userSync = coreUserSyncState(status, diagnostics, configPreview, configPreviewQuery.isLoading, configPreviewQuery.error);
+  const applyButtonLabel = coreApplyButtonLabel(userSync);
   return (
     <div className={`page-stack core-page core-page-${core}`}>
       <PageTitle
@@ -141,7 +143,7 @@ export default function CorePage({ core }: { core: 'xray' | 'singbox' }) {
             <div className="core-action-row">
               <button className="btn secondary" onClick={() => refreshQueries([statusQuery, versionQuery, diagnosticsQuery, configPreviewQuery])}><RefreshCw className="h-4 w-4" /> {text('刷新')}</button>
               <SpinnerButton className="btn secondary" loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck className="h-4 w-4" /> {text('生成校验')}</SpinnerButton>
-              <SpinnerButton className="btn primary" loading={apply.isPending} onClick={async () => (await confirm({ title: text(`应用 ${label} 配置？`), description: text('该操作会重新生成并应用核心配置。') })) && apply.mutate()}><Play className="h-4 w-4" /> {text('应用配置')}</SpinnerButton>
+              <SpinnerButton className="btn primary" loading={apply.isPending} onClick={async () => (await confirm({ title: text(`${applyButtonLabel} ${label} 配置？`), description: text('该操作会重新生成并应用核心配置。') })) && apply.mutate()}><Play className="h-4 w-4" /> {text(applyButtonLabel)}</SpinnerButton>
             </div>
           </div>
           <div className="core-action-group">
@@ -199,13 +201,13 @@ function CoreOverview({ label, status, diagnostics, preview, fallbackVersion, he
   const managed = status?.managed ?? diagnostics?.managed;
   const serviceStatus = status?.status || diagnostics?.service_status;
   const configPath = status?.config_path || diagnostics?.config_path || preview?.config_path || '-';
-  const syncState = configSyncState(preview);
+  const userSync = coreUserSyncState(status, diagnostics, preview);
   const applyJob = status?.apply_job;
   const stats = [
     { label: '安装', value: installed ? '已安装' : '未安装', tone: installed ? 'ok' : 'error' },
     { label: '托管', value: managed ? '已托管' : '未托管', tone: managed ? 'ok' : 'warning' },
     { label: '运行', value: serviceLabel(serviceStatus), tone: serviceStatus === 'running' ? 'ok' : 'error' },
-    { label: '生效', value: preview?.pending_apply || status?.pending_apply ? '待应用' : syncState.ok === false ? '不同步' : syncState.ok ? '一致' : '未知', tone: preview?.pending_apply || status?.pending_apply || syncState.ok === false ? 'warning' : syncState.ok ? 'ok' : 'neutral' },
+    { label: '配置', value: userSync.label, tone: userSync.tone },
   ] satisfies Array<{ label: string; value: string; tone: StatusTone }>;
   return (
     <Card className={`core-overview core-overview-${health.tone} p-5`}>
@@ -240,20 +242,28 @@ function CoreOverview({ label, status, diagnostics, preview, fallbackVersion, he
       <div className="core-overview-strip">
         {stats.map((item) => <StatusPill key={item.label} tone={item.tone} label={`${text(item.label)}：${text(item.value)}`} />)}
         {missingCount ? <StatusPill tone="warning" label={text(`未监听 ${missingCount} 个端口`)} /> : null}
-        {applyJob && (applyJob.status === 'queued' || applyJob.status === 'running') ? <StatusPill tone="warning" label={text(`应用进行中：${applyJob.status === 'queued' ? '排队中' : '执行中'}`)} /> : null}
+        {applyJob && coreApplyJobInProgress(applyJob.status) ? <StatusPill tone="warning" label={text(`应用进行中：${applyJobStatusLabel(applyJob.status)}`)} /> : null}
       </div>
       <div className="core-overview-path">
         <span>{text('配置路径')}</span>
         <code>{configPath}</code>
       </div>
-      {(status?.pending_reason || status?.pending_updated_at || status?.pending_apply_error || applyJob) ? (
-        <div className="mt-4 grid gap-2 rounded-lg border border-panel-line bg-panel-soft p-3 text-sm text-panel-muted">
+      <div className="mt-4 rounded-lg border border-panel-line bg-panel-soft p-3 text-sm">
+        <div className="font-medium text-panel-text">{text(userSync.action)}</div>
+        <div className="mt-1 text-panel-muted">{text(userSync.detail)}</div>
+      </div>
+      <details className="core-details mt-3">
+        <summary><span>{text('高级详情')}</span><ChevronDown className="h-4 w-4" /></summary>
+        <div className="core-details-body grid gap-2 text-sm text-panel-muted">
           {status?.pending_reason ? <div>{text(`待应用原因：${status.pending_reason}`)}</div> : null}
           {status?.pending_updated_at ? <div>{text(`待应用时间：${status.pending_updated_at}`)}</div> : null}
           {status?.pending_apply_error ? <div>{text(`待应用错误：${status.pending_apply_error}`)}{status.pending_apply_detail ? ` · ${text(status.pending_apply_detail)}` : ''}</div> : null}
-          {applyJob ? <div>{text(`应用任务：${applyJob.status}`)}{applyJob.message ? ` · ${text(applyJob.message)}` : ''}{applyJob.error ? ` · ${text(applyJob.error)}` : ''}{applyJob.detail ? ` · ${text(applyJob.detail)}` : ''}</div> : null}
+          {status?.generated_hash ? <div>generated_hash: <code>{status.generated_hash}</code></div> : null}
+          {status?.applied_config_hash ? <div>applied_hash: <code>{status.applied_config_hash}</code></div> : null}
+          {preview?.disk?.hash ? <div>disk_hash: <code>{preview.disk.hash}</code></div> : null}
+          {applyJob ? <div>{text(`应用任务：${applyJobStatusLabel(applyJob.status)}`)}{applyJob.retry_count ? ` · retry ${applyJob.retry_count}/${applyJob.max_retries || 0}` : ''}{applyJob.message ? ` · ${text(applyJob.message)}` : ''}{applyJob.error ? ` · ${text(applyJob.error)}` : ''}{applyJob.detail ? ` · ${text(applyJob.detail)}` : ''}</div> : null}
         </div>
-      ) : null}
+      </details>
     </Card>
   );
 }
@@ -488,8 +498,96 @@ type CoreHealthSummary = {
   nextAction: string;
 };
 
+type CoreUserSyncState = {
+  key: 'in_sync' | 'syncing' | 'waiting' | 'failed' | 'needs_check' | 'unknown';
+  label: string;
+  headline: string;
+  detail: string;
+  action: string;
+  tone: StatusTone;
+};
+
 function StatusPill({ tone, label }: { tone: StatusTone; label: string }) {
   return <span className={`core-status-pill core-status-${tone}`}>{label}</span>;
+}
+
+export function coreUserSyncState(status?: CoreStatus, diagnostics?: CoreDiagnostics, preview?: CoreConfigPreview, loading = false, error?: unknown): CoreUserSyncState {
+  const job = status?.apply_job;
+  if (job && coreApplyJobInProgress(job.status)) {
+    const retry = job.status === 'retrying' && job.retry_count ? `，第 ${job.retry_count}/${job.max_retries || job.retry_count} 次重试` : '';
+    return { key: 'syncing', label: '正在同步', headline: '正在同步核心配置', detail: `${applyJobStatusLabel(job.status)}${retry}。完成后会自动更新状态。`, action: '系统正在处理，无需手动操作。', tone: 'warning' };
+  }
+  if (job?.status === 'failed') {
+    return { key: 'failed', label: '同步失败', headline: '自动同步失败', detail: job.detail || job.error || '自动同步未完成。', action: '可点击“重试同步”，或查看高级详情定位问题。', tone: 'error' };
+  }
+  if (loading) return { key: 'unknown', label: '未知', headline: '正在检查配置状态', detail: '正在读取核心配置同步状态。', action: '稍后刷新状态。', tone: 'neutral' };
+  if (error) return { key: 'unknown', label: '未知', headline: '状态无法判断', detail: error instanceof Error ? error.message : String(error), action: '刷新状态；如果持续失败，请查看日志。', tone: 'warning' };
+  if (status?.pending_apply_error || preview?.error || diagnostics?.config_valid === false || preview?.reason === 'generated_build_failed' || preview?.reason === 'disk_parse_failed') {
+    return { key: 'needs_check', label: '需要检查', headline: '配置需要检查', detail: status?.pending_apply_detail || status?.pending_apply_error || preview?.detail || preview?.error || diagnostics?.config_error || '配置生成、校验或磁盘读取异常。', action: '查看问题详情，修复后再同步。', tone: 'error' };
+  }
+  if (status?.pending_apply || preview?.pending_apply) {
+    return { key: 'waiting', label: '等待同步', headline: '配置等待同步', detail: humanPendingReason(status?.pending_reason || preview?.pending_reason) || '有真实配置变化尚未应用。', action: '可以等待自动同步，或点击“立即同步”。', tone: 'warning' };
+  }
+  if (preview?.in_sync || diagnostics?.disk_generated_in_sync === true) {
+    return { key: 'in_sync', label: '已生效', headline: '核心配置已生效', detail: '数据库生成配置、磁盘配置与已应用状态一致。', action: '无需处理。', tone: 'ok' };
+  }
+  if ((preview && preview.in_sync === false) || diagnostics?.disk_generated_in_sync === false) {
+    return { key: 'needs_check', label: '需要检查', headline: '配置不同步', detail: configSyncReasonLabel(preview?.reason || diagnostics?.sync_reason) || '磁盘配置与数据库生成配置不一致。', action: '点击“查看问题”检查磁盘配置，必要时重新同步。', tone: 'warning' };
+  }
+  return { key: 'unknown', label: '未知', headline: '状态无法判断', detail: '还没有足够信息判断核心配置是否已生效。', action: '刷新状态或查看诊断。', tone: 'neutral' };
+}
+
+function coreApplyButtonLabel(state: CoreUserSyncState): string {
+  switch (state.key) {
+    case 'failed':
+      return '重试同步';
+    case 'needs_check':
+      return '重新同步';
+    case 'waiting':
+      return '立即同步';
+    case 'in_sync':
+      return '重新同步';
+    default:
+      return '应用配置';
+  }
+}
+
+function coreApplyJobInProgress(status?: string): boolean {
+  return ['queued', 'running', 'retrying'].includes(String(status || '').toLowerCase());
+}
+
+function applyJobStatusLabel(status?: string): string {
+  switch (String(status || '').toLowerCase()) {
+    case 'queued':
+      return '排队中';
+    case 'running':
+      return '执行中';
+    case 'retrying':
+      return '自动重试中';
+    case 'succeeded':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    default:
+      return status || '未知';
+  }
+}
+
+function humanPendingReason(reason?: string): string {
+  switch (reason) {
+    case 'config_changed':
+      return '保存的核心配置变化正在等待同步。';
+    case 'apply_locked':
+      return '当前有其他同步任务占用锁，系统会自动重试。';
+    case 'apply_timeout':
+      return '上次同步超时，等待重试或手动处理。';
+    case 'disk_hash_mismatch':
+      return '磁盘配置与数据库生成配置不一致。';
+    case 'generated_build_failed':
+      return '数据库配置生成失败，需要检查相关配置。';
+    default:
+      return reason ? `原因：${reason}` : '';
+  }
 }
 
 export function coreHealthSummary(status?: CoreStatus, diagnostics?: CoreDiagnostics, preview?: CoreConfigPreview, diagnosticsLoading = false, diagnosticsError?: unknown, previewLoading = false, previewError?: unknown): CoreHealthSummary {
@@ -516,8 +614,18 @@ export function coreHealthSummary(status?: CoreStatus, diagnostics?: CoreDiagnos
   if (managed === false || serviceStatus === 'not_managed') {
     return { tone: 'warning', label: '未托管', headline: '核心未由系统托管', detail: '系统服务托管状态异常，面板可能无法稳定重启或停止核心。', nextAction: '确认 systemd 服务后再执行维护操作。' };
   }
+  const userSync = coreUserSyncState(status, diagnostics, preview, previewLoading, previewError);
+  if (userSync.key === 'syncing') {
+    return { tone: 'warning', label: '正在同步', headline: '正在同步核心配置', detail: userSync.detail, nextAction: userSync.action };
+  }
+  if (userSync.key === 'failed') {
+    return { tone: 'error', label: '同步失败', headline: '自动同步失败', detail: userSync.detail, nextAction: userSync.action };
+  }
+  if (userSync.key === 'needs_check') {
+    return { tone: userSync.tone === 'error' ? 'error' : 'warning', label: '需要检查', headline: userSync.headline, detail: userSync.detail, nextAction: userSync.action };
+  }
   if (status?.pending_apply || preview?.pending_apply) {
-    return { tone: 'warning', label: '待应用', headline: '配置有更改尚未生效', detail: '数据库配置已保存，但核心尚未重新生成并重启。', nextAction: '点击“应用配置”使最新更改生效。' };
+    return { tone: 'warning', label: '等待同步', headline: '配置等待同步', detail: userSync.detail, nextAction: userSync.action };
   }
   if (sync.ok === false || diagnostics?.disk_generated_in_sync === false) {
     return { tone: 'warning', label: '需要应用', headline: '配置不同步', detail: sync.detail || '磁盘配置与数据库生成配置不一致。', nextAction: '点击“应用配置”同步磁盘配置。' };

@@ -35,6 +35,7 @@ import (
 var Version = "dev"
 
 var defaultPanelConfigPath = paths.PanelConfig
+var routerOptionsFromConfigHook func([]web.Option) []web.Option
 
 type lang string
 
@@ -1053,6 +1054,9 @@ func routerOptionsFromConfig(cfg panelcfg.Config, path string) []web.Option {
 	}
 	opts = append(opts, web.WithConfigDir(filepath.Dir(path)))
 	opts = append(opts, web.WithXrayConfigPath(paths.XrayConfig))
+	if routerOptionsFromConfigHook != nil {
+		opts = routerOptionsFromConfigHook(opts)
+	}
 	return opts
 }
 

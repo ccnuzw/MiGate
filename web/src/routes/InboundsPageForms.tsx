@@ -10,7 +10,7 @@ import type { Client, CreateClientResponse, CreateInboundResponse, Inbound } fro
 import { Field, FieldError, Modal, SpinnerButton, useConfirm, useToast } from '../components/ui';
 import { copyToClipboard } from '../lib/clipboard';
 import { useI18n } from '../lib/i18n';
-import { coreApplyWarning, coreApplyWarningTone } from '../lib/coreApply';
+import { coreApplyWarning, coreApplyWarningTone, trackCoreApplyJobsFromResponse } from '../lib/coreApply';
 import { z } from '../lib/zod';
 import {
   allowedInboundNetworks,
@@ -239,6 +239,7 @@ export function InboundModal({ inbound, onClose, onSaved }: { inbound: Inbound |
     },
     onSuccess: (response) => {
       const warning = coreApplyWarning(response, '节点已保存，但核心配置未生效');
+      trackCoreApplyJobsFromResponse(response, showToast, text);
       showToast(text(warning || '节点已保存'), warning ? coreApplyWarningTone(response) : 'success');
       onSaved();
       onClose();
@@ -676,6 +677,7 @@ export function ClientModal({ inbound, client, onClose, onSaved }: { inbound: In
     },
     onSuccess: ({ payload, response }) => {
       const warning = coreApplyWarning(response as CreateClientResponse, '客户端已保存，但核心配置未生效');
+      trackCoreApplyJobsFromResponse(response, showToast, text);
       showToast(text(warning || '客户端已保存'), warning ? coreApplyWarningTone(response) : 'success');
       onSaved();
       extractClientResponse(response, client, payload, inbound?.id || client?.inbound_id || 0);

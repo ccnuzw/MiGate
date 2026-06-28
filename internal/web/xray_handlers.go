@@ -1536,7 +1536,7 @@ func enqueueCoreAutoApply(ctx context.Context, cfg *routerConfig, core string) (
 	if cfg.applyJobs.running(core) {
 		return latestCoreApplyJob(cfg, core), "", ""
 	}
-	job := runCoreApplyJob(ctx, cfg, core, autoApplyMessage(core), autoApplyCacheKeys(core), func(jobCtx context.Context) (bool, string, string, string) {
+	job := runCoreApplyJobWithRetry(ctx, cfg, core, autoApplyMessage(core), autoApplyCacheKeys(core), 3, func(jobCtx context.Context) (bool, string, string, string) {
 		ok, message, errCode, detail := cfg.applyJobs.withApplyLock(jobCtx, paths.ApplyLock, func(lockedCtx context.Context) (bool, string, string, string) {
 			switch core {
 			case db.CoreXray:
@@ -1618,6 +1618,41 @@ func autoApplyMessage(core string) string {
 		return "正在同步 sing-box 配置"
 	default:
 		return "正在同步核心配置"
+	}
+}
+
+func coreAutoRetryMessage(core string) string {
+	switch db.NormalizeCore(core) {
+	case db.CoreXray:
+		return "Xray 自动同步暂时失败，稍后重试"
+	case db.CoreSingbox:
+		return "sing-box 自动同步暂时失败，稍后重试"
+	default:
+		return "核心自动同步暂时失败，稍后重试"
+	}
+}
+
+func coreApplyJobStatusHandler(cfg *routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		if cfg == nil || cfg.applyJobs == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "apply_jobs_unavailable")
+			return
+		}
+		id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/core/apply-jobs/"), "/")
+		if id == "" || strings.Contains(id, "/") {
+			writeJSONError(w, http.StatusBadRequest, "invalid_apply_job_id")
+			return
+		}
+		job := cfg.applyJobs.get(id)
+		if job == nil {
+			writeJSONError(w, http.StatusNotFound, "apply_job_not_found")
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
 	}
 }
 

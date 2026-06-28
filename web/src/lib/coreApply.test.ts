@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
-import { coreApplyWarning, coreApplyWarningTone, showCoreApplyWarning } from './coreApply';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { __resetCoreApplyJobTrackingForTests, configureCoreApplyJobTracking, coreApplyWarning, coreApplyWarningTone, showCoreApplyWarning, trackCoreApplyJobsFromResponse } from './coreApply';
+
+afterEach(() => {
+  vi.useRealTimers();
+  __resetCoreApplyJobTrackingForTests();
+});
 
 describe('core apply warning helpers', () => {
   it('detects xray and sing-box apply failures', () => {
@@ -30,6 +35,58 @@ describe('core apply warning helpers', () => {
     const response = { config_changed: true, changed_cores: ['xray'], auto_apply: { xray: { status: 'queued' } } };
     expect(coreApplyWarning(response, '已保存，但核心配置未生效')).toBe('已保存，正在同步核心配置');
     expect(coreApplyWarningTone(response)).toBe('info');
+  });
+
+  it('tracks queued jobs and reports final success', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    configureCoreApplyJobTracking(vi.fn().mockResolvedValue({ id: 'job-1', core: 'xray', status: 'succeeded' }));
+    const response = { config_changed: true, changed_cores: ['xray'], auto_apply: { xray: { id: 'job-1', core: 'xray', status: 'queued' } } };
+    expect(showCoreApplyWarning(response, '已保存，但核心配置未生效', showToast)).toBe(true);
+    expect(showToast).toHaveBeenCalledWith('已保存，正在同步核心配置', 'info');
+    await vi.advanceTimersByTimeAsync(700);
+    expect(showToast).toHaveBeenCalledWith('Xray 配置已同步', 'success');
+  });
+
+  it('tracks queued jobs and reports final failure', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    configureCoreApplyJobTracking(vi.fn().mockResolvedValue({ id: 'job-1', core: 'sing-box', status: 'failed', detail: 'check failed' }));
+    trackCoreApplyJobsFromResponse({ config_changed: true, auto_apply: { singbox: { id: 'job-1', core: 'sing-box', status: 'running' } } }, showToast);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(showToast).toHaveBeenCalledWith(
+      'sing-box 自动同步失败：check failed',
+      'error',
+      expect.objectContaining({ label: '查看核心页', onClick: expect.any(Function) }),
+    );
+  });
+
+  it('merges successful jobs for multiple cores', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    configureCoreApplyJobTracking(vi.fn()
+      .mockResolvedValueOnce({ id: 'job-x', core: 'xray', status: 'succeeded' })
+      .mockResolvedValueOnce({ id: 'job-s', core: 'sing-box', status: 'succeeded' }));
+    trackCoreApplyJobsFromResponse({
+      config_changed: true,
+      auto_apply: {
+        xray: { id: 'job-x', core: 'xray', status: 'queued' },
+        singbox: { id: 'job-s', core: 'sing-box', status: 'queued' },
+      },
+    }, showToast);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(showToast).toHaveBeenCalledWith('核心配置已同步', 'success');
+  });
+
+  it('does not track jobs when config did not change', async () => {
+    vi.useFakeTimers();
+    const showToast = vi.fn();
+    const fetcher = vi.fn().mockResolvedValue({ id: 'job-1', core: 'xray', status: 'succeeded' });
+    configureCoreApplyJobTracking(fetcher);
+    trackCoreApplyJobsFromResponse({ config_changed: false, auto_apply: { xray: { id: 'job-1', core: 'xray', status: 'queued' } } }, showToast);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(showToast).not.toHaveBeenCalled();
   });
 
   it('reports automatic core sync failures', () => {

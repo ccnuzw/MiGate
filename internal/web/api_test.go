@@ -83,6 +83,23 @@ func decodeJSONMap(t *testing.T, body []byte) map[string]interface{} {
 	return payload
 }
 
+func autoApplyJobID(t *testing.T, payload map[string]interface{}, core string) string {
+	t.Helper()
+	autoApply, ok := payload["auto_apply"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected auto_apply map: %#v", payload["auto_apply"])
+	}
+	job, ok := autoApply[core].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected %s auto apply job: %#v", core, autoApply)
+	}
+	id, _ := job["id"].(string)
+	if strings.TrimSpace(id) == "" {
+		t.Fatalf("expected %s auto apply job id: %#v", core, job)
+	}
+	return id
+}
+
 func waitForCondition(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -5256,6 +5273,137 @@ func TestInboundConfigChangeAutoApplyFailureKeepsPending(t *testing.T) {
 	}
 }
 
+func TestAutoCoreApplyRetriesTemporaryFailureAndSucceeds(t *testing.T) {
+	withTempApplyLock(t)
+
+	store := openWebTestStore(t)
+	var calls atomic.Int32
+	var generatedHash atomic.Value
+	controller := &blockingXrayController{
+		applyFn: func(ctx context.Context) web.XrayApplyResult {
+			call := calls.Add(1)
+			if call == 1 {
+				return web.XrayApplyResult{Applied: false, Status: "failed: locked", Service: "xray", Error: "apply_locked", Detail: "lock busy"}
+			}
+			return web.XrayApplyResult{Applied: true, Status: "applied", Service: "xray", AppliedHash: waitAtomicString(ctx, &generatedHash), CommandsExecuted: []string{"xray test", "restart"}}
+		},
+	}
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithXrayController(controller),
+		web.WithCoreApplyRetryDelay(func(int) time.Duration { return 5 * time.Millisecond }),
+	)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"xray","protocol":"vless","port":28451,"network":"tcp","security":"none"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	payload := decodeJSONMap(t, resp.Body.Bytes())
+	jobID := autoApplyJobID(t, payload, db.CoreXray)
+	xrayResult, _ := payload["xray"].(map[string]interface{})
+	generatedHash.Store(fmt.Sprint(xrayResult["generated_hash"]))
+	waitForCondition(t, 2*time.Second, func() bool {
+		jobResp := httptest.NewRecorder()
+		router.ServeHTTP(jobResp, httptest.NewRequest(http.MethodGet, "/api/core/apply-jobs/"+jobID, nil))
+		return jobResp.Code == http.StatusOK && strings.Contains(jobResp.Body.String(), `"status":"succeeded"`)
+	})
+	if calls.Load() != 2 {
+		t.Fatalf("expected one retry then success, got %d calls", calls.Load())
+	}
+	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+	if err != nil {
+		t.Fatalf("get core apply state: %v", err)
+	}
+	if !found || state.PendingDirty || state.LastAppliedHash != fmt.Sprint(xrayResult["generated_hash"]) {
+		t.Fatalf("retry success should clear pending, found=%v state=%+v", found, state)
+	}
+}
+
+func TestAutoCoreApplyRetriesTemporaryFailureThenFails(t *testing.T) {
+	withTempApplyLock(t)
+
+	store := openWebTestStore(t)
+	var calls atomic.Int32
+	controller := &blockingXrayController{
+		applyFn: func(ctx context.Context) web.XrayApplyResult {
+			calls.Add(1)
+			return web.XrayApplyResult{Applied: false, Status: "failed: timeout", Service: "xray", Error: "apply_timeout", Detail: "systemd timeout"}
+		},
+	}
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithXrayController(controller),
+		web.WithCoreApplyRetryDelay(func(int) time.Duration { return time.Millisecond }),
+	)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"xray","protocol":"vless","port":28452,"network":"tcp","security":"none"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	payload := decodeJSONMap(t, resp.Body.Bytes())
+	jobID := autoApplyJobID(t, payload, db.CoreXray)
+	waitForCondition(t, 2*time.Second, func() bool {
+		jobResp := httptest.NewRecorder()
+		router.ServeHTTP(jobResp, httptest.NewRequest(http.MethodGet, "/api/core/apply-jobs/"+jobID, nil))
+		return strings.Contains(jobResp.Body.String(), `"status":"failed"`) &&
+			strings.Contains(jobResp.Body.String(), `"error":"apply_timeout"`) &&
+			strings.Contains(jobResp.Body.String(), `"retry_count":3`)
+	})
+	if calls.Load() != 4 {
+		t.Fatalf("expected initial attempt plus three retries, got %d calls", calls.Load())
+	}
+	state, found, err := store.GetCoreApplyState(context.Background(), db.CoreXray)
+	if err != nil {
+		t.Fatalf("get core apply state: %v", err)
+	}
+	if !found || !state.PendingDirty || state.PendingReason != "apply_timeout" {
+		t.Fatalf("retry exhaustion should keep pending apply_timeout, found=%v state=%+v", found, state)
+	}
+}
+
+func TestAutoCoreApplyDoesNotRetryValidationFailure(t *testing.T) {
+	withTempApplyLock(t)
+
+	store := openWebTestStore(t)
+	var calls atomic.Int32
+	controller := &blockingXrayController{
+		applyFn: func(ctx context.Context) web.XrayApplyResult {
+			calls.Add(1)
+			return web.XrayApplyResult{Applied: false, Status: "failed: validation", Service: "xray", Error: "validation_failed", Detail: "bad config"}
+		},
+	}
+	router := web.NewRouter(
+		web.WithStore(store),
+		web.WithXrayController(controller),
+		web.WithCoreApplyRetryDelay(func(int) time.Duration { return time.Millisecond }),
+	)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/inbounds", strings.NewReader(`{"remark":"xray","protocol":"vless","port":28453,"network":"tcp","security":"none"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	payload := decodeJSONMap(t, resp.Body.Bytes())
+	jobID := autoApplyJobID(t, payload, db.CoreXray)
+	waitForCondition(t, 2*time.Second, func() bool {
+		jobResp := httptest.NewRecorder()
+		router.ServeHTTP(jobResp, httptest.NewRequest(http.MethodGet, "/api/core/apply-jobs/"+jobID, nil))
+		return strings.Contains(jobResp.Body.String(), `"status":"failed"`) &&
+			strings.Contains(jobResp.Body.String(), `"error":"validation_failed"`)
+	})
+	if calls.Load() != 1 {
+		t.Fatalf("validation failure must not retry, got %d calls", calls.Load())
+	}
+}
+
 func TestSharedConfigChangeQueuesBothCoreAutoApplyJobs(t *testing.T) {
 	origApplyLock := paths.ApplyLock
 	paths.ApplyLock = filepath.Join(t.TempDir(), "apply.lock")
@@ -6741,7 +6889,7 @@ func TestXrayApplyAsyncTimesOutAndMarksJobFailed(t *testing.T) {
 	<-done
 }
 
-func TestXrayApplyAsyncUpdatesJobAfterLateSuccess(t *testing.T) {
+func TestXrayApplyAsyncKeepsTimeoutFailureAfterLateSuccess(t *testing.T) {
 	withTempApplyLock(t)
 	blocked := make(chan struct{})
 	release := make(chan struct{})
@@ -6768,12 +6916,13 @@ func TestXrayApplyAsyncUpdatesJobAfterLateSuccess(t *testing.T) {
 		return strings.Contains(status.Body.String(), `"apply_job"`) && strings.Contains(status.Body.String(), `"status":"failed"`) && strings.Contains(status.Body.String(), `"error":"apply_timeout"`)
 	})
 	close(release)
-	waitForCondition(t, 2*time.Second, func() bool {
-		status := httptest.NewRecorder()
-		router.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
-		body := status.Body.String()
-		return strings.Contains(body, `"apply_job"`) && strings.Contains(body, `"status":"succeeded"`) && !strings.Contains(body, `"apply_timeout"`)
-	})
+	time.Sleep(100 * time.Millisecond)
+	status := httptest.NewRecorder()
+	router.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/xray/status", nil))
+	body := status.Body.String()
+	if !strings.Contains(body, `"apply_job"`) || !strings.Contains(body, `"status":"failed"`) || !strings.Contains(body, `"error":"apply_timeout"`) {
+		t.Fatalf("late success must not overwrite timeout failure: %s", body)
+	}
 }
 
 func TestXrayApplyAsyncRejectsConcurrentJobForSameCore(t *testing.T) {

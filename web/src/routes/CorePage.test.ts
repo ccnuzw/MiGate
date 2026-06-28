@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmProvider, ToastProvider } from '../components/ui';
 import { I18nProvider } from '../lib/i18n';
-import CorePage, { configSyncReasonLabel, configSyncState, coreActionResult, coreDiagnosticActions, coreDiagnosticChecks, coreDiagnosticsSummary, coreHealthSummary, coreInstalledWithDiagnostics, coreListeningDiagnostics, corePortSummary, coreStatusMetrics, coreStatusRefetchInterval, diagnosticSuggestionItems, diagnosticWarningLabel, formatDiagnosticAction, isCoreInstalled } from './CorePage';
+import CorePage, { configSyncReasonLabel, configSyncState, coreActionResult, coreDiagnosticActions, coreDiagnosticChecks, coreDiagnosticsSummary, coreHealthSummary, coreInstalledWithDiagnostics, coreListeningDiagnostics, corePortSummary, coreStatusMetrics, coreStatusRefetchInterval, coreUserSyncState, diagnosticSuggestionItems, diagnosticWarningLabel, formatDiagnosticAction, isCoreInstalled } from './CorePage';
 
 const apiMock = vi.hoisted(() => ({
   xrayStatus: vi.fn(async () => ({ service: 'xray', status: 'running', installed: true, managed: true, version: 'Xray 26.3.27', commands_executed: [] })),
@@ -337,6 +337,34 @@ describe('core action result', () => {
     });
   });
 
+  it('derives human core sync states for the core page', () => {
+    expect(coreUserSyncState(
+      { service: 'xray', status: 'running', apply_job: { id: 'job-1', core: 'xray', status: 'retrying', retry_count: 1, max_retries: 3 } },
+      undefined,
+      { config_path: '/etc/migate/cores/xray.json', in_sync: false, pending_apply: true, disk: { config_path: '' }, generated: { config_path: '' } },
+    )).toMatchObject({
+      key: 'syncing',
+      label: '正在同步',
+      detail: '自动重试中，第 1/3 次重试。完成后会自动更新状态。',
+    });
+    expect(coreUserSyncState(
+      { service: 'xray', status: 'running', apply_job: { id: 'job-1', core: 'xray', status: 'failed', detail: 'bad config' } },
+    )).toMatchObject({
+      key: 'failed',
+      label: '同步失败',
+      action: '可点击“重试同步”，或查看高级详情定位问题。',
+    });
+    expect(coreUserSyncState(
+      { service: 'xray', status: 'running' },
+      { installed: true, managed: true, service: 'xray', service_status: 'running', config_path: '/etc/migate/cores/xray.json', config_exists: true, config_valid: true, disk_generated_in_sync: true, expected_listeners: [], missing_listeners: [], recent_logs: [], warnings: [], suggestions: [] },
+      { config_path: '/etc/migate/cores/xray.json', in_sync: true, disk: { config_path: '', hash: 'a' }, generated: { config_path: '', hash: 'a' } },
+    )).toMatchObject({
+      key: 'in_sync',
+      label: '已生效',
+      action: '无需处理。',
+    });
+  });
+
   it('summarizes listening ports for the compact port section', () => {
     expect(corePortSummary([])).toBe('暂无监听端口数据。');
     expect(corePortSummary([{ inboundId: 1, protocol: 'vless', port: 443, transport: 'tcp', listening: true }])).toBe('1 个端口监听正常。');
@@ -445,7 +473,7 @@ describe('core service controls', () => {
     await waitForText('Xray 核心管理');
     await waitForText('配置不同步');
     expect(document.body.textContent).toContain('主操作');
-    expect(document.body.textContent).toContain('应用配置');
+    expect(document.body.textContent).toContain('重新同步');
     expect(document.body.textContent).toContain('配置状态');
     expect(document.body.textContent).toContain('/etc/migate/cores/xray.json');
     expect(document.body.textContent).toContain('监听端口');
@@ -492,10 +520,28 @@ describe('core service controls', () => {
     expect(document.body.textContent).toContain('21001');
     expect(document.body.textContent).toContain('检查防火墙/安全组是否放行 UDP 端口 21001。');
 
-    await clickButtonByText('应用配置');
+    await clickButtonByText('重新同步');
     await clickButtonByText('确认');
     await vi.waitFor(() => expect(apiMock.singboxApply).toHaveBeenCalledTimes(1));
     await waitForText('配置已应用，但端口未监听：21001/udp');
+  });
+
+  it('keeps retrying apply jobs visible as in-progress on the core page', async () => {
+    apiMock.xrayStatus.mockResolvedValueOnce({
+      service: 'xray',
+      status: 'running',
+      installed: true,
+      managed: true,
+      version: 'Xray 26.3.27',
+      config_path: '/etc/migate/cores/xray.json',
+      apply_job: { id: 'job-1', core: 'xray', status: 'retrying', retry_count: 1, max_retries: 3 },
+      commands_executed: [],
+    } as Awaited<ReturnType<typeof apiMock.xrayStatus>>);
+
+    renderCorePage('xray');
+    await waitForText('正在同步核心配置');
+    expect(document.body.textContent).toContain('应用进行中：自动重试中');
+    expect(document.body.textContent).toContain('第 1/3 次重试');
   });
 
   it('uses diagnostics installed state for operation controls when status is unknown', async () => {

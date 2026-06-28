@@ -1,11 +1,12 @@
-import type { CreateClientResponse, CreateInboundResponse, SingboxApplySummary, XrayApplySummary } from '../api/types';
+import { appPath } from '../api/client';
+import type { CoreApplyJobStatus, CreateClientResponse, CreateInboundResponse, SingboxApplySummary, XrayApplySummary } from '../api/types';
 
 type CoreWriteResponse = {
   applied?: boolean;
   config_changed?: boolean;
   pending_apply?: boolean;
   pending_cores?: string[];
-  auto_apply?: Record<string, { status?: string; error?: string; detail?: string }>;
+  auto_apply?: Record<string, CoreApplyJobStatus>;
   auto_apply_error?: Record<string, { error?: string; detail?: string }>;
   detail?: string;
   error?: string;
@@ -15,6 +16,16 @@ type CoreWriteResponse = {
   singbox?: SingboxApplySummary;
   xray?: XrayApplySummary;
 };
+
+type ToastAction = { label: string; onClick: () => void };
+type ToastFn = (title: string, tone?: 'success' | 'error' | 'info', action?: ToastAction) => void;
+type TextFn = (value: string) => string;
+type CoreApplyJobFetcher = (id: string) => Promise<CoreApplyJobStatus>;
+
+const activeTrackedJobs = new Map<string, CoreApplyJobStatus>();
+let coreApplyJobFetcher: CoreApplyJobFetcher | null = null;
+let coreApplyPollTimer: ReturnType<typeof setTimeout> | null = null;
+let coreApplyPollToken = 0;
 
 export function coreApplyWarning(response: CreateInboundResponse | CreateClientResponse | CoreWriteResponse | unknown, prefix: string): string {
   if (!response || typeof response !== 'object') return '';
@@ -63,7 +74,7 @@ function savedPrefix(prefix: string): string {
 }
 
 function autoApplyQueuedOrRunning(data: CoreWriteResponse): boolean {
-  return Object.values(data.auto_apply || {}).some((job) => ['queued', 'running'].includes(String(job?.status || '').toLowerCase()));
+  return Object.values(data.auto_apply || {}).some((job) => coreApplyJobActive(job));
 }
 
 function autoApplyFailureDetail(data: CoreWriteResponse): string {
@@ -145,11 +156,105 @@ function xrayFailureOutput(result: XrayApplySummary | SingboxApplySummary | (Cor
 export function showCoreApplyWarning(
   response: unknown,
   prefix: string,
-  showToast: (title: string, tone?: 'success' | 'error' | 'info') => void,
-  text: (value: string) => string = (value) => value,
+  showToast: ToastFn,
+  text: TextFn = (value) => value,
 ): boolean {
   const warning = coreApplyWarning(response, prefix);
   if (!warning) return false;
+  trackCoreApplyJobsFromResponse(response, showToast, text);
   showToast(text(warning), coreApplyWarningTone(response));
   return true;
+}
+
+export function configureCoreApplyJobTracking(fetcher: CoreApplyJobFetcher | null): void {
+  coreApplyJobFetcher = fetcher;
+}
+
+export function trackCoreApplyJobsFromResponse(response: unknown, showToast: ToastFn, text: TextFn = (value) => value): void {
+  if (!response || typeof response !== 'object' || !coreApplyJobFetcher) return;
+  const data = response as CoreWriteResponse;
+  if (data.config_changed !== true) return;
+  const jobs = Object.values(data.auto_apply || {}).filter((job) => job?.id && coreApplyJobActive(job));
+  if (!jobs.length) return;
+  for (const job of jobs) {
+    activeTrackedJobs.set(job.id, job);
+  }
+  scheduleCoreApplyJobPoll(showToast, text, 600);
+}
+
+export function __resetCoreApplyJobTrackingForTests(): void {
+  activeTrackedJobs.clear();
+  coreApplyJobFetcher = null;
+  coreApplyPollToken++;
+  if (coreApplyPollTimer) {
+    clearTimeout(coreApplyPollTimer);
+    coreApplyPollTimer = null;
+  }
+}
+
+function scheduleCoreApplyJobPoll(showToast: ToastFn, text: TextFn, delayMs: number): void {
+  if (!coreApplyJobFetcher || activeTrackedJobs.size === 0) return;
+  if (coreApplyPollTimer) clearTimeout(coreApplyPollTimer);
+  const token = ++coreApplyPollToken;
+  coreApplyPollTimer = setTimeout(() => {
+    coreApplyPollTimer = null;
+    void pollCoreApplyJobs(token, showToast, text);
+  }, delayMs);
+}
+
+async function pollCoreApplyJobs(token: number, showToast: ToastFn, text: TextFn): Promise<void> {
+  if (!coreApplyJobFetcher || token !== coreApplyPollToken) return;
+  const fetcher = coreApplyJobFetcher;
+  const jobs = Array.from(activeTrackedJobs.values());
+  const results = await Promise.all(jobs.map(async (job) => {
+    try {
+      return await fetcher(job.id);
+    } catch {
+      return job;
+    }
+  }));
+  const succeeded: CoreApplyJobStatus[] = [];
+  const failed: CoreApplyJobStatus[] = [];
+  for (const job of results) {
+    if (!job?.id) continue;
+    if (String(job.status).toLowerCase() === 'succeeded') {
+      activeTrackedJobs.delete(job.id);
+      succeeded.push(job);
+      continue;
+    }
+    if (String(job.status).toLowerCase() === 'failed') {
+      activeTrackedJobs.delete(job.id);
+      failed.push(job);
+      continue;
+    }
+    activeTrackedJobs.set(job.id, job);
+  }
+  if (succeeded.length) {
+    showToast(text(coreApplySucceededMessage(succeeded)), 'success');
+  }
+  for (const job of failed) {
+    showToast(
+      text(`${coreLabel(job.core)} 自动同步失败${job.detail || job.error ? `：${job.detail || job.error}` : ''}`),
+      'error',
+      { label: '查看核心页', onClick: () => window.location.assign(appPath(coreApplyCorePath(job.core))) },
+    );
+  }
+  if (activeTrackedJobs.size) {
+    scheduleCoreApplyJobPoll(showToast, text, 1200);
+  }
+}
+
+function coreApplySucceededMessage(jobs: CoreApplyJobStatus[]): string {
+  const cores = Array.from(new Set(jobs.map((job) => coreLabel(job.core)).filter(Boolean)));
+  if (cores.length === 1) return `${cores[0]} 配置已同步`;
+  return '核心配置已同步';
+}
+
+function coreApplyJobActive(job?: Pick<CoreApplyJobStatus, 'status'>): boolean {
+  return ['queued', 'running', 'retrying'].includes(String(job?.status || '').toLowerCase());
+}
+
+function coreApplyCorePath(core: string): string {
+  const normalized = String(core || '').trim().toLowerCase();
+  return normalized === 'sing-box' || normalized === 'singbox' ? '/singbox' : '/xray';
 }

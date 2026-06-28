@@ -224,15 +224,18 @@ type XrayApplyResult struct {
 }
 
 type CoreApplyJobStatus struct {
-	ID         string `json:"id"`
-	Core       string `json:"core"`
-	Status     string `json:"status"`
-	StartedAt  string `json:"started_at,omitempty"`
-	FinishedAt string `json:"finished_at,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Detail     string `json:"detail,omitempty"`
-	Accepted   bool   `json:"accepted,omitempty"`
+	ID          string `json:"id"`
+	Core        string `json:"core"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"started_at,omitempty"`
+	FinishedAt  string `json:"finished_at,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+	Accepted    bool   `json:"accepted,omitempty"`
+	RetryCount  int    `json:"retry_count,omitempty"`
+	MaxRetries  int    `json:"max_retries,omitempty"`
+	NextRetryAt string `json:"next_retry_at,omitempty"`
 }
 
 type defaultXrayController struct{}
@@ -248,47 +251,48 @@ func (defaultXrayController) Apply(ctx context.Context) XrayApplyResult {
 func (defaultXrayController) Version(ctx context.Context) string { return "" }
 
 type routerConfig struct {
-	store              Store
-	certLookupIP       func(context.Context, string) ([]net.IP, error)
-	certListenTCP      func(network, address string) (net.Listener, error)
-	certIssuer         certsvc.Issuer
-	xrayController     XrayController
-	singboxRuntime     SingboxRuntime
-	authEnabled        bool
-	authUsername       string
-	authPassword       string
-	authMu             sync.RWMutex
-	sessionSecret      []byte
-	configDir          string
-	certDir            string
-	xrayConfigPath     string
-	version            string
-	basePath           string
-	statsClient        xray.StatsClient
-	singboxStatsClient singbox.StatsClient
-	socks5PoolURL      string
-	httpPoolURL        string
-	httpsPoolURL       string
-	updateCheckURL     string
-	updateStatusPath   string
-	publicHost         string
-	trustProxy         bool
-	loginLimiter       *loginLimiter
-	coreScriptRunner   func(script string) ([]byte, error)
-	singboxApplier     func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary
-	singboxApplierSet  bool
-	singboxProbe       SingboxProbe
-	singboxListeners   func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
-	xrayProbe          XrayProbe
-	xrayListeners      func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
-	outboundFetcher    SubscriptionFetcher
-	sessionTouches     map[string]time.Time
-	sessionTouchGC     time.Time
-	sessionTouchMu     sync.Mutex
-	coreCache          *coreStatusCache
-	applyJobs          *coreApplyJobManager
-	coreApplyTimeout   time.Duration
-	autoCoreApply      bool
+	store               Store
+	certLookupIP        func(context.Context, string) ([]net.IP, error)
+	certListenTCP       func(network, address string) (net.Listener, error)
+	certIssuer          certsvc.Issuer
+	xrayController      XrayController
+	singboxRuntime      SingboxRuntime
+	authEnabled         bool
+	authUsername        string
+	authPassword        string
+	authMu              sync.RWMutex
+	sessionSecret       []byte
+	configDir           string
+	certDir             string
+	xrayConfigPath      string
+	version             string
+	basePath            string
+	statsClient         xray.StatsClient
+	singboxStatsClient  singbox.StatsClient
+	socks5PoolURL       string
+	httpPoolURL         string
+	httpsPoolURL        string
+	updateCheckURL      string
+	updateStatusPath    string
+	publicHost          string
+	trustProxy          bool
+	loginLimiter        *loginLimiter
+	coreScriptRunner    func(script string) ([]byte, error)
+	singboxApplier      func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary
+	singboxApplierSet   bool
+	singboxProbe        SingboxProbe
+	singboxListeners    func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
+	xrayProbe           XrayProbe
+	xrayListeners       func(ctx context.Context, cfg *routerConfig) []CoreListenerDiagnostic
+	outboundFetcher     SubscriptionFetcher
+	sessionTouches      map[string]time.Time
+	sessionTouchGC      time.Time
+	sessionTouchMu      sync.Mutex
+	coreCache           *coreStatusCache
+	applyJobs           *coreApplyJobManager
+	coreApplyTimeout    time.Duration
+	coreApplyRetryDelay func(int) time.Duration
+	autoCoreApply       bool
 }
 
 type SingboxRuntime interface {

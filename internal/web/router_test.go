@@ -849,6 +849,7 @@ func TestRouteContractsAreRegisteredAndEnforced(t *testing.T) {
 		{Method: http.MethodPut, Path: "/api/settings", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodGet, Path: "/api/version", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
 		{Method: http.MethodGet, Path: "/api/health", Auth: web.AuthPublic, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodGet, Path: "/api/core/apply-jobs/", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
 		{Method: http.MethodGet, Path: "/api/xray/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
 		{Method: http.MethodPost, Path: "/api/xray/apply", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodPost, Path: "/api/xray/install", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
@@ -1020,6 +1021,7 @@ func TestRouteContractsCoverCriticalAPIBehavior(t *testing.T) {
 		{Method: http.MethodGet, Path: "/api/traffic/v2/stream", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
 		{Method: http.MethodPut, Path: "/api/settings", Auth: web.AuthRequired, CSRF: web.CSRFRequired},
 		{Method: http.MethodGet, Path: "/api/service/status", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
+		{Method: http.MethodGet, Path: "/api/core/apply-jobs/", Auth: web.AuthRequired, CSRF: web.CSRFNotRequired},
 	} {
 		got, ok := contracts[want.Method+" "+want.Path]
 		if !ok {
@@ -1063,6 +1065,7 @@ func TestRouteContractsMatchRegisteredRouterPaths(t *testing.T) {
 		"/api/inbounds",
 		"/api/outbounds",
 		"/api/routing-rules",
+		"/api/core/apply-jobs/",
 		"/api/xray/apply",
 		"/api/xray/install",
 		"/api/singbox/apply",

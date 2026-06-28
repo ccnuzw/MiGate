@@ -212,6 +212,12 @@ func WithCoreApplyTimeout(timeout time.Duration) Option {
 	}
 }
 
+func WithCoreApplyRetryDelay(delay func(int) time.Duration) Option {
+	return func(cfg *routerConfig) {
+		cfg.coreApplyRetryDelay = delay
+	}
+}
+
 func WithAutoCoreApply(enabled bool) Option {
 	return func(cfg *routerConfig) {
 		cfg.autoCoreApply = enabled

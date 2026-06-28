@@ -1,10 +1,11 @@
 import { get, post } from './client';
-import type { ConfigValidation, CoreActionResponse, CoreStatus, SingboxConfigPreview, SingboxDiagnostics, VersionResponse, XrayConfigPreview, XrayDiagnostics } from './types';
+import type { ConfigValidation, CoreActionResponse, CoreApplyJobStatus, CoreStatus, SingboxConfigPreview, SingboxDiagnostics, VersionResponse, XrayConfigPreview, XrayDiagnostics } from './types';
 
 const confirmedSystemAction = { confirm: true, allow_system_changes: true };
 
 export const coreAPI = {
   xrayStatus: () => get<CoreStatus>('/api/xray/status'),
+  coreApplyJob: (id: string) => get<CoreApplyJobStatus>(`/api/core/apply-jobs/${encodeURIComponent(id)}`),
   xrayDiagnostics: () => get<XrayDiagnostics>('/api/xray/diagnostics'),
   xrayVersion: () => get<VersionResponse>('/api/xray/version'),
   xrayConfig: () => get<unknown>('/api/xray/config'),

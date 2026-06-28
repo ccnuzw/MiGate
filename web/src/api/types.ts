@@ -234,13 +234,16 @@ export interface CoreStatus {
 export interface CoreApplyJobStatus {
   id: string;
   core: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | string;
+  status: 'queued' | 'running' | 'retrying' | 'succeeded' | 'failed' | string;
   started_at?: string;
   finished_at?: string;
   message?: string;
   error?: string;
   detail?: string;
   accepted?: boolean;
+  retry_count?: number;
+  max_retries?: number;
+  next_retry_at?: string;
 }
 
 export interface CoreActionResponse {
