@@ -134,7 +134,7 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
 		}
 		deltaUp := int64(0)
 		deltaDown := int64(0)
-		if !hasCurrent || isResetWithoutRawBaseline(current) {
+		if !hasCurrent || isMissingRawBaseline(current) {
 			deltaUp = 0
 			deltaDown = 0
 		} else {
@@ -382,11 +382,24 @@ WHERE sampled_at < ?
 	}, nil
 }
 
-func isResetWithoutRawBaseline(state TrafficState) bool {
-	return state.TotalUp == 0 && state.TotalDown == 0 &&
-		state.LastRawUp == 0 && state.LastRawDown == 0 &&
-		normalizeTrafficStatus(state.Status) == "unavailable" &&
-		strings.Contains(strings.ToLower(state.Message), "baseline unavailable")
+func isMissingRawBaseline(state TrafficState) bool {
+	return state.LastRawUp == 0 && state.LastRawDown == 0 &&
+		state.DeltaUp == 0 && state.DeltaDown == 0 &&
+		state.RateUp == 0 && state.RateDown == 0 &&
+		state.WindowSeconds == 0 &&
+		isBaselineOnlyTrafficStatus(state)
+}
+
+func isBaselineOnlyTrafficStatus(state TrafficState) bool {
+	status := normalizeTrafficStatus(state.Status)
+	if status == "waiting" || status == "not_configured" || status == "unsupported" {
+		return true
+	}
+	if status == "unavailable" {
+		message := strings.ToLower(strings.TrimSpace(state.Message))
+		return message == "" || strings.Contains(message, "baseline unavailable") || strings.Contains(message, "stats offline") || strings.Contains(message, "waiting")
+	}
+	return false
 }
 
 // isCounterReset detects when a core counter has been reset (e.g. Xray/sing-box restart).
@@ -404,7 +417,7 @@ func isCounterReset(rawUp, rawDown, lastRawUp, lastRawDown int64) bool {
 
 func shouldSuppressRecoveredTrafficRate(state TrafficState) bool {
 	switch normalizeTrafficStatus(state.Status) {
-	case "unsupported", "not_configured":
+	case "waiting", "unavailable", "unsupported", "not_configured":
 		return true
 	default:
 		return false

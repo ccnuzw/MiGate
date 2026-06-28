@@ -3690,12 +3690,10 @@ func TestTrafficWaitingRecoverySuppressesCompressedRateAfterMultipleMarkers(t *t
 	}
 	state := findTrafficState(states, "xray", "client", client.StatsKey)
 	if state == nil || state.TotalUp != 600 || state.TotalDown != 800 || state.Status != "ok" || state.Message != "" {
-		t.Fatalf("recovery should keep cumulative delta and compute normal rate (not suppressed), got %+v", state)
+		t.Fatalf("recovery should keep cumulative delta without compressed realtime rate, got %+v", state)
 	}
-	// Rate is no longer suppressed for transient states.
-	// delta=500/600, elapsed=10s (last_seen at marker t0+5m) → rateUp=50, rateDown=60
-	if state.RateUp != 50 || state.RateDown != 60 {
-		t.Fatalf("expected rate 50/60 after recovery, got RateUp=%f RateDown=%f", state.RateUp, state.RateDown)
+	if state.RateUp != 0 || state.RateDown != 0 {
+		t.Fatalf("expected recovered rate to be suppressed after waiting markers, got RateUp=%f RateDown=%f", state.RateUp, state.RateDown)
 	}
 	if err := store.ApplyTrafficRawStats(ctx, raw(1660, 2920), t0.Add(6*time.Minute+10*time.Second)); err != nil {
 		t.Fatalf("post-recovery raw sample: %v", err)
@@ -3716,8 +3714,44 @@ func TestTrafficWaitingRecoverySuppressesCompressedRateAfterMultipleMarkers(t *t
 		t.Fatalf("expected baseline, waiting, recovery and post-recovery samples, got %+v", samples)
 	}
 	recovered := samples[len(samples)-2]
-	if recovered.Status != "ok" || recovered.TotalUp != 600 || recovered.TotalDown != 800 || recovered.RateUp != 50 || recovered.RateDown != 60 {
-		t.Fatalf("recovered series point should carry totals with normal rate (not suppressed), got %+v", recovered)
+	if recovered.Status != "ok" || recovered.TotalUp != 600 || recovered.TotalDown != 800 || recovered.RateUp != 0 || recovered.RateDown != 0 {
+		t.Fatalf("recovered series point should carry totals with suppressed realtime rate, got %+v", recovered)
+	}
+}
+
+func TestTrafficMissingBaselineDoesNotImportRawCounterAsUsage(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	statsKey := "c_missing_baseline"
+	t0 := time.Unix(20_000, 0)
+	if err := store.MarkTrafficScopeStatus(ctx, []db.TrafficStatusMarker{
+		{Engine: "xray", ScopeType: "client", ScopeKey: statsKey, Status: "waiting", Message: "waiting for traffic sample"},
+	}, t0); err != nil {
+		t.Fatalf("mark waiting: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: statsKey, RawUp: 5_444_373, RawDown: 724_143_848, Status: "ok"},
+	}, t0.Add(5*time.Second)); err != nil {
+		t.Fatalf("first raw after waiting: %v", err)
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	state := findTrafficState(states, "xray", "client", statsKey)
+	if state == nil {
+		t.Fatal("missing recovered state")
+	}
+	if state.TotalUp != 0 || state.TotalDown != 0 || state.DeltaUp != 0 || state.DeltaDown != 0 || state.RateUp != 0 || state.RateDown != 0 {
+		t.Fatalf("first raw after missing baseline should establish baseline only, got %+v", state)
+	}
+	if state.LastRawUp != 5_444_373 || state.LastRawDown != 724_143_848 || state.Status != "ok" {
+		t.Fatalf("first raw should still store raw baseline/status, got %+v", state)
 	}
 }
 
