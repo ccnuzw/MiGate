@@ -3755,6 +3755,42 @@ func TestTrafficMissingBaselineDoesNotImportRawCounterAsUsage(t *testing.T) {
 	}
 }
 
+func TestTrafficZeroRawOKStateDoesNotImportHistoricalCounterAsRealtime(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	statsKey := "c_zero_ok_baseline"
+	t0 := time.Unix(21_000, 0)
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: statsKey, RawUp: 0, RawDown: 0, Status: "ok"},
+	}, t0); err != nil {
+		t.Fatalf("zero raw baseline: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "client", ScopeKey: statsKey, RawUp: 449_400_000, RawDown: 12_000_000_000, Status: "ok"},
+	}, t0.Add(5*time.Second)); err != nil {
+		t.Fatalf("first non-zero raw: %v", err)
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	state := findTrafficState(states, "xray", "client", statsKey)
+	if state == nil {
+		t.Fatal("missing state")
+	}
+	if state.TotalUp != 0 || state.TotalDown != 0 || state.DeltaUp != 0 || state.DeltaDown != 0 || state.RateUp != 0 || state.RateDown != 0 {
+		t.Fatalf("first non-zero raw after zero baseline should be baseline-only, got %+v", state)
+	}
+	if state.LastRawUp != 449_400_000 || state.LastRawDown != 12_000_000_000 || state.Status != "ok" {
+		t.Fatalf("first non-zero raw should be stored as new raw baseline, got %+v", state)
+	}
+}
+
 func TestTrafficRawStatsRepairsPollutedSingleClientTotalFromNativeInbound(t *testing.T) {
 	store, err := db.Open(context.Background(), ":memory:")
 	if err != nil {

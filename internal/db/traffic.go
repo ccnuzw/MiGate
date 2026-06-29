@@ -488,6 +488,9 @@ func isBaselineOnlyTrafficStatus(state TrafficState) bool {
 	if status == "waiting" || status == "not_configured" || status == "unsupported" {
 		return true
 	}
+	if status == "ok" {
+		return true
+	}
 	if status == "unavailable" {
 		message := strings.ToLower(strings.TrimSpace(state.Message))
 		return message == "" || strings.Contains(message, "baseline unavailable") || strings.Contains(message, "stats offline") || strings.Contains(message, "waiting")
