@@ -134,10 +134,30 @@ remove_panel() {
   run_cmd rm -f "$UNINSTALLER_BINARY"
 }
 
+legacy_xray_service_is_migate_managed() {
+  local unit=""
+  local old_config_marker="/usr/local/""migate/xray.json"
+  unit="$(systemctl cat xray 2>/dev/null || true)"
+  printf '%s\n' "$unit" | grep -Eq "MiGate|${old_config_marker}|/etc/migate/cores/xray\.json"
+}
+
+stop_disable_legacy_migate_xray_service() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[DRY-RUN] inspect xray.service for MiGate-managed legacy config\n'
+    return 0
+  fi
+  if legacy_xray_service_is_migate_managed; then
+    echo "Stopping legacy MiGate-managed xray.service..."
+    run_cmd systemctl stop xray 2>/dev/null || true
+    run_cmd systemctl disable xray 2>/dev/null || true
+  fi
+}
+
 remove_cores() {
   echo "Stopping MiGate managed core services..."
   stop_disable_remove_service "$XRAY_SERVICE" "$XRAY_SERVICE_PATH"
   stop_disable_remove_service "$SINGBOX_SERVICE" "$SINGBOX_SERVICE_PATH"
+  stop_disable_legacy_migate_xray_service
   echo "Removing MiGate managed core binaries..."
   run_cmd rm -f "$XRAY_BINARY"
   run_cmd rm -f "$SINGBOX_BINARY"
@@ -157,6 +177,9 @@ reload_systemd_state() {
   if [ "$UNINSTALL_MODE" != "panel-only" ]; then
     run_cmd systemctl reset-failed "$XRAY_SERVICE" 2>/dev/null || true
     run_cmd systemctl reset-failed "$SINGBOX_SERVICE" 2>/dev/null || true
+    if [ "$DRY_RUN" -eq 0 ] && legacy_xray_service_is_migate_managed; then
+      run_cmd systemctl reset-failed xray 2>/dev/null || true
+    fi
   fi
   run_cmd systemctl reset-failed 2>/dev/null || true
 }

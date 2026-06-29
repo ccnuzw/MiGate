@@ -1309,6 +1309,40 @@ func TestUninstallInteractiveChoiceCanRemoveEverythingIncludingConfig(t *testing
 	}
 }
 
+func TestUninstallPurgeStopsLegacyMiGateManagedXrayService(t *testing.T) {
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "systemctl.log")
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fakeSystemctl := filepath.Join(binDir, "systemctl")
+	legacyConfigPath := "/usr/local/" + "migate/xray.json"
+	fakeScript := "#!/usr/bin/env bash\nprintf '%s\\n' \"systemctl $*\" >> \"$FAKE_SYSTEMCTL_LOG\"\ncase \"$*\" in\n  'cat xray') printf '%s\\n' 'ExecStart=/usr/local/bin/xray run -c " + legacyConfigPath + "' ;;\nesac\nexit 0\n"
+	if err := os.WriteFile(fakeSystemctl, []byte(fakeScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "uninstall.sh"), "--yes", "--purge")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "FAKE_SYSTEMCTL_LOG="+logPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("uninstall purge with fake legacy xray failed: %v\n%s", err, output)
+	}
+	calls := readFile(t, logPath)
+	for _, want := range []string{
+		"systemctl cat xray",
+		"systemctl stop xray",
+		"systemctl disable xray",
+		"systemctl reset-failed xray",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Fatalf("purge did not clean MiGate-managed legacy xray service %q; calls:\n%s\noutput:\n%s", want, calls, output)
+		}
+	}
+}
+
 func TestInstallerUninstallDryRunDelegatesWithoutEmptyArgument(t *testing.T) {
 	root := repoRoot(t)
 	cmd := exec.Command("bash", filepath.Join(root, "packaging", "install.sh"), "--uninstall", "--dry-run", "--yes")
