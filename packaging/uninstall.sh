@@ -142,7 +142,7 @@ legacy_xray_service_is_migate_managed() {
 }
 
 stop_disable_legacy_migate_xray_service() {
-  if [ "$DRY_RUN" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ] && [ "${MIGATE_ALLOW_LEGACY_XRAY_DRY_RUN:-0}" != "1" ]; then
     printf '[DRY-RUN] inspect xray.service for MiGate-managed legacy config\n'
     return 0
   fi
@@ -177,7 +177,7 @@ reload_systemd_state() {
   if [ "$UNINSTALL_MODE" != "panel-only" ]; then
     run_cmd systemctl reset-failed "$XRAY_SERVICE" 2>/dev/null || true
     run_cmd systemctl reset-failed "$SINGBOX_SERVICE" 2>/dev/null || true
-    if [ "$DRY_RUN" -eq 0 ] && legacy_xray_service_is_migate_managed; then
+    if { [ "$DRY_RUN" -eq 0 ] || [ "${MIGATE_ALLOW_LEGACY_XRAY_DRY_RUN:-0}" = "1" ]; } && legacy_xray_service_is_migate_managed; then
       run_cmd systemctl reset-failed xray 2>/dev/null || true
     fi
   fi
