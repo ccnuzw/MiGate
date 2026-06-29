@@ -115,8 +115,12 @@ Dangerous operation confirmation:
 - Web API dangerous operations must be `POST` and require both `confirm: true`
   and `allow_system_changes: true`.
 - CLI dangerous operations are explicit subcommands. Non-interactive installer
-  operations use `--yes`; destructive uninstall data deletion requires
-  `migate-uninstall --purge` and either `--yes` or typing `PURGE`.
+  operations use `--yes`; uninstall asks for one of three scopes when no mode is
+  supplied: panel-only, panel+managed-cores, or full removal including all
+  MiGate config/data/logs. Non-interactive uninstall requires an explicit scope
+  for the uninstaller itself (`--panel-only`, `--with-cores`, or `--purge`),
+  while `migate-install --uninstall --yes` preserves backward-compatible
+  panel-only behavior.
 - Installer dry-runs must not write real system paths. When the default lock is
   `/run/migate/install.lock`, dry-run uses a temporary lock path.
 

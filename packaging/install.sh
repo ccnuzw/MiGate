@@ -162,7 +162,7 @@ Options:
   --upgrade, --update   Upgrade MiGate and keep existing config.
   --reinstall          Reinstall MiGate binary and keep existing config.
   --fresh-config       Regenerate panel.json during install/reinstall.
-  --uninstall          Run MiGate uninstaller. Keeps config/data unless --purge is passed after --.
+  --uninstall          Run MiGate uninstaller. Without extra args it removes only the panel; pass -- --with-cores or -- --purge for more.
   --repair-service     Rewrite/repair migate.service only.
   --install-xray       Install/repair Xray only, or include Xray when used with --install.
   --install-singbox    Install/repair sing-box only, or include sing-box when used with --install.
@@ -2031,6 +2031,10 @@ uninstall_flow() {
   if [ "$ASSUME_YES" -eq 1 ]; then
     args[args_count]="--yes"
     args_count=$((args_count + 1))
+    if [ "${EXTRA_ARGS_COUNT:-0}" -eq 0 ]; then
+      args[args_count]="--panel-only"
+      args_count=$((args_count + 1))
+    fi
   fi
   if [ -x "$UNINSTALLER_BIN" ]; then
     if [ "$args_count" -gt 0 ]; then

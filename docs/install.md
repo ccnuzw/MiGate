@@ -54,7 +54,9 @@ migate-install --reinstall --fresh-config --yes
 migate-install --repair-service --yes
 migate-install --install-xray --yes
 migate-install --install-singbox --yes
-migate-install --uninstall --yes
+migate-install --uninstall --yes                         # panel only
+migate-install --uninstall -- --with-cores --yes         # panel + cores
+migate-install --uninstall -- --purge --yes              # panel + cores + config/data/logs
 ```
 
 `--install-xray` and `--install-singbox` by themselves are core-only repair
@@ -67,6 +69,8 @@ Preview without changing the system:
 migate-install --install --yes --dry-run
 migate-install --upgrade --yes --dry-run
 migate-install --uninstall --yes --dry-run
+migate-install --uninstall --dry-run                     # asks for 1/2/3
+migate-install --uninstall -- --with-cores --yes --dry-run
 migate-install --install-xray --yes --dry-run
 migate-install --install-singbox --yes --dry-run
 ```

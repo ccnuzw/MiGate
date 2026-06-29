@@ -1208,9 +1208,9 @@ func TestInstallAndUninstallScriptsKeepOpsContractPathsAndSafety(t *testing.T) {
 		`MIGATE_DATA_DIR="/var/lib/migate"`,
 		`MIGATE_LOG_DIR="/var/log/migate"`,
 		`MIGATE_RUN_DIR="/run/migate"`,
-		"Default uninstall keeps:",
+		"Interactive uninstall asks which mode to use:",
 		"Keeping MiGate config/data/logs",
-		`if [ "$PURGE" -eq 1 ]; then`,
+		`if [ "$UNINSTALL_MODE" = "purge" ]; then`,
 	} {
 		if !strings.Contains(uninstall, want) {
 			t.Fatalf("uninstall script ops contract missing %q", want)
@@ -1225,21 +1225,86 @@ func TestInstallAndUninstallScriptsKeepOpsContractPathsAndSafety(t *testing.T) {
 	}
 }
 
-func TestUninstallDryRunPrintsPlannedCommands(t *testing.T) {
+func TestUninstallDryRunPrintsPanelOnlyPlanWhenConfirmed(t *testing.T) {
 	root := repoRoot(t)
-	cmd := exec.Command("bash", filepath.Join(root, "packaging", "uninstall.sh"), "--dry-run", "--yes")
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "uninstall.sh"), "--dry-run", "--yes", "--panel-only")
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("uninstall dry-run failed: %v\n%s", err, output)
 	}
+	out := string(output)
 	for _, want := range []string{
+		"卸载模式: 只卸载 MiGate 面板",
 		"[DRY-RUN] systemctl stop migate",
 		"[DRY-RUN] rm -f /usr/local/bin/migate",
-		"Keeping MiGate config/data",
+		"Keeping MiGate cores and config/data/logs",
 	} {
-		if !strings.Contains(string(output), want) {
-			t.Fatalf("uninstall dry-run missing %q:\n%s", want, output)
+		if !strings.Contains(out, want) {
+			t.Fatalf("panel-only uninstall dry-run missing %q:\n%s", want, output)
+		}
+	}
+	for _, forbidden := range []string{
+		"systemctl stop migate-xray",
+		"systemctl stop migate-sing-box",
+		"rm -f /usr/local/bin/xray",
+		"rm -f /usr/local/bin/sing-box",
+		"rm -rf /etc/migate",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("panel-only uninstall must not include %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+func TestUninstallInteractiveChoiceCanRemovePanelAndCoresWithoutConfig(t *testing.T) {
+	root := repoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "uninstall.sh"), "--dry-run")
+	cmd.Dir = root
+	cmd.Stdin = strings.NewReader("2\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("interactive core uninstall dry-run failed: %v\n%s", err, output)
+	}
+	out := string(output)
+	for _, want := range []string{
+		"请选择卸载方式",
+		"卸载模式: 卸载 MiGate 面板和核心",
+		"[DRY-RUN] systemctl stop migate-xray",
+		"[DRY-RUN] systemctl stop migate-sing-box",
+		"[DRY-RUN] rm -f /usr/local/bin/xray",
+		"[DRY-RUN] rm -f /usr/local/bin/sing-box",
+		"Keeping MiGate config/data/logs",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("interactive core uninstall missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(out, "rm -rf /etc/migate") || strings.Contains(out, "rm -rf /var/lib/migate") {
+		t.Fatalf("panel+core uninstall must keep config/data unless full purge is selected:\n%s", out)
+	}
+}
+
+func TestUninstallInteractiveChoiceCanRemoveEverythingIncludingConfig(t *testing.T) {
+	root := repoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(root, "packaging", "uninstall.sh"), "--dry-run")
+	cmd.Dir = root
+	cmd.Stdin = strings.NewReader("3\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("interactive full uninstall dry-run failed: %v\n%s", err, output)
+	}
+	out := string(output)
+	for _, want := range []string{
+		"卸载模式: 彻底卸载 MiGate 面板、核心和配置文件",
+		"[DRY-RUN] systemctl stop migate-xray",
+		"[DRY-RUN] rm -f /usr/local/bin/sing-box",
+		"[DRY-RUN] rm -rf /etc/migate",
+		"[DRY-RUN] rm -rf /var/lib/migate",
+		"[DRY-RUN] rm -rf /var/log/migate",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("interactive full uninstall missing %q:\n%s", want, output)
 		}
 	}
 }

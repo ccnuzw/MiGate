@@ -53,8 +53,14 @@ migate-install --repair-service --yes
 migate-install --install-xray --yes
 migate-install --install-singbox --yes
 
-# Uninstall service and binaries while keeping config/data.
+# Uninstall only the MiGate panel while keeping cores and config/data.
 migate-install --uninstall --yes
+
+# Uninstall panel plus managed cores while keeping config/data/logs.
+migate-install --uninstall -- --with-cores --yes
+
+# Fully uninstall panel, managed cores, and all MiGate config/data/logs.
+migate-install --uninstall -- --purge --yes
 ```
 
 During first installation, you will be prompted for:
@@ -119,8 +125,10 @@ mg restore /var/lib/migate/backups/migate-backup-YYYYMMDD-HHMMSS.tar.gz
 
 `mg backup` includes `/etc/migate`, `/var/lib/migate/migate.db`, and
 `/var/lib/migate/versions.json` by default, and writes archives under
-`/var/lib/migate/backups`. `mg uninstall` removes services and binaries while
-keeping config/data/logs unless the uninstaller is run with `--purge`.
+`/var/lib/migate/backups`. The uninstaller asks which scope to use: panel only,
+panel plus managed cores, or full removal including config/data/logs. In
+non-interactive mode, `migate-install --uninstall --yes` maps to panel-only;
+pass `-- --with-cores --yes` or `-- --purge --yes` for broader removal.
 
 These paths and services are the MiGate Runtime Contract and MiGate Ops
 Contract. Standard systemd services are `migate`, `migate-xray`, and

@@ -254,8 +254,10 @@ func TestInstallUninstallDocsAndScriptsKeepOpsContract(t *testing.T) {
 
 	uninstaller := read(t, "packaging", "uninstall.sh")
 	for _, want := range []string{
-		"Default uninstall keeps:",
-		`if [ "$PURGE" -eq 1 ]; then`,
+		"Interactive uninstall asks which mode to use:",
+		`--panel-only`,
+		`--with-cores`,
+		`if [ "$UNINSTALL_MODE" = "purge" ]; then`,
 		`rm -rf "$MIGATE_CONFIG_DIR"`,
 		`rm -rf "$MIGATE_DATA_DIR"`,
 		`rm -rf "$MIGATE_LOG_DIR"`,
