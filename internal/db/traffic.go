@@ -252,7 +252,7 @@ WHERE i.enabled = 1 AND c.enabled = 1 AND i.protocol NOT IN ('hysteria2', 'tuic'
 UPDATE traffic_states
 SET total_up=?, total_down=?, delta_up=?, delta_down=?, rate_up=?, rate_down=?, window_seconds=?, last_seen_at=?, status='partial', message=?
 WHERE engine='xray' AND scope_type='client' AND scope_key=?
-`, inboundState.TotalUp, inboundState.TotalDown, inboundState.DeltaUp, inboundState.DeltaDown, inboundState.RateUp, inboundState.RateDown, inboundState.WindowSeconds, seenAt, message, candidate.clientKey)
+`, inboundState.TotalUp, inboundState.TotalDown, 0, 0, 0, 0, 0, seenAt, message, candidate.clientKey)
 		if err != nil {
 			return err
 		}
@@ -268,17 +268,17 @@ ON CONFLICT(sampled_at, engine, scope_type, scope_key) DO UPDATE SET
   rate_down=excluded.rate_down,
   window_seconds=excluded.window_seconds,
   status=excluded.status
-`, sampleBucketAt, candidate.clientKey, inboundState.TotalUp, inboundState.TotalDown, inboundState.DeltaUp, inboundState.DeltaDown, inboundState.RateUp, inboundState.RateDown, inboundState.WindowSeconds)
+`, sampleBucketAt, candidate.clientKey, inboundState.TotalUp, inboundState.TotalDown, 0, 0, 0, 0, 0)
 		if err != nil {
 			return err
 		}
 		clientState.TotalUp = inboundState.TotalUp
 		clientState.TotalDown = inboundState.TotalDown
-		clientState.DeltaUp = inboundState.DeltaUp
-		clientState.DeltaDown = inboundState.DeltaDown
-		clientState.RateUp = inboundState.RateUp
-		clientState.RateDown = inboundState.RateDown
-		clientState.WindowSeconds = inboundState.WindowSeconds
+		clientState.DeltaUp = 0
+		clientState.DeltaDown = 0
+		clientState.RateUp = 0
+		clientState.RateDown = 0
+		clientState.WindowSeconds = 0
 		clientState.LastSeenAt = seenAt
 		clientState.Status = "partial"
 		clientState.Message = message

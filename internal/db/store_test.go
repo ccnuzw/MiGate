@@ -3802,9 +3802,67 @@ func TestTrafficRawStatsRepairsPollutedSingleClientTotalFromNativeInbound(t *tes
 	if clientState == nil || clientState.TotalUp != 300 || clientState.TotalDown != 700 || clientState.Status != "partial" || !strings.Contains(clientState.Message, "reconciled") {
 		t.Fatalf("polluted client state should be reconciled to inbound totals, got %+v", clientState)
 	}
+	if clientState.DeltaUp != 0 || clientState.DeltaDown != 0 || clientState.RateUp != 0 || clientState.RateDown != 0 || clientState.WindowSeconds != 0 {
+		t.Fatalf("repair must not turn inbound delta into fake client realtime, got %+v", clientState)
+	}
 	inboundState := findTrafficState(states, "xray", "inbound", inboundKey)
 	if inboundState == nil || inboundState.TotalUp != 300 || inboundState.TotalDown != 700 || inboundState.Status != "ok" {
 		t.Fatalf("native inbound state should remain authoritative, got %+v", inboundState)
+	}
+}
+
+func TestTrafficRawStatsDoesNotKeepChasingInboundAfterPollutionRepair(t *testing.T) {
+	store, err := db.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	inbound, err := store.CreateInbound(ctx, db.CreateInboundParams{Remark: "quiet-client", Protocol: "vless", Port: 28121, Network: "tcp", Security: "none"})
+	if err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	client, err := store.CreateClient(ctx, db.CreateClientParams{InboundID: inbound.ID, Email: "quiet@example.com"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	inboundKey := db.GeneratedInboundTag(inbound)
+	t0 := time.Unix(31_000, 0)
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "inbound", ScopeKey: inboundKey, RawUp: 1000, RawDown: 2000, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 1000, RawDown: 2000, Status: "ok"},
+	}, t0); err != nil {
+		t.Fatalf("baseline sample: %v", err)
+	}
+	if err := store.ExecForTest(ctx, `UPDATE traffic_states SET total_up=900, total_down=2400 WHERE engine='xray' AND scope_type='client' AND scope_key=?`, client.StatsKey); err != nil {
+		t.Fatalf("pollute client state: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "inbound", ScopeKey: inboundKey, RawUp: 1300, RawDown: 2700, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 1000, RawDown: 2000, Status: "ok"},
+	}, t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("repair sample: %v", err)
+	}
+	if err := store.ApplyTrafficRawStats(ctx, []db.TrafficRawStat{
+		{Engine: "xray", ScopeType: "inbound", ScopeKey: inboundKey, RawUp: 1310, RawDown: 2800, Status: "ok"},
+		{Engine: "xray", ScopeType: "client", ScopeKey: client.StatsKey, RawUp: 1000, RawDown: 2000, Status: "ok"},
+	}, t0.Add(20*time.Second)); err != nil {
+		t.Fatalf("quiet client sample: %v", err)
+	}
+	states, err := store.ListTrafficStates(ctx)
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	clientState := findTrafficState(states, "xray", "client", client.StatsKey)
+	if clientState == nil {
+		t.Fatal("missing client state")
+	}
+	if clientState.TotalUp != 300 || clientState.TotalDown != 700 {
+		t.Fatalf("quiet client cumulative should stay at repaired baseline, got %+v", clientState)
+	}
+	if clientState.DeltaUp != 0 || clientState.DeltaDown != 0 || clientState.RateUp != 0 || clientState.RateDown != 0 {
+		t.Fatalf("quiet client realtime should remain zero instead of inheriting inbound noise, got %+v", clientState)
 	}
 }
 
