@@ -70,6 +70,40 @@ func TestAuthAPIEndpointsRequireSession(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointRequiresSession(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+
+	anonymous := httptest.NewRecorder()
+	router.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/metrics", nil))
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for /api/metrics without session, got %d", anonymous.Code)
+	}
+
+	legacy := httptest.NewRecorder()
+	router.ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if strings.Contains(legacy.Body.String(), "# TYPE migate_") {
+		t.Fatal("legacy /metrics path must not expose metrics without a session")
+	}
+
+	login := httptest.NewRecorder()
+	router.ServeHTTP(login, localLoginRequest(`{"username":"admin","password":"secret"}`))
+	if login.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
+	}
+	authed := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/metrics", nil)
+	for _, cookie := range login.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	router.ServeHTTP(authed, req)
+	if authed.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/metrics with session, got %d: %s", authed.Code, authed.Body.String())
+	}
+	if !strings.Contains(authed.Body.String(), "# TYPE migate_http_requests_total counter") {
+		t.Fatalf("expected Prometheus metrics body, got: %s", authed.Body.String())
+	}
+}
+
 func TestAuthRemovedLegacyRoutesAreNotPublicAllowlisted(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()

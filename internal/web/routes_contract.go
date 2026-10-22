@@ -71,6 +71,7 @@ func routeTable() []Route {
 		route(http.MethodGet, "/api/sessions", AuthRequired, CSRFNotRequired, "sessionsListHandler", func(d *routeDeps) http.HandlerFunc { return sessionsListHandler(d.cfg) }),
 		route(http.MethodDelete, "/api/sessions/", AuthRequired, CSRFRequired, "sessionRevokeHandler", func(d *routeDeps) http.HandlerFunc { return sessionRevokeHandler(d.cfg) }),
 		route(http.MethodGet, "/api/health", AuthPublic, CSRFNotRequired, "healthHandler", func(*routeDeps) http.HandlerFunc { return healthHandler }),
+		route(http.MethodGet, "/api/metrics", AuthRequired, CSRFNotRequired, "metricsHandler", func(*routeDeps) http.HandlerFunc { return metricsHandler() }),
 		route(http.MethodGet, "/api/inbound-capabilities", AuthRequired, CSRFNotRequired, "inboundCapabilitiesHandler", func(*routeDeps) http.HandlerFunc { return inboundCapabilitiesHandler }),
 		route(http.MethodPost, "/api/reality/keypair", AuthRequired, CSRFRequired, "realityKeypairHandler", func(*routeDeps) http.HandlerFunc { return realityKeypairHandler }),
 		route(http.MethodGet, "/api/inbounds", AuthRequired, CSRFNotRequired, "inboundsHandler", func(d *routeDeps) http.HandlerFunc { return inboundsHandler(d.cfg) }),

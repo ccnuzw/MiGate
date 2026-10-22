@@ -41,6 +41,8 @@ func NewRouter(options ...Option) http.Handler {
 	mux.HandleFunc("/", spaHandler(cfg.basePath))
 	handler := csrfMiddleware(mux, &cfg)
 	handler = authMiddleware(handler, &cfg)
+	handler = requestIDMiddleware(handler)
+	handler = metricsMiddleware(handler)
 	handler = securityHeadersMiddleware(handler, &cfg)
 	if cfg.basePath != "" {
 		return basePathMiddleware(handler, cfg.basePath)
