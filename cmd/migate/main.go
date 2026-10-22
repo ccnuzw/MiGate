@@ -32,7 +32,7 @@ import (
 )
 
 // Version is overridden by release builds via ldflags.
-var Version = "v1.6.2"
+var Version = "v1.6.3"
 
 var defaultPanelConfigPath = paths.PanelConfig
 var routerOptionsFromConfigHook func([]web.Option) []web.Option
