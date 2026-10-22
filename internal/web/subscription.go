@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/imzyb/MiGate/internal/db"
+	"github.com/imzyb/MiGate/internal/logger"
 	"github.com/imzyb/MiGate/internal/xray"
 )
 
 func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
+	limiter := newSubscriptionRateLimiter()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -23,6 +25,11 @@ func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		if cfg == nil {
 			http.NotFound(w, r)
+			return
+		}
+		if !limiter.allow(subscriptionRateLimitKey(r, cfg.trustProxy)) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(subscriptionRateLimitWindow.Seconds())))
+			writeJSONError(w, http.StatusTooManyRequests, "subscription_rate_limited")
 			return
 		}
 		store := cfg.store
@@ -37,6 +44,7 @@ func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		inbound, client, found, err := store.GetSubscriptionByToken(r.Context(), token)
 		if err != nil {
+			logger.ErrorContext(r.Context(), "subscription: lookup failed", "error", err)
 			writeJSONError(w, http.StatusInternalServerError, "get_subscription_failed")
 			return
 		}
@@ -59,6 +67,7 @@ func subscriptionHandler(cfg *routerConfig) http.HandlerFunc {
 		if client.TrafficLimit > 0 {
 			usage, found, err := store.GetClientTrafficUsageForClient(r.Context(), client.ID)
 			if err != nil {
+				logger.ErrorContext(r.Context(), "subscription: traffic usage lookup failed", "error", err, "client_id", client.ID)
 				writeJSONError(w, http.StatusInternalServerError, "get_traffic_usage_failed")
 				return
 			}
