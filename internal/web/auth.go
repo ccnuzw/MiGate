@@ -283,8 +283,8 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 		if !constantTimeStringEqual(req.Username, cfg.authUsername) || !cfg.verifyPanelPassword(req.Password) {
 			// The limiter caps these at failureLimit per client IP per cooldown.
 			logger.WarnContext(r.Context(), "login: invalid credentials", "username", req.Username, "client_ip", clientIP)
-			if cfg.loginLimiter != nil {
-				cfg.loginLimiter.recordFailure(keys...)
+			if cfg.loginLimiter != nil && cfg.loginLimiter.recordFailure(keys...) {
+				logger.WarnContext(r.Context(), "login: blocking further attempts", "client_ip", clientIP, "cooldown", cfg.loginCooldown)
 			}
 			metrics.RecordLoginAttempt("failure")
 			writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")

@@ -8,19 +8,25 @@ import (
 
 func NewRouter(options ...Option) http.Handler {
 	cfg := routerConfig{
-		xrayController:   defaultXrayController{},
-		singboxRuntime:   defaultSingboxRuntime{},
-		socks5PoolURL:    defaultSocks5PoolURL,
-		httpPoolURL:      defaultHTTPPoolURL,
-		httpsPoolURL:     defaultHTTPSPoolURL,
-		updateCheckURL:   defaultUpdateCheckURL,
-		loginLimiter:     newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
-		coreScriptRunner: runCoreScript,
-		singboxApplier:   tryApplySingboxWithRuntime,
-		autoCoreApply:    true,
+		xrayController:    defaultXrayController{},
+		singboxRuntime:    defaultSingboxRuntime{},
+		socks5PoolURL:     defaultSocks5PoolURL,
+		httpPoolURL:       defaultHTTPPoolURL,
+		httpsPoolURL:      defaultHTTPSPoolURL,
+		updateCheckURL:    defaultUpdateCheckURL,
+		loginLimiter:      newLoginLimiter(defaultLoginFailureLimit, defaultLoginCooldown),
+		loginFailureLimit: defaultLoginFailureLimit,
+		loginCooldown:     defaultLoginCooldown,
+		coreScriptRunner:  runCoreScript,
+		singboxApplier:    tryApplySingboxWithRuntime,
+		autoCoreApply:     true,
 	}
 	for _, option := range options {
 		option(&cfg)
+	}
+	// A store that can persist login blocks (the real *db.Store) keeps them across restarts.
+	if store, ok := cfg.store.(loginRateLimitStore); ok {
+		cfg.loginLimiter = newPersistentLoginLimiter(store, cfg.loginFailureLimit, cfg.loginCooldown)
 	}
 	mux := http.NewServeMux()
 	trafficCache := newTrafficViewCache(2 * time.Second)

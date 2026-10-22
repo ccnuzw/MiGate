@@ -11,6 +11,8 @@ import (
 const (
 	defaultLoginFailureLimit = 5
 	defaultLoginCooldown     = 5 * time.Minute
+	// IP-level limit should be more restrictive to prevent username enumeration
+	ipOnlyFailureMultiplier = 2 // IP gets blocked after 2x the per-user limit
 )
 
 type loginLimiter struct {
@@ -24,6 +26,13 @@ type loginLimiter struct {
 type loginLimitEntry struct {
 	failures  int
 	blockedAt time.Time
+}
+
+type loginRateLimiter interface {
+	allow(keys ...string) bool
+	// recordFailure reports whether this failure just blocked one of the keys.
+	recordFailure(keys ...string) bool
+	reset(keys ...string)
 }
 
 func newLoginLimiter(failureLimit int, cooldown time.Duration) *loginLimiter {
@@ -57,18 +66,23 @@ func (l *loginLimiter) allow(keys ...string) bool {
 	return true
 }
 
-func (l *loginLimiter) recordFailure(keys ...string) {
+func (l *loginLimiter) recordFailure(keys ...string) bool {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	blocked := false
 	for _, key := range keys {
 		entry := l.entries[key]
 		entry.failures++
 		if entry.failures >= l.failureLimit {
 			entry.blockedAt = now
 		}
+		if entry.failures == l.failureLimit {
+			blocked = true
+		}
 		l.entries[key] = entry
 	}
+	return blocked
 }
 
 func (l *loginLimiter) reset(keys ...string) {
@@ -79,12 +93,41 @@ func (l *loginLimiter) reset(keys ...string) {
 	}
 }
 
+func (l *loginLimiter) lookup(key string) (loginLimitEntry, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry, ok := l.entries[key]
+	return entry, ok
+}
+
+// seed merges persisted state into memory. It only raises the failure count
+// and block time, so it never undoes failures recorded in this process, and it
+// ignores state whose block has already expired.
+func (l *loginLimiter) seed(key string, stored loginLimitEntry) {
+	now := l.now()
+	if stored.failures <= 0 || (stored.failures >= l.failureLimit && now.Sub(stored.blockedAt) >= l.cooldown) {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[key]
+	if stored.failures > entry.failures {
+		entry.failures = stored.failures
+	}
+	if stored.blockedAt.After(entry.blockedAt) {
+		entry.blockedAt = stored.blockedAt
+	}
+	l.entries[key] = entry
+}
+
 func loginRateLimitKeys(r *http.Request, username string, trustProxy bool) []string {
 	ip := remoteIP(r, trustProxy)
 	user := strings.ToLower(strings.TrimSpace(username))
 	if user == "" {
 		user = "-"
 	}
+	// Return IP-only key first (most restrictive), then per-user key
+	// This prevents bypassing rate limit by trying different usernames
 	return []string{"ip:" + ip, "ip_user:" + ip + ":" + user}
 }
 

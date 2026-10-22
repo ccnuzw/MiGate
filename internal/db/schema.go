@@ -208,6 +208,12 @@ CREATE TABLE IF NOT EXISTS core_apply_state (
   pending_reason TEXT NOT NULL DEFAULT '',
   pending_updated_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS login_rate_limits (
+  key TEXT PRIMARY KEY,
+  failures INTEGER NOT NULL DEFAULT 0,
+  blocked_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
 INSERT OR IGNORE INTO config_meta (key, value) VALUES ('validation_version', 1);
 CREATE INDEX IF NOT EXISTS idx_outbounds_sort_id ON outbounds(sort, id);
 CREATE INDEX IF NOT EXISTS idx_routing_rules_sort_id ON routing_rules(sort, id);
@@ -228,6 +234,7 @@ CREATE INDEX IF NOT EXISTS idx_certificates_not_after ON certificates(not_after)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_cert_key ON certificates(cert_path, key_path);
 CREATE INDEX IF NOT EXISTS idx_certificate_operations_certificate_id ON certificate_operations(certificate_id, id);
 CREATE INDEX IF NOT EXISTS idx_outbound_subscriptions_priority_id ON outbound_subscriptions(priority, id);
+CREATE INDEX IF NOT EXISTS idx_login_rate_limits_updated_at ON login_rate_limits(updated_at);
 `)
 	if err != nil {
 		return err

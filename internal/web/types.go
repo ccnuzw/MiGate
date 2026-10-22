@@ -276,7 +276,9 @@ type routerConfig struct {
 	updateStatusPath    string
 	publicHost          string
 	trustProxy          bool
-	loginLimiter        *loginLimiter
+	loginLimiter        loginRateLimiter
+	loginFailureLimit   int
+	loginCooldown       time.Duration
 	coreScriptRunner    func(script string) ([]byte, error)
 	singboxApplier      func(ctx context.Context, store Store, runtime SingboxRuntime, strict bool) SingboxApplySummary
 	singboxApplierSet   bool

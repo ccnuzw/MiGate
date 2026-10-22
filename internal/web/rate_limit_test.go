@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestRemoteIPUsesLastForwardedForEntryWhenTrusted(t *testing.T) {
@@ -31,5 +32,13 @@ func TestRemoteIPUsesLastForwardedForEntryWhenTrusted(t *testing.T) {
 				t.Fatalf("remoteIP = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoginLimiterReportsBlockTransitionOnce(t *testing.T) {
+	limiter := newLoginLimiter(2, time.Minute)
+	got := []bool{limiter.recordFailure("k"), limiter.recordFailure("k"), limiter.recordFailure("k")}
+	if got[0] || !got[1] || got[2] {
+		t.Fatalf("recordFailure results = %v, want [false true false]", got)
 	}
 }
