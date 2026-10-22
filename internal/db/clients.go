@@ -28,7 +28,10 @@ func (s *Store) prepareClientForCreate(ctx context.Context, inbound Inbound, par
 	if email == "" {
 		email = "client"
 	}
-	uuid, credentialID, password := normalizeClientCredentials(inbound.Protocol, params.UUID, params.CredentialID, params.Password)
+	uuid, credentialID, password, err := normalizeClientCredentials(inbound.Protocol, params.UUID, params.CredentialID, params.Password)
+	if err != nil {
+		return Client{}, fmt.Errorf("normalize credentials: %w", err)
+	}
 	clientForValidation := Client{UUID: uuid, CredentialID: credentialID, Password: password}
 	if err := ValidateClientCredential(inbound.Protocol, clientForValidation); err != nil {
 		return Client{}, err
@@ -108,7 +111,7 @@ func (s *Store) DeleteClient(ctx context.Context, id int64) error {
 	}
 	return tx.Commit()
 }
-func normalizeClientCredentials(protocol, uuid, credentialID, password string) (string, string, string) {
+func normalizeClientCredentials(protocol, uuid, credentialID, password string) (string, string, string, error) {
 	protocol = NormalizeInboundProtocol(protocol)
 	uuid = strings.TrimSpace(uuid)
 	credentialID = strings.TrimSpace(credentialID)
@@ -120,46 +123,82 @@ func normalizeClientCredentials(protocol, uuid, credentialID, password string) (
 	switch capability.CredentialType {
 	case CredentialUUID:
 		if credentialID == "" {
-			credentialID = newUUID()
+			var err error
+			credentialID, err = newUUID()
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate credential UUID: %w", err)
+			}
 		}
-		return credentialID, credentialID, ""
+		return credentialID, credentialID, "", nil
 	case CredentialPassword:
 		if password == "" {
 			password = uuid
 		}
 		if password == "" {
-			password = newSecret(24)
+			var err error
+			password, err = newSecret(24)
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate password: %w", err)
+			}
 		}
 		if credentialID == "" {
-			credentialID = newUUID()
+			var err error
+			credentialID, err = newUUID()
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate credential UUID: %w", err)
+			}
 		}
-		return password, credentialID, password
+		return password, credentialID, password, nil
 	case CredentialIDPassword:
 		if credentialID == "" {
-			credentialID = newUUID()
+			var err error
+			credentialID, err = newUUID()
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate credential UUID: %w", err)
+			}
 		}
 		if password == "" {
-			password = newSecret(24)
+			var err error
+			password, err = newSecret(24)
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate password: %w", err)
+			}
 		}
-		return credentialID, credentialID, password
+		return credentialID, credentialID, password, nil
 	case CredentialUsernamePassword:
 		if credentialID == "" {
-			credentialID = "user-" + newSecret(8)
+			secret, err := newSecret(8)
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate username: %w", err)
+			}
+			credentialID = "user-" + secret
 		}
 		if password == "" {
-			password = newSecret(24)
+			var err error
+			password, err = newSecret(24)
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate password: %w", err)
+			}
 		}
-		return credentialID, credentialID, password
+		return credentialID, credentialID, password, nil
 	case CredentialNone:
 		if uuid == "" {
-			uuid = newSecret(24)
+			var err error
+			uuid, err = newSecret(24)
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate token: %w", err)
+			}
 		}
-		return uuid, uuid, ""
+		return uuid, uuid, "", nil
 	default:
 		if uuid == "" {
-			uuid = newUUID()
+			var err error
+			uuid, err = newUUID()
+			if err != nil {
+				return "", "", "", fmt.Errorf("generate UUID: %w", err)
+			}
 		}
-		return uuid, uuid, password
+		return uuid, uuid, password, nil
 	}
 }
 func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientParams) (Client, error) {
@@ -200,7 +239,10 @@ func (s *Store) UpdateClient(ctx context.Context, id int64, params UpdateClientP
 			}
 		}
 	}
-	uuid, credentialID, password := normalizeClientCredentials(inbound.Protocol, rawUUID, rawCredentialID, rawPassword)
+	uuid, credentialID, password, err := normalizeClientCredentials(inbound.Protocol, rawUUID, rawCredentialID, rawPassword)
+	if err != nil {
+		return Client{}, fmt.Errorf("normalize credentials: %w", err)
+	}
 	if err := ValidateClientCredential(inbound.Protocol, Client{UUID: uuid, CredentialID: credentialID, Password: password}); err != nil {
 		return Client{}, err
 	}

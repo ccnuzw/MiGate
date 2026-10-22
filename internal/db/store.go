@@ -113,14 +113,14 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func newUUID() string {
+func newUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
+		return "", fmt.Errorf("generate UUID: %w", err)
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%s-%s-%s-%s-%s", hex.EncodeToString(b[0:4]), hex.EncodeToString(b[4:6]), hex.EncodeToString(b[6:8]), hex.EncodeToString(b[8:10]), hex.EncodeToString(b[10:16]))
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hex.EncodeToString(b[0:4]), hex.EncodeToString(b[4:6]), hex.EncodeToString(b[6:8]), hex.EncodeToString(b[8:10]), hex.EncodeToString(b[10:16])), nil
 }
 
 func randomHexToken(byteLen int) (string, error) {
@@ -131,10 +131,10 @@ func randomHexToken(byteLen int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func newSecret(byteLen int) string {
+func newSecret(byteLen int) (string, error) {
 	token, err := randomHexToken(byteLen)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("generate secret: %w", err)
 	}
-	return token
+	return token, nil
 }
