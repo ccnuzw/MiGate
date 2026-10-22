@@ -482,6 +482,24 @@ func TestAuthLoginRateLimitDoesNotTrustForwardedForByDefault(t *testing.T) {
 	}
 }
 
+func TestAuthLoginRateLimitIgnoresForgedForwardedForEntries(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithTrustedProxyHeaders(true), WithLoginRateLimit(2, time.Minute))
+	// The client forges a new leading entry each time; the proxy appends the real address.
+	for i := 0; i < 3; i++ {
+		resp := httptest.NewRecorder()
+		req := localLoginRequest(`{"username":"admin","password":"wrong"}`)
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d, 198.51.100.7", i+1))
+		router.ServeHTTP(resp, req)
+		want := http.StatusUnauthorized
+		if i == 2 {
+			want = http.StatusTooManyRequests
+		}
+		if resp.Code != want {
+			t.Fatalf("attempt %d: got %d, want %d", i+1, resp.Code, want)
+		}
+	}
+}
+
 func TestAuthLoginPageContainsLoginForm(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()
