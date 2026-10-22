@@ -6,6 +6,9 @@ DEV_DIR="${MIGATE_DEV_DIR:-$ROOT_DIR/.dev}"
 CONFIG_PATH="${MIGATE_CONFIG:-$DEV_DIR/panel.json}"
 PANEL_PORT="${MIGATE_PANEL_PORT:-9999}"
 WEB_PORT="${MIGATE_WEB_PORT:-5173}"
+# Address both dev servers listen on. Use 0.0.0.0 for LAN access. The Vite
+# proxy reaches the backend at 127.0.0.1, so don't set a single LAN IP here.
+DEV_HOST="${MIGATE_DEV_HOST:-127.0.0.1}"
 PANEL_USERNAME="${MIGATE_PANEL_USERNAME:-admin}"
 PANEL_PASSWORD="${MIGATE_PANEL_PASSWORD:-admin123}"
 WEB_BASE_PATH="${MIGATE_WEB_BASE_PATH:-/panel}"
@@ -45,15 +48,28 @@ trap cleanup EXIT INT TERM
 cd "$ROOT_DIR"
 
 echo "MiGate dev config: $CONFIG_PATH"
-echo "Backend API:       http://127.0.0.1:$PANEL_PORT"
-echo "Frontend WebUI:    http://127.0.0.1:$WEB_PORT$WEB_BASE_PATH/"
+DISPLAY_HOST="$DEV_HOST"
+if [ "$DEV_HOST" = "0.0.0.0" ]; then
+  DISPLAY_HOST="127.0.0.1"
+fi
+echo "Listening on:      $DEV_HOST"
+echo "Backend API:       http://$DISPLAY_HOST:$PANEL_PORT"
+echo "Frontend WebUI:    http://$DISPLAY_HOST:$WEB_PORT$WEB_BASE_PATH/"
 echo "Login account:     $PANEL_USERNAME / $PANEL_PASSWORD"
+case "$DEV_HOST" in
+  127.0.0.1 | localhost) ;;
+  *)
+    if [ "$PANEL_PASSWORD" = "admin123" ]; then
+      echo "WARNING: listening on $DEV_HOST; anyone on the network can log in with the default password. Set MIGATE_PANEL_PASSWORD." >&2
+    fi
+    ;;
+esac
 echo
 
-go run ./cmd/migate serve --host 127.0.0.1 --port "$PANEL_PORT" --config "$CONFIG_PATH" &
+go run ./cmd/migate serve --host "$DEV_HOST" --port "$PANEL_PORT" --config "$CONFIG_PATH" &
 api_pid=$!
 
-npm --prefix "$ROOT_DIR/web" run dev -- --port "$WEB_PORT" &
+npm --prefix "$ROOT_DIR/web" run dev -- --host "$DEV_HOST" --port "$WEB_PORT" &
 web_pid=$!
 
 set +e
