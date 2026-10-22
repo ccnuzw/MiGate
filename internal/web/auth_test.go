@@ -70,6 +70,40 @@ func TestAuthAPIEndpointsRequireSession(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointRequiresSession(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"))
+
+	anonymous := httptest.NewRecorder()
+	router.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/metrics", nil))
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for /api/metrics without session, got %d", anonymous.Code)
+	}
+
+	legacy := httptest.NewRecorder()
+	router.ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if strings.Contains(legacy.Body.String(), "# TYPE migate_") {
+		t.Fatal("legacy /metrics path must not expose metrics without a session")
+	}
+
+	login := httptest.NewRecorder()
+	router.ServeHTTP(login, localLoginRequest(`{"username":"admin","password":"secret"}`))
+	if login.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
+	}
+	authed := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/metrics", nil)
+	for _, cookie := range login.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	router.ServeHTTP(authed, req)
+	if authed.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/metrics with session, got %d: %s", authed.Code, authed.Body.String())
+	}
+	if !strings.Contains(authed.Body.String(), "# TYPE migate_http_requests_total counter") {
+		t.Fatalf("expected Prometheus metrics body, got: %s", authed.Body.String())
+	}
+}
+
 func TestAuthRemovedLegacyRoutesAreNotPublicAllowlisted(t *testing.T) {
 	router := NewRouter(WithAuth("admin", "secret"))
 	response := httptest.NewRecorder()
@@ -479,6 +513,24 @@ func TestAuthLoginRateLimitDoesNotTrustForwardedForByDefault(t *testing.T) {
 	router.ServeHTTP(limited, limitedReq)
 	if limited.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected spoofed X-Forwarded-For to remain rate limited, got %d", limited.Code)
+	}
+}
+
+func TestAuthLoginRateLimitIgnoresForgedForwardedForEntries(t *testing.T) {
+	router := NewRouter(WithAuth("admin", "secret"), WithTrustedProxyHeaders(true), WithLoginRateLimit(2, time.Minute))
+	// The client forges a new leading entry each time; the proxy appends the real address.
+	for i := 0; i < 3; i++ {
+		resp := httptest.NewRecorder()
+		req := localLoginRequest(`{"username":"admin","password":"wrong"}`)
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d, 198.51.100.7", i+1))
+		router.ServeHTTP(resp, req)
+		want := http.StatusUnauthorized
+		if i == 2 {
+			want = http.StatusTooManyRequests
+		}
+		if resp.Code != want {
+			t.Fatalf("attempt %d: got %d, want %d", i+1, resp.Code, want)
+		}
 	}
 }
 

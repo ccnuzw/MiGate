@@ -123,6 +123,14 @@ func WithTrustedProxyHeaders(enabled bool) Option {
 
 func WithLoginRateLimit(failureLimit int, cooldown time.Duration) Option {
 	return func(cfg *routerConfig) {
+		if failureLimit <= 0 {
+			failureLimit = defaultLoginFailureLimit
+		}
+		if cooldown <= 0 {
+			cooldown = defaultLoginCooldown
+		}
+		cfg.loginFailureLimit = failureLimit
+		cfg.loginCooldown = cooldown
 		cfg.loginLimiter = newLoginLimiter(failureLimit, cooldown)
 	}
 }

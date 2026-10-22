@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imzyb/MiGate/internal/logger"
+	"github.com/imzyb/MiGate/internal/metrics"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -262,21 +264,35 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
+		// Malformed bodies and rate-limited attempts are counted in metrics but not
+		// logged: neither is bounded by the limiter, so logging them would let a
+		// client grow the log without limit.
 		if err := decodeJSONBody(r, &req); err != nil {
+			metrics.RecordLoginAttempt("invalid_request")
 			writeJSONError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
+		clientIP := remoteIP(r, cfg.trustProxy)
 		keys := loginRateLimitKeys(r, req.Username, cfg.trustProxy)
 		if cfg.loginLimiter != nil && !cfg.loginLimiter.allow(keys...) {
+			metrics.RecordLoginAttempt("rate_limited")
+			metrics.RecordRateLimitBlock("login")
 			writeJSONError(w, http.StatusTooManyRequests, "login_rate_limited")
 			return
 		}
 		if !constantTimeStringEqual(req.Username, cfg.authUsername) || !cfg.verifyPanelPassword(req.Password) {
-			if cfg.loginLimiter != nil {
-				cfg.loginLimiter.recordFailure(keys...)
+			// The limiter caps these at failureLimit per client IP per cooldown.
+			logger.WarnContext(r.Context(), "login: invalid credentials", "username", req.Username, "client_ip", clientIP)
+			if cfg.loginLimiter != nil && cfg.loginLimiter.recordFailure(keys...) {
+				logger.WarnContext(r.Context(), "login: blocking further attempts", "client_ip", clientIP, "cooldown", cfg.loginCooldown)
 			}
+			metrics.RecordLoginAttempt("failure")
 			writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")
 			return
+		}
+		if cfg.panelPasswordUsesDefault() {
+			// The settings page also shows a change-password warning for this case.
+			logger.WarnContext(r.Context(), "login: panel still uses the default password; change it in settings or with mg reset-password", "client_ip", clientIP)
 		}
 		migratePanelPasswordHash(r, cfg, req.Password)
 		if cfg.loginLimiter != nil {
@@ -284,6 +300,7 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 		}
 		token, err := createSessionToken(req.Username, cfg.sessionSecret)
 		if err != nil {
+			logger.ErrorContext(r.Context(), "login: failed to create session token", "error", err, "username", req.Username)
 			writeJSONError(w, http.StatusInternalServerError, "session_token_failed")
 			return
 		}
@@ -303,11 +320,17 @@ func loginHandler(cfg *routerConfig) http.HandlerFunc {
 
 		// Track the new session in the token_blacklist table (revoked=0 = active)
 		if cfg.store != nil {
-			if err := cfg.store.AddToBlacklist(r.Context(), hashToken(token), time.Now().Add(7*24*time.Hour), false); err == nil {
-				_ = cfg.store.PruneActiveSessions(r.Context(), maxActiveSessions)
+			if err := cfg.store.AddToBlacklist(r.Context(), hashToken(token), time.Now().Add(7*24*time.Hour), false); err != nil {
+				logger.ErrorContext(r.Context(), "login: failed to track session", "error", err, "username", req.Username)
+			} else {
+				if err := cfg.store.PruneActiveSessions(r.Context(), maxActiveSessions); err != nil {
+					logger.WarnContext(r.Context(), "login: failed to prune old sessions", "error", err)
+				}
 			}
 		}
 
+		logger.InfoContext(r.Context(), "login: successful", "username", req.Username, "client_ip", clientIP)
+		metrics.RecordLoginAttempt("success")
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }

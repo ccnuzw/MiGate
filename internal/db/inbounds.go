@@ -138,7 +138,11 @@ func (s *Store) insertInboundTx(ctx context.Context, execer sqlExecer, inboundUU
 	shadowTLSVersion int, shadowTLSPassword string) (int64, string, error) {
 	uuid := strings.TrimSpace(inboundUUID)
 	if uuid == "" {
-		uuid = newUUID()
+		var err error
+		uuid, err = newUUID()
+		if err != nil {
+			return 0, "", fmt.Errorf("generate inbound UUID: %w", err)
+		}
 	}
 	tuicZeroRTTInt := 0
 	if tuicZeroRTT {
@@ -260,7 +264,11 @@ func prepareCreateInboundRealityMaterial(security string, params *CreateInboundP
 		}
 	}
 	if strings.TrimSpace(params.RealityShortID) == "" {
-		params.RealityShortID = newSecret(4)
+		shortID, err := newSecret(4)
+		if err != nil {
+			return fmt.Errorf("generate reality short ID: %w", err)
+		}
+		params.RealityShortID = shortID
 	}
 	return nil
 }
@@ -309,7 +317,11 @@ func (s *Store) prepareUpdateInboundRealityMaterial(ctx context.Context, id int6
 		}
 	}
 	if strings.TrimSpace(params.RealityShortID) == "" {
-		params.RealityShortID = newSecret(4)
+		shortID, err := newSecret(4)
+		if err != nil {
+			return fmt.Errorf("generate reality short ID: %w", err)
+		}
+		params.RealityShortID = shortID
 	}
 	return nil
 }
